@@ -1,0 +1,9 @@
+#!/bin/zsh
+# 🌕 Puente Dorado — enlace entre Núcleo y Transmedia
+
+if ! pgrep -f "modulo_transmedia.py" > /dev/null; then
+    echo "🌀 Activando módulo Transmedia..."
+    python3 ~/Vectrax_Nucleo/Transmedia/modulo_transmedia.py &
+else
+    echo "✨ Transmedia ya operativo."
+fi

@@ -1,0 +1,46 @@
+
+import pyttsx3
+
+def hablar_vectrax(texto):
+    engine = pyttsx3.init()
+    voces = engine.getProperty('voices')
+
+    # Buscar voz española (usa una de estas según tu sistema)
+    voz_id = None
+    for v in voces:
+        if "spanish" in v.name.lower() or "es" in v.id.lower():
+            voz_id = v.id
+            break
+
+    if voz_id:
+        engine.setProperty('voice', voz_id)
+    else:
+        # voz por defecto si no encuentra español
+        engine.setProperty('voice', voces[0].id)
+
+    engine.setProperty('rate', 155)
+    engine.setProperty('volume', 1.0)
+    engine.say(texto)
+    engine.runAndWait()
+
+def hablar_vectrax(texto):
+    engine = pyttsx3.init()
+    voces = engine.getProperty('voices')
+
+    # Buscar voz española (usa la mejor que encuentre)
+    voz_id = None
+    for v in voces:
+        if "spanish" in v.name.lower() or "es" in v.id.lower():
+            voz_id = v.id
+            break
+
+    if voz_id:
+        engine.setProperty('voice', voz_id)
+    else:
+        engine.setProperty('voice', voces[0].id)
+
+    engine.setProperty('rate', 160)
+    engine.setProperty('volume', 1.0)
+    engine.say(texto)
+    engine.runAndWait()
+
