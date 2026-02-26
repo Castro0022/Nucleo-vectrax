@@ -1,0 +1,1 @@
+Semilla inicial: estabilidad y ejecución.

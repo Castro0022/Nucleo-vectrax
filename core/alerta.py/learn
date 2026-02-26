@@ -1,0 +1,8 @@
+# =========================================
+# Generado por Vectrax (Modo Btrans)
+# Snippet: alerta_stop
+# Fecha: 2026-02-10T21:41:30
+# =========================================
+
+def alerta():
+    print("Stop cercano")

@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""
+vx — Vectrax CLI
+=================
+Usage:
+  vx start       Start the Vectrax daemon
+  vx smoke       Run smoke tests
+  vx autopatch   Run autopatch cycle (detect → fix → smoke → commit/rollback)
+  vx logs        Show autopatch logs
+  vx status      Show system status
+"""
+
+import os
+import sys
+import subprocess
+import json
+
+BASE_DIR = os.path.expanduser("~/Vectrax")
+CONFIG_PATH = os.path.join(BASE_DIR, "config", "autonomy.json")
+LOG_FILE = os.path.join(BASE_DIR, "logs", "autopatch.log")
+REPORT_FILE = os.path.join(BASE_DIR, "reports", "autopatch_last.json")
+
+
+def cmd_start():
+    """Start the Vectrax daemon."""
+    start_script = os.path.join(BASE_DIR, "vectrax_start.sh")
+    if not os.path.isfile(start_script):
+        print("[vx] Error: vectrax_start.sh not found.")
+        sys.exit(1)
+    os.execv("/bin/bash", ["/bin/bash", start_script])
+
+
+def cmd_smoke():
+    """Run smoke tests."""
+    smoke_script = os.path.join(BASE_DIR, "core", "smoke.py")
+    result = subprocess.run(
+        [sys.executable, smoke_script],
+        cwd=BASE_DIR,
+    )
+    sys.exit(result.returncode)
+
+
+def cmd_autopatch():
+    """Run the autopatch cycle."""
+    # Ensure git is initialized
+    git_dir = os.path.join(BASE_DIR, ".git")
+    if not os.path.isdir(git_dir):
+        print("[vx] Initializing git repo for autopatch...")
+        subprocess.run(["git", "init"], cwd=BASE_DIR, capture_output=True)
+        subprocess.run(["git", "add", "-A"], cwd=BASE_DIR, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "[vx] initial commit for autopatch"],
+            cwd=BASE_DIR,
+            capture_output=True,
+        )
+        print("[vx] Git repo initialized with initial commit.")
+
+    autopatch_script = os.path.join(BASE_DIR, "core", "autopatch.py")
+    result = subprocess.run(
+        [sys.executable, autopatch_script],
+        cwd=BASE_DIR,
+    )
+    sys.exit(result.returncode)
+
+
+def cmd_logs(args):
+    """Show autopatch logs."""
+    if not os.path.isfile(LOG_FILE):
+        print("[vx] No autopatch logs yet.")
+        sys.exit(0)
+
+    # Parse flags
+    lines = 30
+    follow = False
+    for i, a in enumerate(args):
+        if a in ("-n", "--lines") and i + 1 < len(args):
+            lines = int(args[i + 1])
+        if a in ("-f", "--follow"):
+            follow = True
+
+    if follow:
+        os.execvp("tail", ["tail", "-f", LOG_FILE])
+    else:
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            all_lines = f.readlines()
+        for line in all_lines[-lines:]:
+            print(line, end="")
+
+    # Also show last report summary if available
+    if os.path.isfile(REPORT_FILE):
+        print("\n--- Last autopatch report ---")
+        with open(REPORT_FILE, "r") as f:
+            report = json.load(f)
+        print(f"  Result:   {report.get('result', 'N/A')}")
+        print(f"  Started:  {report.get('started_at', 'N/A')}")
+        print(f"  Finished: {report.get('finished_at', 'N/A')}")
+        print(f"  Rollback: {report.get('rollback', False)}")
+        attempts = report.get("attempts", [])
+        if attempts:
+            print(f"  Attempts: {len(attempts)}")
+            for a in attempts:
+                fixes = ", ".join(a.get("fixes_applied", [])) or "none"
+                print(f"    #{a['attempt']}: passed={a.get('smoke_passed', False)} fixes=[{fixes}]")
+
+
+def cmd_status():
+    """Show system status."""
+    print("=== Vectrax Status ===")
+
+    # Git status
+    git_dir = os.path.join(BASE_DIR, ".git")
+    if os.path.isdir(git_dir):
+        result = subprocess.run(
+            ["git", "log", "--oneline", "-1"],
+            cwd=BASE_DIR, capture_output=True, text=True,
+        )
+        print(f"  Git HEAD: {result.stdout.strip() or 'no commits'}")
+    else:
+        print("  Git: not initialized")
+
+    # Config
+    if os.path.isfile(CONFIG_PATH):
+        with open(CONFIG_PATH, "r") as f:
+            cfg = json.load(f).get("autopatch", {})
+        print(f"  Autopatch enabled: {cfg.get('enabled', False)}")
+        print(f"  Max retries: {cfg.get('max_retries', 'N/A')}")
+    else:
+        print("  Config: missing")
+
+    # Last report
+    if os.path.isfile(REPORT_FILE):
+        with open(REPORT_FILE, "r") as f:
+            report = json.load(f)
+        print(f"  Last patch: {report.get('result', 'N/A')} at {report.get('finished_at', 'N/A')}")
+    else:
+        print("  Last patch: none")
+
+    # Daemon
+    pid_file = os.path.expanduser("~/.vectrax/vectrax.pid")
+    if os.path.isfile(pid_file):
+        with open(pid_file) as f:
+            pid = f.read().strip()
+        # Check if process alive
+        try:
+            os.kill(int(pid), 0)
+            print(f"  Daemon: running (PID {pid})")
+        except (ProcessLookupError, ValueError):
+            print(f"  Daemon: stale PID file ({pid})")
+    else:
+        print("  Daemon: not running")
+
+
+def usage():
+    print(__doc__.strip())
+    sys.exit(1)
+
+
+def main():
+    if len(sys.argv) < 2:
+        usage()
+
+    cmd = sys.argv[1]
+    args = sys.argv[2:]
+
+    commands = {
+        "start": lambda: cmd_start(),
+        "smoke": lambda: cmd_smoke(),
+        "autopatch": lambda: cmd_autopatch(),
+        "logs": lambda: cmd_logs(args),
+        "status": lambda: cmd_status(),
+    }
+
+    if cmd in ("-h", "--help", "help"):
+        usage()
+
+    handler = commands.get(cmd)
+    if handler:
+        handler()
+    else:
+        print(f"[vx] Unknown command: {cmd}")
+        usage()
+
+
+if __name__ == "__main__":
+    main()

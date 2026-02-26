@@ -1,0 +1,30 @@
+# Secrets & keys
+.env
+keys/
+secrets/
+
+# Virtual env
+.venv/
+__pycache__/
+*.pyc
+
+# Databases (binary)
+*.db
+*.db-shm
+*.db-wal
+
+# Runtime / daemon
+daemon.err
+daemon.log
+launch.err
+launch.log
+*.pid
+*.lock
+
+# macOS
+.DS_Store
+
+# Logs (tracked via git but content rotated)
+logs/*.log
+
+# Reports are tracked

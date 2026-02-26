@@ -1,0 +1,44 @@
+{
+  "autopatch": {
+    "enabled": true,
+    "max_retries": 3,
+    "smoke_command": "vx smoke",
+    "scope_allowlist": [
+      "core/",
+      "app.py",
+      "nucleo.py",
+      "vectrax_engine.py",
+      "vectrax_unified.py",
+      "vectrax.py",
+      "vectrax_start.sh",
+      "vectrax_ptt.py",
+      "vectrax_presencia.py",
+      "vectrax_presencia_ptt.py",
+      "vectrax_habla_unico.py",
+      "scripts/",
+      "config/"
+    ],
+    "scope_denylist": [
+      ".env",
+      ".git/",
+      "keys/",
+      "secrets/",
+      ".venv/",
+      "vault/",
+      "*.db",
+      "*.db-shm",
+      "*.db-wal"
+    ],
+    "protected_paths": [
+      ".env",
+      ".git/",
+      "keys/",
+      "secrets/"
+    ],
+    "auto_commit": true,
+    "auto_rollback": true,
+    "commit_prefix": "[autopatch]",
+    "log_file": "logs/autopatch.log",
+    "report_file": "reports/autopatch_last.json"
+  }
+}
