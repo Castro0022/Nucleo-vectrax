@@ -1,2 +1,2 @@
 def alerta():
-print("Stop cercano")
+    print("Stop cercano")
