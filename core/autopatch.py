@@ -241,8 +241,23 @@ def attempt_fix(error, logger):
     original_line = lines[idx]
     fixed = False
 
+    # Strategy 0: Missing indentation (expected an indented block)
+    if "expected an indented block" in msg:
+        stripped = original_line.rstrip()
+        current_indent = len(original_line) - len(original_line.lstrip())
+        # Look at the previous line to determine expected indent
+        if idx > 0:
+            prev = lines[idx - 1].rstrip()
+            prev_indent = len(lines[idx - 1]) - len(lines[idx - 1].lstrip())
+            # If prev line ends with ':', indent this line under it
+            if prev.endswith(":"):
+                new_indent = prev_indent + 4
+                lines[idx] = " " * new_indent + stripped.lstrip() + "\n"
+                fixed = True
+                logger.log(f"Fix: added indentation at {fpath}:{line_no}")
+
     # Strategy 1: Missing colon
-    if "expected ':'" in msg or ("invalid syntax" in msg):
+    if not fixed and ("expected ':'" in msg or ("invalid syntax" in msg)):
         stripped = original_line.rstrip()
         block_starters = ("def ", "class ", "if ", "elif ", "else", "for ", "while ", "with ", "try", "except", "finally")
         if any(stripped.lstrip().startswith(kw) for kw in block_starters):
