@@ -116,18 +116,12 @@ def git(*args):
 
 
 def git_checkpoint(logger):
-    """Create a checkpoint commit for rollback."""
-    git("add", "-A")
-    rc, out, err = git("diff", "--cached", "--quiet")
-    if rc != 0:
-        # There are staged changes
-        git("commit", "-m", "[autopatch] checkpoint before patch attempt")
-        logger.log("Git checkpoint created.")
-    else:
-        logger.log("Working tree clean, no checkpoint needed.")
-    # Return current HEAD for rollback
+    """Record current stable HEAD as rollback target (before any broken changes)."""
+    # Save current HEAD — this is the last known-good state
     rc, head, _ = git("rev-parse", "HEAD")
-    return head.strip() if rc == 0 else None
+    stable_head = head.strip() if rc == 0 else None
+    logger.log(f"Stable HEAD recorded: {stable_head[:8] if stable_head else 'N/A'}")
+    return stable_head
 
 
 def git_rollback(target_hash, logger):
