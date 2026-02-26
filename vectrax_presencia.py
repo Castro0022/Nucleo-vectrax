@@ -1,0 +1,36 @@
+import speech_recognition as sr
+import os
+import time
+
+def hablar(texto):
+    print("VECTRAX:", texto)
+    os.system(f'say "{texto}"')
+
+r = sr.Recognizer()
+r.energy_threshold = 300
+r.pause_threshold = 0.8
+
+hablar("Vectrax está presente. Te escucho.")
+
+while True:
+    with sr.Microphone() as source:
+        print("\n🎤 Habla ahora...")
+        audio = r.listen(source, phrase_time_limit=5)
+
+    try:
+        texto = r.recognize_google(audio, language="es-ES")
+        print("TÚ:", texto)
+
+        if "salir" in texto.lower():
+            hablar("Cerrando presencia.")
+            break
+
+        # RESPUESTA SIMPLE (por ahora)
+        hablar(f"Te escuché decir: {texto}")
+
+    except sr.UnknownValueError:
+        print("…")
+    except Exception as e:
+        print("ERROR:", e)
+        time.sleep(1)
+
