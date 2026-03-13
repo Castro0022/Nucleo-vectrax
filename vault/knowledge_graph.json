@@ -1,0 +1,41 @@
+{
+  "nodes": [
+    {
+      "id": "P-001",
+      "node_type": "decision",
+      "label": "deployed feature X",
+      "metadata": {
+        "outcome": "executed"
+      },
+      "created_at": 1772916547.234893
+    },
+    {
+      "id": "COG-C2E2F720",
+      "node_type": "decision",
+      "label": "p2",
+      "metadata": {
+        "outcome": "approved"
+      },
+      "created_at": 1772920386.0438452
+    },
+    {
+      "id": "COG-D3ACA693",
+      "node_type": "decision",
+      "label": "p1",
+      "metadata": {
+        "outcome": "approved"
+      },
+      "created_at": 1772920943.861305
+    },
+    {
+      "id": "COG-ACFD9708",
+      "node_type": "decision",
+      "label": "p1",
+      "metadata": {
+        "outcome": "approved"
+      },
+      "created_at": 1772921056.906537
+    }
+  ],
+  "edges": []
+}

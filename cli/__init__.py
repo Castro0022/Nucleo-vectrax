@@ -1,0 +1,1 @@
+"""Vectrax CLI package"""

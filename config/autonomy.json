@@ -5,16 +5,9 @@
     "smoke_command": "vx smoke",
     "scope_allowlist": [
       "core/",
-      "app.py",
-      "nucleo.py",
-      "vectrax_engine.py",
-      "vectrax_unified.py",
-      "vectrax.py",
-      "vectrax_start.sh",
-      "vectrax_ptt.py",
-      "vectrax_presencia.py",
-      "vectrax_presencia_ptt.py",
-      "vectrax_habla_unico.py",
+      "cognition/",
+      "connectors/",
+      "cli/",
       "scripts/",
       "config/"
     ],
@@ -25,6 +18,7 @@
       "secrets/",
       ".venv/",
       "vault/",
+      "archive/",
       "*.db",
       "*.db-shm",
       "*.db-wal"
@@ -33,12 +27,34 @@
       ".env",
       ".git/",
       "keys/",
-      "secrets/"
+      "secrets/",
+      "core/operator/identity.py",
+      "config/autonomy.json"
     ],
-    "auto_commit": true,
+    "auto_commit": false,
+    "_auto_commit_note": "P-004: auto_commit disabled — commits require explicit creator approval via ApprovalGate",
     "auto_rollback": true,
     "commit_prefix": "[autopatch]",
     "log_file": "logs/autopatch.log",
     "report_file": "reports/autopatch_last.json"
+  },
+  "daily_report": {
+    "enabled": true,
+    "reports_dir": "reports",
+    "retention_days": 30
+  },
+  "progressive_autonomy": {
+    "auto_apply_enabled": false,
+    "max_risk_score": 0.15,
+    "min_confidence_score": 0.90,
+    "max_diff_lines": 50,
+    "policy_gates": {
+      "docs_tests_logs_auto": false
+    }
+  },
+  "roles": {
+    "default_role": "owner",
+    "allow_operator": false,
+    "allow_viewer": false
   }
 }

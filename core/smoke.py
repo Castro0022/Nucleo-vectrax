@@ -24,6 +24,9 @@ REQUIRED_FILES = [
     "core/rules.py",
     "core/ingest.py",
     "core/memory_sqlite.py",
+    "core/state_manager.py",
+    "core/meta_loop.py",
+    "core/governor.py",
     "config/autonomy.json",
 ]
 
@@ -32,6 +35,9 @@ IMPORT_CHECKS = [
     "core.rules",
     "core.ingest",
     "core.memory_sqlite",
+    "core.state_manager",
+    "core.meta_loop",
+    "core.governor",
 ]
 
 

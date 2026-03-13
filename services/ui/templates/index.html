@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vectrax</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ============================================================ -->
+<!-- LOGIN                                                        -->
+<!-- ============================================================ -->
+<div id="view-login" class="view">
+  <div class="login-card">
+    <div class="login-logo">V</div>
+    <h2 class="login-title">Vectrax</h2>
+    <p class="login-subtitle">Cognitive Memory Platform</p>
+    <div id="login-error" class="login-error"></div>
+    <div class="field">
+      <label for="login-user">Username</label>
+      <input id="login-user" type="text" placeholder="username" autocomplete="username">
+    </div>
+    <div class="field">
+      <label for="login-pass">Password</label>
+      <input id="login-pass" type="password" placeholder="password" autocomplete="current-password">
+    </div>
+    <button id="btn-login" class="btn btn-accent full">Sign in</button>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- APP SHELL (post-login)                                       -->
+<!-- ============================================================ -->
+<div id="view-app" class="view" style="display:none">
+
+  <!-- Top bar -->
+  <header id="topbar">
+    <div class="topbar-left">
+      <a href="/portals" class="topbar-logo" title="Universe Portals">V</a>
+      <span class="topbar-name">Vectrax</span>
+    </div>
+    <nav class="topbar-nav">
+      <button class="nav-btn active" data-view="chat">Chat</button>
+      <button class="nav-btn" data-view="dashboard">Dashboard</button>
+      <a href="/portals" class="nav-btn" style="text-decoration:none">Portals</a>
+    </nav>
+    <div class="topbar-right">
+      <span id="topbar-identity" class="topbar-identity"></span>
+      <button id="btn-logout" class="btn btn-ghost btn-sm">Logout</button>
+    </div>
+  </header>
+
+  <!-- ======================================================== -->
+  <!-- CHAT VIEW                                                -->
+  <!-- ======================================================== -->
+  <div id="panel-chat" class="main-panel active">
+    <!-- Context bar -->
+    <div class="chat-context" id="chat-context"></div>
+
+    <!-- Messages -->
+    <div id="chat-messages" class="chat-messages"></div>
+
+    <!-- Input -->
+    <div class="chat-input-bar">
+      <input id="chat-input" type="text" placeholder="Write a message…" autocomplete="off">
+      <button id="btn-send" class="btn btn-accent">Send</button>
+    </div>
+  </div>
+
+  <!-- ======================================================== -->
+  <!-- DASHBOARD VIEW                                           -->
+  <!-- ======================================================== -->
+  <div id="panel-dashboard" class="main-panel">
+
+    <!-- Metrics strip -->
+    <div class="metrics-strip" id="metrics-strip"></div>
+
+    <!-- Sub-navigation -->
+    <div class="dash-nav">
+      <button class="dash-tab active" data-section="stars">Stars</button>
+      <button class="dash-tab" data-section="constellations">Constellations</button>
+      <button class="dash-tab" data-section="history">History</button>
+      <button class="dash-tab" data-section="sessions">Sessions</button>
+      <button class="dash-tab" data-section="proposals">Proposals</button>
+      <button class="dash-tab" data-section="operator">Operator</button>
+      <button class="dash-tab" data-section="audit">Audit</button>
+    </div>
+
+    <!-- Section containers -->
+    <div class="dash-content">
+      <div id="sec-stars" class="dash-section active"></div>
+      <div id="sec-constellations" class="dash-section"></div>
+      <div id="sec-history" class="dash-section"></div>
+      <div id="sec-sessions" class="dash-section"></div>
+      <div id="sec-proposals" class="dash-section"></div>
+      <div id="sec-operator" class="dash-section"></div>
+      <div id="sec-audit" class="dash-section"></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

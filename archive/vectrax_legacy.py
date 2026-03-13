@@ -583,6 +583,27 @@ def routing_stats():
     }
 
 
+@app.get("/daily-report")
+def daily_report(date: str = ""):
+    """Reporte Diario de Estado consolidado.
+    - Sin parámetros: genera reporte del día actual.
+    - ?date=YYYY-MM-DD: carga reporte guardado o genera para esa fecha.
+    """
+    from core.daily_report import generate_report, save_report, load_saved_report
+
+    target_date = date.strip() if date.strip() else None
+
+    # Si piden fecha específica, intentar cargar reporte guardado
+    if target_date:
+        saved = load_saved_report(target_date)
+        if saved:
+            return saved
+
+    report = generate_report(target_date=target_date)
+    save_report(report)
+    return report
+
+
 @app.get("/analytics")
 def analytics(topic: str = ""):
     """Dashboard analítico: divergencia, dominancia, latencia, tendencia."""

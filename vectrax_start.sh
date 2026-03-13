@@ -1,12 +1,14 @@
 #!/bin/bash
-set -e
+# vectrax_start.sh — Sovereign startup delegation
+# Delegates entirely to the single runtime authority: vx activate
+# Do NOT start vectrax_unified.py here; use 'vx run' for a persistent loop.
 
 mkdir -p ~/.vectrax
 
-# Arranque persistente (no muere si cierras Warp)
-nohup python3 ~/Vectrax/vectrax_unified.py >> ~/.vectrax/vectrax.boot.log 2>&1 &
+# Ensure we are in the Vectrax directory with the venv active
+cd "$(dirname "$0")"
+if [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+fi
 
-# Soltar el job del shell (extra seguro)
-disown || true
-
-echo "⟡ [Vectrax] Arranque enviado. (Si ya estaba activo, no se duplicará.)"
+exec vx activate

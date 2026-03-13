@@ -1,0 +1,37 @@
+Metadata-Version: 2.4
+Name: vectrax
+Version: 0.1.0
+Summary: Cognitive operator runtime with 12-layer architecture and gravitational memory
+Author: Vectrax Community
+Requires-Python: >=3.9
+Requires-Dist: click>=8.1
+Requires-Dist: rich>=13.0
+Requires-Dist: anthropic>=0.20
+Requires-Dist: litellm>=1.30
+Requires-Dist: sentence-transformers>=2.7
+Requires-Dist: networkx>=2.8
+Requires-Dist: numpy>=1.24
+Requires-Dist: fastapi>=0.100
+Requires-Dist: uvicorn>=0.22
+Requires-Dist: httpx>=0.24
+Requires-Dist: pydantic>=2.0
+Requires-Dist: requests>=2.28
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: protobuf<4.0,>=3.20
+Provides-Extra: faiss
+Requires-Dist: faiss-cpu>=1.8; extra == "faiss"
+Provides-Extra: audio
+Requires-Dist: pyaudio>=0.2; extra == "audio"
+Requires-Dist: SpeechRecognition>=3.10; extra == "audio"
+Provides-Extra: monitoring
+Requires-Dist: psutil>=5.9; extra == "monitoring"
+Requires-Dist: watchdog>=3.0; extra == "monitoring"
+Provides-Extra: all
+Requires-Dist: faiss-cpu>=1.8; extra == "all"
+Requires-Dist: pyaudio>=0.2; extra == "all"
+Requires-Dist: SpeechRecognition>=3.10; extra == "all"
+Requires-Dist: psutil>=5.9; extra == "all"
+Requires-Dist: watchdog>=3.0; extra == "all"
+Dynamic: author
+Dynamic: requires-python

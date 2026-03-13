@@ -1,0 +1,78 @@
+{
+  "date": "2026-02-26",
+  "generated_at": "2026-02-26T18:32:55",
+  "system": {
+    "version": "2.1.0",
+    "timestamp": "2026-02-26T18:32:55",
+    "daemon_running": false,
+    "daemon_pid": null
+  },
+  "orchestrator": {
+    "db_exists": true,
+    "queries_today": 4,
+    "topics": [
+      {
+        "topic": "test",
+        "count": 2
+      },
+      {
+        "topic": "tech",
+        "count": 2
+      }
+    ],
+    "routing_modes": [],
+    "avg_divergence": 0.091,
+    "high_divergence_count": 0,
+    "single_savings_pct": 0.0,
+    "consensus_count": 0,
+    "fallback_count": 0
+  },
+  "providers": {
+    "providers": [
+      {
+        "provider": "gemini",
+        "calls": 4,
+        "avg_latency_ms": 3817.2,
+        "errors": 0,
+        "error_rate": 0.0
+      },
+      {
+        "provider": "openai",
+        "calls": 4,
+        "avg_latency_ms": 882.5,
+        "errors": 2,
+        "error_rate": 0.5
+      }
+    ],
+    "feedback_today": 0
+  },
+  "autopatch": {
+    "total_cycles": 4,
+    "fixes_applied": 1,
+    "rollbacks": 2,
+    "errors_detected": 2,
+    "last_cycle_date": "2026-02-26 18:23:14",
+    "recent_errors": [
+      "All 3 attempts exhausted.",
+      "All 3 attempts exhausted."
+    ],
+    "last_report": {
+      "started_at": "2026-02-26T18:23:14",
+      "attempts": [],
+      "result": "clean",
+      "rollback": false,
+      "finished_at": "2026-02-26T18:23:14"
+    }
+  },
+  "ledger": {
+    "db_exists": true,
+    "events_count": 18,
+    "facts_count": 0,
+    "knowledge_count": 1,
+    "last_event": "2026-02-10T22:08:19"
+  },
+  "inbox": {
+    "processed_today": 0,
+    "total_processed": 4
+  }
+}

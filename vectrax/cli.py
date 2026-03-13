@@ -31,6 +31,7 @@ DAEMON (background observer):
 """
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime
 
@@ -1343,6 +1344,7 @@ def connect_status(name: str):
 def connect_test(name: str):
     """Run self-test on a connector."""
     from connectors.engine import get_connection_engine
+    from connectors.core.errors import UCEError
 
     engine = get_connection_engine()
     if not engine.list_connectors():
@@ -1352,6 +1354,14 @@ def connect_test(name: str):
     if not connector:
         console.print(f"[red]Connector '{name}' not found.[/red]")
         return
+
+    # Load credentials from vault and authenticate before testing
+    try:
+        engine.connect(name)
+    except UCEError as exc:
+        console.print(f"[yellow]⚠ Auth skipped:[/yellow] {exc}")
+    except Exception as exc:
+        console.print(f"[yellow]⚠ Auth skipped:[/yellow] {exc}")
 
     with console.status(f"Testing '{name}'…"):
         result = connector.test()
@@ -1508,6 +1518,207 @@ def _auto_register_adapters(engine):
             engine.register(connector, contract)
         except Exception:
             pass
+
+
+# ===========================================================================
+# AUTH — Multi-user authentication
+# ===========================================================================
+
+_SESSION_PATH = os.path.join(os.path.expanduser("~/.vectrax"), "session.json")
+
+
+def _load_session() -> dict | None:
+    """Load the saved session token from disk."""
+    import json as _json
+    if os.path.isfile(_SESSION_PATH):
+        try:
+            with open(_SESSION_PATH, "r") as f:
+                return _json.load(f)
+        except Exception:
+            pass
+    return None
+
+
+def _save_session(data: dict) -> None:
+    import json as _json
+    os.makedirs(os.path.dirname(_SESSION_PATH), exist_ok=True)
+    with open(_SESSION_PATH, "w") as f:
+        _json.dump(data, f, indent=2)
+    os.chmod(_SESSION_PATH, 0o600)
+
+
+def _clear_session() -> None:
+    if os.path.isfile(_SESSION_PATH):
+        os.remove(_SESSION_PATH)
+
+
+@cli.group()
+def auth():
+    """[bold green]🔐 Auth[/bold green] — multi-user login/logout."""
+
+
+@auth.command(name="login")
+@click.option("--username", prompt=True)
+@click.option("--password", prompt=True, hide_input=True)
+def auth_login(username: str, password: str):
+    """Authenticate and save session locally."""
+    from services.core.users import UserStore
+    from services.core.tokens import TokenManager
+
+    store = UserStore()
+    user = store.authenticate(username, password)
+    if not user:
+        console.print("[bold red]✗[/bold red] Invalid credentials.")
+        sys.exit(1)
+
+    tm = TokenManager()
+    token = tm.issue_token(
+        user_id=user.id,
+        username=user.username,
+        role=user.role,
+        channel=user.channel,
+    )
+    _save_session({
+        "token": token,
+        "username": user.username,
+        "role": user.role,
+        "channel": user.channel,
+    })
+    console.print(
+        f"[bold green]✓[/bold green] Logged in as [bold]{user.username}[/bold] "
+        f"(role={user.role}, channel={user.channel})"
+    )
+
+
+@auth.command(name="logout")
+def auth_logout():
+    """Clear local session."""
+    session = _load_session()
+    if session:
+        # Revoke server-side tokens too
+        try:
+            from services.core.tokens import TokenManager
+            tm = TokenManager()
+            tm.revoke_token(session["token"])
+        except Exception:
+            pass
+    _clear_session()
+    console.print("[bold green]✓[/bold green] Logged out.")
+
+
+@auth.command(name="whoami")
+def auth_whoami():
+    """Show the currently logged-in user."""
+    session = _load_session()
+    if not session:
+        console.print("[dim]Not logged in. Use 'vectrax auth login'.[/dim]")
+        return
+    console.print(Panel(
+        f"Username:  [bold]{session.get('username', '?')}[/bold]\n"
+        f"Role:      {session.get('role', '?')}\n"
+        f"Channel:   {session.get('channel', '?')}",
+        title="[bold green]🔐 Current Session[/bold green]",
+        expand=False,
+    ))
+
+
+# ===========================================================================
+# ADMIN — User management (owner-only)
+# ===========================================================================
+
+@cli.group()
+def admin():
+    """[bold red]⚙ Admin[/bold red] — user management (creator only)."""
+
+
+@admin.command(name="users")
+def admin_users():
+    """List all registered users."""
+    from services.core.users import UserStore
+
+    store = UserStore()
+    users = store.list_users(active_only=False)
+    if not users:
+        console.print("[dim]No users registered.[/dim]")
+        return
+
+    table = Table(title="[bold]Registered Users[/bold]", box=box.SIMPLE_HEAVY)
+    table.add_column("ID", width=14, style="dim")
+    table.add_column("Username", width=18)
+    table.add_column("Role", width=10)
+    table.add_column("Channel", width=10)
+    table.add_column("Active", width=7)
+    for u in users:
+        active = "[green]✓[/green]" if u.is_active else "[red]✗[/red]"
+        role_color = {"owner": "yellow", "operator": "cyan", "viewer": "dim"}.get(u.role, "white")
+        table.add_row(
+            u.id, u.username, f"[{role_color}]{u.role}[/{role_color}]",
+            u.channel, active,
+        )
+    console.print(table)
+
+
+@admin.command(name="create-user")
+@click.option("--username", prompt=True)
+@click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True)
+@click.option("--role", type=click.Choice(["operator", "viewer"]), default="viewer")
+def admin_create_user(username: str, password: str, role: str):
+    """Create a new user account."""
+    from services.core.users import UserStore
+
+    store = UserStore()
+    try:
+        user = store.create_user(username=username, password=password, role=role)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    console.print(
+        f"[bold green]✓[/bold green] User [bold]{user.username}[/bold] created "
+        f"(role={user.role}, channel={user.channel})"
+    )
+
+
+@admin.command(name="deactivate")
+@click.argument("username")
+def admin_deactivate(username: str):
+    """Deactivate a user account (soft delete)."""
+    from services.core.users import UserStore
+    from services.core.tokens import TokenManager
+
+    store = UserStore()
+    user = store.get_by_username(username)
+    if not user:
+        console.print(f"[red]User '{username}' not found.[/red]")
+        sys.exit(1)
+    try:
+        store.deactivate(user.id)
+        # Also revoke all their tokens
+        TokenManager().revoke_all_for_user(user.id)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    console.print(f"[bold green]✓[/bold green] User [bold]{username}[/bold] deactivated.")
+
+
+@admin.command(name="set-role")
+@click.argument("username")
+@click.argument("role", type=click.Choice(["operator", "viewer"]))
+def admin_set_role(username: str, role: str):
+    """Change a user's role."""
+    from services.core.users import UserStore
+
+    store = UserStore()
+    user = store.get_by_username(username)
+    if not user:
+        console.print(f"[red]User '{username}' not found.[/red]")
+        sys.exit(1)
+    try:
+        store.update_role(user.id, role)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+    console.print(f"[bold green]✓[/bold green] {username} is now [bold]{role}[/bold].")
 
 
 if __name__ == "__main__":

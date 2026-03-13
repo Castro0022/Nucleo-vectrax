@@ -1,0 +1,90 @@
+system:
+  name: vectrax
+  mode: hybrid  # local-first | hybrid | cloud
+  fallback_enabled: true
+  log_level: INFO
+
+providers:
+  ollama:
+    type: ollama
+    endpoint: http://localhost:11434
+    enabled: true
+    priority: 1
+    models:
+      fast: llama3.2:3b
+      code: qwen2.5-coder:7b
+      default: llama3.2:3b
+    timeout: 60
+    
+  # Optional cloud fallbacks
+  openai:
+    type: openai
+    enabled: true
+    priority: 10
+    api_key_env: OPENAI_API_KEY
+    models:
+      gpt4: gpt-4o
+      gpt3: gpt-3.5-turbo
+      default: gpt-4o
+    
+  anthropic:
+    type: anthropic
+    enabled: false
+    priority: 11
+    models:
+      claude: claude-3-5-sonnet-20241022
+
+  gemini:
+    type: gemini
+    enabled: true
+    priority: 9
+    api_key_env: GEMINI_API_KEY
+    models:
+      fast: gemini-2.0-flash
+      pro: gemini-2.0-pro
+      default: gemini-2.0-flash
+
+routing:
+  default_provider: ollama
+  default_model: fast
+  rules:
+    - task_type: code
+      provider: ollama
+      model: code
+    - task_type: chat
+      provider: ollama
+      model: fast
+    - task_type: reasoning
+      provider: ollama
+      model: fast
+
+storage:
+  vector_db:
+    type: qdrant
+    mode: memory  # memory | disk | server
+    endpoint: http://localhost:6333
+    collection_name: vectrax
+    
+  cache:
+    type: memory  # memory | redis
+    ttl: 3600
+    max_size: 1000
+
+observability:
+  metrics:
+    enabled: true
+    port: 9090
+  tracing:
+    enabled: false
+    endpoint: http://localhost:4318
+  logging:
+    format: json
+    level: INFO
+
+api:
+  host: 0.0.0.0
+  port: 8000
+  cors_enabled: true
+  allowed_origins:
+    - http://localhost:*
+    - http://127.0.0.1:*

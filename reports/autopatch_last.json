@@ -1,50 +1,7 @@
 {
-  "started_at": "2026-02-26T18:11:37",
-  "attempts": [
-    {
-      "attempt": 1,
-      "started_at": "2026-02-26T18:11:37",
-      "errors_found": [
-        {
-          "file": "core/alerta_stop.py",
-          "line": 1,
-          "msg": "invalid syntax"
-        }
-      ],
-      "fixes_applied": [],
-      "smoke_passed": false,
-      "finished_at": "2026-02-26T18:11:37"
-    },
-    {
-      "attempt": 2,
-      "started_at": "2026-02-26T18:11:37",
-      "errors_found": [
-        {
-          "file": "core/alerta_stop.py",
-          "line": 1,
-          "msg": "invalid syntax"
-        }
-      ],
-      "fixes_applied": [],
-      "smoke_passed": false,
-      "finished_at": "2026-02-26T18:11:38"
-    },
-    {
-      "attempt": 3,
-      "started_at": "2026-02-26T18:11:38",
-      "errors_found": [
-        {
-          "file": "core/alerta_stop.py",
-          "line": 1,
-          "msg": "invalid syntax"
-        }
-      ],
-      "fixes_applied": [],
-      "smoke_passed": false,
-      "finished_at": "2026-02-26T18:11:38"
-    }
-  ],
-  "result": "rollback",
-  "rollback": true,
-  "finished_at": "2026-02-26T18:11:38"
+  "started_at": "2026-03-07T15:53:19",
+  "attempts": [],
+  "result": "clean",
+  "rollback": false,
+  "finished_at": "2026-03-07T15:53:19"
 }
