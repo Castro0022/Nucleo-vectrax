@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vectrax"
+version = "0.1.0"
+description = "Cognitive operator runtime with 12-layer architecture and gravitational memory"
+requires-python = ">=3.9"
+dependencies = [
+    # CLI & display
+    "click>=8.1",
+    "rich>=13.0",
+    # AI / LLM
+    "anthropic>=0.20",
+    "litellm>=1.30",
+    # Embeddings & graph
+    "sentence-transformers>=2.7",
+    "networkx>=2.8",
+    "numpy>=1.24",
+    # API framework
+    "fastapi>=0.100",
+    "uvicorn>=0.22",
+    "httpx>=0.24",
+    "pydantic>=2.0",
+    "requests>=2.28",
+    # Config & data
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    # Protobuf pin (chromadb/opentelemetry compatibility)
+    "protobuf>=3.20,<4.0",
+]
+
+[project.optional-dependencies]
+faiss = ["faiss-cpu>=1.8"]
+audio = ["pyaudio>=0.2", "SpeechRecognition>=3.10"]
+monitoring = ["psutil>=5.9", "watchdog>=3.0"]
+all = [
+    "faiss-cpu>=1.8",
+    "pyaudio>=0.2",
+    "SpeechRecognition>=3.10",
+    "psutil>=5.9",
+    "watchdog>=3.0",
+]
+
+[project.scripts]
+vectrax = "vectrax.cli:cli"
+vx = "cli.vx_main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "vectrax*",
+    "cli*",
+    "cognition*",
+    "connectors*",
+    "core*",
+    "pipeline*",
+    "interface_layer*",
+    "scripts*",
+    "services*",
+    "models*",
+    "agent*",
+    "utils*",
+    "observability*",
+]

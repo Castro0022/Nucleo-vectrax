@@ -5,6 +5,7 @@ Main entry point for all CLI commands
 """
 import sys
 import asyncio
+import time
 from pathlib import Path
 
 # Add parent directory to path
@@ -76,9 +77,23 @@ USAGE:
     vx <command> [arguments]
 
 COMMANDS:
+    activate              Activate the cognitive operator runtime
+    run                   Activate operator & run continuous cycles
+                              --interval <N>  Seconds between cycles (default: 5)
+    watch                 Observe operator state (read-only)
+                              --live          Continuous refresh every 3s
+                              --cycle         Run one observation cycle
+                              --json          JSON output
     <prompt>              Generate response from AI
     propose <description> Propose system changes (shows diff, risk, waits for approval)
     propose --remote <d>  Propose via Core Central Service
+    learn watch           Start silent watchdog daemon
+    learn stop            Stop watchdog
+    learn scan            Full repository scan
+    learn report          Show learned candidates + clusters
+    learn approve <id>    Approve a quarantined candidate
+    learn ban <id>        Ban a candidate
+    learn stats           Show learning statistics
     agent start           Start the local agent daemon
     agent status          Check agent status and Core connectivity
     route status          Show intelligence router health and model registry
@@ -97,6 +112,12 @@ COMMANDS:
     help                  Show this help message
 
 EXAMPLES:
+    vx activate
+    vx run
+    vx run --interval 10
+    vx watch
+    vx watch --live
+    vx watch --cycle
     vx "Explain quantum computing"
     vx propose "Add logging to SmartRouter class"
     vx mode status
@@ -261,6 +282,111 @@ async def handle_propose(description: str, model: str = "qwen2.5-coder:7b"):
     
     finally:
         await engine.close()
+
+# ===================================================================
+# Activate command — sovereign operator activation
+# ===================================================================
+
+def handle_activate():
+    """
+    Activate the cognitive operator runtime.
+    Single path: core.operator.activation.activate_operator()
+    """
+    from core.operator.activation import activate_operator, get_runtime
+    from core.operator.identity import OperatorMode
+
+    runtime = get_runtime()
+
+    if runtime.is_active:
+        print(
+            f"\n\u2705 Operator already ACTIVE | mode={runtime.mode.value} | "
+            f"cycles={runtime.cycle_count}"
+        )
+        return
+
+    print("\n\U0001f680 Activating Vectrax Cognitive Operator...")
+    try:
+        result = activate_operator(mode=OperatorMode.GUIDED)
+        print(f"\u2705 Operator ACTIVE")
+        print(f"   Identity : {result['identity']}")
+        print(f"   Creator  : {result['creator']}")
+        print(f"   Mode     : {result['mode']}")
+        print(f"   Layers   : {result['layers_active']} active")
+        print(f"   Boot     : {result['boot_time_ms']:.0f}ms")
+        print(f"   Domains  : {len(result['authorized_domains'])} authorized, "
+              f"{len(result['restricted_domains'])} restricted")
+        print()
+        print("   Activation recorded in ledger.")
+        print("   Run 'vx watch' to observe state.")
+        print("   Run 'vx run' to start continuous cycles.")
+    except Exception as exc:
+        print(f"\u274c Activation failed: {exc}")
+        sys.exit(1)
+
+
+# ===================================================================
+# Watch command — sovereign read-only observation
+# ===================================================================
+
+def handle_watch(args):
+    """
+    Observe operator state (read-only).
+    Delegates entirely to scripts.watch_operator.main(args).
+    State source: core.operator.activation.get_operator_status()
+    """
+    from scripts.watch_operator import main as watch_main
+    watch_main(args)
+
+
+# ===================================================================
+# Run command — continuous cognitive operator cycle
+# ===================================================================
+
+def handle_run(interval: float = 5.0):
+    """
+    Activate the operator and run continuous cognitive cycles.
+    Delegates to core.operator.activation.run_operator_forever().
+    """
+    from core.operator.activation import activate_operator, get_runtime, run_operator_forever
+    from core.operator.identity import OperatorMode
+
+    runtime = get_runtime()
+
+    # Activate if not already active
+    if not runtime.is_active:
+        print("\n\U0001f680 Activating Vectrax Operator...")
+        try:
+            result = activate_operator(mode=OperatorMode.GUIDED)
+            print(f"\u2705 Operator active | mode={result['mode']} | "
+                  f"layers={result['layers_active']} | "
+                  f"boot={result['boot_time_ms']:.0f}ms")
+        except Exception as exc:
+            print(f"\u274c Activation failed: {exc}")
+            sys.exit(1)
+    else:
+        print(f"\n\u2705 Operator already active | mode={runtime.mode.value} | "
+              f"cycles={runtime.cycle_count}")
+
+    print(f"\n\U0001f504 Starting continuous run loop (interval={interval}s)")
+    print("   Press Ctrl+C to stop\n")
+
+    def _print_cycle(cycle):
+        cd = cycle.to_dict()
+        ts = time.strftime("%H:%M:%S")
+        print(
+            f"  [{ts}] cycle={cd['cycle_id']} #{cd['cycle_number']} "
+            f"| {cd['outcome']} "
+            f"| signals={cd['perception']['signals']} "
+            f"| high={cd['relevance']['high']} "
+            f"| hyp={cd['hypotheses']['proposed']} "
+            f"| proposals={cd['proposals_count']} "
+            f"| {cd['elapsed_ms']:.0f}ms"
+        )
+
+    # run_operator_forever handles SIGINT/SIGTERM and ledger shutdown
+    run_operator_forever(interval=interval, on_cycle=_print_cycle)
+
+    print(f"\n\u23f9  Operator stopped after {runtime.cycle_count} cycles.")
 
 
 # ===================================================================
@@ -569,11 +695,34 @@ def main():
             print(f"Unknown route subcommand: {sub}")
             print("Usage: vx route status | vx route test")
             sys.exit(1)
+    elif command == "learn":
+        from cli.learn_cli import handle_learn_command
+        handle_learn_command(sys.argv[2:])
     elif command == "agent":
         from agent.cli import handle_agent_command
         handle_agent_command(sys.argv[2:])
+    elif command == "activate":
+        handle_activate()
+    elif command == "watch":
+        handle_watch(sys.argv[2:])
+    elif command == "run":
+        interval = 5.0
+        if "--interval" in sys.argv:
+            idx = sys.argv.index("--interval")
+            if idx + 1 < len(sys.argv):
+                interval = float(sys.argv[idx + 1])
+        handle_run(interval=interval)
     elif command == "status":
         asyncio.run(handle_status())
+        # Append learn subsystem status
+        try:
+            from cli.learn_cli import learn_status_summary
+            summary = learn_status_summary()
+            if summary:
+                print("\n  Learn Subsystem:")
+                print(summary)
+        except Exception:
+            pass
     elif command == "models":
         asyncio.run(handle_list_models())
     elif command == "start":

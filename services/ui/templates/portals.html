@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vectrax — Universo</title>
+  <link rel="stylesheet" href="/static/portals.css">
+</head>
+<body>
+
+<!-- ============================================================ -->
+<!-- CANVAS — Particle starfield background                       -->
+<!-- ============================================================ -->
+<canvas id="starfield"></canvas>
+
+<!-- ============================================================ -->
+<!-- UNIVERSE HEADER                                              -->
+<!-- ============================================================ -->
+<header id="universe-header">
+  <div class="u-logo-group">
+    <div class="u-logo">V</div>
+    <div>
+      <h1 class="u-title">Vectrax</h1>
+      <p class="u-subtitle">Cognitive Memory Universe</p>
+    </div>
+  </div>
+  <div class="u-status">
+    <span id="u-identity" class="u-identity"></span>
+    <span id="u-ping" class="u-ping"></span>
+  </div>
+</header>
+
+<!-- ============================================================ -->
+<!-- PORTAL GRID — 6 dimensional gateways                         -->
+<!-- ============================================================ -->
+<main id="portal-grid">
+
+  <!-- 1. CREATOR — Núcleo fundacional -->
+  <a href="/?view=chat" class="portal portal-creator" data-portal="creator">
+    <div class="portal-ring"></div>
+    <div class="portal-core">
+      <div class="portal-icon">◈</div>
+      <h2 class="portal-name">Creator</h2>
+      <p class="portal-desc">Núcleo fundacional. Chat, ingestión de estrellas, wake word, sesiones persistentes.</p>
+    </div>
+    <div class="portal-stats">
+      <span id="stat-creator-stars">—</span> stars
+      <span class="portal-sep">·</span>
+      <span id="stat-creator-sessions">—</span> sessions
+    </div>
+    <div class="portal-glow"></div>
+  </a>
+
+  <!-- 2. COGNITION — Motor cognitivo -->
+  <a href="/?view=dashboard&sec=operator" class="portal portal-cognition" data-portal="cognition">
+    <div class="portal-ring"></div>
+    <div class="portal-core">
+      <div class="portal-icon">◆</div>
+      <h2 class="portal-name">Cognición</h2>
+      <p class="portal-desc">4 motores: percepción, razonamiento, memoria estructural, orquestador. Ciclos cognitivos.</p>
+    </div>
+    <div class="portal-stats">
+      <span id="stat-cog-proposals">—</span> proposals
+      <span class="portal-sep">·</span>
+      <span id="stat-cog-mode">—</span>
+    </div>
+    <div class="portal-glow"></div>
+  </a>
+
+  <!-- 3. MEMORIA — Estrellas y constelaciones -->
+  <a href="/?view=dashboard&sec=stars" class="portal portal-memory" data-portal="memory">
+    <div class="portal-ring"></div>
+    <div class="portal-core">
+      <div class="portal-icon">★</div>
+      <h2 class="portal-name">Memoria</h2>
+      <p class="portal-desc">Grafo gravitacional. Estrellas, constelaciones, capas core/mid/outer, gravedad.</p>
+    </div>
+    <div class="portal-stats">
+      <span id="stat-mem-stars">—</span> stars
+      <span class="portal-sep">·</span>
+      <span id="stat-mem-const">—</span> constellations
+      <span class="portal-sep">·</span>
+      <span id="stat-mem-graph">—</span>
+    </div>
+    <div class="portal-glow"></div>
+  </a>
+
+  <!-- 4. INTELIGENCIA — Multi-AI router -->
+  <a href="/?view=chat" class="portal portal-intelligence" data-portal="intelligence">
+    <div class="portal-ring"></div>
+    <div class="portal-core">
+      <div class="portal-icon">⬡</div>
+      <h2 class="portal-name">Inteligencia</h2>
+      <p class="portal-desc">Router multi-modelo. Soberanía de respuesta, síntesis, feedback adaptativo.</p>
+    </div>
+    <div class="portal-stats">
+      <span id="stat-intel-providers">—</span> providers
+      <span class="portal-sep">·</span>
+      <span id="stat-intel-status">—</span>
+    </div>
+    <div class="portal-glow"></div>
+  </a>
+
+  <!-- 5. CONEXIONES — UCE -->
+  <a href="/?view=dashboard&sec=operator" class="portal portal-connections" data-portal="connections">
+    <div class="portal-ring"></div>
+    <div class="portal-core">
+      <div class="portal-icon">◎</div>
+      <h2 class="portal-name">Conexiones</h2>
+      <p class="portal-desc">Universal Connection Engine. Conectores, contratos, aprobaciones, health checks.</p>
+    </div>
+    <div class="portal-stats">
+      <span id="stat-conn-total">—</span> connectors
+      <span class="portal-sep">·</span>
+      <span id="stat-conn-healthy">—</span> healthy
+    </div>
+    <div class="portal-glow"></div>
+  </a>
+
+  <!-- 6. CONTROL — Operador / Gobernador -->
+  <a href="/?view=dashboard&sec=audit" class="portal portal-control" data-portal="control">
+    <div class="portal-ring"></div>
+    <div class="portal-core">
+      <div class="portal-icon">⚙</div>
+      <h2 class="portal-name">Control</h2>
+      <p class="portal-desc">Gobernador, auditoría, políticas, riesgo sistémico, ledger inmutable, RBAC.</p>
+    </div>
+    <div class="portal-stats">
+      <span id="stat-ctrl-governor">—</span>
+      <span class="portal-sep">·</span>
+      <span id="stat-ctrl-streak">—</span> clean
+      <span class="portal-sep">·</span>
+      <span id="stat-ctrl-proposals">—</span> pending
+    </div>
+    <div class="portal-glow"></div>
+  </a>
+
+</main>
+
+<!-- ============================================================ -->
+<!-- FOOTER — System pulse                                        -->
+<!-- ============================================================ -->
+<footer id="universe-footer">
+  <div class="u-footer-left">
+    <span id="u-version">v1.0.0</span>
+    <span class="u-sep">·</span>
+    <span id="u-uptime">—</span>
+    <span class="u-sep">·</span>
+    <span id="u-env">—</span>
+  </div>
+  <div class="u-footer-center">
+    <span class="u-pulse"></span>
+    <span id="u-health-label">Connecting…</span>
+  </div>
+  <div class="u-footer-right">
+    <a href="/" class="u-link">App</a>
+    <span class="u-sep">·</span>
+    <a href="/v1/docs" class="u-link">API</a>
+  </div>
+</footer>
+
+<script src="/static/portals.js"></script>
+</body>
+</html>

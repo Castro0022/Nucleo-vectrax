@@ -1,0 +1,47 @@
+# Vectrax Platform — Docker Compose
+# ====================================
+# Usage: docker-compose up
+# Dev:   docker-compose -f docker-compose.yml -f docker-compose.override.yml up
+
+version: "3.8"
+
+services:
+  core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${VX_CORE_PORT:-8900}:8900"
+    env_file:
+      - ./config/env/${VX_ENV:-local}.env
+    environment:
+      - VX_ENV=${VX_ENV:-local}
+      - VX_CORE_HOST=0.0.0.0
+      - VX_CORE_PORT=8900
+      - VX_API_TOKEN=${VX_API_TOKEN:-vx-dev-token-local}
+      - VX_VECTOR_DB_URL=http://chromadb:8000
+    volumes:
+      - vectrax-data:/home/vectrax/.vectrax
+      - ./vault:/app/vault
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+      - ./config:/app/config
+    depends_on:
+      chromadb:
+        condition: service_started
+    restart: unless-stopped
+
+  chromadb:
+    image: chromadb/chroma:latest
+    ports:
+      - "${VX_CHROMA_PORT:-8000}:8000"
+    volumes:
+      - chroma-data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    restart: unless-stopped
+
+volumes:
+  vectrax-data:
+  chroma-data:

@@ -1,0 +1,3 @@
+[console_scripts]
+vectrax = vectrax.cli:cli
+vx = cli.vx_main:main

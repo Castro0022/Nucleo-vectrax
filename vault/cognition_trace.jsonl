@@ -1,0 +1,11 @@
+{"step": "perceive", "timestamp": 1772919266.617718, "duration_ms": 0.52, "input_summary": "", "output_summary": "0 signals", "success": true, "error": null, "cycle_id": "4df1c5f2a2a3"}
+{"step": "memory_query", "timestamp": 1772919266.61816, "duration_ms": 0.44, "input_summary": "intent=", "output_summary": "tier=raw", "success": true, "error": null, "cycle_id": "4df1c5f2a2a3"}
+{"step": "silent_mode", "timestamp": 1772919266.618162, "duration_ms": 0.0, "input_summary": "", "output_summary": "observation only", "success": true, "error": null, "cycle_id": "4df1c5f2a2a3"}
+{"step": "perceive", "timestamp": 1772922883.6625128, "duration_ms": 0.52, "input_summary": "", "output_summary": "0 signals", "success": true, "error": null, "cycle_id": "529db6a79925"}
+{"step": "memory_query", "timestamp": 1772922883.662993, "duration_ms": 0.47, "input_summary": "intent=", "output_summary": "tier=operative", "success": true, "error": null, "cycle_id": "529db6a79925"}
+{"step": "silent_mode", "timestamp": 1772922883.6629949, "duration_ms": 0.0, "input_summary": "", "output_summary": "observation only", "success": true, "error": null, "cycle_id": "529db6a79925"}
+{"step": "perceive", "timestamp": 1773160004.369326, "duration_ms": 7.18, "input_summary": "", "output_summary": "0 signals", "success": true, "error": null, "cycle_id": "3a0cad2e8d5d"}
+{"step": "memory_query", "timestamp": 1773160004.37678, "duration_ms": 7.45, "input_summary": "intent=", "output_summary": "tier=structural", "success": true, "error": null, "cycle_id": "3a0cad2e8d5d"}
+{"step": "reason", "timestamp": 1773160004.380594, "duration_ms": 3.81, "input_summary": "", "output_summary": "rec=proceed, risk=LOW", "success": true, "error": null, "cycle_id": "3a0cad2e8d5d"}
+{"step": "proposal_generated", "timestamp": 1773160004.380641, "duration_ms": 0.0, "input_summary": "", "output_summary": "id=COG-A9B4DD15", "success": true, "error": null, "cycle_id": "3a0cad2e8d5d"}
+{"step": "dry_run", "timestamp": 1773160004.380642, "duration_ms": 0.0, "input_summary": "", "output_summary": "proposal not submitted", "success": true, "error": null, "cycle_id": "3a0cad2e8d5d"}

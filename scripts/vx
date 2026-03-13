@@ -4,10 +4,19 @@ vx — Vectrax CLI
 =================
 Usage:
   vx start       Start the Vectrax daemon
+  vx run         Start cognitive operator & run continuous cycles
+                   --interval <N>  Seconds between cycles (default: 5)
   vx smoke       Run smoke tests
   vx autopatch   Run autopatch cycle (detect → fix → smoke → commit/rollback)
   vx logs        Show autopatch logs
   vx status      Show system status
+  vx report      Generate daily status report
+                   --json         Output JSON only
+                   --date DATE    Report for specific date (YYYY-MM-DD)
+  vx watch       Observe the Operator Universal (read-only)
+                   --live         Continuous refresh (3s)
+                   --cycle        Run one observation cycle
+                   --json         JSON output
 """
 
 import os
@@ -22,12 +31,9 @@ REPORT_FILE = os.path.join(BASE_DIR, "reports", "autopatch_last.json")
 
 
 def cmd_start():
-    """Start the Vectrax daemon."""
-    start_script = os.path.join(BASE_DIR, "vectrax_start.sh")
-    if not os.path.isfile(start_script):
-        print("[vx] Error: vectrax_start.sh not found.")
-        sys.exit(1)
-    os.execv("/bin/bash", ["/bin/bash", start_script])
+    """Activate the operator via sovereign runtime authority."""
+    # Delegates to the installed vx activate — no independent runtime here.
+    os.execvp("vx", ["vx", "activate"])
 
 
 def cmd_smoke():
@@ -103,6 +109,26 @@ def cmd_logs(args):
                 print(f"    #{a['attempt']}: passed={a.get('smoke_passed', False)} fixes=[{fixes}]")
 
 
+def cmd_report(args):
+    """Generate daily status report."""
+    report_script = os.path.join(BASE_DIR, "core", "daily_report.py")
+    cmd = [sys.executable, report_script] + args
+    result = subprocess.run(cmd, cwd=BASE_DIR)
+    sys.exit(result.returncode)
+
+
+def cmd_watch(args):
+    """Observe operator state via sovereign status authority."""
+    # Delegates to the installed vx watch — no subprocess spawning needed.
+    os.execvp("vx", ["vx", "watch"] + args)
+
+
+def cmd_run(args):
+    """Run continuous cognitive cycles via sovereign runtime authority."""
+    # Delegates to the installed vx run — no subprocess spawning needed.
+    os.execvp("vx", ["vx", "run"] + args)
+
+
 def cmd_status():
     """Show system status."""
     print("=== Vectrax Status ===")
@@ -127,20 +153,11 @@ def cmd_status():
     else:
         print("  Config: missing")
 
-    # Last report
-    if os.path.isfile(REPORT_FILE):
-        with open(REPORT_FILE, "r") as f:
-            report = json.load(f)
-        print(f"  Last patch: {report.get('result', 'N/A')} at {report.get('finished_at', 'N/A')}")
-    else:
-        print("  Last patch: none")
-
     # Daemon
     pid_file = os.path.expanduser("~/.vectrax/vectrax.pid")
     if os.path.isfile(pid_file):
         with open(pid_file) as f:
             pid = f.read().strip()
-        # Check if process alive
         try:
             os.kill(int(pid), 0)
             print(f"  Daemon: running (PID {pid})")
@@ -148,6 +165,57 @@ def cmd_status():
             print(f"  Daemon: stale PID file ({pid})")
     else:
         print("  Daemon: not running")
+
+    # Cognition state
+    state_path = os.path.expanduser("~/.vectrax/cognition_state.json")
+    if os.path.isfile(state_path):
+        try:
+            with open(state_path, "r") as f:
+                cog = json.load(f)
+            print()
+            print("  --- Estado Cognitivo ---")
+            print(f"  Boot:               {cog.get('boot_time', 'N/A')}")
+            print(f"  Ciclos:             {cog.get('cycles', 0)}")
+            print(f"  Ingests totales:    {cog.get('ingests_total', 0)}")
+            print(f"  Ultimo ciclo:       {cog.get('last_cycle_at', 'N/A')}")
+            print(f"  Ultimo ingest:      {cog.get('last_ingest_at', 'N/A')}")
+            print(f"  Errores desde boot: {cog.get('errors_since_boot', 0)}")
+            ref = cog.get("last_reflection")
+            if ref:
+                print(f"  Reflexion:          {ref.get('activity', '?')} | {ref.get('health', '?')} | uptime {ref.get('uptime', '?')}")
+
+            # Governor / Policy
+            gov_mode = cog.get("governor_mode", "unknown")
+            MODE_ICONS = {"observe": "◎", "act": "●", "cautious": "◐", "recover": "○"}
+            icon = MODE_ICONS.get(gov_mode, "?")
+            print()
+            print("  --- Governor (Policy Engine) ---")
+            print(f"  Modo:               {icon} {gov_mode}")
+            print(f"  Autopatch permitido: {'si' if cog.get('governor_autopatch_allowed') else 'no'}")
+            print(f"  Razon:              {cog.get('governor_reason', 'N/A')}")
+            print(f"  Decidido:           {cog.get('governor_decided_at', 'N/A')}")
+            print(f"  Clean streak:       {cog.get('clean_streak', 0)}")
+            err_hist = cog.get("error_history", [])
+            if err_hist:
+                window_str = "".join("✗" if e else "·" for e in err_hist[-10:])
+                errors_count = sum(1 for e in err_hist[-10:] if e)
+                print(f"  Error window (10):  [{window_str}] ({errors_count} errors)")
+            else:
+                print("  Error window (10):  [sin datos]")
+
+        except (json.JSONDecodeError, OSError):
+            print("  Cognition: error reading state")
+    else:
+        print("  Cognition: no state yet (daemon not started with cognition)")
+
+    print()
+
+    # Daily status report via reporter
+    try:
+        reporter_script = os.path.join(BASE_DIR, "core", "reporter.py")
+        subprocess.run([sys.executable, reporter_script], cwd=BASE_DIR)
+    except Exception as e:
+        print(f"  [reporter error: {e}]")
 
 
 def usage():
@@ -167,7 +235,10 @@ def main():
         "smoke": lambda: cmd_smoke(),
         "autopatch": lambda: cmd_autopatch(),
         "logs": lambda: cmd_logs(args),
+        "run": lambda: cmd_run(args),
         "status": lambda: cmd_status(),
+        "report": lambda: cmd_report(args),
+        "watch": lambda: cmd_watch(args),
     }
 
     if cmd in ("-h", "--help", "help"):

@@ -7,7 +7,15 @@ import signal
 import shutil
 import fcntl
 
+# Add project root to path for core imports
 VECTRAX_DIR = os.path.expanduser("~/Vectrax")
+if VECTRAX_DIR not in sys.path:
+    sys.path.insert(0, VECTRAX_DIR)
+
+from core import state_manager
+from core import meta_loop
+from core import governor
+
 INBOX_DIR = os.path.join(VECTRAX_DIR, "inbox")
 DONE_DIR  = os.path.join(VECTRAX_DIR, "inbox_done")
 
@@ -87,7 +95,11 @@ def ingest_file(filepath: str):
     shutil.move(filepath, dst)
     log(f"INGEST_DONE: {dst}")
 
+    # Track ingest in cognitive state
+    state_manager.record_ingest()
+
 def scan_inbox_once():
+    ingested = 0
     try:
         items = sorted(os.listdir(INBOX_DIR))
     except FileNotFoundError:
@@ -102,6 +114,9 @@ def scan_inbox_once():
         if name.startswith(".") or name.endswith(".tmp"):
             continue
         ingest_file(path)
+        ingested += 1
+
+    return ingested
 
 def main():
     ensure_dirs()
@@ -112,11 +127,41 @@ def main():
     lock_fh = acquire_single_instance_lock()
     log(f"Núcleo líder adquirido. PID {os.getpid()}.")
     log("Núcleo iniciado correctamente.")
+
+    # Initialize cognitive state
+    state_manager.record_boot()
+    log("Estado Cognitivo Persistente inicializado.")
+
     print("⟡ [Vectrax] Núcleo Unificado Online (watcher activo).")
+
+    prev_error = False
 
     try:
         while True:
-            scan_inbox_once()
+            # 1. Governor evaluates policy BEFORE actions
+            policy = governor.evaluate(had_error=prev_error)
+            mode = policy["mode"]
+
+            # Log mode transitions
+            if mode != getattr(main, "_last_mode", None):
+                log(f"GOVERNOR: mode={mode} reason='{policy['reason']}'")
+                main._last_mode = mode
+
+            # 2. Execute cycle actions based on policy
+            cycle_error = False
+            try:
+                ingested = scan_inbox_once()
+            except Exception as e:
+                log(f"CYCLE ERROR: {e}")
+                cycle_error = True
+                ingested = 0
+                state_manager.record_error()
+
+            # 3. Record cycle + reflect
+            state_manager.record_cycle()
+            meta_loop.reflect(ingested_count=ingested)
+
+            prev_error = cycle_error
             time.sleep(POLL_SECONDS)
     finally:
         try:
