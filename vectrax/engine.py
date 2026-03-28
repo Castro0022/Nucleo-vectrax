@@ -23,6 +23,7 @@ from vectrax.embeddings import (
     embed,
     find_similar,
 )
+from vectrax.models import STAR_TYPE_PRIMARY
 from vectrax.gravity import (
     assign_layer,
     compute_constellation_gravity,
@@ -37,10 +38,14 @@ from vectrax.identity import (
     validate_creator_ownership,
 )
 from vectrax.models import (
+    COLLECTIVE_CONSTELLATION_MIN_MASS,
+    COLLECTIVE_CONSTELLATION_MIN_STARS,
+    COLLECTIVE_OWNER,
     CONSTELLATION_MIN_STARS,
     PROPOSAL_GRAVITY_THRESHOLD,
     PROPOSAL_MIN_MEMBERS,
     SIMILARITY_THRESHOLD,
+    STAR_TYPE_CONVERGENCE,
     Constellation,
     Proposal,
     Star,
@@ -124,9 +129,40 @@ def ingest(
 
 def _post_ingest(star: Star, vec, channel: str, owner: str) -> None:
     """
-    Link the star to similar neighbours WITHIN ITS OWN CHANNEL ONLY,
-    then detect patterns for that channel.
+    Post-ingest pipeline:
+      1. Emit star event to the Universal Bus (live circuit)
+      2. Link the star to similar neighbours WITHIN ITS OWN CHANNEL ONLY
+      3. Record trajectory point (user's path through the knowledge graph)
+      4. Auto-detect convergence (create convergence coordinates)
+      5. Detect constellation patterns
     """
+    # --- 0. Emit star event to bus ---
+    try:
+        from core.operator.universal_bus import get_universal_bus
+        from core.operator.bus_reactor import LiveChannels, EventTypes
+        _bus = get_universal_bus()
+        _event_type = (
+            EventTypes.STAR_UPDATED
+            if star.repetition_count > 1
+            else EventTypes.STAR_CREATED
+        )
+        _bus.emit(
+            channel=LiveChannels.STARS,
+            event_type=_event_type,
+            source_layer=3,
+            payload={
+                "id": star.id,
+                "content": star.content[:120],
+                "gravity_score": star.gravity_score,
+                "layer": star.layer,
+                "repetition_count": star.repetition_count,
+                "channel": channel,
+                "owner": owner,
+            },
+        )
+    except Exception:
+        pass  # bus hook is non-fatal
+    # --- 1. Link to similar neighbours ---
     channel_stars = db.get_all_stars(channel=channel, owner=owner)
     existing_embeddings = [
         (s.id, decode_embedding(s.embedding))
@@ -140,7 +176,36 @@ def _post_ingest(star: Star, vec, channel: str, owner: str) -> None:
         if other and other.channel == channel:
             g.link_stars(star.id, other_id, sim)
 
+    # --- 2. Record trajectory point ---
+    try:
+        from vectrax.trajectory import record_point
+        record_point(star.id, channel, owner)
+    except Exception:
+        pass  # trajectory recording is non-fatal
+
+    # --- 3. Auto-detect convergence ---
+    if star.star_type == STAR_TYPE_PRIMARY:
+        try:
+            from vectrax.convergence_engine import auto_check_convergence
+            auto_check_convergence(star, vec, channel, owner)
+        except Exception:
+            pass  # convergence detection is non-fatal
+
+        # --- 3b. Cross-user (collective) convergence ---
+        try:
+            from vectrax.convergence_engine import auto_check_cross_user_convergence
+            auto_check_cross_user_convergence(star, vec, channel, owner)
+        except Exception:
+            pass  # collective convergence detection is non-fatal
+
+    # --- 4. Detect constellation patterns ---
     detect_patterns(channel=channel, owner=owner)
+
+    # --- 4b. Collective constellation emergence ---
+    try:
+        detect_collective_patterns(channel=channel)
+    except Exception:
+        pass  # collective pattern detection is non-fatal
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +274,114 @@ def detect_patterns(
     # Proposals only route to the creator channel
     if channel == CHANNEL_CREATOR:
         check_proposals(updated)
+    return updated
+
+
+# ---------------------------------------------------------------------------
+# Collective constellation emergence
+# ---------------------------------------------------------------------------
+
+def detect_collective_patterns(
+    channel: str = CHANNEL_USER,
+) -> List[Constellation]:
+    """
+    Detect dense components that span multiple owners and contain
+    collective convergence stars with sufficient accumulated mass.
+
+    Unlike detect_patterns (scoped to a single owner), this searches
+    across ALL owners in the channel. Constellations only emerge when
+    the average mass of the component exceeds the collective threshold
+    — meaning enough distinct users have independently validated the
+    knowledge cluster for it to crystallise into a constellation.
+
+    Created constellations have owner=__collective__.
+    """
+    db.init_db()
+
+    # Get ALL stars in the channel (cross-owner)
+    all_stars = db.get_all_stars(channel=channel)
+    star_map = {s.id: s for s in all_stars}
+    channel_ids = set(star_map.keys())
+
+    if len(channel_ids) < COLLECTIVE_CONSTELLATION_MIN_STARS:
+        return []
+
+    # Find dense components in the full graph that belong to this channel
+    dense = g.get_dense_components(min_size=COLLECTIVE_CONSTELLATION_MIN_STARS)
+    dense = [comp for comp in dense if comp.issubset(channel_ids)]
+
+    # Filter: only components containing ≥1 collective convergence star
+    collective_components = []
+    for comp in dense:
+        has_collective = any(
+            star_map[sid].owner == COLLECTIVE_OWNER
+            and star_map[sid].star_type == STAR_TYPE_CONVERGENCE
+            for sid in comp
+            if sid in star_map
+        )
+        if not has_collective:
+            continue
+
+        # Check mass threshold: avg mass of all stars in the component
+        masses = [
+            star_map[sid].mass for sid in comp if sid in star_map
+        ]
+        avg_mass = sum(masses) / len(masses) if masses else 0.0
+
+        if avg_mass >= COLLECTIVE_CONSTELLATION_MIN_MASS:
+            collective_components.append(comp)
+
+    if not collective_components:
+        return []
+
+    # Dedup against existing collective constellations
+    existing = {
+        frozenset(c.star_ids): c
+        for c in db.get_all_constellations(channel=channel, owner=COLLECTIVE_OWNER)
+    }
+
+    updated: List[Constellation] = []
+    for component in collective_components:
+        key = frozenset(component)
+
+        vecs = [
+            decode_embedding(star_map[sid].embedding)
+            for sid in component
+            if sid in star_map and star_map[sid].embedding
+        ]
+        coherence = cluster_coherence(vecs) if len(vecs) >= 2 else 1.0
+
+        # Compute avg success across all contributing stars
+        avg_success = (
+            sum(star_map[sid].success_rate for sid in component if sid in star_map)
+            / len(component)
+        )
+
+        # Count distinct owners
+        owners = {
+            star_map[sid].owner for sid in component
+            if sid in star_map and star_map[sid].owner != COLLECTIVE_OWNER
+        }
+
+        if key in existing:
+            c = existing[key]
+            c.repetition_count += 1
+            c.coherence_score = coherence
+            c.success_rate = avg_success
+            c.updated_at = time.time()
+        else:
+            c = Constellation(
+                star_ids=list(component),
+                coherence_score=coherence,
+                success_rate=avg_success,
+                channel=channel,
+                owner=COLLECTIVE_OWNER,
+            )
+
+        c.gravity_score = compute_constellation_gravity(c)
+        db.upsert_constellation(c)
+        updated.append(c)
+
     return updated
 
 

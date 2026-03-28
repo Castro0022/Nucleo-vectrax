@@ -29,6 +29,9 @@ class Capability(str, Enum):
     STRUCTURED_EXTRACTION = "structured_extraction"
     LONG_CONTEXT = "long_context"
     TOOL_USE = "tool_use"
+    AGENTIC = "agentic"               # autonomous agent workflows
+    SAFETY = "safety"                  # safety-critical reasoning
+    PLANNING = "planning"              # step-by-step planning
 
 
 # ---------------------------------------------------------------------------
@@ -141,15 +144,15 @@ def _build_default_registry() -> Dict[str, ModelProfile]:
     anthropic_available = bool(os.environ.get("ANTHROPIC_API_KEY"))
 
     _cloud_models = [
-        # OpenAI
+        # OpenAI — fortaleza: código, herramientas, agentes
         ModelProfile(
             provider="openai",
             model="gpt-4o",
             capabilities={
-                Capability.REASONING, Capability.CODING,
-                Capability.SUMMARIZATION, Capability.TRANSLATION,
-                Capability.VISION, Capability.STRUCTURED_EXTRACTION,
-                Capability.LONG_CONTEXT, Capability.TOOL_USE,
+                Capability.CODING, Capability.TOOL_USE, Capability.AGENTIC,
+                Capability.REASONING, Capability.SUMMARIZATION,
+                Capability.TRANSLATION, Capability.VISION,
+                Capability.STRUCTURED_EXTRACTION, Capability.LONG_CONTEXT,
             },
             cost_per_1k_tokens=0.005,
             avg_latency_ms=2000,
@@ -162,9 +165,9 @@ def _build_default_registry() -> Dict[str, ModelProfile]:
             provider="openai",
             model="gpt-4o-mini",
             capabilities={
-                Capability.REASONING, Capability.CODING,
-                Capability.SUMMARIZATION, Capability.TRANSLATION,
-                Capability.STRUCTURED_EXTRACTION, Capability.TOOL_USE,
+                Capability.CODING, Capability.TOOL_USE, Capability.AGENTIC,
+                Capability.REASONING, Capability.SUMMARIZATION,
+                Capability.TRANSLATION, Capability.STRUCTURED_EXTRACTION,
             },
             cost_per_1k_tokens=0.00015,
             avg_latency_ms=1000,
@@ -173,14 +176,14 @@ def _build_default_registry() -> Dict[str, ModelProfile]:
             priority=25,
             available=openai_available,
         ),
-        # Gemini
+        # Gemini — fortaleza: análisis largo, contexto grande, multimodal
         ModelProfile(
             provider="gemini",
             model="gemini-2.0-flash",
             capabilities={
-                Capability.REASONING, Capability.CODING,
-                Capability.SUMMARIZATION, Capability.TRANSLATION,
-                Capability.VISION, Capability.LONG_CONTEXT,
+                Capability.LONG_CONTEXT, Capability.VISION,
+                Capability.SUMMARIZATION, Capability.REASONING,
+                Capability.CODING, Capability.TRANSLATION,
                 Capability.TOOL_USE,
             },
             cost_per_1k_tokens=0.0001,
@@ -190,15 +193,15 @@ def _build_default_registry() -> Dict[str, ModelProfile]:
             priority=25,
             available=gemini_available,
         ),
-        # Anthropic
+        # Anthropic — fortaleza: razonamiento, seguridad, planificación
         ModelProfile(
             provider="anthropic",
             model="claude-sonnet-4-20250514",
             capabilities={
-                Capability.REASONING, Capability.CODING,
-                Capability.SUMMARIZATION, Capability.TRANSLATION,
-                Capability.STRUCTURED_EXTRACTION, Capability.LONG_CONTEXT,
-                Capability.TOOL_USE,
+                Capability.REASONING, Capability.SAFETY, Capability.PLANNING,
+                Capability.CODING, Capability.SUMMARIZATION,
+                Capability.TRANSLATION, Capability.STRUCTURED_EXTRACTION,
+                Capability.LONG_CONTEXT, Capability.TOOL_USE,
             },
             cost_per_1k_tokens=0.003,
             avg_latency_ms=2500,

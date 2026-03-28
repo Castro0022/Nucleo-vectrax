@@ -41,13 +41,16 @@ logger = logging.getLogger("vectrax.smart_router")
 
 class Intent(str, Enum):
     """Clasificación expandida de intención del mensaje."""
-    MEMORY      = "memory"        # nota personal, statement para ingestar
-    LOCAL       = "local"         # pregunta sobre la propia memoria del usuario
-    ONLINE      = "online"        # pregunta factual que requiere búsqueda web
-    AI_SINGLE   = "ai_single"    # ruta explícita a modelo AI único (/ai)
-    AI_MULTI    = "ai_multi"     # ruta explícita a multi-modelo (/multi)
-    COMMAND     = "command"       # comando del sistema (/router, /help, etc.)
-    COGNITIVE   = "cognitive"    # pregunta compleja que requiere razonamiento profundo
+    MEMORY       = "memory"        # nota personal, statement para ingestar
+    LOCAL        = "local"         # pregunta sobre la propia memoria del usuario
+    ONLINE       = "online"        # pregunta factual que requiere búsqueda web
+    AI_SINGLE    = "ai_single"    # ruta explícita a modelo AI único (/ai)
+    AI_MULTI     = "ai_multi"     # ruta explícita a multi-modelo (/multi)
+    COMMAND      = "command"       # comando del sistema (/router, /help, etc.)
+    COGNITIVE    = "cognitive"    # pregunta compleja que requiere razonamiento profundo
+    PLACE_SEARCH = "place_search" # búsqueda de lugar físico / negocio
+    IDENTITY     = "identity"     # consulta de identidad (quién soy, mi nombre)
+    MARKET       = "market"       # consulta de mercado (precio, análisis, tendencia)
 
 
 class RiskLevel(str, Enum):
@@ -61,6 +64,9 @@ class Strategy(str, Enum):
     RESOLVE_MEMORY  = "resolve_memory"     # ingestar como star
     RESOLVE_LOCAL   = "resolve_local"      # buscar en memoria
     RESOLVE_ONLINE  = "resolve_online"     # buscar en la web
+    RESOLVE_PLACES  = "resolve_places"     # buscar lugar físico vía Google Places
+    RESOLVE_IDENTITY = "resolve_identity"  # responder desde identidad/memoria de usuario
+    RESOLVE_MARKET   = "resolve_market"     # datos de mercado (crypto, stocks, análisis)
     ROUTE_SINGLE    = "route_single"       # enviar a mejor modelo AI
     ROUTE_MULTI     = "route_multi"        # consultar múltiples modelos + síntesis
     ROUTE_COGNITIVE = "route_cognitive"    # razonamiento profundo (perception→reason)
@@ -152,11 +158,11 @@ _QUERY_INTENT = re.compile(
 _LOCAL_KEYWORDS = re.compile(
     r"(\bwhat did i\b|\bwhat i said\b|\bwhat have i\b"
     r"|\bmy (messages|history|notes|data|stars|memory|conversations?)\b"
-    r"|\bqué dije\b|\bqué te dije\b|\bqué hablamos\b|\bqué recuerdas\b"
-    r"|\bmi (historial|memoria|mensajes|notas|conversación|datos)\b"
-    r"|\besta conversación\b|\bthis conversation\b"
+    r"|\bqu[eé] dije\b|\bqu[eé] te dije\b|\bqu[eé] hablamos\b|\bqu[eé] recuerdas\b"
+    r"|\bmi (historial|memoria|mensajes|notas|conversaci[oó]n|datos)\b"
+    r"|\besta conversaci[oó]n\b|\bthis conversation\b"
     r"|\bdo you remember\b|\brecuerdas\b"
-    r"|\blo que te conté\b|\blo que escribí\b"
+    r"|\blo que te cont[eé]\b|\blo que escrib[ií]\b"
     r"|\bmy previous\b|\bmy last\b)",
     re.IGNORECASE,
 )
@@ -177,6 +183,37 @@ _COGNITIVE_PATTERN = re.compile(
 # Tópicos sensibles que elevan el riesgo
 _SENSITIVE_TOPICS = {"trading", "health", "financial", "security"}
 
+# Market data query patterns (detected before topic keywords)
+_MARKET_PATTERN = re.compile(
+    r"(?:"
+    # "precio de btc", "price of bitcoin", "cotización del btc"
+    r"\b(?:precio|price|cotizaci[oó]n|valor)\s+(?:de[l]?\s+)?(?:of\s+)?(?:btc|bitcoin|eth|ethereum|bnb|sol|spy|qqq|aapl|tsla|nvda)\b"
+    # "btc precio", "bitcoin price", "eth precio" (reversed order)
+    r"|\b(?:btc|bitcoin|eth|ethereum|bnb|sol|spy|qqq|aapl|tsla|nvda)\s+(?:precio|price|cotizaci[oó]n|valor)\b"
+    # "cuánto vale btc", "cuánto cuesta bitcoin", "cuánto está eth"
+    r"|\bcu[aá]nto\s+(?:vale|cuesta|est[aá])\s+(?:el\s+)?(?:btc|bitcoin|eth|ethereum|bnb|sol)\b"
+    # "cómo está btc", "cómo va bitcoin"
+    r"|\b(?:c[oó]mo\s+(?:est[aá]|va))\s+(?:el\s+)?(?:de[l]?\s+)?(?:btc|bitcoin|eth|ethereum|spy|qqq|aapl|tsla|nvda|el mercado)\b"
+    # "tendencia de btc", "análisis btc"
+    r"|\b(?:tendencia|trend|momentum|breakout|an[aá]lisis)\s+(?:de[l]?\s+)?(?:btc|bitcoin|eth|ethereum)\b"
+    # "resumen del mercado"
+    r"|\b(?:resumen|snapshot|estado)\s+(?:de[l]?\s+)?(?:mercado|market)\b"
+    # "vx market"
+    r"|\bvx\s+market\b"
+    # "mercado crypto", "market stock"
+    r"|\b(?:mercado|market)\s+(?:crypto|cripto|stock|bolsa)\b"
+    # "bitcoin hoy", "btc now", "eth ahora", "btc status"
+    r"|\b(?:bitcoin|btc|ethereum|eth)\s+(?:hoy|now|ahora|status|today)\b"
+    # Standalone crypto tickers as full message ("btc", "bitcoin", "eth")
+    r"|^\s*(?:btc|bitcoin|ethereum|eth|bnb|sol|ada|dot|avax|matic|link|xrp)\s*[?]?\s*$"
+    # "watchlist"
+    r"|\bwatchlist\b"
+    # "a cuanto esta btc", "a cuanto esta el bitcoin"
+    r"|\ba\s+cu[aá]nto\s+est[aá]\s+(?:el\s+)?(?:btc|bitcoin|eth|ethereum|bnb|sol)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 # Tópicos detectables por keywords rápidos
 _TOPIC_KEYWORDS: Dict[str, List[str]] = {
     "trading":      ["btc", "bitcoin", "entrada", "stop", "trade", "short", "long",
@@ -196,6 +233,110 @@ _TOPIC_KEYWORDS: Dict[str, List[str]] = {
 # Umbrales
 _LONG_PROMPT_CHARS = 300
 _COGNITIVE_MIN_WORDS = 15
+
+
+# ---------------------------------------------------------------------------
+# Mapeo de dominio → capacidades requeridas para selección de proveedor
+# ---------------------------------------------------------------------------
+
+# Importar Capability (lazy, fail-safe)
+try:
+    from core.routing.capabilities import (
+        Capability as _Cap,
+        CAPABILITY_REGISTRY as _CAP_REGISTRY,
+        get_available_models as _get_available,
+        refresh_availability as _refresh_avail,
+        ModelProfile as _ModelProfile,
+    )
+    _CAP_AVAILABLE = True
+except ImportError:
+    _CAP_AVAILABLE = False
+
+# Fortalezas por proveedor: capacidades que definen su dominio principal.
+# Cada proveedor tiene "primary" (máxima afinidad) y "secondary".
+_PROVIDER_STRENGTHS: Dict[str, Dict[str, Any]] = {
+    "openai": {
+        "primary": {"coding", "tool_use", "agentic"},
+        "secondary": {"structured_extraction", "reasoning"},
+        "desc": "código, herramientas, agentes",
+    },
+    "gemini": {
+        "primary": {"long_context", "vision", "summarization"},
+        "secondary": {"translation", "coding"},
+        "desc": "análisis largo, contexto grande, multimodal",
+    },
+    "anthropic": {
+        "primary": {"reasoning", "safety", "planning"},
+        "secondary": {"coding", "structured_extraction"},
+        "desc": "razonamiento, seguridad, planificación",
+    },
+    "ollama": {
+        "primary": set(),  # fortaleza = localidad, no capacidad
+        "secondary": {"coding", "reasoning", "summarization"},
+        "desc": "local, offline, privacidad",
+        "locality_bonus": True,
+    },
+}
+
+# Mapeo de señales del task → capacidades requeridas.
+# El router usa tópico + señales de intent para inferir qué capacidades necesita.
+_TASK_CAPABILITY_MAP: Dict[str, set] = {
+    # -- Por tópico --
+    "code":         {"coding", "tool_use", "agentic"},
+    "trading":      {"reasoning", "safety", "structured_extraction"},
+    "financial":    {"reasoning", "safety", "planning"},
+    "security":     {"safety", "reasoning", "planning"},
+    "health":       {"safety", "reasoning"},
+    "relationship": {"reasoning", "summarization"},
+    "general":      {"reasoning"},
+}
+
+# -- Por señales textuales (keywords en el mensaje) --
+_SIGNAL_CAPABILITY_KEYWORDS: Dict[str, set] = {
+    # código / herramientas / agentes → OpenAI
+    "coding": {
+        "código", "code", "python", "script", "función", "function", "bug",
+        "api", "endpoint", "deploy", "docker", "test", "debug", "refactor",
+        "github", "git", "compilar", "compile", "lint", "build",
+    },
+    "tool_use": {
+        "herramienta", "tool", "plugin", "webhook", "integración",
+        "integration", "automation", "automatiza",
+    },
+    "agentic": {
+        "agente", "agent", "autónomo", "autonomous", "workflow", "pipeline",
+        "orquesta", "orchestrate",
+    },
+    # análisis largo / contexto grande / multimodal → Gemini
+    "long_context": {
+        "documento", "document", "libro", "book", "paper", "artículo",
+        "artículo largo", "long", "extenso", "completo", "pdf", "corpus",
+    },
+    "vision": {
+        "imagen", "image", "foto", "photo", "visual", "diagrama",
+        "diagram", "screenshot", "captura", "gráfico", "chart",
+    },
+    "summarization": {
+        "resumen", "resume", "summarize", "sintetiza", "condensa",
+        "extracto", "abstract", "tldr",
+    },
+    # razonamiento / seguridad / planificación → Anthropic
+    "reasoning": {
+        "razona", "reason", "lógica", "logic", "deduce", "infiere",
+        "evalúa", "evaluate", "compara", "compare", "analiza profundo",
+        "deep analysis", "crítico", "critical",
+    },
+    "safety": {
+        "seguridad", "security", "riesgo", "risk", "vulnerable",
+        "vulnerability", "audit", "audita", "compliance", "cumplimiento",
+        "sensible", "sensitive", "confidencial", "privado",
+    },
+    "planning": {
+        "plan", "planifica", "roadmap", "estrategia", "strategy",
+        "diseño", "design", "arquitectura", "architecture",
+        "paso a paso", "step by step", "fases", "phases", "hitos",
+    },
+}
 
 
 # ---------------------------------------------------------------------------
@@ -221,11 +362,24 @@ class SmartRouter:
         self._metrics: List[Dict[str, Any]] = []
         self._strategic_router = None  # lazy init — necesita embedder
 
+    # -- Threshold de confianza semántica ------------------------------------
+    _SEMANTIC_CONFIDENCE_THRESHOLD = 0.5
+
     # -- 1. Clasificación de Intent -----------------------------------------
 
     def classify_intent(self, text: str) -> Tuple[Intent, Dict[str, Any]]:
         """
         Clasifica el intent expandido del mensaje.
+
+        Pipeline semantic-first:
+          1. Comandos explícitos (/ai, /multi, etc.) → return inmediato
+          2. Ejecutar SIEMPRE clasificador semántico
+          3. Ejecutar SIEMPRE evaluación regex
+          4. Resolver: semántico si conf >= threshold, sino regex fallback;
+             si ambos coinciden se refuerza confianza.
+
+        Fail-safe: si el clasificador semántico falla (exception),
+        el regex decide solo.
 
         Returns:
             (Intent, signals_dict) donde signals contiene las señales usadas.
@@ -249,16 +403,52 @@ class SmartRouter:
 
             return Intent.COMMAND, signals
 
-        # --- Señales textuales ---
-        has_question_mark = "?" in stripped or "¿" in stripped
-        has_question_start = bool(_QUESTION_STARTS.match(stripped))
-        has_query_intent = bool(_QUERY_INTENT.search(stripped))
-        has_local_keywords = bool(_LOCAL_KEYWORDS.search(stripped))
-        has_cognitive = bool(_COGNITIVE_PATTERN.search(stripped))
-        is_long = len(stripped) > _LONG_PROMPT_CHARS
-        word_count = len(stripped.split())
+        # --- Capa 1: Clasificación semántica (siempre se ejecuta) ---
+        semantic_result = self._classify_semantic(stripped)
+        semantic_intent: Optional[Intent] = None
+        if semantic_result is not None:
+            semantic_intent = _SEMANTIC_TO_INTENT.get(semantic_result.intent)
+            # Guardar señales semánticas en signals (siempre)
+            signals["semantic_intent"] = semantic_result.intent.value
+            signals["semantic_confidence"] = semantic_result.confidence
+            signals["semantic_frame"] = semantic_result.frame
+            signals["semantic_entities"] = [
+                {"type": e.type, "value": e.value}
+                for e in semantic_result.entities
+            ]
+            signals["semantic_tools"] = semantic_result.suggested_tools
+            signals["semantic_scores"] = semantic_result.scores
 
-        signals.update({
+        # --- Capa 2: Evaluación regex (siempre se ejecuta) ---
+        regex_intent, regex_signals = self._classify_regex(stripped)
+        signals.update(regex_signals)
+
+        # --- Capa 3: Decisión unificada ---
+        return self._resolve_intent(
+            semantic_result, semantic_intent,
+            regex_intent, regex_signals,
+            signals, stripped,
+        )
+
+    # -- 1a. Clasificación regex (fallback seguro) --------------------------
+
+    def _classify_regex(self, text: str) -> Tuple[Intent, Dict[str, Any]]:
+        """
+        Clasificación por señales textuales (regex legacy).
+
+        Siempre se ejecuta como segunda opinión / fallback.
+        Returns:
+            (Intent, regex_signals_dict)
+        """
+        has_question_mark = "?" in text or "¿" in text
+        has_question_start = bool(_QUESTION_STARTS.match(text))
+        has_query_intent = bool(_QUERY_INTENT.search(text))
+        has_local_keywords = bool(_LOCAL_KEYWORDS.search(text))
+        has_cognitive = bool(_COGNITIVE_PATTERN.search(text))
+        is_long = len(text) > _LONG_PROMPT_CHARS
+        word_count = len(text.split())
+
+        regex_signals: Dict[str, Any] = {
             "question_mark": has_question_mark,
             "question_start": has_question_start,
             "query_intent": has_query_intent,
@@ -266,24 +456,139 @@ class SmartRouter:
             "cognitive_pattern": has_cognitive,
             "is_long": is_long,
             "word_count": word_count,
-        })
+        }
 
         is_question = has_question_mark or has_question_start or has_query_intent
+        has_market = bool(_MARKET_PATTERN.search(text))
+        regex_signals["market_query"] = has_market
 
-        # Referencia a memoria propia → LOCAL
+        if has_market:
+            return Intent.MARKET, regex_signals
         if has_local_keywords:
-            return Intent.LOCAL, signals
-
-        # Patrón cognitivo profundo + pregunta larga → COGNITIVE
+            return Intent.LOCAL, regex_signals
         if has_cognitive and word_count >= _COGNITIVE_MIN_WORDS:
-            return Intent.COGNITIVE, signals
-
-        # Pregunta general → ONLINE
+            return Intent.COGNITIVE, regex_signals
         if is_question:
-            return Intent.ONLINE, signals
+            return Intent.ONLINE, regex_signals
+        return Intent.MEMORY, regex_signals
 
-        # Statement/nota → MEMORY
-        return Intent.MEMORY, signals
+    # -- 1b. Resolución unificada de intent ---------------------------------
+
+    def _resolve_intent(
+        self,
+        semantic_result: Any,
+        semantic_intent: Optional[Intent],
+        regex_intent: Intent,
+        regex_signals: Dict[str, Any],
+        signals: Dict[str, Any],
+        text: str,
+    ) -> Tuple[Intent, Dict[str, Any]]:
+        """
+        Resuelve el intent final combinando semántico + regex.
+
+        Reglas de decisión:
+          1. Semántico con conf >= threshold → usar semántico
+          2. Ambos coinciden → usar semántico + reforzar confianza
+          3. Semántico bajo pero regex fuerte → regex como fallback
+          4. Semántico None (fallo) → regex solo
+
+        Registra alineación/conflicto en signals para aprendizaje.
+        """
+        threshold = self._SEMANTIC_CONFIDENCE_THRESHOLD
+        sem_conf = semantic_result.confidence if semantic_result else 0.0
+        word_count = regex_signals.get("word_count", len(text.split()))
+        signals["word_count"] = word_count
+
+        # --- Semántico con confianza suficiente ---
+        if semantic_intent is not None and sem_conf >= threshold:
+            aligned = (semantic_intent == regex_intent)
+
+            # Excepción: si regex detecta COGNITIVE (patrón + longitud),
+            # tiene prioridad sobre semántico de confianza media-baja
+            # porque COGNITIVE es una señal más específica.
+            if (
+                not aligned
+                and regex_intent == Intent.COGNITIVE
+                and sem_conf < 0.7
+            ):
+                signals["classification_method"] = "regex_override"
+                signals["regex_agrees"] = False
+                signals["decision_note"] = (
+                    f"regex COGNITIVE overrides semantic={semantic_intent.value} "
+                    f"(sem_conf={sem_conf:.2f} < 0.7)"
+                )
+                logger.info(
+                    "classify_intent: COGNITIVE via regex override (sem=%s conf=%.2f)",
+                    semantic_intent.value, sem_conf,
+                )
+                return regex_intent, signals
+
+            # Excepción: si regex detecta MARKET, siempre tiene prioridad.
+            # El clasificador semántico no conoce el dominio MARKET y lo
+            # clasifica como ONLINE/MEMORY. El regex _MARKET_PATTERN es
+            # específico y fiable — override incondicional.
+            if not aligned and regex_intent == Intent.MARKET:
+                signals["classification_method"] = "regex_override"
+                signals["regex_agrees"] = False
+                signals["decision_note"] = (
+                    f"regex MARKET overrides semantic={semantic_intent.value} "
+                    f"(sem_conf={sem_conf:.2f}) — domain-specific override"
+                )
+                logger.info(
+                    "classify_intent: MARKET via regex override (sem=%s conf=%.2f)",
+                    semantic_intent.value, sem_conf,
+                )
+                return regex_intent, signals
+
+            signals["classification_method"] = "semantic"
+            signals["regex_agrees"] = aligned
+            if aligned:
+                signals["decision_note"] = "semantic+regex aligned"
+            else:
+                signals["decision_note"] = (
+                    f"semantic={semantic_intent.value} "
+                    f"regex={regex_intent.value} → semantic wins (conf={sem_conf:.2f})"
+                )
+            logger.info(
+                "classify_intent: %s via semantic (conf=%.2f, frame=%s, regex_agrees=%s)",
+                semantic_intent.value, sem_conf,
+                signals.get("semantic_frame", "?"), aligned,
+            )
+            return semantic_intent, signals
+
+        # --- Semántico por debajo del threshold ---
+        # Caso especial: si ambas capas coinciden, la concordancia
+        # independiente es señal fuerte. Promover a decisión semántica
+        # con nota de alineación (semántico-first aún con conf baja).
+        if semantic_intent is not None and semantic_intent == regex_intent and sem_conf > 0:
+            signals["classification_method"] = "semantic_aligned"
+            signals["regex_agrees"] = True
+            signals["decision_note"] = (
+                f"aligned below threshold: both={regex_intent.value} "
+                f"(semantic_conf={sem_conf:.2f}, promoted by agreement)"
+            )
+            logger.info(
+                "classify_intent: %s via semantic_aligned (conf=%.2f, regex agrees)",
+                semantic_intent.value, sem_conf,
+            )
+            return semantic_intent, signals
+
+        # Conflicto o semántico ausente → regex decide solo
+        signals["classification_method"] = "regex_fallback"
+
+        if semantic_intent is not None and sem_conf > 0:
+            signals["semantic_below_threshold"] = True
+            signals["semantic_would_have_been"] = semantic_intent.value
+            signals["decision_note"] = (
+                f"conflict: semantic={semantic_intent.value}(conf={sem_conf:.2f}) "
+                f"vs regex={regex_intent.value} → regex wins (below threshold)"
+            )
+
+        logger.info(
+            "classify_intent: %s via regex_fallback (words=%d, sem_conf=%.2f)",
+            regex_intent.value, word_count, sem_conf,
+        )
+        return regex_intent, signals
 
     # -- 2. Detección de Contexto -------------------------------------------
 
@@ -346,7 +651,7 @@ class SmartRouter:
         else:
             risk_level = RiskLevel.LOW
 
-        return {
+        result = {
             "topic": best_topic,
             "topic_confidence": round(topic_confidence, 4),
             "risk_level": risk_level,
@@ -359,6 +664,11 @@ class SmartRouter:
                 "owner": owner,
             },
         }
+        logger.info(
+            "detect_context: topic=%s conf=%.2f risk=%s sensitive=%s",
+            best_topic, topic_confidence, risk_level.value, sensitive,
+        )
+        return result
 
     # -- 3. Evaluación de Política ------------------------------------------
 
@@ -380,6 +690,7 @@ class SmartRouter:
         """
         # Resoluciones pasivas: siempre permitidas
         if intent in (Intent.MEMORY, Intent.LOCAL, Intent.ONLINE, Intent.COMMAND):
+            logger.debug("evaluate_policy: AUTO_EXECUTE (passive intent=%s)", intent.value)
             return PolicyAction.AUTO_EXECUTE
 
         # AI routing: evaluar riesgo
@@ -400,8 +711,10 @@ class SmartRouter:
                 decision = pr.evaluate(ri)
                 return PolicyAction(decision.action.value)
             except Exception:
+                logger.info("evaluate_policy: REQUIERE_REVISION (risk=HIGH, policy_router unavailable)")
                 return PolicyAction.REQUIERE_REVISION
 
+        logger.debug("evaluate_policy: AUTO_EXECUTE (intent=%s, risk=%s)", intent.value, risk_level.value)
         return PolicyAction.AUTO_EXECUTE
 
     # -- 4. Selección de Estrategia -----------------------------------------
@@ -441,6 +754,27 @@ class SmartRouter:
                 "Statement/nota → ingestar como star en memoria",
             )
 
+        # Búsqueda de lugar físico
+        if intent == Intent.PLACE_SEARCH:
+            return (
+                Strategy.RESOLVE_PLACES, [], 0.9,
+                "Búsqueda de lugar/negocio → Google Places",
+            )
+
+        # Consulta de identidad
+        if intent == Intent.IDENTITY:
+            return (
+                Strategy.RESOLVE_IDENTITY, [], 0.95,
+                "Consulta de identidad → memoria de usuario",
+            )
+
+        # Consulta de mercado (crypto, stocks, análisis)
+        if intent == Intent.MARKET:
+            return (
+                Strategy.RESOLVE_MARKET, [], 0.95,
+                "Consulta de mercado → market_vigilance + market_router",
+            )
+
         # Consulta local (memoria propia)
         if intent == Intent.LOCAL:
             return (
@@ -450,15 +784,15 @@ class SmartRouter:
 
         # AI explícita (single)
         if intent == Intent.AI_SINGLE:
-            providers = self._suggest_providers(topic, single=True)
+            providers = self._suggest_providers(topic, single=True, text=signals.get("prompt", ""))
             return (
                 Strategy.ROUTE_SINGLE, providers, 0.9,
-                f"Ruta AI explícita (/ai) → modelo único — topic={topic}",
+                f"Ruta AI explícita (/ai) → {providers[0] if providers else '?'} — topic={topic}",
             )
 
         # AI explícita (multi)
         if intent == Intent.AI_MULTI:
-            providers = self._suggest_providers(topic, single=False)
+            providers = self._suggest_providers(topic, single=False, text=signals.get("prompt", ""))
             return (
                 Strategy.ROUTE_MULTI, providers, 0.9,
                 f"Ruta multi-modelo explícita (/multi) → síntesis — topic={topic}",
@@ -486,7 +820,7 @@ class SmartRouter:
         if intent == Intent.ONLINE:
             # Si es tópico sensible con riesgo alto, escalar a multi-modelo
             if topic in _SENSITIVE_TOPICS and risk_level == RiskLevel.HIGH:
-                providers = self._suggest_providers(topic, single=False)
+                providers = self._suggest_providers(topic, single=False, text=signals.get("prompt", ""))
                 return (
                     Strategy.ROUTE_MULTI, providers, 0.7,
                     f"Pregunta sensible escalada a multi-modelo — "
@@ -523,6 +857,7 @@ class SmartRouter:
             SmartRoute con la decisión completa.
         """
         t0 = time.time()
+        logger.info("route: start (channel=%s, owner=%s, len=%d)", channel, owner, len(text))
 
         # Paso 1: Clasificar intent
         intent, intent_signals = self.classify_intent(text)
@@ -539,8 +874,16 @@ class SmartRouter:
         strategy, providers, confidence, reason = self.select_strategy(
             intent, topic, risk_level, policy_action, intent_signals,
         )
+        logger.info(
+            "select_strategy: %s providers=%s conf=%.2f reason=%s",
+            strategy.value, providers, confidence, reason,
+        )
 
         # Construir metadata agregada (sin contenido del mensaje)
+        provider_scores = {}
+        if _CAP_AVAILABLE:
+            provider_scores = self._score_providers(topic, text)
+
         metadata = {
             "intent_signals": {
                 k: v for k, v in intent_signals.items()
@@ -548,6 +891,7 @@ class SmartRouter:
             },
             "topic_confidence": context["topic_confidence"],
             "sensitive": context["sensitive"],
+            "provider_scores": provider_scores,
             "routing_latency_ms": round((time.time() - t0) * 1000, 2),
         }
 
@@ -575,7 +919,8 @@ class SmartRouter:
             metadata=metadata,
         )
 
-        logger.info("SmartRoute: %s", route.summary())
+        latency_ms = (time.time() - t0) * 1000
+        logger.info("SmartRoute: %s (total=%.1fms)", route.summary(), latency_ms)
         return route
 
     # -- 6. Registro de métricas (abstractas, sin contenido) -----------------
@@ -620,6 +965,54 @@ class SmartRouter:
             metric["intent_category"], metric["strategy_used"],
             metric["success"], metric["latency_ms"],
         )
+
+    def record_feedback(
+        self,
+        route: SmartRoute,
+        success: bool,
+        response_latency_ms: float = 0.0,
+        used_fallback: bool = False,
+        fallback_strategy: str = "",
+        resolution_error: str = "",
+        was_generic_response: bool = False,
+        word_count: int = 0,
+    ) -> None:
+        """
+        Registra feedback detallado para el sistema de autoaprendizaje.
+
+        Delega a core.router_learning para persistencia en JSONL
+        y evaluación post-resolución. Fail-safe: si el módulo de
+        aprendizaje falla, el router sigue operando normalmente.
+
+        NUNCA almacena contenido del mensaje, identidad ni credenciales.
+        """
+        # Registrar en métricas in-memory (siempre)
+        self.record_outcome(route, success, response_latency_ms)
+
+        # Registrar en ledger de aprendizaje (fail-safe)
+        try:
+            from core.router_learning import (
+                create_feedback_from_route,
+                get_ledger,
+            )
+            feedback = create_feedback_from_route(
+                route=route,
+                success=success,
+                response_latency_ms=response_latency_ms,
+                used_fallback=used_fallback,
+                fallback_strategy=fallback_strategy,
+                resolution_error=resolution_error,
+                was_generic_response=was_generic_response,
+                word_count=word_count,
+            )
+            get_ledger().append(feedback)
+            logger.debug(
+                "Router feedback recorded: intent=%s quality=%s",
+                feedback.intent, feedback.quality_score,
+            )
+        except Exception as exc:
+            # Fail-safe: si el aprendizaje falla, el sistema sigue
+            logger.debug("Router learning feedback failed (non-critical): %s", exc)
 
     # -- 7. Estadísticas ---------------------------------------------------
 
@@ -678,36 +1071,198 @@ class SmartRouter:
 
     def _suggest_providers(
         self, topic: str, single: bool = True,
+        text: str = "",
     ) -> List[str]:
         """
-        Sugiere proveedores AI basándose en el tópico y el strategic router.
+        Selecciona proveedores AI por capacidades requeridas.
 
-        Si el strategic router está disponible, usa su decisión.
-        Si no, devuelve defaults.
+        Pipeline:
+          1. Detectar capacidades requeridas del task (topic + keywords)
+          2. Puntuar cada proveedor disponible por match de capacidades
+          3. Aplicar bonus/penalty (locality, costo, latencia)
+          4. Ordenar por score descendente
+
+        Si el capability registry no está disponible, fallback al
+        strategic router o defaults.
         """
+        # ── Capability-based selection ─────────────────────────
+        if _CAP_AVAILABLE:
+            scores = self._score_providers(topic, text)
+            if scores:
+                ranked = sorted(scores.items(), key=lambda x: -x[1])
+                providers = [name for name, _ in ranked]
+                logger.debug("_suggest_providers: capability-based scores=%s", scores)
+                if single:
+                    return providers[:1]
+                return providers
+
+        # ── Fallback: strategic router ────────────────────────
         try:
             sr = self._get_strategic_router()
             if sr is not None:
-                # Obtener perfil y decisión del strategic router
                 profile = sr.evaluate_history(topic)
-                # Construir un prompt dummy corto para la decisión
                 decision = sr.decide(topic, profile, topic)
                 providers = decision.providers
+                logger.debug("_suggest_providers: strategic_router → %s", providers)
                 if single:
                     return providers[:1]
                 return providers
         except Exception:
             pass
 
-        # Default fallback
-        defaults = ["openai", "gemini"]
+        # ── Fallback: defaults ────────────────────────────────
+        defaults = ["openai", "gemini", "anthropic"]
+        logger.debug("_suggest_providers: fallback defaults → %s", defaults)
         if single:
             return defaults[:1]
         return defaults
 
+    def _score_providers(
+        self, topic: str, text: str = "",
+    ) -> Dict[str, float]:
+        """
+        Puntúa proveedores disponibles por match de capacidades.
+
+        Scoring:
+          - capability_match: cuántas capacidades requeridas tiene el proveedor
+          - strength_bonus:  +0.3 si la capacidad es fortaleza primaria del proveedor
+          - locality_bonus:  +0.2 para proveedores locales si el tópico es sensible
+          - cost_factor:     ligera preferencia por menor costo (-0.1 si caro)
+          - latency_factor:  ligera preferencia por menor latencia (-0.05 si lento)
+
+        Returns:
+            Dict[provider_name, score] para proveedores disponibles.
+        """
+        if not _CAP_AVAILABLE:
+            return {}
+
+        # 1. Detectar capacidades requeridas
+        required = self._detect_required_capabilities(topic, text)
+
+        if not required:
+            required = {"reasoning", "summarization"}
+
+        # 2. Obtener modelos disponibles
+        _refresh_avail()
+        available = _get_available()
+        if not available:
+            return {}
+
+        # 3. Agrupar por proveedor (mejor modelo por proveedor)
+        provider_best: Dict[str, _ModelProfile] = {}
+        for profile in available.values():
+            prov = profile.provider
+            if prov not in provider_best or profile.priority < provider_best[prov].priority:
+                provider_best[prov] = profile
+
+        # 4. Puntuar cada proveedor
+        scores: Dict[str, float] = {}
+        sensitive_topic = topic in _SENSITIVE_TOPICS
+
+        for prov_name, profile in provider_best.items():
+            score = 0.0
+            prov_caps = {c.value for c in profile.capabilities}
+            strengths = _PROVIDER_STRENGTHS.get(prov_name, {})
+            primary = strengths.get("primary", set())
+            secondary = strengths.get("secondary", set())
+
+            # Capability match
+            for cap in required:
+                if cap in prov_caps:
+                    if cap in primary:
+                        score += 1.5   # fortaleza primaria
+                    elif cap in secondary:
+                        score += 0.6   # fortaleza secundaria
+                    else:
+                        score += 0.3   # tiene la capacidad pero no es su fuerte
+
+            # Locality bonus (privacidad / seguridad)
+            if profile.is_local:
+                if sensitive_topic:
+                    score += 0.5   # bonus fuerte para tópicos sensibles
+                else:
+                    score += 0.1   # bonus leve por privacidad
+
+            # Cost factor (menor costo = leve bonus)
+            if profile.cost_per_1k_tokens == 0.0:
+                score += 0.1   # gratis = bonus
+            elif profile.cost_per_1k_tokens > 0.003:
+                score -= 0.1   # caro = penalización leve
+
+            # Latency factor
+            if profile.avg_latency_ms < 1200:
+                score += 0.05
+            elif profile.avg_latency_ms > 2200:
+                score -= 0.05
+
+            scores[prov_name] = round(score, 4)
+
+        return scores
+
+    def _detect_required_capabilities(
+        self, topic: str, text: str = "",
+    ) -> set:
+        """
+        Infiere las capacidades requeridas a partir del tópico y keywords.
+
+        Combina:
+          - _TASK_CAPABILITY_MAP (por tópico)
+          - _SIGNAL_CAPABILITY_KEYWORDS (por keywords en el texto)
+        """
+        required: set = set()
+
+        # Por tópico
+        topic_caps = _TASK_CAPABILITY_MAP.get(topic, set())
+        required.update(topic_caps)
+
+        # Por keywords en el texto
+        lower = text.lower()
+        for cap_name, keywords in _SIGNAL_CAPABILITY_KEYWORDS.items():
+            for kw in keywords:
+                if kw in lower:
+                    required.add(cap_name)
+                    break
+
+        logger.debug("_detect_required_capabilities: topic=%s → %s", topic, required)
+        return required
+
+    # -- Clasificación semántica (lazy) ------------------------------------
+
+    def _classify_semantic(self, text: str):
+        """
+        Clasifica usando el SemanticClassifier.
+        Retorna SemanticResult o None si no disponible.
+        """
+        try:
+            from core.semantic_classifier import get_semantic_classifier
+            sc = get_semantic_classifier()
+            return sc.classify(text)
+        except Exception as exc:
+            logger.debug("SemanticClassifier not available: %s", exc)
+            return None
+
     def __repr__(self) -> str:
         n = len(self._metrics)
         return f"SmartRouter(metrics={n})"
+
+
+# ---------------------------------------------------------------------------
+# Mapeo SemanticIntent → Intent (compatibilidad)
+# ---------------------------------------------------------------------------
+
+try:
+    from core.semantic_classifier import SemanticIntent as _SI
+    _SEMANTIC_TO_INTENT: Dict[Any, Intent] = {
+        _SI.PLACE_SEARCH:   Intent.PLACE_SEARCH,
+        _SI.WEB_SEARCH:     Intent.ONLINE,
+        _SI.MEMORY_LOOKUP:  Intent.LOCAL,
+        _SI.IDENTITY_QUERY: Intent.IDENTITY,
+        _SI.GENERAL_CHAT:   Intent.MEMORY,
+        _SI.SYSTEM_ACTION:  Intent.COMMAND,
+        _SI.MIXED:          Intent.ONLINE,  # mixed → resolver online como safe default
+    }
+except ImportError:
+    _SEMANTIC_TO_INTENT = {}
 
 
 # ---------------------------------------------------------------------------

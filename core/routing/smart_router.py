@@ -85,7 +85,7 @@ class SmartRouter:
         # Check each pattern
         for task_type, pattern in self.patterns.items():
             if pattern.search(prompt):
-                logger.debug(f"Detected task type: {task_type.value}")
+                logger.debug("Detected task type: %s", task_type.value)
                 return task_type
         
         # Default to chat if no specific pattern matches
@@ -113,7 +113,7 @@ class SmartRouter:
         """
         # If explicit provider/model given, use those
         if provider and model:
-            logger.info(f"Using explicit routing: {provider}/{model}")
+            logger.info("Using explicit routing: %s/%s", provider, model)
             return (provider, model)
         
         # Detect task type if not provided
@@ -131,7 +131,7 @@ class SmartRouter:
                 rule_model = rule.get('model', self.default_model)
                 
                 logger.info(
-                    f"Routing {task_type} task to {rule_provider}/{rule_model}"
+                    "Routing %s task to %s/%s", task_type, rule_provider, rule_model
                 )
                 
                 return (
@@ -141,8 +141,8 @@ class SmartRouter:
         
         # No rule found, use defaults
         logger.info(
-            f"No rule for {task_type}, using default: "
-            f"{self.default_provider}/{self.default_model}"
+            "No rule for %s, using default: %s/%s",
+            task_type, self.default_provider, self.default_model,
         )
         
         return (
@@ -192,7 +192,7 @@ class SmartRouter:
         # Sort by priority
         self.rules.sort(key=lambda r: r.get('priority', 100))
         
-        logger.info(f"Added routing rule: {task_type} -> {provider}/{model}")
+        logger.info("Added routing rule: %s -> %s/%s", task_type, provider, model)
     
     def remove_rule(self, task_type: str) -> bool:
         """
@@ -209,7 +209,7 @@ class SmartRouter:
         
         removed = len(self.rules) < original_len
         if removed:
-            logger.info(f"Removed routing rule for: {task_type}")
+            logger.info("Removed routing rule for: %s", task_type)
         
         return removed
     

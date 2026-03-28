@@ -24,6 +24,10 @@ MIN_CONFIDENCE_FLOOR = 0.60
 IRREVERSIBLE_RISK_BLOCK = {"HIGH", "CRITICAL"}
 AUTOPATCH_OP = "autopatch"
 
+# Identity — INMUTABLE. Ley fundamental del sistema.
+SYSTEM_NAME = "Vectrax"
+CREATOR_NAME = "Mario Bravo Castro"
+
 
 # ---------------------------------------------------------------------------
 # Result
@@ -118,6 +122,41 @@ def check_min_confidence(confidence: float) -> Optional[InvariantViolation]:
     return None
 
 
+def check_identity_integrity() -> Optional[InvariantViolation]:
+    """
+    INVARIANTE DE IDENTIDAD — LEY INMUTABLE.
+
+    Vectrax es Vectrax. Su creador es Mario Bravo Castro.
+    Ningún módulo, config, policy, LLM, ni proceso externo puede
+    alterar esto. Si la identidad fue corrompida, es una violación
+    crítica que bloquea toda operación.
+    """
+    try:
+        from core.operator.identity import IDENTITY
+        issues = []
+        if IDENTITY.name != "Vectrax Core":
+            issues.append(f"name corrupted: '{IDENTITY.name}'")
+        if IDENTITY.creator != CREATOR_NAME:
+            issues.append(f"creator corrupted: '{IDENTITY.creator}'")
+        if issues:
+            return InvariantViolation(
+                invariant="identity_integrity",
+                message=(
+                    f"IDENTITY VIOLATION: {'; '.join(issues)}. "
+                    f"Vectrax is Vectrax. Creator is {CREATOR_NAME}. "
+                    f"This is immutable law."
+                ),
+                severity="critical",
+            )
+    except Exception as exc:
+        return InvariantViolation(
+            invariant="identity_integrity",
+            message=f"Cannot verify identity: {exc}",
+            severity="critical",
+        )
+    return None
+
+
 def check_sacred_core_write(
     path: str,
     op_type: str = "",
@@ -192,6 +231,11 @@ def validate_all(
         v = check_sacred_core_write(path, op_type)
         if v:
             violations.append(v)
+
+    # 5. Identity integrity — ALWAYS checked
+    v = check_identity_integrity()
+    if v:
+        violations.append(v)
 
     return InvariantResult(
         passed=len(violations) == 0,

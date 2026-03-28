@@ -19,8 +19,8 @@ from core.abstraction.base import (
 )
 
 
-class NotConfiguredError(Exception):
-    """Raised when a provider is used without required configuration."""
+# Backward-compatible re-export
+from core.resilience.errors import NotConfiguredError  # noqa: F401
 
 
 class OpenAIProvider(BaseLLMProvider):
@@ -46,6 +46,7 @@ class OpenAIProvider(BaseLLMProvider):
     def _ensure_client(self):
         if self._api_key is None:
             raise NotConfiguredError(
+                "openai",
                 "OPENAI_API_KEY not set. Export it or pass api_key=..."
             )
         if self._client is None:

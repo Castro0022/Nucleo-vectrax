@@ -73,6 +73,34 @@ def _make_handler():
                         "Ingested %s → %s (conf=%s)",
                         result.file_path, result.intent_primary, result.candidate_id,
                     )
+                    # Emit watchdog event to Universal Bus
+                    try:
+                        from core.operator.universal_bus import get_universal_bus
+                        from core.operator.bus_reactor import LiveChannels, EventTypes
+                        get_universal_bus().emit(
+                            channel=LiveChannels.WATCHDOG,
+                            event_type=EventTypes.WATCHDOG_INGESTED,
+                            source_layer=2,
+                            payload={
+                                "path": result.file_path,
+                                "intent": result.intent_primary or "unknown",
+                                "candidate_id": result.candidate_id or "",
+                            },
+                        )
+                    except Exception:
+                        pass  # bus hook is non-fatal
+                    # Feed active learning if enabled
+                    try:
+                        from core.learn.active_learning import get_orchestrator
+                        orch = get_orchestrator()
+                        if orch.is_active():
+                            orch.on_file_ingested(
+                                file_path=result.file_path,
+                                intent=result.intent_primary or "unknown",
+                                confidence=result.cc_score,
+                            )
+                    except Exception:
+                        pass  # active learning hook is non-fatal
             except Exception as e:
                 logger.error("Ingestion error for %s: %s", path, e)
 

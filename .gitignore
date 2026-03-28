@@ -28,3 +28,4 @@ launch.log
 logs/*.log
 
 # Reports are tracked
+vault/*.db

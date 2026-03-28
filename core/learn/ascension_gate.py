@@ -144,6 +144,61 @@ class AscensionGate:
             counts[st] = counts.get(st, 0) + 1
         return counts
 
+    def release_for_evaluation(
+        self,
+        min_confidence: float = 0.6,
+        max_release: int = 10,
+    ) -> List[str]:
+        """
+        Release high-confidence QUARANTINED candidates to EVALUATING state.
+
+        Only candidates with confidence >= min_confidence are released.
+        Returns list of released candidate IDs.
+        """
+        records = self._load_all()
+        released: List[str] = []
+
+        for rec in records:
+            if len(released) >= max_release:
+                break
+            if (rec.get("state") == "QUARANTINED"
+                    and rec.get("confidence", 0.0) >= min_confidence):
+                rec["state"] = "EVALUATING"
+                rec["decided_at"] = datetime.now(timezone.utc).isoformat()
+                released.append(rec.get("id", ""))
+
+        if released:
+            self._save_all(records)
+            try:
+                from core.learn.episodic import get_ledger, EpisodicEvent
+                get_ledger().append(EpisodicEvent(
+                    event_type="CANDIDATES_RELEASED",
+                    summary=f"{len(released)} candidates released for evaluation",
+                    metadata={"released_ids": released},
+                ))
+            except Exception:
+                pass
+
+        return released
+
+    def evaluating_candidates(self) -> List[Dict[str, Any]]:
+        """Return candidates currently being evaluated."""
+        return self.list_by_state("EVALUATING")
+
+    def promote_from_evaluation(self, candidate_id: str) -> bool:
+        """Promote an EVALUATING candidate to APPROVED."""
+        records = self._load_all()
+        found = False
+        for rec in records:
+            if rec.get("id") == candidate_id and rec.get("state") == "EVALUATING":
+                rec["state"] = "APPROVED"
+                rec["decided_at"] = datetime.now(timezone.utc).isoformat()
+                found = True
+                break
+        if found:
+            self._save_all(records)
+        return found
+
     def approved_patterns(self) -> List[Dict[str, Any]]:
         """Return only APPROVED candidates (safe to influence proposals)."""
         return self.list_by_state("APPROVED")

@@ -70,9 +70,13 @@ LAYERS: List[LayerDefinition] = [
     LayerDefinition(
         id=1,
         name="Núcleo Central",
-        description="Punto de coordinación, registro de capas, estado global",
+        description="Punto de coordinación, registro de capas, estado global, convergencia total",
         status=LayerStatus.ACTIVE,
-        modules=["core.operator.nucleus", "core.operator.activation"],
+        modules=[
+            "core.operator.nucleus",
+            "core.operator.activation",
+            "core.nucleus.total_convergence",
+        ],
         dependencies=[],
     ),
     LayerDefinition(

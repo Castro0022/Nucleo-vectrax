@@ -75,6 +75,20 @@ class ProviderError(VectraxError):
         self.details['provider'] = provider
 
 
+class NotConfiguredError(ProviderError):
+    """Raised when a provider is used without required configuration (missing API key, etc.)."""
+
+    def __init__(self, provider: str, detail: str = "", **kwargs):
+        msg = f"Provider '{provider}': {detail}" if detail else f"Provider '{provider}' is not configured"
+        super().__init__(
+            msg,
+            provider=provider,
+            severity=ErrorSeverity.HIGH,
+            recoverable=False,
+            **kwargs
+        )
+
+
 class ProviderUnavailableError(ProviderError):
     """Provider is not available or not responding"""
     

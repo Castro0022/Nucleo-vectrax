@@ -148,11 +148,10 @@ class ConfigLoader:
                 endpoint=config.endpoint or "http://localhost:11434",
                 timeout=config.timeout
             )
-        
+
         elif provider_type == "openai":
-            # Lazy import to avoid dependency if not needed
             try:
-                from ..providers.openai_provider import OpenAIProvider
+                from ..providers.openai_stub import OpenAIProvider
                 return OpenAIProvider(
                     api_key=config.api_key,
                     timeout=config.timeout
@@ -160,11 +159,22 @@ class ConfigLoader:
             except ImportError:
                 logger.error("OpenAI provider requested but not available")
                 raise
-        
-        elif provider_type == "anthropic":
-            # Lazy import
+
+        elif provider_type == "gemini":
             try:
-                from ..providers.anthropic_provider import AnthropicProvider
+                from ..providers.gemini_stub import GeminiProvider
+                return GeminiProvider(
+                    api_key=config.api_key,
+                    endpoint=config.endpoint or "https://generativelanguage.googleapis.com/v1beta",
+                    timeout=config.timeout
+                )
+            except ImportError:
+                logger.error("Gemini provider requested but not available")
+                raise
+
+        elif provider_type == "anthropic":
+            try:
+                from ..providers.anthropic_stub import AnthropicProvider
                 return AnthropicProvider(
                     api_key=config.api_key,
                     timeout=config.timeout
@@ -172,7 +182,7 @@ class ConfigLoader:
             except ImportError:
                 logger.error("Anthropic provider requested but not available")
                 raise
-        
+
         else:
             raise ValueError(f"Unknown provider type: {provider_type}")
     

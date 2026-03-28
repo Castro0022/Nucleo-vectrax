@@ -127,6 +127,18 @@ class Channels:
     INTEGRITY = "integrity"      # Eventos de integridad
     MODE_CHANGE = "mode_change"  # Cambios de modo operativo
 
+    # Canales live — fuentes vivas del sistema
+    LIVE_CHAT        = "live.chat"         # CoreCommEngine: chat núcleo
+    LIVE_VOICE       = "live.voice"        # Pipeline de voz
+    LIVE_STARS       = "live.stars"        # engine.ingest: estrellas
+    LIVE_CONVERGENCE = "live.convergence"  # Motor de convergencias
+    LIVE_WATCHDOG    = "live.watchdog"     # Watchdog de archivos
+    LIVE_UNIVERSE    = "live.universe"     # Universo / gravedad
+    OPERATOR_OUT     = "operator.out"      # Salida observable del reactor
+
+    # Canal externo — gateway de entrada/salida para canales externos
+    EXTERNAL         = "external"          # ExternalGateway: web, telegram, etc.
+
     @classmethod
     def for_layer(cls, layer_id: int) -> str:
         """Canal correspondiente a un layer_id."""

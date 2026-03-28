@@ -563,6 +563,313 @@ def _handle_router_command(ib):
     console.print(Panel("\n".join(lines), expand=False))
 
 
+# ---------------------------------------------------------------------------
+# Voice handlers (used inside creator chat loop)
+# ---------------------------------------------------------------------------
+
+import logging as _logging
+logger = _logging.getLogger("vectrax.cli")
+
+
+def _voice_single_turn(engine) -> bool:
+    """
+    Execute a single voice turn: record → transcribe → CoreCommEngine → speak.
+
+    Returns True if the turn completed successfully, False otherwise.
+    Uses CoreCommEngine for the full nucleus pipeline and VECTRAX-CORE identity for TTS.
+    """
+    try:
+        from vectrax.comm.voice import (
+            MicRecorder, transcribe, speak_as_core, speak_core_phrase,
+            get_voice_status,
+        )
+        from vectrax.comm.voice_identity import VECTRAX_CORE
+    except ImportError as exc:
+        console.print(f"[red]Error importando módulo de voz: {exc}[/red]")
+        return False
+
+    # ── 0. Pre-flight check ──────────────────────────────────────────
+    vs = get_voice_status()
+    if not vs["microphone"]:
+        console.print("[red]Micrófono no detectado.[/red]")
+        console.print(
+            "[dim]Verifica permisos: Configuración del Sistema → "
+            "Privacidad → Micrófono → Warp/Terminal[/dim]"
+        )
+        return False
+    if not vs["transcription_backends"]:
+        console.print("[red]Sin backend de transcripción.[/red]")
+        console.print("[dim]Ejecuta: pip install faster-whisper[/dim]")
+        return False
+
+    recorder = MicRecorder()
+
+    # ── 1. Record ──────────────────────────────────────────────────────
+    try:
+        recorder.start()
+    except Exception as exc:
+        console.print(f"[red]Error al abrir micrófono: {exc}[/red]")
+        console.print(
+            "[dim]Puede ser un problema de permisos. Ve a: "
+            "Configuración del Sistema → Privacidad → Micrófono[/dim]"
+        )
+        return False
+
+    console.print(
+        "[bold red]● GRABANDO[/bold red] — Habla ahora. "
+        "Presiona [bold]Enter[/bold] para detener."
+    )
+
+    try:
+        input()
+    except (EOFError, KeyboardInterrupt):
+        recorder.cancel()
+        console.print("[dim]Grabación cancelada.[/dim]")
+        return False
+
+    with console.status("[dim]◈ Guardando audio…[/dim]"):
+        audio_path = recorder.stop()
+
+    if not audio_path:
+        console.print("[yellow]Grabación demasiado corta o vacía.[/yellow]")
+        return False
+
+    console.print(f"[dim]Audio guardado: {audio_path}[/dim]")
+
+    # ── 2. Transcribe ───────────────────────────────────────────────────
+    speak_core_phrase("confirm_listen", wait=True)
+
+    with console.status("[bold cyan]◈ Transcribiendo con faster-whisper…[/bold cyan]"):
+        try:
+            text = transcribe(audio_path)
+        except Exception as exc:
+            console.print(f"[red]Error en transcripción: {exc}[/red]")
+            text = None
+
+    # Cleanup temp audio
+    try:
+        os.unlink(audio_path)
+    except Exception:
+        pass
+
+    if not text:
+        console.print("[red]Transcripción vacía — no se detectó habla en el audio.[/red]")
+        console.print(
+            "[dim]Posibles causas:\n"
+            "  • Micrófono en mute o sin permiso para Warp/Terminal\n"
+            "  • Habla muy baja o lejos del micrófono\n"
+            "  • Verifica: Configuración del Sistema → Privacidad → Micrófono[/dim]"
+        )
+        speak_core_phrase("error_phrase")
+        return False
+
+    console.print(Panel(
+        f"[bold]🎙 Mario (voz):[/bold] {text}",
+        title="[bold cyan]◈ Voz → Texto[/bold cyan]",
+        expand=False,
+    ))
+
+    # ── Emit voice.input to live bus ─────────────────────────────────
+    try:
+        from core.operator.universal_bus import get_universal_bus
+        from core.operator.bus_reactor import LiveChannels, EventTypes
+        _bus = get_universal_bus()
+        _bus.publish(LiveChannels.VOICE, EventTypes.VOICE_INPUT, {"transcript": text[:200]})
+    except Exception:
+        pass
+
+    # ── 3. CoreCommEngine → nucleus pipeline ─────────────────────────
+    try:
+        with console.status("[dim]◈ Procesando en el núcleo…[/dim]"):
+            result = engine.send_text(text, source_type="voice")
+    except Exception as exc:
+        console.print(f"[red]Error en CoreCommEngine: {exc}[/red]")
+        speak_core_phrase("error_phrase")
+        return False
+
+    # ── 4. Display response ──────────────────────────────────────────
+    console.print(Panel(
+        f"[dim]★ [{result.star_id[:8]}] gravity={result.gravity_score:.4f} | "
+        f"layer={result.layer} | mode={result.resolve_mode} | src=voice[/dim]\n\n"
+        f"{result.text}",
+        title=f"[bold yellow]◈ {VECTRAX_CORE.name} responde[/bold yellow]",
+        expand=False,
+    ))
+
+    # ── 5. Speak response as VECTRAX-CORE ────────────────────────────
+    tts_result = speak_as_core(result.text, wait=True)
+    if not tts_result:
+        console.print("[yellow]TTS no produjo audio para la respuesta.[/yellow]")
+
+    return True
+
+
+def _handle_voice_record(session_id: str, _ingest, mem, auto_speak: bool):
+    """Handle /voz — single voice turn through CoreCommEngine + VECTRAX-CORE."""
+    try:
+        from vectrax.comm.voice import speak_core_phrase
+    except ImportError:
+        console.print("[red]Módulo de voz no disponible. Instala sounddevice y soundfile.[/red]")
+        return
+
+    from vectrax.comm.engine_core import CoreCommEngine
+    engine = CoreCommEngine(session_id=session_id)
+
+    _voice_single_turn(engine)
+
+
+def _handle_voice_loop(session_id: str):
+    """
+    Handle /voz-loop — continuous voice conversation with VECTRAX-CORE.
+
+    Loop: graba → transcribe → CoreCommEngine → habla → repite.
+    Ctrl-C o grabación vacía para salir.
+    """
+    try:
+        from vectrax.comm.voice import speak_as_core, speak_core_phrase
+        from vectrax.comm.voice_identity import VoiceSession, VECTRAX_CORE
+    except ImportError:
+        console.print("[red]Módulo de voz no disponible.[/red]")
+        return
+
+    from vectrax.comm.engine_core import CoreCommEngine
+
+    engine = CoreCommEngine(session_id=session_id)
+    session = VoiceSession()
+
+    # ── Greeting ─────────────────────────────────────────────────────
+    greeting = session.start()
+    console.print(Panel(
+        f"[bold yellow]◈ {VECTRAX_CORE.name} — MODO VOZ CONTINUO[/bold yellow]\n\n"
+        f"Identidad:  [bold]{VECTRAX_CORE.name}[/bold]\n"
+        f"Voz:        {VECTRAX_CORE.macos_voice}\n"
+        f"Cadencia:   {VECTRAX_CORE.rate} wpm\n\n"
+        f"[dim]Habla con Vectrax. Ctrl-C para salir del modo voz.[/dim]",
+        title=f"[bold yellow]◈ {VECTRAX_CORE.name}[/bold yellow]",
+        expand=False,
+    ))
+    speak_as_core(greeting, wait=True)
+
+    # ── Loop ─────────────────────────────────────────────────────────
+    try:
+        while True:
+            console.print("\n[bold yellow]◈[/bold yellow] [dim]Listo para escuchar…[/dim]")
+            ok = _voice_single_turn(engine)
+            if ok:
+                session.record_turn()
+            else:
+                # Failed turn — ask if user wants to continue
+                console.print("[dim]Presiona Enter para continuar o Ctrl-C para salir.[/dim]")
+                try:
+                    input()
+                except (EOFError, KeyboardInterrupt):
+                    break
+
+    except KeyboardInterrupt:
+        pass
+
+    # ── Farewell ─────────────────────────────────────────────────────
+    farewell = session.end()
+    speak_as_core(farewell, wait=True)
+
+    console.print(Panel(
+        f"Turnos de voz:  {session.turn_count}\n"
+        f"Duración:       {session.duration_seconds:.0f}s\n"
+        f"Identidad:      {VECTRAX_CORE.name}",
+        title=f"[bold yellow]◈ Sesión de voz cerrada[/bold yellow]",
+        expand=False,
+    ))
+
+
+def _handle_bus_status():
+    """Handle /bus — show universal bus + reactor + universe evolution stats."""
+    try:
+        from core.operator.universal_bus import get_universal_bus
+        from core.operator.bus_reactor import get_bus_reactor
+        bus = get_universal_bus()
+        reactor = get_bus_reactor()
+        stats = bus.get_stats() if hasattr(bus, "get_stats") else {}
+        r_stats = reactor.get_stats() if hasattr(reactor, "get_stats") else {}
+    except Exception as exc:
+        console.print(f"[red]Bus no disponible: {exc}[/red]")
+        return
+
+    published = stats.get("total_published", "n/a")
+    delivered = stats.get("total_delivered", "n/a")
+    channels_active = stats.get("channels_active", "n/a")
+    events_processed = r_stats.get("events_processed", "n/a")
+    hypotheses_total = r_stats.get("hypotheses_total", "n/a")
+    hypotheses_active = r_stats.get("hypotheses_active", "n/a")
+
+    # Per-channel flow — clave correcta en UniversalBus.get_stats()
+    channel_flows = stats.get("by_channel", {})
+    flow_lines = "\n".join(
+        f"  {ch:<28} {cnt}"
+        for ch, cnt in sorted(channel_flows.items(), key=lambda x: -x[1])
+    ) or "  [dim]sin datos[/dim]"
+
+    # Universe evolution stats
+    evo = r_stats.get("evolution_stats", {})
+    evo_count    = evo.get("evolution_count", "n/a")
+    layer_trans  = evo.get("layer_transitions", "n/a")
+    mass_updates = evo.get("mass_updates", "n/a")
+    decay_runs   = evo.get("decay_runs", "n/a")
+    const_checks = evo.get("constellation_checks", "n/a")
+    evo_wired    = "[green]●[/green]" if evo.get("wired") else "[red]●[/red]"
+
+    console.print(Panel(
+        f"[bold yellow]◈ BUS UNIVERSAL — CIRCUITO VIVO[/bold yellow]\n\n"
+        f"  Eventos publicados:      {published}\n"
+        f"  Eventos entregados:      {delivered}\n"
+        f"  Canales activos:         {channels_active}\n"
+        f"  Reactor procesados:      {events_processed}\n"
+        f"  Hipótesis totales:       {hypotheses_total}\n"
+        f"  Hipótesis activas:       {hypotheses_active}\n\n"
+        f"[bold magenta]◈ Universo — Evolución Autónoma[/bold magenta] {evo_wired}\n"
+        f"  Evoluciones totales:     {evo_count}\n"
+        f"  Transiciones de capa:    {layer_trans}\n"
+        f"  Actualizaciones de masa: {mass_updates}\n"
+        f"  Ciclos de decay:         {decay_runs}\n"
+        f"  Checks de constelación:  {const_checks}\n\n"
+        f"[bold cyan]Flujo por canal:[/bold cyan]\n{flow_lines}",
+        title="[bold cyan]◈ Bus Status[/bold cyan]",
+        expand=False,
+    ))
+
+
+def _handle_voice_status():
+    """Handle /voz-status — show voice subsystem diagnostics + VECTRAX-CORE identity."""
+    try:
+        from vectrax.comm.voice import get_voice_status
+        from vectrax.comm.voice_identity import VECTRAX_CORE
+        vs = get_voice_status()
+    except ImportError:
+        console.print("[red]Módulo de voz no disponible.[/red]")
+        return
+
+    mic_icon = "[green]●[/green]" if vs["microphone"] else "[red]●[/red]"
+    tts_icon = "[green]●[/green]" if vs["tts"] else "[red]●[/red]"
+    ready_icon = "[bold green]✓ LISTO[/bold green]" if vs["ready"] else "[bold red]✗ INCOMPLETO[/bold red]"
+
+    backends = vs.get("transcription_backends", [])
+    backends_str = ", ".join(backends) if backends else "[red]ninguno[/red]"
+
+    console.print(Panel(
+        f"{ready_icon}\n\n"
+        f"[bold yellow]◈ Identidad vocal[/bold yellow]\n"
+        f"  Nombre:        {VECTRAX_CORE.name}\n"
+        f"  Voz macOS:     {VECTRAX_CORE.macos_voice}\n"
+        f"  Cadencia:      {VECTRAX_CORE.rate} wpm\n"
+        f"  Personalidad:  {VECTRAX_CORE.personality[:60]}…\n\n"
+        f"{mic_icon} Micrófono:     {'detectado' if vs['microphone'] else 'no detectado'}\n"
+        f"{tts_icon} TTS (say):     {'disponible' if vs['tts'] else 'no disponible'}\n"
+        f"  Transcripción: {backends_str}\n\n"
+        f"[dim]Comandos: /voz · /voz-loop · /habla · /silencio · /voz-status[/dim]",
+        title=f"[bold cyan]◈ {VECTRAX_CORE.name} — Voice Status[/bold cyan]",
+        expand=False,
+    ))
+
+
 @creator.command(name="chat")
 def creator_chat():
     """Loop conversacional persistente — Vectrax recuerda todo."""
@@ -575,6 +882,9 @@ def creator_chat():
 
     session_id = str(uuid.uuid4())
 
+    # ── Voice state ──────────────────────────────────────────────────────────
+    auto_speak = False  # toggle: auto-speak all responses
+
     # ── Inicializar Intelligence Router (non-blocking) ────────────────────
     with console.status("[dim]◈ Detectando modelos de inteligencia…[/dim]"):
         ir_result = ib.initialize()
@@ -584,26 +894,50 @@ def creator_chat():
     else:
         ir_line = "[dim]Sin modelos LLM detectados. /ai no disponible.[/dim]"
 
+    # ── Check voice subsystem + identity ───────────────────────────────────
+    try:
+        from vectrax.comm.voice import get_voice_status
+        from vectrax.comm.voice_identity import VECTRAX_CORE
+        vs = get_voice_status()
+        if vs["microphone"]:
+            voice_line = (
+                f"[bold green]🎙 {VECTRAX_CORE.name}[/bold green] · "
+                f"Voz: {VECTRAX_CORE.macos_voice} · {VECTRAX_CORE.rate} wpm"
+            )
+        else:
+            voice_line = f"[dim]🎙 {VECTRAX_CORE.name} — Micrófono no detectado[/dim]"
+    except Exception:
+        voice_line = "[dim]🎙 Módulo de voz no disponible[/dim]"
+
     # ── Bienvenida ──────────────────────────────────────────────────────────
     welcome_text = mem.build_welcome(session_id)
     console.print(Panel(
         f"[bold yellow]◈ VECTRAX — CHAT ACTIVO[/bold yellow]\n"
         f"Creator: [bold]{cfg.get('creator_identity')}[/bold]\n"
         f"Sesión:  [dim]{session_id[:8]}[/dim]\n"
-        f"{ir_line}\n\n"
+        f"{ir_line}\n"
+        f"{voice_line}\n\n"
         f"{welcome_text}\n\n"
-        f"[dim]Comandos: /ai <prompt> · /multi <prompt> · /router · Ctrl-C salir[/dim]",
+        f"[dim]Comandos: /ai · /multi · /router · /voz · /voz-loop · /habla · /silencio · /bus · Ctrl-C[/dim]",
         title="[bold yellow]◈ Vectrax[/bold yellow]",
         expand=False,
     ))
 
     db.insert_message(session_id, "vectrax", f"[SESIÓN INICIADA] {welcome_text}")
 
+    # ── Wire bus reactor (idempotent) ────────────────────────────────────────
+    try:
+        from core.operator.bus_reactor import get_bus_reactor
+        get_bus_reactor()  # auto-wires all live channels on first access
+    except Exception:
+        pass
+
     # ── Loop principal ───────────────────────────────────────────────────────
     try:
         while True:
             try:
-                text = input("\n  Mario › ")
+                prompt_icon = "🎙" if auto_speak else "›"
+                text = input(f"\n  Mario {prompt_icon} ")
             except EOFError:
                 break
 
@@ -622,6 +956,36 @@ def creator_chat():
                 _handle_router_command(ib)
                 continue
 
+            # ── Comandos de voz ───────────────────────────────────────
+            if text == "/voz":
+                _handle_voice_record(session_id, _ingest, mem, auto_speak)
+                continue
+            if text == "/habla":
+                auto_speak = True
+                console.print(
+                    "[bold green]🔊 Modo voz activado[/bold green] — "
+                    "Vectrax hablará cada respuesta. /silencio para desactivar."
+                )
+                continue
+            if text == "/silencio":
+                auto_speak = False
+                from vectrax.comm.voice import stop_speaking
+                stop_speaking()
+                console.print(
+                    "[dim]🔇 Modo silencio activado[/dim] — "
+                    "Solo texto. /habla para reactivar voz."
+                )
+                continue
+            if text == "/voz-loop":
+                _handle_voice_loop(session_id)
+                continue
+            if text == "/voz-status":
+                _handle_voice_status()
+                continue
+            if text == "/bus":
+                _handle_bus_status()
+                continue
+
             # Wake word
             if ww.detect_in_text(text, CHANNEL_CREATOR):
                 result = ww.trigger_activation(source="creator_chat")
@@ -635,6 +999,19 @@ def creator_chat():
                 db.insert_message(session_id, "mario", text)
                 db.insert_message(session_id, "vectrax", f"[WAKE ACTIVATION] {ts}")
                 continue
+
+            # ── Convergencia Total: procesar input ────────────────
+            conv_record = None
+            try:
+                from core.nucleus.total_convergence import get_convergence_engine
+                conv_engine = get_convergence_engine()
+                if conv_engine.is_active:
+                    conv_record = conv_engine.process(
+                        text, source="creator_chat",
+                        channel=CHANNEL_CREATOR, owner=CREATOR_OWNER,
+                    )
+            except Exception:
+                pass  # convergence hook is non-fatal
 
             # Ingestar como creator star
             try:
@@ -656,20 +1033,42 @@ def creator_chat():
             # Guardar respuesta de Vectrax
             db.insert_message(session_id, "vectrax", response)
 
-            # Mostrar respuesta
+            # Mostrar respuesta (con info de convergencia si disponible)
+            conv_line = ""
+            if conv_record:
+                conv_line = (
+                    f" | conv={conv_record.action_recommended}"
+                    f" | cc={conv_record.coherence_score:.2f}"
+                )
             console.print(Panel(
                 f"[dim]★ [{star.id[:8]}] gravity={star.gravity_score:.4f} | "
-                f"layer={star.layer} | rep={star.repetition_count}[/dim]\n\n"
+                f"layer={star.layer} | rep={star.repetition_count}{conv_line}[/dim]\n\n"
                 f"{response}",
                 title="[bold yellow]◈ Vectrax recuerda[/bold yellow]",
                 expand=False,
             ))
 
+            # ── Auto-speak response as VECTRAX-CORE if enabled ─────────
+            if auto_speak:
+                try:
+                    from vectrax.comm.voice import speak_core_async
+                    speak_core_async(response)
+                except Exception:
+                    pass
+
     except KeyboardInterrupt:
         pass
 
-    # ── Cleanup Intelligence Router ──────────────────────────────────────────
+    # ── Cleanup Intelligence Router + Voice ───────────────────────────────────
     ib.cleanup()
+    try:
+        from vectrax.comm.voice import cleanup_temp_audio, stop_speaking
+        stop_speaking()
+        cleaned = cleanup_temp_audio()
+        if cleaned:
+            logger.debug("Cleaned %d temp audio files", cleaned)
+    except Exception:
+        pass
 
     # ── Resumen de cierre ────────────────────────────────────────────────────
     summary = mem.session_summary(session_id)

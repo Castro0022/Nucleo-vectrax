@@ -4,6 +4,8 @@ Vectrax UI — Route handler
 Serves the single-page application, universe portals, and personalized user portals.
 """
 
+from __future__ import annotations
+
 import json
 import sqlite3
 from pathlib import Path
@@ -24,6 +26,15 @@ async def index():
     if index_path.exists():
         return HTMLResponse(content=index_path.read_text(encoding="utf-8"))
     return HTMLResponse(content="<h1>Vectrax UI not found</h1>", status_code=404)
+
+
+@router.get("/universe", response_class=HTMLResponse, include_in_schema=False)
+async def universe():
+    """Serve the interactive cognitive universe visualizer."""
+    universe_path = _TEMPLATE_DIR / "universe.html"
+    if universe_path.exists():
+        return HTMLResponse(content=universe_path.read_text(encoding="utf-8"))
+    return HTMLResponse(content="<h1>Universe not found</h1>", status_code=404)
 
 
 @router.get("/portals", response_class=HTMLResponse, include_in_schema=False)

@@ -64,16 +64,41 @@ EVENT_TYPES = [
     "GRAVITY_PROMOTED",
     "GRAVITY_DEMOTED",
     "CONSTELLATION_CREATED",
+    "LEARNING_MODE_CHANGED",
+    "HYPOTHESIS_FROM_PATTERN",
+    "HYPOTHESIS_VALIDATED",
+    "RULE_LEARNED",
+    "CANDIDATES_RELEASED",
+    "LEARNING_CYCLE_COMPLETED",
+    "CONVERGENCE_INPUT_RECEIVED",
+    "CONVERGENCE_CLASSIFIED",
+    "CONVERGENCE_MEMORY_LINKED",
+    "CONVERGENCE_SYNTHESIZED",
+    "CONVERGENCE_CYCLE_COMPLETED",
+    "CONVERGENCE_MODE_ACTIVATED",
+    "ANOMALY_DETECTED",
+    "INVESTIGATION_STARTED",
+    "INVESTIGATION_COMPLETED",
+    "VERIFICATION_STARTED",
+    "VERIFICATION_COMPLETED",
+    "INTEGRATION_COMPLETED",
+    "LEARNING_PIPELINE_COMPLETED",
 ]
 
 # ---------------------------------------------------------------------------
 # Ascension candidate states
 # ---------------------------------------------------------------------------
 
-CANDIDATE_STATES = ["QUARANTINED", "APPROVED", "BANNED"]
+CANDIDATE_STATES = ["QUARANTINED", "EVALUATING", "APPROVED", "BANNED"]
 
 # ---------------------------------------------------------------------------
 # Operational modes for intent-driven learning
 # ---------------------------------------------------------------------------
 
 LEARN_MODES = ["OBSERVE", "PROPOSE", "PROPOSE_PROCEED", "EXECUTE"]
+
+# ---------------------------------------------------------------------------
+# Learning system operational modes
+# ---------------------------------------------------------------------------
+
+LEARNING_MODES = ["OBSERVATION", "ACTIVE_LEARNING"]

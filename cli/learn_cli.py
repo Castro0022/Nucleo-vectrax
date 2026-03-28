@@ -46,6 +46,10 @@ def handle_learn_command(args: list[str]) -> None:
         _handle_stats()
     elif sub == "gravity":
         _handle_gravity(args[1:])
+    elif sub == "cycle":
+        _handle_cycle(args[1:])
+    elif sub == "cycle-status":
+        _handle_cycle_status()
     else:
         _print_learn_help()
 
@@ -340,6 +344,104 @@ def _gravity_explain(fingerprint: str) -> None:
     print()
 
 
+def _handle_cycle(args: list[str]) -> None:
+    """Run one learning pipeline cycle or feed an event."""
+    from core.learning_cycle.pipeline import get_learning_pipeline
+    from core.learning_cycle.anomaly_detector import InputEvent
+
+    pipeline = get_learning_pipeline()
+
+    if args and args[0] == "feed":
+        # vx learn cycle feed --intent <intent> --source <source>
+        intent = "UNKNOWN"
+        source = "cli"
+        text = ""
+        i = 1
+        while i < len(args):
+            if args[i] == "--intent" and i + 1 < len(args):
+                intent = args[i + 1]
+                i += 2
+            elif args[i] == "--source" and i + 1 < len(args):
+                source = args[i + 1]
+                i += 2
+            elif args[i] == "--text" and i + 1 < len(args):
+                text = args[i + 1]
+                i += 2
+            else:
+                i += 1
+
+        event = InputEvent(
+            text=text, intent=intent, source=source, length=len(text),
+        )
+        print(f"  Feeding event: intent={intent} source={source}")
+        result = pipeline.process_event(event)
+    else:
+        # vx learn cycle — run with no input (status cycle)
+        result = pipeline.run_cycle()
+
+    print(f"\n  LEARNING CYCLE #{result.cycle_number}")
+    print(f"  {'─'*40}")
+    if result.skipped:
+        print(f"  Skipped: {result.skip_reason}")
+        return
+    print(f"  Anomalies detected:    {result.anomalies_detected}")
+    print(f"  Hypotheses generated:  {result.hypotheses_generated}")
+    print(f"  Hypotheses confirmed:  {result.hypotheses_confirmed}")
+    print(f"  Hypotheses refuted:    {result.hypotheses_refuted}")
+    print(f"  Rules integrated:      {result.rules_integrated}")
+    if result.phase_times:
+        phases = "  ".join(
+            f"{k}={v:.1f}" for k, v in result.phase_times.items()
+        )
+        print(f"  Timing: {phases}")
+    print(f"  Total: {result.elapsed_ms:.1f}ms")
+    print()
+
+
+def _handle_cycle_status() -> None:
+    """Show learning pipeline status."""
+    from core.learning_cycle.pipeline import get_learning_pipeline
+
+    pipeline = get_learning_pipeline()
+    status = pipeline.status()
+
+    print(f"\n{'='*55}")
+    print(f"  LEARNING CYCLE STATUS")
+    print(f"{'='*55}")
+
+    ps = status["pipeline"]
+    print(f"\n  Pipeline:")
+    print(f"    Cycles completed:      {ps['cycles_completed']}")
+    print(f"    Anomalies processed:   {ps['total_anomalies_processed']}")
+    print(f"    Rules created:         {ps['total_rules_created']}")
+
+    ds = status["detector"]
+    print(f"\n  Anomaly Detector:")
+    print(f"    Events analyzed:       {ds['total_analyzed']}")
+    print(f"    Anomalies detected:    {ds['total_anomalies']}")
+    print(f"    Anomaly rate:          {ds['anomaly_rate']:.2%}")
+    print(f"    Known intents:         {ds['known_intents']}")
+
+    inv = status["investigator"]
+    print(f"\n  Investigation Engine:")
+    print(f"    Investigations:        {inv['total_investigations']}")
+    print(f"    Hypotheses generated:  {inv['total_hypotheses_generated']}")
+
+    vs = status["verifier"]
+    print(f"\n  Verification Engine:")
+    print(f"    Verifications:         {vs['total_verifications']}")
+    print(f"    Confirmed:             {vs['total_confirmed']}")
+    print(f"    Refuted:               {vs['total_refuted']}")
+    print(f"    Insufficient data:     {vs['total_insufficient']}")
+
+    ins = status["integrator"]
+    print(f"\n  Learning Integrator:")
+    print(f"    Rules created:         {ins['total_rules_created']}")
+    print(f"    Rejected:              {ins['total_rejected']}")
+
+    print(f"\n{'='*55}\n")
+
+
 def _print_learn_help() -> None:
     print("""
 vx learn — Hybrid Memory & Silent Watchdog
@@ -358,6 +460,12 @@ COMMANDS:
     vx learn gravity status    Gravity memory tier overview
     vx learn gravity rebalance Run decay + constellation compaction
     vx learn gravity explain <fp>  Explain a fingerprint's gravity state
+
+  LEARNING CYCLE (SEÑAL → INVESTIGACIÓN → VERIFICACIÓN → INTEGRACIÓN):
+    vx learn cycle             Run one learning pipeline cycle
+    vx learn cycle feed --intent <intent> --source <src> --text <txt>
+                               Feed an event into the pipeline
+    vx learn cycle-status      Show learning cycle pipeline status
 """)
 
 

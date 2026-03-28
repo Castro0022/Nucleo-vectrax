@@ -7,9 +7,10 @@ Reads GEMINI_API_KEY from environment.
 
 from __future__ import annotations
 
+import json as _json
 import os
 import time
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Dict, Optional
 
 from core.abstraction.base import (
     BaseLLMProvider,
@@ -17,7 +18,7 @@ from core.abstraction.base import (
     GenerateResponse,
     ProviderType,
 )
-from core.providers.openai_stub import NotConfiguredError
+from core.resilience.errors import NotConfiguredError
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -43,6 +44,7 @@ class GeminiProvider(BaseLLMProvider):
     def _ensure_client(self):
         if self._api_key is None:
             raise NotConfiguredError(
+                "gemini",
                 "GEMINI_API_KEY not set. Export it or pass api_key=..."
             )
         if self._client is None:
@@ -52,6 +54,44 @@ class GeminiProvider(BaseLLMProvider):
     def get_provider_name(self) -> str:
         return "gemini"
 
+    # -- Payload helpers ----------------------------------------------------
+
+    def _build_payload(self, request: GenerateRequest) -> Dict:
+        """Build the Gemini API payload with optional systemInstruction."""
+        payload: Dict = {
+            "contents": [{"parts": [{"text": request.prompt}]}],
+            "generationConfig": {"temperature": request.temperature},
+        }
+        if request.max_tokens:
+            payload["generationConfig"]["maxOutputTokens"] = request.max_tokens
+        if request.system_prompt:
+            payload["systemInstruction"] = {
+                "parts": [{"text": request.system_prompt}]
+            }
+        return payload
+
+    @staticmethod
+    def _extract_text(data: Dict) -> str:
+        """Extract generated text from Gemini response JSON."""
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts:
+                return parts[0].get("text", "")
+        return ""
+
+    @staticmethod
+    def _extract_error(resp) -> str:
+        """Best-effort error message extraction from a failed response."""
+        try:
+            body = resp.json()
+            err = body.get("error", {})
+            return err.get("message", resp.text[:200])
+        except Exception:
+            return resp.text[:200] if hasattr(resp, "text") else "unknown error"
+
+    # -- generate / stream --------------------------------------------------
+
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         self._ensure_client()
         start = time.time()
@@ -60,24 +100,16 @@ class GeminiProvider(BaseLLMProvider):
             f"{self.endpoint}/models/{request.model}:generateContent"
             f"?key={self._api_key}"
         )
-        payload = {
-            "contents": [{"parts": [{"text": request.prompt}]}],
-            "generationConfig": {"temperature": request.temperature},
-        }
-        if request.max_tokens:
-            payload["generationConfig"]["maxOutputTokens"] = request.max_tokens
+        payload = self._build_payload(request)
 
         resp = await self._client.post(url, json=payload)
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Gemini API error ({resp.status_code}): {self._extract_error(resp)}"
+            )
         data = resp.json()
 
-        text = ""
-        candidates = data.get("candidates", [])
-        if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if parts:
-                text = parts[0].get("text", "")
-
+        text = self._extract_text(data)
         usage = data.get("usageMetadata", {})
 
         return GenerateResponse(
@@ -97,22 +129,16 @@ class GeminiProvider(BaseLLMProvider):
             f"{self.endpoint}/models/{request.model}:streamGenerateContent"
             f"?key={self._api_key}&alt=sse"
         )
-        payload = {
-            "contents": [{"parts": [{"text": request.prompt}]}],
-            "generationConfig": {"temperature": request.temperature},
-        }
+        payload = self._build_payload(request)
 
         async with self._client.stream("POST", url, json=payload) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
                 if line.startswith("data: "):
-                    import json
-                    chunk = json.loads(line[6:])
-                    candidates = chunk.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        if parts:
-                            yield parts[0].get("text", "")
+                    chunk = _json.loads(line[6:])
+                    text = self._extract_text(chunk)
+                    if text:
+                        yield text
 
     async def health_check(self) -> bool:
         try:

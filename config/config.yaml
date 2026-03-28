@@ -81,6 +81,32 @@ observability:
     format: json
     level: INFO
 
+# ── Market Data Module ────────────────────────────────────────────
+market_data:
+  domain: market_data_authorized
+  mode: read_only
+  allowlist:
+    - api.binance.com
+    - stream.binance.com
+    - data-stream.binance.vision
+    - api.coingecko.com
+    - www.alphavantage.co
+  watchlist:
+    crypto:
+      - BTCUSDT
+      - ETHUSDT
+    stocks:
+      - SPY
+      - QQQ
+      - AAPL
+      - TSLA
+      - NVDA
+  cache:
+    ttl_spot: 5
+    ttl_ticker: 15
+    ttl_ohlcv: 60
+    ttl_quote: 30
+
 api:
   host: 0.0.0.0
   port: 8000

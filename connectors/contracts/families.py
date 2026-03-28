@@ -21,4 +21,5 @@ class ConnectorFamily(str, Enum):
     CLOUD_STORAGE = "cloud_storage"
     DOCUMENT = "document"
     TERMINAL = "terminal"
+    MARKET_DATA = "market_data"
     CUSTOM = "custom"

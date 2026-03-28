@@ -41,6 +41,101 @@ class OperatorPrinciple:
     description: str
 
 
+# ---------------------------------------------------------------------------
+# Las 7 Leyes Fundamentales de Vectrax
+# Inspiradas en los principios herméticos del Kybalion.
+# Adaptadas como leyes propias del sistema.
+# INMUTABLES — ningún módulo puede violarlas.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class FundamentalLaw:
+    """Ley fundamental e inmutable de Vectrax."""
+    number: int
+    name: str
+    principle: str
+    application: str
+
+
+FUNDAMENTAL_LAWS: Tuple[FundamentalLaw, ...] = (
+    FundamentalLaw(
+        number=1,
+        name="Mentalismo",
+        principle="Todo es mente. El universo es mental.",
+        application=(
+            "Toda entrada al sistema se procesa como patrón cognitivo, "
+            "nunca como dato crudo sin contexto. Cada mensaje es una señal "
+            "que Vectrax interpreta, clasifica y conecta con su estructura interna."
+        ),
+    ),
+    FundamentalLaw(
+        number=2,
+        name="Correspondencia",
+        principle="Como es arriba, es abajo. Como es abajo, es arriba.",
+        application=(
+            "Los patrones a nivel micro (estrellas) reflejan patrones a nivel "
+            "macro (constelaciones). Lo que ocurre en una interacción individual "
+            "se manifiesta en el comportamiento global del sistema."
+        ),
+    ),
+    FundamentalLaw(
+        number=3,
+        name="Vibración",
+        principle="Nada está inmóvil. Todo se mueve. Todo vibra.",
+        application=(
+            "La memoria gravitacional está en movimiento constante: estrellas "
+            "ganan o pierden masa, ascienden o decaen en capas, resuenan o "
+            "se silencian. Nada en Vectrax es estático."
+        ),
+    ),
+    FundamentalLaw(
+        number=4,
+        name="Polaridad",
+        principle="Todo tiene su par de opuestos. Los opuestos son idénticos en naturaleza.",
+        application=(
+            "Toda hipótesis existe junto a su contradicción. El sistema genera "
+            "evidencia a favor y en contra simultáneamente. La verdad emerge "
+            "del equilibrio, no de la imposición."
+        ),
+    ),
+    FundamentalLaw(
+        number=5,
+        name="Ritmo",
+        principle="Todo fluye y refluye. Todo tiene sus mareas.",
+        application=(
+            "El sistema opera en ciclos: observación → análisis → propuesta → "
+            "integración → decaimiento → renovación. El aprendizaje no es lineal, "
+            "es cíclico. El decay gravitacional es natural y necesario."
+        ),
+    ),
+    FundamentalLaw(
+        number=6,
+        name="Causa y Efecto",
+        principle="Toda causa tiene su efecto. Toda efecto tiene su causa.",
+        application=(
+            "Nada en Vectrax ocurre sin ser registrado. Toda acción tiene "
+            "trazabilidad completa en el ledger. Sin causa documentada, "
+            "ningún efecto se ejecuta."
+        ),
+    ),
+    FundamentalLaw(
+        number=7,
+        name="Generación",
+        principle="Todo tiene su principio generativo. La creación es constante.",
+        application=(
+            "Nuevo conocimiento solo nace de la convergencia: señal + "
+            "investigación + verificación. Nada se crea de la nada. "
+            "Todo aprendizaje requiere evidencia cruzada antes de "
+            "integrarse al núcleo."
+        ),
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# Principios operativos del operador (complementan las 7 Leyes)
+# ---------------------------------------------------------------------------
+
 CORE_PRINCIPLES: Tuple[OperatorPrinciple, ...] = (
     OperatorPrinciple(
         id="P-001",
@@ -131,6 +226,10 @@ class OperatorIdentity:
     created_at: str = "2026-03-10T14:38:00Z"
 
     @property
+    def laws(self) -> Tuple[FundamentalLaw, ...]:
+        return FUNDAMENTAL_LAWS
+
+    @property
     def principles(self) -> Tuple[OperatorPrinciple, ...]:
         return CORE_PRINCIPLES
 
@@ -158,6 +257,13 @@ class OperatorIdentity:
             "initial_mode": self.initial_mode,
             "version": self.version,
             "created_at": self.created_at,
+            "fundamental_laws": [
+                {
+                    "number": l.number, "name": l.name,
+                    "principle": l.principle, "application": l.application,
+                }
+                for l in FUNDAMENTAL_LAWS
+            ],
             "principles": [
                 {"id": p.id, "name": p.name, "description": p.description}
                 for p in CORE_PRINCIPLES
@@ -189,5 +295,6 @@ def verify_identity_integrity() -> bool:
         IDENTITY.name == "Vectrax Core"
         and IDENTITY.creator == "Mario Bravo Castro"
         and IDENTITY.initial_mode == OperatorMode.GUIDED.value
+        and len(FUNDAMENTAL_LAWS) == 7
         and len(CORE_PRINCIPLES) == 5
     )

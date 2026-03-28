@@ -24,7 +24,8 @@ import time as _time
 from services.core.config import get_settings
 from services.core.routes import (
     health, auth, connectors, events, actions,
-    chat, memory, proposals, status,
+    chat, memory, proposals, status, gravitational,
+    comm, gateway,
 )
 
 logger = logging.getLogger("vectrax.core.app")
@@ -70,6 +71,9 @@ def create_app() -> FastAPI:
     app.include_router(connectors.router, prefix="/v1")
     app.include_router(events.router, prefix="/v1")
     app.include_router(actions.router, prefix="/v1")
+    app.include_router(gravitational.router, prefix="/v1")
+    app.include_router(comm.router, prefix="/v1")
+    app.include_router(gateway.router, prefix="/v1")
 
     # --- Lifecycle events ---
 

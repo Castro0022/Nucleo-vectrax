@@ -38,6 +38,15 @@ DEFAULT_STATE = {
     "meta": {},
     # Architecture C: operational mode preference
     "operational_mode": "HOME_AUTO",
+    # Active Learning subsystem
+    "learning_mode": "OBSERVATION",
+    "learning_activated_at": None,
+    "hypotheses_generated": 0,
+    "rules_learned": 0,
+    "learning_cycles": 0,
+    # Total Convergence
+    "convergence_mode": "INACTIVE",
+    "convergence_activated_at": None,
 }
 
 

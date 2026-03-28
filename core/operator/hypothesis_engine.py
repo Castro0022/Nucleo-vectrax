@@ -19,6 +19,7 @@ Creador: Mario Bravo Castro
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -142,6 +143,21 @@ MIN_EVIDENCE = 2           # Mínimo de evidencias antes de resolver
 # Motor de hipótesis
 # ---------------------------------------------------------------------------
 
+_HYP_DB_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "vault", "hypotheses.db",
+)
+
+_HYP_CREATE_TABLE = """
+CREATE TABLE IF NOT EXISTS hypotheses (
+    id          TEXT PRIMARY KEY,
+    data        TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'proposed',
+    updated_at  REAL NOT NULL
+);
+"""
+
+
 class HypothesisEngine:
     """
     Motor de hipótesis persistente con evolución.
@@ -153,12 +169,92 @@ class HypothesisEngine:
     - Evolucionar hipótesis (generar hijas con ajustes)
     - Consultar hipótesis por estado, confianza, tags
     - Registrar transiciones en ledger
+    - Persistir en SQLite (sobrevive reinicios)
     """
 
     def __init__(self) -> None:
         self._hypotheses: Dict[str, Hypothesis] = {}
         self._resolved_count: int = 0
-        logger.info("HypothesisEngine initialized")
+        self._init_db()
+        self._load_from_db()
+        logger.info(
+            "HypothesisEngine initialized (loaded %d from SQLite)",
+            len(self._hypotheses),
+        )
+
+    def _init_db(self) -> None:
+        import sqlite3
+        os.makedirs(os.path.dirname(_HYP_DB_PATH), exist_ok=True)
+        conn = sqlite3.connect(_HYP_DB_PATH)
+        conn.execute(_HYP_CREATE_TABLE)
+        conn.commit()
+        conn.close()
+
+    def _conn(self):
+        import sqlite3
+        return sqlite3.connect(_HYP_DB_PATH)
+
+    def _load_from_db(self) -> None:
+        """Carga hipotesis desde SQLite al iniciar."""
+        import json as _json
+        try:
+            conn = self._conn()
+            rows = conn.execute("SELECT id, data FROM hypotheses").fetchall()
+            conn.close()
+            for hyp_id, data_json in rows:
+                try:
+                    d = _json.loads(data_json)
+                    evidence_list = [
+                        Evidence(
+                            id=e.get("id", ""),
+                            evidence_type=EvidenceType(e.get("evidence_type", "observation")),
+                            description=e.get("description", ""),
+                            weight=e.get("weight", 0.5),
+                            supports=e.get("supports", True),
+                            source=e.get("source", ""),
+                            timestamp=e.get("timestamp", 0),
+                            metadata=e.get("metadata", {}),
+                        )
+                        for e in d.get("evidence", [])
+                    ]
+                    hyp = Hypothesis(
+                        id=d["id"],
+                        description=d.get("description", ""),
+                        context=d.get("context", ""),
+                        status=HypothesisStatus(d.get("status", "proposed")),
+                        confidence=d.get("confidence", 0.5),
+                        evidence=evidence_list,
+                        tags=d.get("tags", []),
+                        parent_id=d.get("parent_id"),
+                        children_ids=d.get("children_ids", []),
+                        created_at=d.get("created_at", 0),
+                        updated_at=d.get("updated_at", 0),
+                        resolved_at=d.get("resolved_at"),
+                        metadata=d.get("metadata", {}),
+                    )
+                    self._hypotheses[hyp_id] = hyp
+                    if hyp.status in (HypothesisStatus.CONFIRMED, HypothesisStatus.REFUTED):
+                        self._resolved_count += 1
+                except Exception as exc:
+                    logger.warning("Failed to load hypothesis %s: %s", hyp_id, exc)
+        except Exception as exc:
+            logger.warning("Failed to load hypotheses from DB: %s", exc)
+
+    def _persist(self, hyp: Hypothesis) -> None:
+        """Persiste una hipotesis en SQLite."""
+        import json as _json
+        try:
+            conn = self._conn()
+            conn.execute(
+                "INSERT OR REPLACE INTO hypotheses (id, data, status, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                (hyp.id, _json.dumps(hyp.to_dict(), ensure_ascii=False),
+                 hyp.status.value, hyp.updated_at),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as exc:
+            logger.warning("Failed to persist hypothesis %s: %s", hyp.id, exc)
 
     # -- Crear --------------------------------------------------------------
 
@@ -189,6 +285,7 @@ class HypothesisEngine:
             self._hypotheses[parent_id].children_ids.append(hyp.id)
 
         self._hypotheses[hyp.id] = hyp
+        self._persist(hyp)
         self._record_transition(hyp, "proposed", "New hypothesis created")
 
         logger.info(
@@ -233,6 +330,7 @@ class HypothesisEngine:
 
         # Recalcular confianza
         hyp.confidence = self._calculate_confidence(hyp)
+        self._persist(hyp)
 
         logger.info(
             "Evidence added to %s: %s (supports=%s, weight=%.2f) → confidence=%.2f",
@@ -312,6 +410,7 @@ class HypothesisEngine:
             )
 
         hyp.updated_at = now
+        self._persist(hyp)
         return hyp
 
     # -- Evolución ----------------------------------------------------------
@@ -339,6 +438,7 @@ class HypothesisEngine:
         # Marcar padre como evolucionado
         parent.status = HypothesisStatus.EVOLVED
         parent.updated_at = time.time()
+        self._persist(parent)
 
         # Crear hija
         child_confidence = max(0.0, min(1.0, parent.confidence + adjust_confidence))
@@ -371,6 +471,7 @@ class HypothesisEngine:
 
         hyp.status = HypothesisStatus.ARCHIVED
         hyp.updated_at = time.time()
+        self._persist(hyp)
         self._record_transition(hyp, "archived", reason)
         return True
 

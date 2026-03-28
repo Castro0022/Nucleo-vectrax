@@ -1,16 +1,25 @@
 {
   "fa4e03e21b11": {
     "fingerprint": "fa4e03e21b11",
-    "tier": "HOT",
-    "hits": 3,
-    "last_seen": "2026-03-08T03:58:19.997245+00:00",
+    "tier": "WARM",
+    "hits": 12,
+    "last_seen": "2026-03-25T01:23:44.518701+00:00",
     "first_seen": "2026-03-07T20:49:07.234631+00:00",
     "cc_score": 0.0,
     "impact": "low",
-    "freq": 10.0649,
+    "freq": 0.6981,
     "domain": "cognition",
     "intent": "deployed feature X",
     "outcome_history": [
+      "executed",
+      "executed",
+      "executed",
+      "executed",
+      "executed",
+      "executed",
+      "executed",
+      "executed",
+      "executed",
       "executed",
       "executed",
       "executed"
@@ -2155,6 +2164,168 @@
     ],
     "decay_factor": 3.0,
     "summary": "services/core/routes/status.py: SECURITY",
+    "constellation_id": null
+  },
+  "22351256c4f8df45": {
+    "fingerprint": "22351256c4f8df45",
+    "tier": "HOT",
+    "hits": 1,
+    "last_seen": "2026-03-20T00:42:01.248635+00:00",
+    "first_seen": "2026-03-20T00:42:01.248635+00:00",
+    "cc_score": 0.5,
+    "impact": "high",
+    "freq": 100.0,
+    "domain": "unknown",
+    "intent": "INFRA",
+    "outcome_history": [
+      "proceed"
+    ],
+    "decay_factor": 3.0,
+    "summary": "type=instruction intent=INFRA action=proceed",
+    "constellation_id": null
+  },
+  "917fd4a6e0a7c076": {
+    "fingerprint": "917fd4a6e0a7c076",
+    "tier": "HOT",
+    "hits": 1,
+    "last_seen": "2026-03-20T00:42:01.255632+00:00",
+    "first_seen": "2026-03-20T00:42:01.255632+00:00",
+    "cc_score": 0.5,
+    "impact": "high",
+    "freq": 100.0,
+    "domain": "unknown",
+    "intent": "SECURITY",
+    "outcome_history": [
+      "proceed"
+    ],
+    "decay_factor": 3.0,
+    "summary": "type=code intent=SECURITY action=proceed",
+    "constellation_id": null
+  },
+  "1d21947a5baa79d5": {
+    "fingerprint": "1d21947a5baa79d5",
+    "tier": "HOT",
+    "hits": 1,
+    "last_seen": "2026-03-20T00:42:01.262032+00:00",
+    "first_seen": "2026-03-20T00:42:01.262032+00:00",
+    "cc_score": 0.5,
+    "impact": "high",
+    "freq": 100.0,
+    "domain": "unknown",
+    "intent": "SECURITY",
+    "outcome_history": [
+      "proceed"
+    ],
+    "decay_factor": 3.0,
+    "summary": "type=error intent=SECURITY action=proceed",
+    "constellation_id": null
+  },
+  "86272c3eab3973f7": {
+    "fingerprint": "86272c3eab3973f7",
+    "tier": "HOT",
+    "hits": 1,
+    "last_seen": "2026-03-20T00:42:01.268699+00:00",
+    "first_seen": "2026-03-20T00:42:01.268699+00:00",
+    "cc_score": 0.5,
+    "impact": "low",
+    "freq": 100.0,
+    "domain": "unknown",
+    "intent": "UNKNOWN",
+    "outcome_history": [
+      "proceed"
+    ],
+    "decay_factor": 1.0,
+    "summary": "type=text intent=UNKNOWN action=proceed",
+    "constellation_id": null
+  },
+  "d065386eda8f1177": {
+    "fingerprint": "d065386eda8f1177",
+    "tier": "HOT",
+    "hits": 1,
+    "last_seen": "2026-03-20T00:58:23.198575+00:00",
+    "first_seen": "2026-03-20T00:58:23.198575+00:00",
+    "cc_score": 0.5,
+    "impact": "high",
+    "freq": 100.0,
+    "domain": "unknown",
+    "intent": "INFRA",
+    "outcome_history": [
+      "proceed"
+    ],
+    "decay_factor": 3.0,
+    "summary": "type=text intent=INFRA action=proceed",
+    "constellation_id": null
+  },
+  "6edcc982f121bd92": {
+    "fingerprint": "6edcc982f121bd92",
+    "tier": "HOT",
+    "hits": 1,
+    "last_seen": "2026-03-20T01:01:05.813152+00:00",
+    "first_seen": "2026-03-20T01:01:05.813152+00:00",
+    "cc_score": 0.5,
+    "impact": "low",
+    "freq": 100.0,
+    "domain": "unknown",
+    "intent": "UNKNOWN",
+    "outcome_history": [
+      "proceed"
+    ],
+    "decay_factor": 1.0,
+    "summary": "type=text intent=UNKNOWN action=proceed",
+    "constellation_id": null
+  },
+  "1706ece14126ea36": {
+    "fingerprint": "1706ece14126ea36",
+    "tier": "HOT",
+    "hits": 1,
+    "last_seen": "2026-03-20T01:02:28.278956+00:00",
+    "first_seen": "2026-03-20T01:02:28.278956+00:00",
+    "cc_score": 0.5,
+    "impact": "low",
+    "freq": 100.0,
+    "domain": "unknown",
+    "intent": "UNKNOWN",
+    "outcome_history": [
+      "proceed"
+    ],
+    "decay_factor": 1.0,
+    "summary": "type=result intent=UNKNOWN action=proceed",
+    "constellation_id": null
+  },
+  "044213b6b0602eaf": {
+    "fingerprint": "044213b6b0602eaf",
+    "tier": "HOT",
+    "hits": 1,
+    "last_seen": "2026-03-21T23:26:54.187423+00:00",
+    "first_seen": "2026-03-21T23:26:54.187423+00:00",
+    "cc_score": 0.5,
+    "impact": "low",
+    "freq": 100.0,
+    "domain": "unknown",
+    "intent": "UNKNOWN",
+    "outcome_history": [
+      "proceed"
+    ],
+    "decay_factor": 1.0,
+    "summary": "type=text intent=UNKNOWN action=proceed",
+    "constellation_id": null
+  },
+  "c75cab592a035908": {
+    "fingerprint": "c75cab592a035908",
+    "tier": "HOT",
+    "hits": 1,
+    "last_seen": "2026-03-25T00:24:56.639274+00:00",
+    "first_seen": "2026-03-25T00:24:56.639274+00:00",
+    "cc_score": 0.5,
+    "impact": "low",
+    "freq": 100.0,
+    "domain": "unknown",
+    "intent": "UNKNOWN",
+    "outcome_history": [
+      "proceed"
+    ],
+    "decay_factor": 1.0,
+    "summary": "type=text intent=UNKNOWN action=proceed",
     "constellation_id": null
   }
 }

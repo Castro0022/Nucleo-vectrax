@@ -603,7 +603,7 @@ def _synthesize_local(star_contents: List[str], lang: str = "es") -> str:
 
 
 # ---------------------------------------------------------------------------
-# 3. ONLINE RESOLVER — DuckDuckGo search
+# 3. ONLINE RESOLVER — Multi-engine search
 # ---------------------------------------------------------------------------
 
 _DDG_URL = "https://html.duckduckgo.com/html/"
@@ -622,7 +622,7 @@ def _search_duckduckgo(query: str, max_results: int = 5) -> List[Source]:
             _DDG_URL,
             data={"q": query},
             headers={"User-Agent": _USER_AGENT},
-            timeout=8,
+            timeout=5,
         )
         resp.raise_for_status()
     except Exception as exc:
@@ -659,10 +659,268 @@ def _search_duckduckgo(query: str, max_results: int = 5) -> List[Source]:
     return sources
 
 
+def _search_brave(query: str, max_results: int = 5) -> List[Source]:
+    """
+    Search via Brave Search API (requires BRAVE_API_KEY env var).
+    Fallback engine — only used when DuckDuckGo returns insufficient results.
+    """
+    import os
+    try:
+        from dotenv import load_dotenv
+        from pathlib import Path
+        _env = Path(__file__).resolve().parent.parent / ".env"
+        if _env.exists():
+            load_dotenv(_env, override=False)
+    except ImportError:
+        pass
+    api_key = os.environ.get("BRAVE_API_KEY", "")
+    if not api_key:
+        return []
+
+    import requests
+    try:
+        resp = requests.get(
+            "https://api.search.brave.com/res/v1/web/search",
+            params={"q": query, "count": max_results},
+            headers={
+                "Accept": "application/json",
+                "X-Subscription-Token": api_key,
+            },
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("Brave search failed: %s", exc)
+        return []
+
+    sources: List[Source] = []
+    for item in (data.get("web", {}).get("results", []))[:max_results]:
+        title = item.get("title", "").strip()
+        snippet = item.get("description", "").strip()
+        url = item.get("url", "")
+        if title and snippet:
+            sources.append(Source(title=title, url=url, snippet=snippet))
+    return sources
+
+
+def _search_google_cse(query: str, max_results: int = 5) -> List[Source]:
+    """
+    Search via Google Custom Search Engine API.
+    Requires GOOGLE_CSE_CX env var + API key.
+    API key: uses GOOGLE_CSE_KEY, fallback to GOOGLE_PLACES_API_KEY.
+    Fallback engine — only used when other engines return insufficient results.
+    """
+    import os
+    try:
+        from dotenv import load_dotenv
+        from pathlib import Path
+        _env = Path(__file__).resolve().parent.parent / ".env"
+        if _env.exists():
+            load_dotenv(_env, override=False)
+    except ImportError:
+        pass
+
+    api_key = os.environ.get("GOOGLE_CSE_KEY", "") or os.environ.get("GOOGLE_PLACES_API_KEY", "")
+    cx = os.environ.get("GOOGLE_CSE_CX", "")
+    if not api_key or not cx:
+        return []
+
+    import requests
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={
+                "key": api_key,
+                "cx": cx,
+                "q": query,
+                "num": min(max_results, 10),
+            },
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("Google CSE search failed: %s", exc)
+        return []
+
+    sources: List[Source] = []
+    for item in (data.get("items", []))[:max_results]:
+        title = item.get("title", "").strip()
+        snippet = item.get("snippet", "").strip()
+        url = item.get("link", "")
+        if title and snippet:
+            sources.append(Source(title=title, url=url, snippet=snippet))
+    return sources
+
+
+def _search_multi_engine(
+    query: str,
+    max_results: int = 5,
+    min_sources: int = 3,
+) -> Tuple[List[Source], List[str]]:
+    """
+    Multi-engine search with automatic fallback.
+
+    Strategy:
+      1. DuckDuckGo first (free, no key)
+      2. If insufficient results → Brave Search (if key available)
+      3. If still insufficient → Google CSE (if keys available)
+
+    Deduplicates by URL across engines.
+    Returns (sources, engines_used).
+    """
+    all_sources: List[Source] = []
+    seen_urls: set = set()
+    engines_used: List[str] = []
+
+    def _add_sources(new_sources: List[Source], engine_name: str) -> None:
+        nonlocal all_sources, seen_urls, engines_used
+        added = 0
+        for src in new_sources:
+            normalized = src.url.rstrip("/").lower()
+            if normalized not in seen_urls:
+                seen_urls.add(normalized)
+                all_sources.append(src)
+                added += 1
+        if added > 0:
+            engines_used.append(engine_name)
+            logger.info(
+                "_search_multi_engine: %s returned %d new sources (total=%d)",
+                engine_name, added, len(all_sources),
+            )
+
+    # Engine 1: DuckDuckGo (always available)
+    ddg_results = _search_duckduckgo(query, max_results=max_results)
+    _add_sources(ddg_results, "duckduckgo")
+
+    # Engine 2: Brave (if needed + key available)
+    if len(all_sources) < min_sources:
+        brave_results = _search_brave(query, max_results=max_results)
+        _add_sources(brave_results, "brave")
+
+    # Engine 3: Google CSE (if needed + keys available)
+    if len(all_sources) < min_sources:
+        google_results = _search_google_cse(query, max_results=max_results)
+        _add_sources(google_results, "google_cse")
+
+    # If no engines produced results, mark the fallback chain
+    if not engines_used:
+        engines_used = ["none"]
+
+    return all_sources[:max_results], engines_used
+
+
 def _strip_html(text: str) -> str:
     """Remove HTML tags and decode entities."""
     cleaned = re.sub(r'<[^>]+>', '', text)
     return html.unescape(cleaned)
+
+
+# ---------------------------------------------------------------------------
+# INTELLIGENT INTERPRETATION — LLM-powered synthesis
+# ---------------------------------------------------------------------------
+
+_INTERPRET_PROMPT_ES = """Eres un asistente experto. Analiza la siguiente información y responde la pregunta del usuario de forma clara, directa y útil.
+
+REGLAS:
+- Nunca copies texto tal cual de las fuentes
+- Analiza, comprende y reformula con tus propias palabras
+- Extrae solo lo importante y relevante
+- Responde en 3-6 oraciones máximo
+- Si hay datos numéricos o hechos clave, inclúyelos
+- No menciones fuentes, URLs, ni que buscaste en internet
+- Responde en español
+- Sé preciso y útil, no genérico
+
+PREGUNTA DEL USUARIO: {query}
+
+INFORMACIÓN RECOPILADA:
+{context}
+
+RESPUESTA INTELIGENTE:"""
+
+_INTERPRET_PROMPT_EN = """You are an expert assistant. Analyze the following information and answer the user's question clearly, directly and usefully.
+
+RULES:
+- Never copy text verbatim from sources
+- Analyze, understand and reformulate in your own words
+- Extract only what is important and relevant
+- Answer in 3-6 sentences maximum
+- Include key numbers or facts if relevant
+- Do not mention sources, URLs, or that you searched the internet
+- Respond in English
+- Be precise and useful, not generic
+
+USER QUESTION: {query}
+
+GATHERED INFORMATION:
+{context}
+
+INTELLIGENT RESPONSE:"""
+
+
+def _interpret_with_llm(
+    query: str,
+    snippets: List[str],
+    lang: str = "es",
+) -> str:
+    """
+    Intelligent interpretation: pass search results through LLM to produce
+    an analyzed, synthesized response instead of raw snippet assembly.
+
+    Falls back to empty string if LLM is unavailable.
+    """
+    context = "\n".join(f"- {s}" for s in snippets if s.strip())
+    if not context:
+        return ""
+
+    prompt_template = _INTERPRET_PROMPT_ES if lang == "es" else _INTERPRET_PROMPT_EN
+    prompt = prompt_template.format(query=query, context=context)
+
+    # Try Intelligence Bridge (multi-model)
+    try:
+        from vectrax.intelligence_bridge import is_ready, route_single
+        if is_ready():
+            result = route_single(prompt)
+            if result.get("success") and result.get("content"):
+                interpreted = result["content"].strip()
+                logger.info(
+                    "Intelligent interpretation via %s | len=%d",
+                    result.get("provider", "?"), len(interpreted),
+                )
+                return interpreted
+    except Exception as exc:
+        logger.debug("Intelligence Bridge unavailable for interpretation: %s", exc)
+
+    # Try direct OpenAI fallback
+    try:
+        import os
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if api_key:
+            import requests as _req
+            resp = _req.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 400,
+                    "temperature": 0.5,
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+            logger.info("Intelligent interpretation via OpenAI direct | len=%d", len(content))
+            return content.strip()
+    except Exception as exc:
+        logger.debug("OpenAI direct interpretation failed: %s", exc)
+
+    return ""
 
 
 def resolve_online(
@@ -671,15 +929,23 @@ def resolve_online(
     owner: str,
 ) -> Resolution:
     """
-    Build a search query from the user's question, search the web,
-    and compose an answer from the top results.
+    Build a search query from the user's question, search the web
+    using multi-engine fallback, and compose an intelligent answer.
+
+    Pipeline:
+      1. Multi-engine search (DDG + Brave + Google CSE)
+      2. Intelligent interpretation via LLM (analyzes, synthesizes,
+         never returns raw results)
+      3. Fallback to structured synthesis if LLM unavailable
+
+    Mode: comprensión > copia — always analyze, never copy.
     """
-    # Build query: use the question directly (DuckDuckGo handles natural language)
+    # Build query: use the question directly
     query = text.strip().rstrip("?").strip()
     if len(query) > 200:
         query = query[:200]
 
-    sources = _search_duckduckgo(query, max_results=5)
+    sources, engines_used = _search_multi_engine(query, max_results=5)
 
     lang = _detect_lang(text)
     labels = _get_labels(lang)
@@ -691,7 +957,7 @@ def resolve_online(
             sovereign_answer=labels["no_info"],
             sources=[],
             search_query=query,
-            engines_used=["duckduckgo"],
+            engines_used=engines_used,
         )
 
     # Debug answer (numbered sources — internal only)
@@ -700,10 +966,15 @@ def resolve_online(
         debug_parts.append(f"{i}. **{src.title}**\n   {src.snippet}")
     answer = "DEBUG sources:\n\n" + "\n\n".join(debug_parts)
 
-    # Sovereign answer — clean synthesis in the user's language
-    lang = _detect_lang(text)
     snippets = [src.snippet for src in sources[:5]]
-    sovereign = _synthesize_online(snippets, lang=lang, query=text, sources=sources)
+
+    # ══ INTELLIGENT INTERPRETATION ══
+    # Priority: LLM analysis > structured synthesis
+    sovereign = _interpret_with_llm(text, snippets, lang=lang)
+
+    # Fallback: structured synthesis (if LLM unavailable)
+    if not sovereign:
+        sovereign = _synthesize_online(snippets, lang=lang, query=text, sources=sources)
 
     return Resolution(
         mode="online",
@@ -711,7 +982,7 @@ def resolve_online(
         sovereign_answer=sovereign,
         sources=sources,
         search_query=query,
-        engines_used=["duckduckgo"],
+        engines_used=engines_used,
     )
 
 

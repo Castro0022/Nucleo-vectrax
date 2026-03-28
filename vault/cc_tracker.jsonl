@@ -109,3 +109,12 @@
 {"fingerprint": "48b8841cc331", "cc_score": 0.1949, "observations": 3, "domain": "services", "last_intent": "SECURITY", "dead_end": false}
 {"fingerprint": "f8212d9d063b", "cc_score": 0.2787, "observations": 3, "domain": "services", "last_intent": "BUG_FIX", "dead_end": false}
 {"fingerprint": "a0dc774731e0", "cc_score": 0.2308, "observations": 3, "domain": "services", "last_intent": "SECURITY", "dead_end": false}
+{"fingerprint": "22351256c4f8df45", "cc_score": 0.5, "observations": 1, "domain": "unknown", "last_intent": "INFRA", "dead_end": false}
+{"fingerprint": "917fd4a6e0a7c076", "cc_score": 0.5, "observations": 1, "domain": "unknown", "last_intent": "SECURITY", "dead_end": false}
+{"fingerprint": "1d21947a5baa79d5", "cc_score": 0.5, "observations": 1, "domain": "unknown", "last_intent": "SECURITY", "dead_end": false}
+{"fingerprint": "86272c3eab3973f7", "cc_score": 0.5, "observations": 1, "domain": "unknown", "last_intent": "UNKNOWN", "dead_end": false}
+{"fingerprint": "d065386eda8f1177", "cc_score": 0.5, "observations": 1, "domain": "unknown", "last_intent": "INFRA", "dead_end": false}
+{"fingerprint": "6edcc982f121bd92", "cc_score": 0.5, "observations": 1, "domain": "unknown", "last_intent": "UNKNOWN", "dead_end": false}
+{"fingerprint": "1706ece14126ea36", "cc_score": 0.5, "observations": 1, "domain": "unknown", "last_intent": "UNKNOWN", "dead_end": false}
+{"fingerprint": "044213b6b0602eaf", "cc_score": 0.5, "observations": 1, "domain": "unknown", "last_intent": "UNKNOWN", "dead_end": false}
+{"fingerprint": "c75cab592a035908", "cc_score": 0.5, "observations": 1, "domain": "unknown", "last_intent": "UNKNOWN", "dead_end": false}

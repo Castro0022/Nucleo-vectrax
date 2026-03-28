@@ -274,6 +274,26 @@ class ProposalActionResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# External Gateway
+# ---------------------------------------------------------------------------
+
+class GatewayMessageRequest(BaseModel):
+    user_id: str
+    content: str
+    channel: str = "web"  # web | telegram | api | webhook | custom
+
+
+class GatewayMessageResponse(BaseModel):
+    event_id: str = ""
+    user_id: str = ""
+    channel: str = ""
+    response: str = ""
+    timestamp: float = 0.0
+    processed: bool = False
+    error: str = ""
+
+
+# ---------------------------------------------------------------------------
 # Status
 # ---------------------------------------------------------------------------
 

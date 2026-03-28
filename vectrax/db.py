@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import List, Optional
 
 from vectrax.identity import CHANNEL_USER
-from vectrax.models import Constellation, Proposal, Star
+from vectrax.models import (
+    COLLECTIVE_OWNER,
+    Constellation, MIN_MASS, Proposal, Star,
+    STAR_TYPE_CONVERGENCE, STAR_TYPE_PRIMARY,
+)
 
 DB_DIR = Path.home() / ".vectrax"
 DB_PATH = DB_DIR / "vectrax.db"
@@ -78,6 +82,20 @@ def init_db() -> None:
                 ON conversations(session_id);
             CREATE INDEX IF NOT EXISTS idx_conversations_timestamp
                 ON conversations(timestamp);
+
+            CREATE TABLE IF NOT EXISTS trajectories (
+                id          TEXT PRIMARY KEY,
+                star_id     TEXT NOT NULL,
+                channel     TEXT NOT NULL DEFAULT 'user',
+                owner       TEXT NOT NULL DEFAULT '',
+                seq_num     INTEGER NOT NULL DEFAULT 0,
+                timestamp   REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_traj_owner
+                ON trajectories(channel, owner, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_traj_star
+                ON trajectories(star_id);
         """)
     _migrate_db()
 
@@ -90,6 +108,13 @@ def _migrate_db() -> None:
         ("constellations", "channel TEXT NOT NULL DEFAULT 'user'"),
         ("constellations", "owner   TEXT NOT NULL DEFAULT ''"),
         ("proposals",     "channel TEXT NOT NULL DEFAULT 'creator'"),
+        # Gravitational mass fields
+        ("stars",         "mass REAL NOT NULL DEFAULT 0.01"),
+        ("stars",         "activation_count INTEGER NOT NULL DEFAULT 0"),
+        ("stars",         "last_activated REAL NOT NULL DEFAULT 0"),
+        ("stars",         "distance_to_core REAL NOT NULL DEFAULT 1.0"),
+        # Star type
+        ("stars",         "star_type TEXT NOT NULL DEFAULT 'primary'"),
     ]
     with _get_conn() as conn:
         for table, col_def in migrations:
@@ -109,11 +134,15 @@ def insert_star(star: Star) -> None:
         conn.execute(
             """INSERT INTO stars
                (id, content, timestamp, embedding, layer, gravity_score,
-                repetition_count, success_count, total_count, channel, owner)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                repetition_count, success_count, total_count,
+                mass, activation_count, last_activated, distance_to_core,
+                star_type, channel, owner)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (star.id, star.content, star.timestamp, star.embedding,
              star.layer, star.gravity_score, star.repetition_count,
-             star.success_count, star.total_count, star.channel, star.owner),
+             star.success_count, star.total_count,
+             star.mass, star.activation_count, star.last_activated,
+             star.distance_to_core, star.star_type, star.channel, star.owner),
         )
 
 
@@ -122,12 +151,14 @@ def update_star(star: Star) -> None:
         conn.execute(
             """UPDATE stars SET
                content=?, timestamp=?, embedding=?, layer=?,
-               gravity_score=?, repetition_count=?, success_count=?, total_count=?
+               gravity_score=?, repetition_count=?, success_count=?, total_count=?,
+               mass=?, activation_count=?, last_activated=?, distance_to_core=?
                WHERE id=?
                -- channel and owner are immutable after creation""",
             (star.content, star.timestamp, star.embedding, star.layer,
              star.gravity_score, star.repetition_count, star.success_count,
-             star.total_count, star.id),
+             star.total_count, star.mass, star.activation_count,
+             star.last_activated, star.distance_to_core, star.id),
         )
 
 
@@ -173,9 +204,162 @@ def _row_to_star(row: sqlite3.Row) -> Star:
         repetition_count=row["repetition_count"],
         success_count=row["success_count"],
         total_count=row["total_count"],
+        mass=row["mass"] if "mass" in keys else MIN_MASS,
+        activation_count=row["activation_count"] if "activation_count" in keys else 0,
+        last_activated=row["last_activated"] if "last_activated" in keys else 0.0,
+        distance_to_core=row["distance_to_core"] if "distance_to_core" in keys else 1.0,
+        star_type=row["star_type"] if "star_type" in keys else STAR_TYPE_PRIMARY,
         channel=row["channel"] if "channel" in keys else CHANNEL_USER,
         owner=row["owner"] if "owner" in keys else "",
     )
+
+
+def update_star_mass(star_id: str, mass: float, distance_to_core: float) -> None:
+    """Update only the gravitational mass and distance fields of a star."""
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE stars SET mass=?, distance_to_core=? WHERE id=?",
+            (mass, distance_to_core, star_id),
+        )
+
+
+def activate_star(star_id: str) -> None:
+    """Increment activation_count and update last_activated timestamp."""
+    import time as _time
+    with _get_conn() as conn:
+        conn.execute(
+            """UPDATE stars SET
+               activation_count = activation_count + 1,
+               last_activated = ?
+               WHERE id = ?""",
+            (_time.time(), star_id),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Trajectories
+# ---------------------------------------------------------------------------
+
+def insert_trajectory_point(
+    star_id: str,
+    channel: str,
+    owner: str,
+) -> str:
+    """Record a trajectory point. Returns the point ID."""
+    import uuid
+    import time as _time
+    point_id = str(uuid.uuid4())
+    # Get next sequence number for this user
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT MAX(seq_num) as mx FROM trajectories WHERE channel=? AND owner=?",
+            (channel, owner),
+        ).fetchone()
+        next_seq = (row["mx"] or 0) + 1
+        conn.execute(
+            """INSERT INTO trajectories (id, star_id, channel, owner, seq_num, timestamp)
+               VALUES (?,?,?,?,?,?)""",
+            (point_id, star_id, channel, owner, next_seq, _time.time()),
+        )
+    return point_id
+
+
+def get_trajectory(
+    channel: str,
+    owner: str,
+    limit: int = 50,
+) -> List[dict]:
+    """Return the most recent trajectory points for a user, ordered by sequence."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT t.*, s.content, s.star_type, s.mass, s.distance_to_core, s.layer
+               FROM trajectories t
+               JOIN stars s ON t.star_id = s.id
+               WHERE t.channel=? AND t.owner=?
+               ORDER BY t.seq_num DESC LIMIT ?""",
+            (channel, owner, limit),
+        ).fetchall()
+    return [dict(r) for r in reversed(rows)]
+
+
+def get_trajectory_star_ids(
+    channel: str,
+    owner: str,
+    limit: int = 50,
+) -> List[str]:
+    """Return recent trajectory star IDs for a user."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT star_id FROM trajectories
+               WHERE channel=? AND owner=?
+               ORDER BY seq_num DESC LIMIT ?""",
+            (channel, owner, limit),
+        ).fetchall()
+    return [r["star_id"] for r in reversed(rows)]
+
+
+# ---------------------------------------------------------------------------
+# Convergence star queries
+# ---------------------------------------------------------------------------
+
+def get_convergence_stars(
+    channel: Optional[str] = None,
+    owner: Optional[str] = None,
+) -> List[Star]:
+    """Return all convergence-type stars, ordered by distance to core (ascending)."""
+    clauses = ["star_type = ?"]
+    params: list = [STAR_TYPE_CONVERGENCE]
+    if channel:
+        clauses.append("channel=?")
+        params.append(channel)
+    if owner:
+        clauses.append("owner=?")
+        params.append(owner)
+    where = "WHERE " + " AND ".join(clauses)
+    with _get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM stars {where} ORDER BY distance_to_core ASC",
+            params,
+        ).fetchall()
+    return [_row_to_star(r) for r in rows]
+
+
+def get_collective_convergence_stars(
+    channel: Optional[str] = None,
+) -> List[Star]:
+    """Return collective convergence stars (owner=__collective__), ordered by distance."""
+    clauses = ["star_type = ?", "owner = ?"]
+    params: list = [STAR_TYPE_CONVERGENCE, COLLECTIVE_OWNER]
+    if channel:
+        clauses.append("channel=?")
+        params.append(channel)
+    where = "WHERE " + " AND ".join(clauses)
+    with _get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM stars {where} ORDER BY distance_to_core ASC",
+            params,
+        ).fetchall()
+    return [_row_to_star(r) for r in rows]
+
+
+def get_stars_near_core(max_distance: float = 0.3) -> List[Star]:
+    """Return stars whose distance_to_core <= max_distance."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM stars WHERE distance_to_core <= ? ORDER BY distance_to_core ASC",
+            (max_distance,),
+        ).fetchall()
+    return [_row_to_star(r) for r in rows]
+
+
+def get_stars_in_periphery(min_distance: float = 0.8) -> List[Star]:
+    """Return stars whose distance_to_core >= min_distance."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM stars WHERE distance_to_core >= ? ORDER BY distance_to_core DESC",
+            (min_distance,),
+        ).fetchall()
+    return [_row_to_star(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

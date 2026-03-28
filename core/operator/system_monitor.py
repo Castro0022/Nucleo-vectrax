@@ -1,0 +1,312 @@
+"""
+Vectrax System Monitor — Observabilidad + Límites Duros
+=========================================================
+Métricas en tiempo real + protección contra crecimiento descontrolado.
+
+Métricas:
+  - Usuarios activos (mensajes en últimos 5 min)
+  - Jobs pendientes / processing / done
+  - Latencia promedio de respuesta
+  - CPU / RAM del proceso
+  - Workers activos + heartbeat age
+
+Límites duros:
+  - MAX_QUEUE_DEPTH: si la cola supera este número, nuevos jobs se rechazan
+  - MAX_MEMORY_MB: si RAM supera este valor, se fuerza cleanup
+  - MAX_LATENCY_S: si latencia promedio supera, se registra alerta
+  - DUPLICATE_WINDOW_S: mensajes idénticos del mismo usuario en N segundos = duplicado
+  - MAX_CONCURRENT: ya enforced en el worker
+
+Principio: mejor rechazar un mensaje que colapsar el sistema.
+
+Creado: 2026-03-28
+Creador: Mario Bravo Castro
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sqlite3
+import time
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger("vectrax.system_monitor")
+
+
+# ---------------------------------------------------------------------------
+# Hard limits (NUNCA se superan, el sistema se protege)
+# ---------------------------------------------------------------------------
+
+MAX_QUEUE_DEPTH = 50          # máx mensajes en cola antes de rechazar
+MAX_MEMORY_MB = 800           # máx RAM por proceso antes de alerta
+MAX_LATENCY_S = 15.0          # latencia promedio máxima antes de alerta
+DUPLICATE_WINDOW_S = 5        # ventana para detectar mensajes duplicados
+ACTIVE_USER_WINDOW_S = 300    # 5 minutos para considerar usuario "activo"
+
+
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SystemMetrics:
+    """Snapshot de métricas del sistema en un momento."""
+    timestamp: float = 0.0
+
+    # Queue
+    queue_pending: int = 0
+    queue_processing: int = 0
+    queue_done: int = 0
+    queue_error: int = 0
+    queue_total: int = 0
+
+    # Users
+    active_users: int = 0
+
+    # Latency
+    avg_latency_s: float = 0.0
+    max_latency_s: float = 0.0
+
+    # System
+    memory_mb: float = 0.0
+    cpu_percent: float = 0.0
+
+    # Workers
+    worker_alive: bool = False
+    worker_heartbeat_age_s: float = 0.0
+
+    # Limits
+    queue_at_limit: bool = False
+    memory_at_limit: bool = False
+    latency_at_limit: bool = False
+
+    # Status
+    status: str = "healthy"  # healthy | degraded | critical
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Metrics collection
+# ---------------------------------------------------------------------------
+
+_QUEUE_DB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "vault", "message_queue.db",
+)
+
+_HEARTBEAT_PATH = os.path.join(os.path.expanduser("~"), ".vectrax", "worker_heartbeat")
+
+
+def collect_metrics() -> SystemMetrics:
+    """Recolecta todas las métricas del sistema en un snapshot."""
+    m = SystemMetrics(timestamp=time.time())
+
+    # --- Queue stats ---
+    try:
+        conn = sqlite3.connect(_QUEUE_DB, timeout=2)
+        rows = conn.execute("SELECT status, COUNT(*) FROM queue GROUP BY status").fetchall()
+        for status, count in rows:
+            if status == "pending":
+                m.queue_pending = count
+            elif status == "processing":
+                m.queue_processing = count
+            elif status == "done":
+                m.queue_done = count
+            elif status == "error":
+                m.queue_error = count
+        m.queue_total = m.queue_pending + m.queue_processing + m.queue_done + m.queue_error
+
+        # Active users (distinct users in last 5 min)
+        cutoff = time.time() - ACTIVE_USER_WINDOW_S
+        m.active_users = conn.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM queue WHERE created_at > ?",
+            (cutoff,),
+        ).fetchone()[0]
+
+        # Latency (avg time from created to done, last 20 completed)
+        latency_rows = conn.execute(
+            "SELECT done_at - created_at FROM queue "
+            "WHERE status = 'done' AND done_at > 0 "
+            "ORDER BY done_at DESC LIMIT 20",
+        ).fetchall()
+        if latency_rows:
+            latencies = [r[0] for r in latency_rows if r[0] > 0]
+            if latencies:
+                m.avg_latency_s = round(sum(latencies) / len(latencies), 2)
+                m.max_latency_s = round(max(latencies), 2)
+
+        conn.close()
+    except Exception as exc:
+        logger.debug("Queue metrics failed: %s", exc)
+
+    # --- System resources ---
+    try:
+        import resource
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        m.memory_mb = round(usage.ru_maxrss / (1024 * 1024), 1)  # macOS: bytes
+    except Exception:
+        pass
+
+    # Fallback: read from /proc or ps
+    if m.memory_mb == 0:
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["ps", "-o", "rss=", "-p", str(os.getpid())],
+                capture_output=True, text=True, timeout=2,
+            )
+            m.memory_mb = round(int(result.stdout.strip()) / 1024, 1)
+        except Exception:
+            pass
+
+    # --- Worker heartbeat ---
+    try:
+        if os.path.exists(_HEARTBEAT_PATH):
+            with open(_HEARTBEAT_PATH) as f:
+                hb_ts = float(f.read().strip())
+            m.worker_heartbeat_age_s = round(time.time() - hb_ts, 1)
+            m.worker_alive = m.worker_heartbeat_age_s < 30
+        else:
+            m.worker_alive = False
+            m.worker_heartbeat_age_s = -1
+    except Exception:
+        m.worker_alive = False
+
+    # --- Evaluate limits ---
+    m.queue_at_limit = m.queue_pending >= MAX_QUEUE_DEPTH
+    m.memory_at_limit = m.memory_mb > MAX_MEMORY_MB
+    m.latency_at_limit = m.avg_latency_s > MAX_LATENCY_S
+
+    # --- Overall status ---
+    if m.queue_at_limit or not m.worker_alive:
+        m.status = "critical"
+    elif m.latency_at_limit or m.memory_at_limit:
+        m.status = "degraded"
+    else:
+        m.status = "healthy"
+
+    return m
+
+
+# ---------------------------------------------------------------------------
+# Duplicate detection
+# ---------------------------------------------------------------------------
+
+_recent_messages: Dict[str, float] = {}  # "user_id:hash" → timestamp
+
+
+def is_duplicate(user_id: str, content: str) -> bool:
+    """
+    Detecta si el mismo usuario envió el mismo mensaje en los últimos N segundos.
+    Previene jobs duplicados por doble-tap o reintentos.
+    """
+    key = f"{user_id}:{hash(content)}"
+    now = time.time()
+
+    # Cleanup old entries
+    stale = [k for k, ts in _recent_messages.items() if now - ts > DUPLICATE_WINDOW_S]
+    for k in stale:
+        _recent_messages.pop(k, None)
+
+    if key in _recent_messages:
+        age = now - _recent_messages[key]
+        if age < DUPLICATE_WINDOW_S:
+            logger.info("Duplicate detected: %s (%.1fs ago)", user_id[:20], age)
+            return True
+
+    _recent_messages[key] = now
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Queue gate (should we accept this job?)
+# ---------------------------------------------------------------------------
+
+def should_accept_job(user_id: str, content: str) -> tuple:
+    """
+    Decide si el sistema puede aceptar un nuevo job.
+
+    Returns:
+        (accepted: bool, reason: str)
+
+    Rechaza si:
+      - Cola llena (MAX_QUEUE_DEPTH)
+      - Duplicado (mismo mensaje en DUPLICATE_WINDOW_S)
+      - Worker muerto y cola ya tiene mensajes pending
+    """
+    # Duplicate check
+    if is_duplicate(user_id, content):
+        return False, "duplicate"
+
+    # Queue depth check
+    try:
+        conn = sqlite3.connect(_QUEUE_DB, timeout=2)
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM queue WHERE status = 'pending'",
+        ).fetchone()[0]
+        conn.close()
+
+        if pending >= MAX_QUEUE_DEPTH:
+            logger.warning("Queue full: %d pending (max=%d)", pending, MAX_QUEUE_DEPTH)
+            return False, "queue_full"
+    except Exception:
+        pass
+
+    # Worker alive check
+    try:
+        if os.path.exists(_HEARTBEAT_PATH):
+            with open(_HEARTBEAT_PATH) as f:
+                hb_ts = float(f.read().strip())
+            age = time.time() - hb_ts
+            if age > 60:  # Worker dead for >1 min
+                try:
+                    conn = sqlite3.connect(_QUEUE_DB, timeout=2)
+                    pending = conn.execute(
+                        "SELECT COUNT(*) FROM queue WHERE status = 'pending'",
+                    ).fetchone()[0]
+                    conn.close()
+                    if pending > 5:
+                        return False, "worker_dead_queue_backlog"
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return True, "accepted"
+
+
+# ---------------------------------------------------------------------------
+# CLI-friendly status string
+# ---------------------------------------------------------------------------
+
+def format_status(m: Optional[SystemMetrics] = None) -> str:
+    """Formatea métricas para CLI/logs."""
+    if m is None:
+        m = collect_metrics()
+
+    icon = {"healthy": "🟢", "degraded": "🟡", "critical": "🔴"}.get(m.status, "⚪")
+
+    lines = [
+        f"  {icon} System: {m.status.upper()}",
+        f"",
+        f"  Queue:",
+        f"    Pending:     {m.queue_pending}",
+        f"    Processing:  {m.queue_processing}",
+        f"    Done:        {m.queue_done}",
+        f"    Errors:      {m.queue_error}",
+        f"",
+        f"  Users active:  {m.active_users} (last 5min)",
+        f"  Latency avg:   {m.avg_latency_s}s (max {m.max_latency_s}s)",
+        f"  Memory:        {m.memory_mb} MB",
+        f"  Worker:        {'ALIVE' if m.worker_alive else 'DEAD'} (heartbeat {m.worker_heartbeat_age_s}s ago)",
+        f"",
+        f"  Limits:",
+        f"    Queue:       {'⚠ FULL' if m.queue_at_limit else 'OK'} ({m.queue_pending}/{MAX_QUEUE_DEPTH})",
+        f"    Memory:      {'⚠ HIGH' if m.memory_at_limit else 'OK'} ({m.memory_mb}/{MAX_MEMORY_MB} MB)",
+        f"    Latency:     {'⚠ SLOW' if m.latency_at_limit else 'OK'} ({m.avg_latency_s}/{MAX_LATENCY_S}s)",
+    ]
+    return "\n".join(lines)

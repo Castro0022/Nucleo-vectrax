@@ -17,11 +17,17 @@ import math
 from typing import List
 
 from vectrax.models import (
+    COLLECTIVE_OWNER_DIVERSITY_WEIGHT,
     GRAVITY_CORE_THRESHOLD,
     GRAVITY_MID_THRESHOLD,
     LAYER_CORE,
     LAYER_MID,
     LAYER_OUTER,
+    MASS_ACTIVATION_WEIGHT,
+    MASS_COHERENCE_WEIGHT,
+    MASS_CONNECTION_WEIGHT,
+    MAX_MASS,
+    MIN_MASS,
     Constellation,
     Star,
 )
@@ -80,6 +86,93 @@ def assign_layer(gravity: float) -> str:
     if gravity >= GRAVITY_MID_THRESHOLD:
         return LAYER_MID
     return LAYER_OUTER
+
+
+# ---------------------------------------------------------------------------
+# Semantic gravity (gravitational mass computation)
+# ---------------------------------------------------------------------------
+
+def _normalise_activation(count: int) -> float:
+    """Map activation count to [0, 1] using log scale."""
+    if count <= 0:
+        return 0.0
+    return min(math.log10(count + 1) / 2.0, 1.0)
+
+
+def _normalise_connections(in_degree: int, max_degree: int = 20) -> float:
+    """Map incoming connection count to [0, 1]."""
+    if in_degree <= 0:
+        return 0.0
+    return min(in_degree / max_degree, 1.0)
+
+
+def compute_semantic_gravity(
+    star: Star,
+    in_degree: int = 0,
+    neighbor_coherence: float = 0.0,
+) -> float:
+    """
+    Compute gravitational mass for a star based on three pillars:
+
+      1. Incoming connections  (weight: 0.40)
+      2. Semantic coherence    (weight: 0.35) — avg cosine sim with neighbours
+      3. Activation frequency  (weight: 0.25)
+
+    Returns a mass value in [MIN_MASS, MAX_MASS].
+    """
+    conn_score = _normalise_connections(in_degree)
+    coherence_score = float(max(min(neighbor_coherence, 1.0), 0.0))
+    activation_score = _normalise_activation(star.activation_count)
+
+    raw_mass = (
+        MASS_CONNECTION_WEIGHT * conn_score
+        + MASS_COHERENCE_WEIGHT * coherence_score
+        + MASS_ACTIVATION_WEIGHT * activation_score
+    )
+    return round(float(max(MIN_MASS, min(raw_mass, MAX_MASS))), 6)
+
+
+def compute_collective_gravity(
+    star: Star,
+    in_degree: int = 0,
+    neighbor_coherence: float = 0.0,
+    owner_count: int = 1,
+) -> float:
+    """
+    Gravitational mass for collective (cross-user) stars.
+
+    Same three pillars as compute_semantic_gravity, amplified by
+    a fourth factor: **owner diversity**.
+
+    The more distinct users independently arrive at the same meaning,
+    the stronger the gravitational pull of that knowledge point:
+
+      multiplier = 1.0 + log₂(owner_count) × DIVERSITY_WEIGHT
+
+      2 owners → ×1.30    (30% boost)
+      4 owners → ×1.60    (60% boost)
+      8 owners → ×1.90    (90% boost)
+
+    Returns mass in [MIN_MASS, MAX_MASS].
+    """
+    base_mass = compute_semantic_gravity(star, in_degree, neighbor_coherence)
+
+    if owner_count <= 1:
+        return base_mass
+
+    diversity_bonus = math.log2(owner_count) * COLLECTIVE_OWNER_DIVERSITY_WEIGHT
+    amplified = base_mass * (1.0 + diversity_bonus)
+    return round(float(max(MIN_MASS, min(amplified, MAX_MASS))), 6)
+
+
+def compute_distance_from_mass(mass: float) -> float:
+    """
+    Distance to the core is the inverse of mass.
+
+    mass → 0.01  ⇒  distance → 0.99  (periphery)
+    mass → 1.0   ⇒  distance → 0.0   (nucleus)
+    """
+    return round(float(max(0.0, min(1.0 - mass, 1.0))), 6)
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ from core.abstraction.base import (
     GenerateResponse,
     ProviderType,
 )
-from core.providers.openai_stub import NotConfiguredError
+from core.resilience.errors import NotConfiguredError
 
 
 class AnthropicProvider(BaseLLMProvider):
@@ -43,6 +43,7 @@ class AnthropicProvider(BaseLLMProvider):
     def _ensure_client(self):
         if self._api_key is None:
             raise NotConfiguredError(
+                "anthropic",
                 "ANTHROPIC_API_KEY not set. Export it or pass api_key=..."
             )
         if self._client is None:

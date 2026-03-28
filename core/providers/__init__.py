@@ -1,10 +1,25 @@
-"""LLM provider implementations"""
+"""LLM provider implementations."""
 from .ollama_provider import OllamaProvider
 
-# Optional cloud providers — import directly from submodules to avoid
-# circular imports. Use:  from core.providers.openai_stub import OpenAIProvider
-# These are NOT imported at package level on purpose.
+# Cloud providers — lazy imports to avoid hard httpx dependency at package level.
+try:
+    from .openai_stub import OpenAIProvider
+except ImportError:
+    OpenAIProvider = None  # type: ignore[assignment,misc]
+
+try:
+    from .gemini_stub import GeminiProvider
+except ImportError:
+    GeminiProvider = None  # type: ignore[assignment,misc]
+
+try:
+    from .anthropic_stub import AnthropicProvider
+except ImportError:
+    AnthropicProvider = None  # type: ignore[assignment,misc]
 
 __all__ = [
     "OllamaProvider",
+    "OpenAIProvider",
+    "GeminiProvider",
+    "AnthropicProvider",
 ]
