@@ -101,6 +101,11 @@ AUTO_ACTIONS = frozenset({
     "cognitive_cycle",
     "meta_loop_cycle",
     "law_enforcement_check",
+
+    # Executor: acciones autónomas de mantenimiento
+    "cleanup_queue",
+    "cleanup_stale_hypotheses",
+    "gravity_rebalance",
 })
 
 # Acciones que requieren autorización del creador (externas, críticas)
