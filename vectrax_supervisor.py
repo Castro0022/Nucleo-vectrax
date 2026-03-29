@@ -252,6 +252,9 @@ class ManagedService:
 WORKER_HEARTBEAT_PATH = RUNTIME_DIR / "worker_heartbeat"
 WORKER_HEARTBEAT_MAX_AGE = 30  # seconds without heartbeat = hung
 
+GATEWAY_HEARTBEAT_PATH = RUNTIME_DIR / "gateway_heartbeat"
+GATEWAY_HEARTBEAT_MAX_AGE = 90  # gateway polls every 30s, so 90s = 3 missed polls
+
 
 class VectraxSupervisor:
     """Main supervisor loop."""
@@ -315,8 +318,9 @@ class VectraxSupervisor:
                             "[%s] REQUIRED service failed permanently!", svc.name,
                         )
 
-            # --- Heartbeat check: detect hung worker ---
+            # --- Heartbeat checks: detect hung processes ---
             self._check_worker_heartbeat()
+            self._check_gateway_heartbeat()
 
     def _check_worker_heartbeat(self) -> None:
         """Kill and restart pipeline_worker if heartbeat is stale."""
@@ -353,7 +357,41 @@ class VectraxSupervisor:
                     pass
                 # Will be restarted by main loop on next cycle
         except Exception as exc:
-            logger.debug("Heartbeat check error: %s", exc)
+            logger.debug("Worker heartbeat check error: %s", exc)
+
+    def _check_gateway_heartbeat(self) -> None:
+        """Kill and restart gateway if heartbeat is stale."""
+        if "telegram_gateway" not in self.services:
+            return
+
+        svc = self.services["telegram_gateway"]
+        if not svc.healthy or svc.process is None:
+            return
+
+        try:
+            if not GATEWAY_HEARTBEAT_PATH.exists():
+                return
+
+            heartbeat_ts = float(GATEWAY_HEARTBEAT_PATH.read_text().strip())
+            age = time.time() - heartbeat_ts
+
+            if age > GATEWAY_HEARTBEAT_MAX_AGE:
+                logger.warning(
+                    "[telegram_gateway] HEARTBEAT STALE (%.0fs > %ds) — killing hung gateway (PID %d)",
+                    age, GATEWAY_HEARTBEAT_MAX_AGE, svc.process.pid,
+                )
+                svc.process.kill()
+                try:
+                    svc.process.wait(timeout=5)
+                except Exception:
+                    pass
+                svc.healthy = False
+                try:
+                    GATEWAY_HEARTBEAT_PATH.unlink()
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.debug("Gateway heartbeat check error: %s", exc)
 
     def stop_all(self) -> None:
         """Stop all services gracefully."""

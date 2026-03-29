@@ -261,6 +261,9 @@ class TelegramGateway:
         logger.info("Bot started — queue-based polling")
         while self._running:
             try:
+                # Write heartbeat every poll cycle
+                self._write_heartbeat()
+
                 r = self._poll_http.post(
                     f"{self._base}/getUpdates",
                     json={"offset": self._offset, "timeout": POLL_TIMEOUT,
@@ -282,6 +285,16 @@ class TelegramGateway:
                     break
                 time.sleep(RETRY_DELAY)
         logger.info("Bot stopped | processed=%d", self._processed)
+
+    @staticmethod
+    def _write_heartbeat() -> None:
+        try:
+            hb_path = os.path.join(os.path.expanduser("~"), ".vectrax", "gateway_heartbeat")
+            os.makedirs(os.path.dirname(hb_path), exist_ok=True)
+            with open(hb_path, "w") as f:
+                f.write(str(time.time()))
+        except Exception:
+            pass
 
     def stop(self):
         self._running = False
