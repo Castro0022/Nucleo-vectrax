@@ -343,6 +343,13 @@ class VectraxSupervisor:
                     "[pipeline_worker] HEARTBEAT STALE (%.0fs > %ds) — killing hung worker (PID %d)",
                     age, WORKER_HEARTBEAT_MAX_AGE, svc.process.pid,
                 )
+                # Record failure for immunity
+                try:
+                    from core.operator.failure_immunity import record_failure
+                    record_failure("worker_hung", "heartbeat_stale",
+                                   f"age={age:.0f}s pid={svc.process.pid}")
+                except Exception:
+                    pass
                 # Force kill
                 svc.process.kill()
                 try:
@@ -380,6 +387,13 @@ class VectraxSupervisor:
                     "[telegram_gateway] HEARTBEAT STALE (%.0fs > %ds) — killing hung gateway (PID %d)",
                     age, GATEWAY_HEARTBEAT_MAX_AGE, svc.process.pid,
                 )
+                # Record failure for immunity
+                try:
+                    from core.operator.failure_immunity import record_failure
+                    record_failure("gateway_stale", "heartbeat_stale",
+                                   f"age={age:.0f}s pid={svc.process.pid}")
+                except Exception:
+                    pass
                 svc.process.kill()
                 try:
                     svc.process.wait(timeout=5)
