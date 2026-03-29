@@ -131,7 +131,7 @@ _FRAME_PATTERNS: List[Tuple[re.Pattern, _Frame, float]] = [
     # === BÚSQUEDA DE LUGAR ===
     # Estructura: verbo_búsqueda + artículo? + tipo_servicio + ubicación?
     (re.compile(
-        r"\b(?:búscame|buscame|busca|encuentra|encontrar|buscar)\b"
+        r"\b(?:búscame|buscame|busca|busco|busque|encuentra|encontrar|buscar)\b"
         r".*\b(?:un|una|el|la|los|las|algún|alguna)\b"
         r".*\b(?:en|cerca|por|de)\b",
         re.I,
@@ -148,6 +148,26 @@ _FRAME_PATTERNS: List[Tuple[re.Pattern, _Frame, float]] = [
     (re.compile(
         r"\b(?:necesito|quiero|busco|ocupo)\b\s+(?:un|una|el|la)\b"
         r".*\b(?:cerca|cercano|cercana|abierto|abierta|en\s+\w+)\b",
+        re.I,
+    ), _Frame.SEARCH_PLACE, 0.85),
+
+    # Estructura: busco/necesito/quiero + artículo + tipo_lugar (sin exigir ubicación)
+    (re.compile(
+        r"\b(?:busco|necesito|quiero|ocupo)\b\s+(?:un|una|el|la)\s+"
+        r"(?:restaurante|farmacia|taller|mec[aá]nico|mecanico|tienda|banco|"
+        r"hospital|cl[ií]nica|clinica|dentista|veterinari[oa]|hotel|gimnasio|"
+        r"barber[ií]a|barberia|peluquer[ií]a|peluqueria|cafeter[ií]a|cafeteria|"
+        r"panader[ií]a|panaderia|lavander[ií]a|lavanderia|cerrajero|electricista|"
+        r"plomero|fontanero|abogad[oa]|notar[ií]a|notaria|ferreter[ií]a|ferreteria|"
+        r"librer[ií]a|libreria|bar|pub|spa|supermercado|gasolinera)",
+        re.I,
+    ), _Frame.SEARCH_PLACE, 0.85),
+
+    # Estructura: dame/dime la dirección/ubicación/teléfono de
+    (re.compile(
+        r"\b(?:dame|dime|deme|cu[aá]l\s+es)\b\s+(?:la\s+)?"
+        r"(?:direcci[oó]n|direccion|ubicaci[oó]n|ubicacion|tel[eé]fono|telefono)\b"
+        r".*\b(?:de|del)\b",
         re.I,
     ), _Frame.SEARCH_PLACE, 0.85),
 
@@ -375,8 +395,9 @@ _ACTION_VERBS: Dict[str, str] = {
 
 # Verbos que indican contexto de BÚSQUEDA de lugar (no mención casual)
 _SEARCH_CONTEXT_VERBS = re.compile(
-    r"\b(?:busca|búscame|buscame|buscar|encuentra|encontrar|necesito|"
+    r"\b(?:busca|busco|búscame|buscame|buscar|encuentra|encontrar|necesito|"
     r"quiero|ocupo|hay|dónde|donde|cerca|recomienda|recomié?ndame|"
+    r"dame|dime|deme|direcci[oó]n|direccion|ubicaci[oó]n|ubicacion|"
     r"find|search|looking\s+for|where|need|want)\b",
     re.I,
 )
@@ -514,9 +535,15 @@ def _score_intents(
             scores[SemanticIntent.PLACE_SEARCH] += 0.15
 
     # — Penalización: si no hay frame de búsqueda de lugar pero sí categoría,
-    #   reducir place_search (evita "trabajo en un banco" → place_search) —
+    #   reducir place_search (evita "trabajo en un banco" → place_search).
+    #   Penalización atenuada si hay entidad de categoría + verbos de búsqueda
+    #   para no matar consultas legítimas que escaparon los frame patterns. —
     if not any(f == _Frame.SEARCH_PLACE for f, _ in frames):
-        scores[SemanticIntent.PLACE_SEARCH] *= 0.3
+        has_category = "category" in {e.type for e in entities}
+        if has_category:
+            scores[SemanticIntent.PLACE_SEARCH] *= 0.7
+        else:
+            scores[SemanticIntent.PLACE_SEARCH] *= 0.3
 
     return scores
 

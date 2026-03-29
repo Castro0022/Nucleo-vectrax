@@ -325,6 +325,24 @@ class TelegramGateway:
             if not text:
                 return
 
+            # Tier management (creator only)
+            tier_m = re.match(r"^tier\s+(free|pro|creator)\s+(.+)", text.strip(), re.I)
+            if tier_m:
+                try:
+                    from core.operator.user_tiers import set_tier, Tier, can_use_feature
+                    if not can_use_feature(tg_uid, "approve_rules"):
+                        self._send(cid, "Solo el creador puede cambiar tiers.")
+                        return
+                    new_tier = Tier(tier_m.group(1).lower())
+                    target = tier_m.group(2).strip()
+                    if not target.startswith("tg:"):
+                        target = f"tg:{target}"
+                    set_tier(target, new_tier)
+                    self._send(cid, f"✅ {target} → {new_tier.value.upper()}")
+                except Exception as e:
+                    self._send(cid, f"Error: {e}")
+                return
+
             # Rule approval
             m = re.match(r"^(?:aprobar|approve)\s+(RULE-\w+)", text.strip(), re.I)
             if m:
@@ -338,6 +356,16 @@ class TelegramGateway:
                 except Exception as e:
                     self._send(cid, f"Error: {e}")
                 return
+
+            # === TIER CHECK: verificar acceso del usuario ===
+            try:
+                from core.operator.user_tiers import check_access, can_use_feature
+                access = check_access(tg_uid)
+                if not access.allowed:
+                    self._send(cid, access.reason)
+                    return
+            except Exception:
+                pass
 
             # === LANGUAGE POLICY: detectar idioma + instrucciones ===
             try:
