@@ -166,7 +166,15 @@ def _extract_interests(text: str) -> List[str]:
 
 
 def _detect_lang(text: str) -> str:
-    """Detección rápida de idioma."""
+    """Detección de idioma — delega al language_gate multi-idioma."""
+    try:
+        from core.language_gate import detect_language
+        detected = detect_language(text)
+        if detected != "unknown":
+            return detected
+    except Exception:
+        pass
+    # Fallback mínimo
     es_matches = len(_LANG_DETECT.findall(text))
     return "es" if es_matches >= 1 else "en"
 
@@ -313,16 +321,17 @@ class _MemoryStore:
             profile.name = name
             logger.info("Profile: name detected | user=%s | name=%s", user_id[:20], name)
 
-        # Idioma: respetar language lock del identity_anchor si existe
-        try:
-            from vectrax.identity_anchor import get_locked_language
-            locked = get_locked_language(user_id)
-            if locked:
-                profile.language = locked
-            else:
+        # Idioma: respetar idioma guardado/fijado. NO sobreescribir por detección.
+        if not profile.language:
+            try:
+                from vectrax.identity_anchor import get_locked_language
+                locked = get_locked_language(user_id)
+                if locked:
+                    profile.language = locked
+                else:
+                    profile.language = _detect_lang(text)
+            except ImportError:
                 profile.language = _detect_lang(text)
-        except ImportError:
-            profile.language = _detect_lang(text)
 
         # Preferencias
         prefs = _extract_preferences(text)
@@ -523,8 +532,32 @@ def _get_store() -> _MemoryStore:
 # ---------------------------------------------------------------------------
 
 def store_memory(user_id: str, user_input: str, bot_output: str) -> None:
-    """Almacena una interacción usuario ↔ Vectrax."""
+    """Almacena una interacción usuario ↔ Vectrax + extrae hechos + absorbe en core."""
     _get_store().store(user_id, user_input, bot_output)
+    # Extraer y almacenar hechos de negocio (nombres, cifras, fechas)
+    try:
+        from vectrax.fact_memory import store_facts
+        stored = store_facts(user_id, user_input)
+        if stored:
+            logger.info("Facts extracted | user=%s | count=%d", user_id[:20], stored)
+    except Exception as exc:
+        logger.debug("Fact extraction failed: %s", exc)
+    # Detectar preferencias reveladas de contactos (detector híbrido)
+    try:
+        from core.preference_tracker import detect_and_store
+        pref_stored = detect_and_store(user_id, user_input)
+        if pref_stored:
+            logger.info("Preferences extracted | user=%s | count=%d", user_id[:20], pref_stored)
+    except Exception as exc:
+        logger.debug("Preference detection failed: %s", exc)
+    # Absorber en core_memory (memoria permanente indestructible)
+    try:
+        from vectrax.core_memory import absorb
+        absorbed = absorb(user_id, user_input, bot_output)
+        if absorbed:
+            logger.info("Core absorbed | user=%s | count=%d", user_id[:20], absorbed)
+    except Exception as exc:
+        logger.debug("Core absorb failed: %s", exc)
 
 
 def get_memory_context(user_id: str) -> str:
@@ -737,21 +770,54 @@ def _memory_response(text: str) -> Dict[str, str]:
     return {"text": text, "source": "memory"}
 
 
+def _fact_response(result: Dict[str, str]) -> Dict[str, str]:
+    """Empaqueta una respuesta resuelta por hechos."""
+    return {"text": result["text"], "source": "facts"}
+
+
 def _get_response_lang(user_id: str, user_input: str) -> str:
-    """Obtiene el idioma de respuesta: locked > detectado."""
+    """Obtiene el idioma de respuesta: locked > profile > detectado > 'es'."""
+    # 1. Language lock de sesión (prioridad absoluta)
     try:
         from vectrax.identity_anchor import get_locked_language
         locked = get_locked_language(user_id)
         if locked:
             return locked
-    except ImportError:
+    except Exception:
         pass
-    return _detect_lang(user_input)
+    # 2. Language gate completo (incluye perfil persistente)
+    try:
+        from core.language_gate import get_user_language
+        return get_user_language(user_id, user_input)
+    except Exception:
+        pass
+    # 3. Fallback local
+    detected = _detect_lang(user_input)
+    return detected if detected != "en" or len(user_input.split()) > 3 else "es"
+
+
+# Consultas que piden el alma / resumen profundo de core_memory
+_CORE_QUERIES = [
+    "que sabes de mi", "qué sabes de mí",
+    "que sabes sobre mi", "qué sabes sobre mí",
+    "que recuerdas de mi", "qué recuerdas de mí",
+    "que tienes de mi", "qué tienes de mí",
+    "que tienes sobre mi", "qué tienes sobre mí",
+    "what do you know about me",
+    "quien soy para ti", "quién soy para ti",
+    "que soy para ti", "qué soy para ti",
+    "me conoces", "sabes quien soy", "sabes quién soy",
+]
 
 
 def resolve_with_memory(user_id: str, user_input: str):
     """
     Resolver pre-LLM: responde directamente desde la memoria del usuario.
+
+    Prioridad:
+      1. Hechos de negocio (fact_memory)
+      2. Core memory (alma — resumen profundo)
+      3. Perfil básico (nombre, preferencias, intereses)
 
     Reglas estrictas:
       - Si memoria TIENE el dato → retorna respuesta directa.
@@ -766,6 +832,19 @@ def resolve_with_memory(user_id: str, user_input: str):
     if not user_id or not user_input:
         return ""
 
+    # ── HECHOS DE NEGOCIO (segundo cerebro) ─ prioridad máxima ───
+    try:
+        from vectrax.fact_memory import query_facts
+        fact_result = query_facts(user_id, user_input)
+        if fact_result:
+            logger.info(
+                "Fact resolve | user=%s | source=facts | input=%r",
+                user_id[:20], user_input[:60],
+            )
+            return _fact_response(fact_result)
+    except Exception as exc:
+        logger.debug("Fact query failed: %s", exc)
+
     profile = get_user_profile(user_id)
     if not profile:
         return ""
@@ -773,7 +852,21 @@ def resolve_with_memory(user_id: str, user_input: str):
     normalized = _normalize(user_input)
     lang = _get_response_lang(user_id, user_input)
 
-    # ── Nombre ────────────────────────────────────────────────
+    # ── Alma / resumen profundo (PRIMERO — antes de nombre) ───────
+    if _match_any(normalized, _CORE_QUERIES):
+        try:
+            from vectrax.core_memory import get_living_response
+            living = get_living_response(user_id, lang)
+            if living:
+                logger.info(
+                    "Core LIVING resolve | user=%s | input=%r",
+                    user_id[:20], user_input[:60],
+                )
+                return _memory_response(living)
+        except Exception:
+            pass
+
+    # ── Nombre ────────────────────────────────────────────────────────
     if _match_any(normalized, _NAME_QUERIES):
         name = profile.get("name", "")
         if name:
@@ -828,10 +921,22 @@ def resolve_with_memory(user_id: str, user_input: str):
             return _memory_response(f"Your detected language is {language}.")
         return ""
 
-    # ── Resumen completo ──────────────────────────────────────
+    # ── Resumen completo ──────────────────────────────────────────
     if _match_any(normalized, _SUMMARY_QUERIES):
+        # Intentar voz viva desde core_memory
+        try:
+            from vectrax.core_memory import get_living_response
+            living = get_living_response(user_id, lang)
+            if living:
+                logger.info(
+                    "Core LIVING resolve | user=%s | input=%r",
+                    user_id[:20], user_input[:60],
+                )
+                return _memory_response(living)
+        except Exception:
+            pass
+        # Fallback al resumen básico de profile
         summary = _build_summary(profile, lang)
-        # Solo retornar si hay datos reales en el resumen
         if profile.get("name") or profile.get("preferences") or profile.get("interests"):
             return _memory_response(summary)
         return ""

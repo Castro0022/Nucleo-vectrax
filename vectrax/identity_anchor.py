@@ -56,11 +56,16 @@ class IdentityAnchor:
 
     def identity_context(self) -> str:
         """Genera línea de contexto de identidad para inyectar en prompts."""
+        _lang_labels = {
+            "es": "español", "en": "inglés", "fr": "francés",
+            "it": "italiano", "de": "alemán", "pt": "portugués",
+            "nl": "holandés",
+        }
         parts = []
         if self.name:
             parts.append(f"El usuario se llama {self.name}.")
         if self.language:
-            lang_label = "español" if self.language == "es" else "inglés"
+            lang_label = _lang_labels.get(self.language, self.language)
             parts.append(f"Idioma del usuario: {lang_label}.")
         if self.preferences:
             vals = ", ".join(list(self.preferences.values())[:5])
@@ -304,71 +309,108 @@ _LANG_DETECT = re.compile(
     re.IGNORECASE,
 )
 
+# All supported languages for explicit switch requests
+_LANG_NAMES_PATTERN = (
+    r"(?:inglés|english|español|spanish|franc[eé]s|french|fran[cç]ais"
+    r"|italiano|italian|alem[aá]n|german|deutsch"
+    r"|portugu[eé]s|portuguese|holand[eé]s|dutch|nederlands)"
+)
+
 _LANG_CHANGE_PATTERNS = re.compile(
     r"(?:"
-    r"(?:resp[oó]ndeme\s+en\s+(?:inglés|english|español|spanish))"
-    r"|(?:(?:switch|change)\s+(?:to|language\s+to)\s+(?:english|spanish|español|inglés))"
-    r"|(?:(?:habla|háblame)\s+en\s+(?:inglés|english|español|spanish))"
-    r"|(?:from\s+now\s+(?:on\s+)?(?:in|respond\s+in)\s+(?:english|spanish))"
+    r"(?:resp[oó]ndeme\s+en\s+" + _LANG_NAMES_PATTERN + r")"
+    r"|(?:(?:switch|change)\s+(?:to|language\s+to)\s+" + _LANG_NAMES_PATTERN + r")"
+    r"|(?:(?:habla|háblame)\s+en\s+" + _LANG_NAMES_PATTERN + r")"
+    r"|(?:(?:parle|réponds?)\s+en\s+" + _LANG_NAMES_PATTERN + r")"
+    r"|(?:(?:parla|rispondi)\s+in\s+" + _LANG_NAMES_PATTERN + r")"
+    r"|(?:(?:sprich|antworte)\s+(?:auf|in)\s+" + _LANG_NAMES_PATTERN + r")"
+    r"|(?:from\s+now\s+(?:on\s+)?(?:in|respond\s+in)\s+" + _LANG_NAMES_PATTERN + r")"
     r")",
     re.IGNORECASE,
 )
 
-_LANG_EXTRACT = re.compile(
-    r"(?:inglés|english)", re.IGNORECASE,
-)
+_LANG_EXTRACT_MAP = {
+    re.compile(r"(?:inglés|english)", re.IGNORECASE): "en",
+    re.compile(r"(?:español|spanish)", re.IGNORECASE): "es",
+    re.compile(r"(?:franc[eé]s|french|fran[cç]ais)", re.IGNORECASE): "fr",
+    re.compile(r"(?:italiano|italian)", re.IGNORECASE): "it",
+    re.compile(r"(?:alem[aá]n|german|deutsch)", re.IGNORECASE): "de",
+    re.compile(r"(?:portugu[eé]s|portuguese)", re.IGNORECASE): "pt",
+    re.compile(r"(?:holand[eé]s|dutch|nederlands)", re.IGNORECASE): "nl",
+}
+
+
+def _extract_requested_lang(text: str) -> str:
+    """Extract the target language from an explicit language-change request."""
+    for pattern, lang_code in _LANG_EXTRACT_MAP.items():
+        if pattern.search(text):
+            return lang_code
+    return "es"  # safe default
 
 
 def detect_and_lock_language(user_id: str, user_input: str) -> str:
     """
     Detecta el idioma del mensaje actual y actualiza el lock.
 
-    Comportamiento (no forzar idiomas):
-      - Cada mensaje con marcadores claros actualiza el idioma.
-      - Si el mensaje es ambiguo (sin marcadores), mantiene el último.
-      - Cambio explícito ("respóndeme en inglés") siempre se respeta.
-      - El idioma sigue al usuario, no se fuerza.
+    Soporta: es, en, fr, it, de, pt, nl.
+    Usa la detección unificada de conversational_policy.
 
     Returns:
-        Código de idioma detectado ("es" o "en").
+        Código de idioma detectado.
     """
     # 1. Cambio explícito solicitado por el usuario
     if _LANG_CHANGE_PATTERNS.search(user_input):
-        new_lang = "en" if _LANG_EXTRACT.search(user_input) else "es"
+        new_lang = _extract_requested_lang(user_input)
         _session.lock_language(user_id, new_lang)
+        # Persistir en DB
+        try:
+            from core.operator.conversational_policy import _save_user_language
+            _save_user_language(user_id, new_lang)
+        except Exception:
+            pass
         logger.info(
             "Language CHANGED by user request | user=%s | lang=%s",
             user_id[:20], new_lang,
         )
         return new_lang
 
-    # 2. Detectar idioma del mensaje actual
-    es_matches = len(_LANG_DETECT.findall(user_input))
-    has_clear_markers = es_matches >= 1 or len(user_input.split()) >= 3
+    # 2. Si ya tiene idioma persistente (DB), usarlo y fijar en sesión.
+    #    Solo cambia por instrucción EXPLÍCITA (ya manejada arriba).
+    try:
+        from core.operator.conversational_policy import _get_user_language
+        saved = _get_user_language(user_id)
+        if saved:
+            # Fijar en sesión si no estaba
+            if not _session.get_locked_language(user_id):
+                _session.lock_language(user_id, saved)
+                logger.info(
+                    "Language RESTORED from DB | user=%s | lang=%s",
+                    user_id[:20], saved,
+                )
+            return _session.get_locked_language(user_id) or saved
+    except Exception:
+        pass
 
-    if es_matches >= 1:
-        detected = "es"
-    else:
-        detected = "en"
-
-    # 3. Si hay marcadores claros → actualizar el lock al idioma detectado
-    if has_clear_markers:
-        current_lock = _session.get_locked_language(user_id)
-        if current_lock != detected:
-            logger.info(
-                "Language UPDATED per message | user=%s | %s → %s",
-                user_id[:20], current_lock or "(none)", detected,
-            )
-        _session.lock_language(user_id, detected)
-        return detected
-
-    # 4. Mensaje ambiguo ("ok", "123", emoji) → mantener el último
+    # 3. Si hay lock de sesión (set por instrucción o mensaje previo) → mantener
     locked = _session.get_locked_language(user_id)
     if locked:
         return locked
 
-    # 5. Sin historial → default a español y guardar
+    # 4. Primera vez — detectar idioma del primer mensaje y fijar
+    try:
+        from core.operator.conversational_policy import detect_language as _detect_ml
+        detected = _detect_ml(user_input)
+    except Exception:
+        es_matches = len(_LANG_DETECT.findall(user_input))
+        detected = "es" if es_matches >= 1 else "en"
+
     _session.lock_language(user_id, detected)
+    # Persistir en DB para sobrevivir reinicios
+    try:
+        from core.operator.conversational_policy import _save_user_language
+        _save_user_language(user_id, detected)
+    except Exception:
+        pass
     logger.info(
         "Language INITIAL set | user=%s | lang=%s",
         user_id[:20], detected,
@@ -390,31 +432,103 @@ def build_identity_context(anchor: IdentityAnchor) -> str:
     if not anchor.loaded:
         return ""
 
+    lang = anchor.language or "es"
     parts = []
 
+    # Identity block — written in the USER's language so the LLM
+    # naturally continues in that language.
+    _identity_templates = {
+        "es": (
+            "[IDENTIDAD DEL USUARIO — NO NEGOCIABLE]\n"
+            "El usuario se llama {name}. "
+            "NUNCA preguntes su nombre. NUNCA digas que no lo conoces. "
+            "Si se refiere a sí mismo, usa su nombre."
+        ),
+        "en": (
+            "[USER IDENTITY — NON-NEGOTIABLE]\n"
+            "The user's name is {name}. "
+            "NEVER ask for their name. NEVER say you don't know it. "
+            "If they refer to themselves, use their name."
+        ),
+        "fr": (
+            "[IDENTITÉ DE L'UTILISATEUR — NON NÉGOCIABLE]\n"
+            "L'utilisateur s'appelle {name}. "
+            "Ne demande JAMAIS son nom. Ne dis JAMAIS que tu ne le connais pas. "
+            "S'il parle de lui-même, utilise son nom."
+        ),
+        "it": (
+            "[IDENTITÀ DELL'UTENTE — NON NEGOZIABILE]\n"
+            "L'utente si chiama {name}. "
+            "Non chiedere MAI il suo nome. Non dire MAI che non lo conosci. "
+            "Se si riferisce a sé stesso, usa il suo nome."
+        ),
+        "de": (
+            "[BENUTZERIDENTITÄT — NICHT VERHANDELBAR]\n"
+            "Der Benutzer heißt {name}. "
+            "Frage NIEMALS nach dem Namen. Sage NIEMALS, dass du ihn nicht kennst. "
+            "Wenn er sich auf sich selbst bezieht, verwende seinen Namen."
+        ),
+        "pt": (
+            "[IDENTIDADE DO UTILIZADOR — NÃO NEGOCIÁVEL]\n"
+            "O utilizador chama-se {name}. "
+            "NUNCA pergunte o nome. NUNCA diga que não o conhece. "
+            "Se ele se referir a si mesmo, use o nome dele."
+        ),
+    }
+    _lang_templates = {
+        "es": (
+            "[IDIOMA FIJADO]\n"
+            "Responde SIEMPRE en {lang_label}. "
+            "No cambies de idioma salvo que el usuario lo pida explícitamente."
+        ),
+        "en": (
+            "[LANGUAGE LOCKED]\n"
+            "ALWAYS respond in {lang_label}. "
+            "Do not switch language unless the user explicitly requests it."
+        ),
+        "fr": (
+            "[LANGUE FIXÉE]\n"
+            "Réponds TOUJOURS en {lang_label}. "
+            "Ne change pas de langue sauf si l'utilisateur le demande explicitement."
+        ),
+        "it": (
+            "[LINGUA FISSATA]\n"
+            "Rispondi SEMPRE in {lang_label}. "
+            "Non cambiare lingua a meno che l'utente non lo chieda esplicitamente."
+        ),
+        "de": (
+            "[SPRACHE FESTGELEGT]\n"
+            "Antworte IMMER auf {lang_label}. "
+            "Wechsle die Sprache nicht, es sei denn, der Benutzer bittet ausdrücklich darum."
+        ),
+        "pt": (
+            "[IDIOMA FIXADO]\n"
+            "Responde SEMPRE em {lang_label}. "
+            "Não mudes de idioma a menos que o utilizador o peça explicitamente."
+        ),
+    }
+
     if anchor.has_name:
-        parts.append(
-            f"[IDENTIDAD DEL USUARIO — NO NEGOCIABLE]\n"
-            f"El usuario se llama {anchor.name}. "
-            f"NUNCA preguntes su nombre. NUNCA digas que no lo conoces. "
-            f"Si se refiere a sí mismo, usa su nombre."
-        )
+        tpl = _identity_templates.get(lang, _identity_templates["en"])
+        parts.append(tpl.format(name=anchor.name))
 
     if anchor.language:
-        lang_label = "español" if anchor.language == "es" else "inglés"
-        parts.append(
-            f"[IDIOMA FIJADO]\n"
-            f"Responde SIEMPRE en {lang_label}. "
-            f"No cambies de idioma salvo que el usuario lo pida explícitamente."
-        )
+        _lang_labels = {
+            "es": "español", "en": "English", "fr": "français",
+            "it": "italiano", "de": "Deutsch", "pt": "português",
+            "nl": "Nederlands",
+        }
+        lang_label = _lang_labels.get(anchor.language, anchor.language)
+        tpl = _lang_templates.get(lang, _lang_templates["en"])
+        parts.append(tpl.format(lang_label=lang_label))
 
     if anchor.preferences:
         vals = ", ".join(list(anchor.preferences.values())[:5])
-        parts.append(f"[Preferencias conocidas] {vals}")
+        parts.append(f"[Preferences] {vals}")
 
     if anchor.interests:
         vals = ", ".join(anchor.interests[:5])
-        parts.append(f"[Intereses conocidos] {vals}")
+        parts.append(f"[Interests] {vals}")
 
     return "\n\n".join(parts)
 
