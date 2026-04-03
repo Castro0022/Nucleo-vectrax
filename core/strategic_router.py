@@ -7,12 +7,13 @@ Auto-aprendizaje, budget/latency guards, kill switch.
 
 import os
 import re
-import sqlite3
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, List, Dict, Optional, Tuple
 
 import numpy as np
+
+from vectrax.db import _get_conn as _db_conn
 
 # ---------------------------------------------------------------------------
 # Tipos
@@ -129,17 +130,16 @@ LATENCY_SLOW_RATIO        = 2.0      # si es 2x más lento que el otro → penal
 
 class StrategicRouter:
 
-    def __init__(self, embedder, db_path: str):
+    def __init__(self, embedder, db_path: str = ""):
+        """Create router.  *db_path* is accepted for backward compat but ignored."""
         self._embedder = embedder
-        self._db_path = db_path
         self._topic_embeddings: Optional[Dict[str, np.ndarray]] = None
 
     # -- helpers ---------------------------------------------------------
 
     def _db(self):
-        conn = sqlite3.connect(self._db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        """Return a connection to the unified Vectrax database."""
+        return _db_conn()
 
     def _env(self, key: str, default: str = "") -> str:
         return (os.getenv(key) or default).strip()

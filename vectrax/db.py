@@ -1,6 +1,13 @@
-"""
-SQLite ledger for persistent storage of stars, constellations and proposals.
-Database is stored at ~/.vectrax/vectrax.db
+"""Vectrax Unified Database — Single source of truth.
+
+All persistent tables (gravitational memory, routing, learning) live in
+one SQLite database at ~/.vectrax/vectrax.db.  Every table is created by
+``init_db()`` — there is no separate schema file to run.
+
+Previously the routing tables (queries, responses, provider_weights,
+feedback) were defined in schema.sql and initialised by the legacy
+orchestrator.  They are now part of init_db() so a single call sets up
+the complete database.
 """
 from __future__ import annotations
 
@@ -8,7 +15,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from vectrax.identity import CHANNEL_USER
 from vectrax.models import (
@@ -29,9 +36,21 @@ def _get_conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Create tables if they do not yet exist, then run migrations."""
+    """Create ALL tables if they do not yet exist, then run migrations.
+
+    This is the **single entry point** for database initialisation.
+    It covers both the gravitational memory model (stars, constellations,
+    proposals, conversations, trajectories) AND the routing/learning model
+    (queries, responses, provider_weights, feedback, resolution_log).
+    """
     with _get_conn() as conn:
         conn.executescript("""
+            PRAGMA journal_mode=WAL;
+
+            -- =============================================================
+            -- Gravitational Memory
+            -- =============================================================
+
             CREATE TABLE IF NOT EXISTS stars (
                 id              TEXT PRIMARY KEY,
                 content         TEXT NOT NULL,
@@ -96,6 +115,73 @@ def init_db() -> None:
                 ON trajectories(channel, owner, timestamp);
             CREATE INDEX IF NOT EXISTS idx_traj_star
                 ON trajectories(star_id);
+
+            -- =============================================================
+            -- Routing & Provider Learning  (previously in schema.sql)
+            -- =============================================================
+
+            CREATE TABLE IF NOT EXISTS queries (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                prompt          TEXT NOT NULL,
+                topic           TEXT DEFAULT 'general',
+                created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+                final           TEXT,
+                divergence      REAL DEFAULT 0.0,
+                consensus_mode  INTEGER DEFAULT 0,
+                routing_mode    TEXT DEFAULT '',
+                routing_reason  TEXT DEFAULT '',
+                confidence      REAL DEFAULT 0.0,
+                risk_level      TEXT DEFAULT '',
+                estimated_savings REAL DEFAULT 0.0,
+                providers_called TEXT DEFAULT '',
+                fallback_used   INTEGER DEFAULT 0,
+                star_id         TEXT DEFAULT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS responses (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_id    INTEGER NOT NULL REFERENCES queries(id),
+                provider    TEXT NOT NULL,
+                content     TEXT,
+                latency_ms  INTEGER DEFAULT 0,
+                error       TEXT DEFAULT ''
+            );
+
+            -- Bayesian adaptive weights per provider×topic
+            CREATE TABLE IF NOT EXISTS provider_weights (
+                provider    TEXT NOT NULL,
+                topic       TEXT NOT NULL,
+                alpha       REAL DEFAULT 1.0,
+                beta        REAL DEFAULT 1.0,
+                updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(provider, topic)
+            );
+
+            CREATE TABLE IF NOT EXISTS feedback (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                query_id        INTEGER NOT NULL REFERENCES queries(id),
+                topic           TEXT NOT NULL,
+                chosen_provider TEXT NOT NULL,
+                reason          TEXT DEFAULT '',
+                created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            -- =============================================================
+            -- Resolution Learning Log
+            -- =============================================================
+
+            CREATE TABLE IF NOT EXISTS resolution_log (
+                id              TEXT PRIMARY KEY,
+                question        TEXT NOT NULL,
+                resolve_pattern TEXT NOT NULL,
+                engines_used    TEXT NOT NULL DEFAULT '[]',
+                consensus       TEXT NOT NULL DEFAULT '',
+                useful          INTEGER NOT NULL DEFAULT 0,
+                timestamp       REAL NOT NULL,
+                channel         TEXT NOT NULL DEFAULT 'user',
+                owner           TEXT NOT NULL DEFAULT '',
+                query_id        INTEGER DEFAULT NULL
+            );
         """)
     _migrate_db()
 
@@ -115,6 +201,10 @@ def _migrate_db() -> None:
         ("stars",         "distance_to_core REAL NOT NULL DEFAULT 1.0"),
         # Star type
         ("stars",         "star_type TEXT NOT NULL DEFAULT 'primary'"),
+        # Cross-reference: queries ↔ stars
+        ("queries",       "star_id TEXT DEFAULT NULL"),
+        # Cross-reference: resolution_log ↔ queries
+        ("resolution_log", "query_id INTEGER DEFAULT NULL"),
     ]
     with _get_conn() as conn:
         for table, col_def in migrations:
@@ -583,21 +673,11 @@ def get_last_session() -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 def _ensure_resolution_log() -> None:
-    """Create the resolution_log table if it doesn't exist."""
-    with _get_conn() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS resolution_log (
-                id              TEXT PRIMARY KEY,
-                question        TEXT NOT NULL,
-                resolve_pattern TEXT NOT NULL,
-                engines_used    TEXT NOT NULL DEFAULT '[]',
-                consensus       TEXT NOT NULL DEFAULT '',
-                useful          INTEGER NOT NULL DEFAULT 0,
-                timestamp       REAL NOT NULL,
-                channel         TEXT NOT NULL DEFAULT 'user',
-                owner           TEXT NOT NULL DEFAULT ''
-            )
-        """)
+    """No-op — resolution_log is now created by init_db().
+
+    Kept for backward compatibility with callers that still invoke it.
+    """
+    pass
 
 
 def log_resolution(
@@ -631,7 +711,6 @@ def get_resolution_stats(
     owner: Optional[str] = None,
 ) -> dict:
     """Return aggregate stats from the resolution log."""
-    _ensure_resolution_log()
     clauses, params = [], []
     if channel:
         clauses.append("channel=?")
@@ -651,3 +730,112 @@ def get_resolution_stats(
         ).fetchall():
             patterns[row[0]] = row[1]
     return {"total": total, "patterns": patterns}
+
+
+# ---------------------------------------------------------------------------
+# Queries & Responses  (routing / provider learning)
+# ---------------------------------------------------------------------------
+
+def insert_query(
+    prompt: str,
+    topic: str = "general",
+    routing_mode: str = "",
+    routing_reason: str = "",
+    confidence: float = 0.0,
+    risk_level: str = "",
+    star_id: Optional[str] = None,
+) -> int:
+    """Insert a routing query. Returns the auto-incremented query id."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO queries
+               (prompt, topic, routing_mode, routing_reason,
+                confidence, risk_level, star_id)
+               VALUES (?,?,?,?,?,?,?)""",
+            (prompt, topic, routing_mode, routing_reason,
+             confidence, risk_level, star_id),
+        )
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+def update_query_result(
+    query_id: int,
+    final: str,
+    divergence: float = 0.0,
+    consensus_mode: int = 0,
+    estimated_savings: float = 0.0,
+    providers_called: str = "",
+    fallback_used: int = 0,
+    star_id: Optional[str] = None,
+) -> None:
+    """Update a query row with post-resolution results."""
+    with _get_conn() as conn:
+        conn.execute(
+            """UPDATE queries SET
+               final=?, divergence=?, consensus_mode=?,
+               estimated_savings=?, providers_called=?,
+               fallback_used=?, star_id=COALESCE(?, star_id)
+               WHERE id=?""",
+            (final, divergence, consensus_mode,
+             estimated_savings, providers_called,
+             fallback_used, star_id, query_id),
+        )
+
+
+def insert_response(
+    query_id: int,
+    provider: str,
+    content: str = "",
+    latency_ms: int = 0,
+    error: str = "",
+) -> int:
+    """Insert a provider response linked to a query. Returns response id."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO responses
+               (query_id, provider, content, latency_ms, error)
+               VALUES (?,?,?,?,?)""",
+            (query_id, provider, content, latency_ms, error),
+        )
+        return cur.lastrowid  # type: ignore[return-value]
+
+
+def get_query(query_id: int) -> Optional[Dict[str, Any]]:
+    """Return a single query row as dict, or None."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM queries WHERE id=?", (query_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_recent_queries(topic: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    """Return recent queries, optionally filtered by topic."""
+    if topic:
+        sql = "SELECT * FROM queries WHERE topic=? ORDER BY id DESC LIMIT ?"
+        params: tuple = (topic, limit)
+    else:
+        sql = "SELECT * FROM queries ORDER BY id DESC LIMIT ?"
+        params = (limit,)
+    with _get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_query_with_responses(query_id: int) -> Optional[Dict[str, Any]]:
+    """Return a query with its associated responses and linked star."""
+    query = get_query(query_id)
+    if query is None:
+        return None
+    with _get_conn() as conn:
+        resp_rows = conn.execute(
+            "SELECT * FROM responses WHERE query_id=? ORDER BY id",
+            (query_id,),
+        ).fetchall()
+    query["responses"] = [dict(r) for r in resp_rows]
+    # Attach linked star if present
+    sid = query.get("star_id")
+    if sid:
+        star = get_star(sid)
+        query["star"] = star.to_dict() if star else None
+    return query

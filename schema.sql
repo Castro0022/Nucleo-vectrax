@@ -1,3 +1,13 @@
+-- ==========================================================================
+-- DEPRECATED — Reference only.
+--
+-- These tables are now created by  vectrax/db.py → init_db()  which is the
+-- single entry point for all database initialisation.  Do NOT run this file
+-- directly.  It is kept for documentation purposes.
+--
+-- See: vectrax/db.py
+-- ==========================================================================
+
 PRAGMA journal_mode=WAL;
 
 CREATE TABLE IF NOT EXISTS queries (
@@ -14,7 +24,8 @@ CREATE TABLE IF NOT EXISTS queries (
   risk_level TEXT DEFAULT '',
   estimated_savings REAL DEFAULT 0.0,
   providers_called TEXT DEFAULT '',
-  fallback_used INTEGER DEFAULT 0
+  fallback_used INTEGER DEFAULT 0,
+  star_id TEXT DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS responses (

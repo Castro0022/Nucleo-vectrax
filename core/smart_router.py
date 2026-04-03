@@ -1055,15 +1055,14 @@ class SmartRouter:
     # -- Helpers internos ---------------------------------------------------
 
     def _get_strategic_router(self):
-        """Lazy init del StrategicRouter (necesita embedder + DB)."""
+        """Lazy init del StrategicRouter (necesita embedder)."""
         if self._strategic_router is not None:
             return self._strategic_router
         try:
             from core.strategic_router import StrategicRouter
             from vectrax.embeddings import get_embedder
-            from vectrax.db import DB_PATH
             embedder = get_embedder()
-            self._strategic_router = StrategicRouter(embedder, DB_PATH)
+            self._strategic_router = StrategicRouter(embedder)
             return self._strategic_router
         except Exception as exc:
             logger.debug("StrategicRouter not available: %s", exc)
