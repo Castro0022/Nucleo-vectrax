@@ -5,8 +5,10 @@ Vectrax Supervisor — Punto de arranque unificado
 Un solo proceso que supervisa todos los servicios de Vectrax:
 
   1. Telegram Gateway (conexión con usuarios)
-  2. Meta Loop (ciclo cognitivo continuo)
-  3. Health checks periódicos
+  2. Pipeline Worker (procesamiento pesado)
+  3. Core API (FastAPI en puerto 8900)
+  4. Meta Loop (ciclo cognitivo continuo)
+  5. Health checks periódicos
 
 Si un servicio muere, el supervisor lo reinicia automáticamente.
 Si el supervisor muere, launchd lo reinicia (KeepAlive=true).
@@ -65,6 +67,9 @@ logger = logging.getLogger("vectrax.supervisor")
 # Service definitions
 # ---------------------------------------------------------------------------
 
+# Port for the Core API (FastAPI / uvicorn)
+CORE_API_PORT = int(os.environ.get("VX_CORE_PORT", "8900"))
+
 SERVICES: Dict[str, Dict] = {
     "telegram_gateway": {
         "cmd": [PYTHON, "-m", "vectrax.telegram_gateway"],
@@ -73,19 +78,32 @@ SERVICES: Dict[str, Dict] = {
         "restart_delay": 5,  # Seconds before restart
         "max_restarts": 10,  # Max restarts before giving up
     },
-    "meta_loop": {
-        "cmd": [PYTHON, str(VECTRAX_DIR / "vectrax_unified.py")],
-        "cwd": str(VECTRAX_DIR),
-        "required": False,   # Nice to have, not critical
-        "restart_delay": 10,
-        "max_restarts": 5,
-    },
     "pipeline_worker": {
         "cmd": [PYTHON, "-m", "core.transport.pipeline_worker"],
         "cwd": str(VECTRAX_DIR),
         "required": True,    # Sin worker, no hay respuestas
         "restart_delay": 3,
         "max_restarts": 20,
+    },
+    "core_api": {
+        "cmd": [
+            PYTHON, "-m", "uvicorn",
+            "services.core.app:app",
+            "--host", "0.0.0.0",
+            "--port", str(CORE_API_PORT),
+            "--no-access-log",
+        ],
+        "cwd": str(VECTRAX_DIR),
+        "required": False,   # Telegram flow works without API
+        "restart_delay": 5,
+        "max_restarts": 8,
+    },
+    "meta_loop": {
+        "cmd": [PYTHON, str(VECTRAX_DIR / "vectrax_unified.py")],
+        "cwd": str(VECTRAX_DIR),
+        "required": False,   # Nice to have, not critical
+        "restart_delay": 10,
+        "max_restarts": 5,
     },
 }
 
@@ -180,6 +198,14 @@ class ManagedService:
             self.healthy = False
             return False
 
+    # Minimum uptime (seconds) to consider the process was stable;
+    # if it ran longer than this before dying, reset the restart counter.
+    _STABLE_UPTIME = 120  # 2 minutes
+
+    # Maximum backoff delay (seconds) for required services that hit
+    # the restart cap.  Grows exponentially but never exceeds this.
+    _MAX_BACKOFF = 120  # 2 minutes
+
     def check(self) -> bool:
         """Check if the process is alive. Returns True if healthy."""
         if self.process is None:
@@ -207,17 +233,36 @@ class ManagedService:
             "[%s] Died (exit=%d, uptime=%.0fs, stderr=%s)",
             self.name, retcode, uptime, stderr_tail[:200],
         )
+
+        # If it was alive long enough, it wasn't a crash loop → reset counter
+        if uptime >= self._STABLE_UPTIME:
+            prev = self.restart_count
+            self.restart_count = 0
+            logger.info(
+                "[%s] Was stable for %.0fs → restart counter reset (%d→0)",
+                self.name, uptime, prev,
+            )
+
         return False
 
     def restart(self) -> bool:
-        """Restart after a delay."""
+        """Restart after a delay. Never gives up on required services."""
         self.restart_count += 1
+
+        # Compute delay: use backoff when past the normal restart cap
+        if self.restart_count <= self.max_restarts:
+            delay = self.restart_delay
+        else:
+            # Exponential backoff for required services that keep crashing
+            extra = self.restart_count - self.max_restarts
+            delay = min(self.restart_delay * (2 ** extra), self._MAX_BACKOFF)
+
         logger.info(
-            "[%s] Restarting in %ds (attempt %d/%d)...",
-            self.name, self.restart_delay,
+            "[%s] Restarting in %ds (attempt %d, max=%d)...",
+            self.name, delay,
             self.restart_count, self.max_restarts,
         )
-        time.sleep(self.restart_delay)
+        time.sleep(delay)
         return self.start()
 
     def stop(self) -> None:
@@ -311,11 +356,16 @@ class VectraxSupervisor:
 
             for svc in self.services.values():
                 if not svc.check():
-                    if svc.restart_count < svc.max_restarts:
+                    if svc.required:
+                        # REQUIRED services are ALWAYS restarted, never abandoned.
+                        # After max_restarts, backoff delay grows automatically.
                         svc.restart()
-                    elif svc.required:
-                        logger.critical(
-                            "[%s] REQUIRED service failed permanently!", svc.name,
+                    elif svc.restart_count < svc.max_restarts:
+                        svc.restart()
+                    else:
+                        logger.warning(
+                            "[%s] Optional service exceeded max restarts (%d) — paused",
+                            svc.name, svc.max_restarts,
                         )
 
             # --- Heartbeat checks: detect hung processes ---

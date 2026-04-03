@@ -14,8 +14,10 @@ services:
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
+    ports:
+      - "8900:8900"
     volumes:
-      - ./vault:/app/vault
+      - ./:/app
       - vectrax-runtime:/root/.vectrax
     healthcheck:
       test: ["CMD", "python", "/app/vectrax_supervisor.py", "--check"]
@@ -26,10 +28,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
-          cpus: "2.0"
+          memory: 8G
+          cpus: "4.0"
         reservations:
-          memory: 256M
+          memory: 512M
 
 volumes:
   vectrax-runtime:

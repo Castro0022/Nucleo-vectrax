@@ -1,9 +1,10 @@
 # ============================================
 # Vectrax Production Dockerfile
 # ============================================
-# Runs 3 processes via supervisor:
+# Runs 4 processes via supervisor:
 #   - Telegram Gateway (polling + fast-path)
 #   - Pipeline Worker (heavy processing)
+#   - Core API (FastAPI on port 8900)
 #   - Meta Loop (cognitive cycles)
 #
 # Usage:
@@ -27,6 +28,8 @@ RUN mkdir -p /app/vault /root/.vectrax
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8900
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD python /app/vectrax_supervisor.py --check || exit 1
