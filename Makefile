@@ -10,7 +10,7 @@ PYTEST := $(VENV)/bin/pytest
 UVICORN := $(VENV)/bin/uvicorn
 VX := $(VENV)/bin/vx
 
-.PHONY: help dev test lint run-core run-agent install clean
+.PHONY: help dev test test-integration lint run-core run-agent install clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -25,6 +25,9 @@ dev:  ## Install dev dependencies
 
 test:  ## Run all tests
 	PYTHONPATH=. $(PYTEST) tests/ -v --tb=short
+
+test-integration:  ## Run integration tests only (fast, no external deps)
+	PYTHONPATH=. $(PYTEST) tests/integration/ -v --tb=short
 
 lint:  ## Run linting (basic syntax check)
 	$(PYTHON) -m py_compile services/core/app.py
