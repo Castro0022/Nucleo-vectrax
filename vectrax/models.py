@@ -1,5 +1,19 @@
 """
-Core data models for the Vectrax memory graph.
+Core data models for the Vectrax cognitive universe.
+
+Architecture:
+  - Each user IS a star (UserStar). One star per user.
+  - Each interaction feeds the star as a Pattern.
+  - The star's embedding is the centroid of its patterns.
+  - Gravity pulls the star toward the nucleus with activity.
+  - Stars converge with other stars by semantic proximity.
+  - Constellations are clusters of users with convergent knowledge.
+  - The nucleus (Vectrax) is the gravity center — enriched by every star.
+  - The creator (Mario) is a privileged root star, not the nucleus.
+
+Legacy:
+  - The Star class is preserved for backward compatibility with legacy_stars.
+  - New code should use UserStar + Pattern exclusively.
 """
 from __future__ import annotations
 
@@ -10,6 +24,17 @@ from typing import List, Optional
 
 from vectrax.identity import CHANNEL_CREATOR, CHANNEL_USER
 
+
+# ---------------------------------------------------------------------------
+# Roles
+# ---------------------------------------------------------------------------
+ROLE_CREATOR = "creator"     # Mario — privileged root star
+ROLE_USER = "user"           # regular user star
+
+# Creator privileges
+CREATOR_INITIAL_MASS = 0.50  # creator starts with high mass
+CREATOR_CENTROID_WEIGHT = 3  # creator patterns weigh 3x in nucleus centroid
+USER_INITIAL_MASS = 0.01     # new users start at periphery
 
 # ---------------------------------------------------------------------------
 # Layer constants
@@ -117,9 +142,90 @@ class Star:
         }
 
 
+# ---------------------------------------------------------------------------
+# UserStar — one star per user (the new model)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class UserStar:
+    """A user IS a star — a living source of knowledge for Vectrax.
+
+    Each interaction enriches the star (patterns, mass, embedding).
+    The star gains gravity with use and moves toward the nucleus.
+    Even if the user disappears, their knowledge persists in the system.
+    """
+
+    user_id: str = ""                        # PK — unique identity (e.g. "tg:12345")
+    role: str = ROLE_USER                    # 'creator' | 'user'
+    embedding: Optional[bytes] = None        # centroid of all patterns (float32 BLOB)
+    mass: float = USER_INITIAL_MASS          # gravitational mass (0.01 → 1.0)
+    distance_to_core: float = 1.0            # 1.0 = periphery, 0.0 = nucleus
+    layer: str = LAYER_OUTER                 # outer / mid / core
+    pattern_count: int = 0                   # total interactions absorbed
+    topic_fingerprint: str = "{}"             # JSON: {"trading": 12, "code": 5, ...}
+    activation_count: int = 0                # total activations (queries + ingests)
+    last_active: float = field(default_factory=time.time)
+    knowledge_contributed: bool = False      # nucleus has absorbed this star's knowledge
+    created_at: float = field(default_factory=time.time)
+
+    @property
+    def is_creator(self) -> bool:
+        return self.role == ROLE_CREATOR
+
+    def to_dict(self) -> dict:
+        import json as _json
+        return {
+            "user_id": self.user_id,
+            "role": self.role,
+            "mass": round(self.mass, 6),
+            "distance_to_core": round(self.distance_to_core, 6),
+            "layer": self.layer,
+            "pattern_count": self.pattern_count,
+            "topic_fingerprint": _json.loads(self.topic_fingerprint)
+                                 if isinstance(self.topic_fingerprint, str)
+                                 else self.topic_fingerprint,
+            "activation_count": self.activation_count,
+            "last_active": self.last_active,
+            "knowledge_contributed": self.knowledge_contributed,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Pattern — individual interaction that feeds a star
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Pattern:
+    """A single interaction that enriches a UserStar.
+
+    Patterns are the raw material. They have no gravity of their own —
+    the gravity belongs to the star they feed.
+    """
+
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str = ""                        # FK → UserStar.user_id
+    content: str = ""                        # the interaction text
+    embedding: Optional[bytes] = None        # float32 BLOB
+    topic: str = "general"                   # detected topic
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "content": self.content[:200],
+            "topic": self.topic,
+            "timestamp": self.timestamp,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Constellation — cluster of user-stars with convergent knowledge
+# ---------------------------------------------------------------------------
+
 @dataclass
 class Constellation:
-    """A cluster of related stars detected through embedding similarity."""
+    """A cluster of user-stars with convergent knowledge."""
 
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     star_ids: List[str] = field(default_factory=list)

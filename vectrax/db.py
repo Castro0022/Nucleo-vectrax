@@ -1,13 +1,12 @@
 """Vectrax Unified Database — Single source of truth.
 
-All persistent tables (gravitational memory, routing, learning) live in
-one SQLite database at ~/.vectrax/vectrax.db.  Every table is created by
-``init_db()`` — there is no separate schema file to run.
+All persistent tables live in one SQLite database at ~/.vectrax/vectrax.db.
+Every table is created by ``init_db()``.
 
-Previously the routing tables (queries, responses, provider_weights,
-feedback) were defined in schema.sql and initialised by the legacy
-orchestrator.  They are now part of init_db() so a single call sets up
-the complete database.
+Architecture (v2 — gravitational):
+  - user_stars: one row per user — the star IS the user
+  - patterns: individual interactions that feed user stars
+  - Legacy tables (stars, constellations) are preserved as legacy_stars
 """
 from __future__ import annotations
 
@@ -20,7 +19,9 @@ from typing import Any, Dict, List, Optional
 from vectrax.identity import CHANNEL_USER
 from vectrax.models import (
     COLLECTIVE_OWNER,
-    Constellation, MIN_MASS, Proposal, Star,
+    CREATOR_INITIAL_MASS,
+    Constellation, MIN_MASS, Pattern, Proposal, Star,
+    ROLE_CREATOR, ROLE_USER, USER_INITIAL_MASS, UserStar,
     STAR_TYPE_CONVERGENCE, STAR_TYPE_PRIMARY,
 )
 
@@ -165,6 +166,36 @@ def init_db() -> None:
                 reason          TEXT DEFAULT '',
                 created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
             );
+
+            -- =============================================================
+            -- User Stars (v2 gravitational model)
+            -- =============================================================
+
+            CREATE TABLE IF NOT EXISTS user_stars (
+                user_id             TEXT PRIMARY KEY,
+                role                TEXT NOT NULL DEFAULT 'user',
+                embedding           BLOB,
+                mass                REAL NOT NULL DEFAULT 0.01,
+                distance_to_core    REAL NOT NULL DEFAULT 1.0,
+                layer               TEXT NOT NULL DEFAULT 'outer',
+                pattern_count       INTEGER NOT NULL DEFAULT 0,
+                topic_fingerprint   TEXT NOT NULL DEFAULT '{}',
+                activation_count    INTEGER NOT NULL DEFAULT 0,
+                last_active         REAL NOT NULL DEFAULT 0,
+                knowledge_contributed INTEGER NOT NULL DEFAULT 0,
+                created_at          REAL NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS patterns (
+                id          TEXT PRIMARY KEY,
+                user_id     TEXT NOT NULL,
+                content     TEXT NOT NULL,
+                embedding   BLOB,
+                topic       TEXT NOT NULL DEFAULT 'general',
+                timestamp   REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_patterns_user
+                ON patterns(user_id, timestamp);
 
             -- =============================================================
             -- Resolution Learning Log
@@ -839,3 +870,182 @@ def get_query_with_responses(query_id: int) -> Optional[Dict[str, Any]]:
         star = get_star(sid)
         query["star"] = star.to_dict() if star else None
     return query
+
+
+# ---------------------------------------------------------------------------
+# User Stars  (v2 gravitational model)
+# ---------------------------------------------------------------------------
+
+def upsert_user_star(star: UserStar) -> None:
+    """Create or update a user star."""
+    import time as _time
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO user_stars
+               (user_id, role, embedding, mass, distance_to_core, layer,
+                pattern_count, topic_fingerprint, activation_count,
+                last_active, knowledge_contributed, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET
+               embedding=excluded.embedding,
+               mass=excluded.mass,
+               distance_to_core=excluded.distance_to_core,
+               layer=excluded.layer,
+               pattern_count=excluded.pattern_count,
+               topic_fingerprint=excluded.topic_fingerprint,
+               activation_count=excluded.activation_count,
+               last_active=excluded.last_active,
+               knowledge_contributed=excluded.knowledge_contributed""",
+            (star.user_id, star.role, star.embedding,
+             star.mass, star.distance_to_core, star.layer,
+             star.pattern_count, star.topic_fingerprint,
+             star.activation_count, star.last_active,
+             int(star.knowledge_contributed),
+             star.created_at or _time.time()),
+        )
+
+
+def get_user_star(user_id: str) -> Optional[UserStar]:
+    """Return a user star by user_id, or None."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM user_stars WHERE user_id=?", (user_id,)
+        ).fetchone()
+    return _row_to_user_star(row) if row else None
+
+
+def get_all_user_stars(layer: Optional[str] = None) -> List[UserStar]:
+    """Return all user stars, optionally filtered by layer."""
+    if layer:
+        sql = "SELECT * FROM user_stars WHERE layer=? ORDER BY mass DESC"
+        params: tuple = (layer,)
+    else:
+        sql = "SELECT * FROM user_stars ORDER BY mass DESC"
+        params = ()
+    with _get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [_row_to_user_star(r) for r in rows]
+
+
+def activate_user_star(user_id: str) -> None:
+    """Increment activation_count and update last_active."""
+    import time as _time
+    with _get_conn() as conn:
+        conn.execute(
+            """UPDATE user_stars SET
+               activation_count = activation_count + 1,
+               last_active = ?
+               WHERE user_id = ?""",
+            (_time.time(), user_id),
+        )
+
+
+def _row_to_user_star(row: sqlite3.Row) -> UserStar:
+    return UserStar(
+        user_id=row["user_id"],
+        role=row["role"],
+        embedding=row["embedding"],
+        mass=float(row["mass"]),
+        distance_to_core=float(row["distance_to_core"]),
+        layer=row["layer"],
+        pattern_count=int(row["pattern_count"]),
+        topic_fingerprint=row["topic_fingerprint"],
+        activation_count=int(row["activation_count"]),
+        last_active=float(row["last_active"]),
+        knowledge_contributed=bool(row["knowledge_contributed"]),
+        created_at=float(row["created_at"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Patterns  (interactions that feed user stars)
+# ---------------------------------------------------------------------------
+
+def insert_pattern(pattern: Pattern) -> str:
+    """Insert a pattern. Returns the pattern id."""
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO patterns
+               (id, user_id, content, embedding, topic, timestamp)
+               VALUES (?,?,?,?,?,?)""",
+            (pattern.id, pattern.user_id, pattern.content,
+             pattern.embedding, pattern.topic, pattern.timestamp),
+        )
+    return pattern.id
+
+
+def get_patterns_for_user(
+    user_id: str,
+    limit: int = 200,
+) -> List[Pattern]:
+    """Return the most recent patterns for a user."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM patterns WHERE user_id=?
+               ORDER BY timestamp DESC LIMIT ?""",
+            (user_id, limit),
+        ).fetchall()
+    return [_row_to_pattern(r) for r in reversed(rows)]
+
+
+def get_pattern_count(user_id: str) -> int:
+    """Return total pattern count for a user."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM patterns WHERE user_id=?", (user_id,)
+        ).fetchone()
+    return row[0] if row else 0
+
+
+def get_topic_distribution(user_id: str) -> Dict[str, int]:
+    """Return topic distribution for a user's patterns."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """SELECT topic, COUNT(*) as cnt FROM patterns
+               WHERE user_id=? GROUP BY topic""",
+            (user_id,),
+        ).fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+def _row_to_pattern(row: sqlite3.Row) -> Pattern:
+    return Pattern(
+        id=row["id"],
+        user_id=row["user_id"],
+        content=row["content"],
+        embedding=row["embedding"],
+        topic=row["topic"],
+        timestamp=float(row["timestamp"]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Universe status (nucleus heartbeat)
+# ---------------------------------------------------------------------------
+
+def get_universe_status() -> Dict[str, Any]:
+    """Return the live state of the Vectrax universe."""
+    with _get_conn() as conn:
+        star_count = conn.execute("SELECT COUNT(*) FROM user_stars").fetchone()[0]
+        pattern_count = conn.execute("SELECT COUNT(*) FROM patterns").fetchone()[0]
+        layers = {}
+        for row in conn.execute(
+            "SELECT layer, COUNT(*) as cnt FROM user_stars GROUP BY layer"
+        ).fetchall():
+            layers[row[0]] = row[1]
+        total_mass = conn.execute(
+            "SELECT COALESCE(SUM(mass), 0) FROM user_stars"
+        ).fetchone()[0]
+        # Most active stars
+        active = conn.execute(
+            """SELECT user_id, mass, distance_to_core, layer,
+                      pattern_count, activation_count, last_active
+               FROM user_stars ORDER BY last_active DESC LIMIT 10"""
+        ).fetchall()
+    return {
+        "stars": star_count,
+        "patterns": pattern_count,
+        "total_mass": round(float(total_mass), 4),
+        "layers": layers,
+        "active_stars": [dict(r) for r in active],
+    }
