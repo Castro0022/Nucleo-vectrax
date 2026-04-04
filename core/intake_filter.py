@@ -248,8 +248,13 @@ def evaluate_intake(
         )
 
     # ── Filtro 2: duplicado exacto del último mensaje ────────
+    # Exception: temporal questions are never duplicates (time changes)
+    _is_temporal = bool(re.match(
+        r"^(?:qu[eé]\s+(?:hora|d[ií]a|fecha)|what\s+(?:time|day|date)|quelle\s+heure)",
+        text_lower,
+    ))
     last = _last_messages.get(user_id, "")
-    if text_lower == last:
+    if text_lower == last and not _is_temporal:
         return IntakeResult(
             importance=Importance.LOW,
             action=Action.IGNORE,
