@@ -561,6 +561,7 @@ class ExternalGateway:
             if not response_text:
                 response_text, source_path = self._resolve_via_pipeline_v2(
                     user_id, content, channel,
+                    extra_context=memory_context,
                 )
 
             # 6. Consolidar respuesta (dedup, limpieza interna)
@@ -1033,6 +1034,7 @@ class ExternalGateway:
         user_id: str,
         content: str,
         channel: str,
+        extra_context: str = "",
     ) -> Tuple[str, str]:
         """
         Pipeline cognitivo unificado con clasificación semántica.
@@ -1040,11 +1042,18 @@ class ExternalGateway:
         El SmartRouter usa el SemanticClassifier para decidir automáticamente
         entre Google Places, búsqueda web, memoria, identidad o LLM.
 
+        Args:
+            extra_context: additional context (temporal, identity, language)
+                           to inject into LLM prompts.
+
         Returns:
             (response_text, source_path) donde source_path es "places",
             "llm", "online", "local", "identity", etc.
         """
+        # Store extra_context so _generate_cognitive_response can use it
+        self._current_extra_context = extra_context
         answer, source_path = self._resolve_via_pipeline(user_id, content, channel)
+        self._current_extra_context = ""
         if answer:
             return answer, source_path
         return "", "llm"
@@ -1396,12 +1405,18 @@ class ExternalGateway:
     ) -> str:
         """
         Genera respuesta usando el Intelligence Router (multi-IA).
-        La identidad de Vectrax se inyecta a nivel de provider (core_identity.py).
-        NO pasar system_prompt aquí — los providers ya lo manejan.
+        Inyecta contexto temporal + identidad + memoria en el prompt.
         """
         from vectrax.identity_layer import build_prompt
 
-        prompt = build_prompt(content, memory_context, user_id)
+        # Merge local memory context with the full pipeline context
+        # (temporal, identity, language) stored by _resolve_via_pipeline_v2
+        full_context = memory_context
+        extra = getattr(self, '_current_extra_context', '')
+        if extra:
+            full_context = extra + ("\n\n" + full_context if full_context else "")
+
+        prompt = build_prompt(content, full_context, user_id)
 
         # Intentar vía Intelligence Bridge (multi-modelo)
         # system_prompt=None — los providers inyectan VECTRAX_SYSTEM_PROMPT
