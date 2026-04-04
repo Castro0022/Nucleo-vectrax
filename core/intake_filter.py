@@ -333,7 +333,14 @@ def evaluate_intake(
 
     # ── Filtro 7: mensaje corto sin pregunta → guardar ───────
     word_count = len(text.split())
-    has_question = "?" in text or "¿" in text
+    has_question = (
+        "?" in text or "¿" in text
+        or bool(re.match(
+            r"^(?:qu[eé]|c[oó]mo|cu[aá]l|cu[aá]ndo|d[oó]nde|cu[aá]nto|qui[eé]n"
+            r"|what|who|where|when|why|how|which)\b",
+            text_lower,
+        ))
+    )
     if word_count <= 5 and not has_question:
         # Antes de almacenar, verificar si hay hechos que responder
         try:
