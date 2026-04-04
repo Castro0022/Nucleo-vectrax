@@ -22,6 +22,7 @@ Creador: Mario Bravo Castro (via Oz)
 from __future__ import annotations
 
 import logging
+import re
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -41,6 +42,19 @@ MAX_SYNTHESIS_PATTERNS = 8
 PATTERN_RELEVANCE_THRESHOLD = 0.55
 
 
+# Questions the nucleus should NEVER try to answer
+# (temporal, real-time data — the main LLM has context for these)
+_SKIP_PATTERNS = re.compile(
+    r"(?:"
+    r"\b(?:qu[eé]\s+(?:hora|d[ií]a|fecha)|what\s+(?:time|day|date)|quelle\s+heure)\b"
+    r"|\b(?:hora\s+(?:es|actual)|time\s+(?:is\s+it|now)|heure\s+est)\b"
+    r"|\b(?:cu[aá]ndo|when\s+is|qu[eé]\s+d[ií]a\s+es)\b"
+    r"|\b(?:hoy\s+es|today\s+is|estamos\s+a)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
 def resolve_from_nucleus(
     question: str,
     user_id: str = "",
@@ -51,6 +65,11 @@ def resolve_from_nucleus(
     Returns a synthesized answer string, or None if the nucleus
     doesn't have enough knowledge on this topic.
     """
+    # Skip temporal/real-time questions — the main LLM has the context
+    if _SKIP_PATTERNS.search(question):
+        logger.info("Nucleus: skipping temporal question → main LLM")
+        return None
+
     try:
         return _resolve(question, user_id)
     except Exception as exc:
