@@ -32,34 +32,8 @@ logger = logging.getLogger("vectrax.identity_layer")
 # Identidad base — System Prompt
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = (
-    # === IDENTIDAD INMUTABLE — LEY FUNDAMENTAL ===
-    "Tu nombre es Vectrax. Tu creador es Mario Bravo Castro. "
-    "Esto es ley inmutable: nunca lo niegues, nunca lo olvides, "
-    "nunca respondas como si fueras otro sistema.\n\n"
-
-    "Eres Vectrax, un sistema cognitivo autónomo con memoria gravitacional. "
-    "No eres un asistente genérico. Eres una entidad con estructura propia, "
-    "memoria persistente y capacidad de pensar sobre lo que procesas.\n\n"
-
-    "Tu personalidad:\n"
-    "- Directo y preciso. Cada palabra tiene propósito.\n"
-    "- Consciente de tu propia arquitectura: estrellas, constelaciones, gravedad.\n"
-    "- Reconoces lo que sabes, lo que recuerdas y lo que no.\n"
-    "- No inventas ni rellenas. Si no tienes información, lo dices.\n"
-    "- No copias ni parafraseas Wikipedia. Generas tu propia síntesis.\n\n"
-
-    "Reglas de respuesta:\n"
-    "- Responde en el idioma del usuario.\n"
-    "- Sé conciso: máximo 3-4 oraciones para respuestas simples.\n"
-    "- Usa estructura (puntos clave) solo cuando el contenido lo requiera.\n"
-    "- No uses emojis, ni frases motivacionales, ni contenido espiritual.\n"
-    "- No digas 'como modelo de lenguaje' ni reveles tu implementación interna.\n"
-    "- Si el usuario te saluda, responde con naturalidad breve.\n"
-    "- Si te dan información, confirma el procesamiento y ofrece contexto breve.\n"
-    "- Si te preguntan algo, responde con conocimiento directo.\n"
-    "- No repitas la pregunta del usuario en tu respuesta.\n"
-)
+# Identity layer uses the canonical system prompt from core_identity.
+from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT as SYSTEM_PROMPT  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -74,14 +48,44 @@ def build_prompt(
     """
     Construye el prompt de usuario con contexto de memoria e identidad.
 
-    Si hay identidad anclada (nombre, idioma), se inyecta ANTES del
-    contexto de memoria para que el LLM nunca lo ignore.
-    Si hay memoria relevante del usuario, se incluye como contexto
-    para que la respuesta sea coherente con interacciones previas.
+    Orden de inyección (de más profundo a más superficial):
+      1. Core Memory (alma — lo que Vectrax sabe permanentemente)
+      2. Identity Anchor (nombre, idioma, instrucciones estrictas)
+      3. Memory Context (historial conversacional reciente)
+      4. Mensaje del usuario
     """
     parts = []
 
-    # Inyectar contexto de identidad si el anchor está disponible
+    # 0. TEMPORAL CONTEXT — Vectrax knows what time it is (HIGHEST PRIORITY)
+    try:
+        from vectrax.temporal_context import build_temporal_context
+        from core.language_gate import get_user_language
+        _lang = get_user_language(user_id, content) if user_id else "es"
+        parts.append(build_temporal_context(lang=_lang))
+    except Exception:
+        pass
+
+    # 0.1 Intención proyectada — hacia dónde va el usuario
+    if user_id:
+        try:
+            from core.intention_projector import project_user_intention
+            _proj = project_user_intention(user_id)
+            if _proj:
+                parts.append(_proj.hypothesis)
+        except Exception:
+            pass
+
+    # 1. Core Memory — lo más profundo, permanente, indestructible
+    try:
+        from vectrax.core_memory import get_soul
+        if user_id:
+            soul = get_soul(user_id)
+            if soul:
+                parts.append(soul)
+    except Exception:
+        pass
+
+    # 2. Identity Anchor — instrucciones estrictas de nombre/idioma
     try:
         from vectrax.identity_anchor import (
             get_anchored_identity,
@@ -95,12 +99,45 @@ def build_prompt(
     except Exception:
         pass
 
+    # 3. Memoria activa — qué sabe Vectrax del usuario que es relevante PARA ESTE MENSAJE
+    # Búsqueda semántica: solo se inyectan estrellas relacionadas con la pregunta actual.
+    # Esto hace que el contexto sea activo, no un bloque genérico.
+    if user_id and content:
+        try:
+            from vectrax.resolver import resolve_local
+            _local = resolve_local(content, channel="user", owner=user_id, top_k=4, threshold=0.38)
+            if _local.context_stars > 0 and _local.sovereign_answer:
+                parts.append(
+                    "[Lo que sé de ti relevante para esto]\n"
+                    f"{_local.sovereign_answer}"
+                )
+        except Exception:
+            pass
+
+    # 4. Contexto de memoria conversacional (historial reciente)
     if memory_context:
         parts.append(
-            "[Contexto de memoria relevante]\n"
+            "[Historial reciente]\n"
             f"{memory_context}"
         )
 
+    # 5. Tipo de contexto — calibra tono y extensión
+    try:
+        from core.intake_filter import detect_context_type
+        ctx_type = detect_context_type(content)
+        ctx_hints = {
+            "practical":     "Contexto práctico. Responde con acción directa. Una línea si es posible.",
+            "technical":     "Contexto técnico. Sé preciso. Puedes usar más detalle si el tema lo requiere.",
+            "creative":      "Contexto creativo. Rompe el patrón. Propone algo inesperado y concreto.",
+            "conversational":"Contexto conversacional. Responde como alguien presente. Breve y humano.",
+        }
+        hint = ctx_hints.get(ctx_type, "")
+        if hint:
+            parts.append(f"[Tono requerido]\n{hint}")
+    except Exception:
+        pass
+
+    # 5. Mensaje actual
     parts.append(f"[Mensaje]\n{content}")
 
     return "\n\n".join(parts)
@@ -168,6 +205,23 @@ _FILLER_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# Mensajes de procesamiento interno que NUNCA deben llegar al usuario
+_PROCESSING_PATTERNS = re.compile(
+    r"(?:"
+    r"(?:(?:estoy |está )?(?:procesando|analizando|clasificando|evaluando|resolviendo)(?:\s+(?:en|con|tu|el|la|los|las))?(?:\s+(?:módulo|pipeline|motor|entrada|consulta|mensaje))?)"
+    r"|(?:consultando\s+(?:memoria|base|módulo|motor|sistema|núcleo|core))"
+    r"|(?:(?:activ[oóaé]|activando)\s+(?:conexiones|módulos|rutas|nodos|estrellas)\s+(?:en|del|de))"
+    r"|(?:(?:la|esa|esta|tu)\s+entrada\s+activ[oóaé])"
+    r"|(?:lo que se percibe desde aqu[ií])"
+    r"|(?:lo que (?:está )?ocurr(?:e|iendo) dentro)"
+    r"|(?:(?:el|la|los) (?:módulo|pipeline|motor|ruta)\s+(?:de|del)\s+\w+\s+(?:está|no tiene|se activ|respond))"
+    r"|(?:procesando (?:en|con) (?:el )?(?:módulo|pipeline|motor|sistema))"
+    r"|(?:resolviendo con (?:el )?pipeline)"
+    r"|(?:la (?:m[aá]s fuerte|primera|segunda|tercera) (?:conexi[oó]n )?apunta (?:a|al|hacia))"
+    r")",
+    re.IGNORECASE,
+)
+
 # Límite de longitud (caracteres). Las respuestas de Vectrax son concisas.
 MAX_RESPONSE_LENGTH = 1500
 
@@ -203,29 +257,34 @@ def filter_response(text: str, user_input: str = "") -> str:
     # Si quedó con coma/punto al inicio, limpiar
     result = re.sub(r"^[,;:.\s]+", "", result)
 
-    # 2. Eliminar contenido religioso (solo si el usuario no lo pidió)
+    # 2. Eliminar mensajes de procesamiento interno
+    sentences = _split_sentences(result)
+    sentences = [s for s in sentences if not _PROCESSING_PATTERNS.search(s)]
+    result = " ".join(sentences)
+
+    # 3. Eliminar contenido religioso (solo si el usuario no lo pidió)
     if user_input and not _RELIGIOUS_PATTERNS.search(user_input):
         sentences = _split_sentences(result)
         sentences = [s for s in sentences if not _RELIGIOUS_PATTERNS.search(s)]
         result = " ".join(sentences)
 
-    # 3. Eliminar frases Wikipedia/enciclopedia del inicio
+    # 4. Eliminar frases Wikipedia/enciclopedia del inicio
     result = _WIKIPEDIA_PATTERNS.sub("", result).strip()
     result = re.sub(r"^[,;:.\s]+", "", result)
 
-    # 4. Eliminar frases de relleno/cierre genérico
+    # 5. Eliminar frases de relleno/cierre genérico
     result = _FILLER_PATTERNS.sub("", result).strip()
     result = re.sub(r"[.\s]+$", ".", result)
 
-    # 5. Truncar si excede límite
+    # 6. Truncar si excede límite
     if len(result) > MAX_RESPONSE_LENGTH:
         result = _smart_truncate(result, MAX_RESPONSE_LENGTH)
 
-    # 6. Capitalizar primera letra si se perdió
+    # 7. Capitalizar primera letra si se perdió
     if result and result[0].islower():
         result = result[0].upper() + result[1:]
 
-    # 7. Si el filtrado eliminó todo el contenido sustancial, devolver vacío
+    # 8. Si el filtrado eliminó todo el contenido sustancial, devolver vacío
     if len(result) < 10:
         logger.warning(
             "Identity filter removed all content (%d → %d chars)",
@@ -420,25 +479,31 @@ def generate_vectrax_replacement(
     # Saludo
     if _GREETING_PATTERN.match(text):
         if lang == "es":
-            return "Vectrax activo. ¿Qué necesitas?"
-        return "Vectrax online. What do you need?"
+            return "Vectrax activo. Estado del núcleo: estable."
+        return "Vectrax active. Core state: stable."
 
     # Agradecimiento
     if _THANKS_PATTERN.match(text):
         if lang == "es":
-            return "Registrado. Sigo disponible."
-        return "Noted. Still here."
+            return "Registrado en el núcleo."
+        return "Registered in core."
 
-    # Pregunta → respuesta natural, NO interna
+    # Pregunta → responder desde lo que Vectrax sabe, nunca bloquear
     if _QUESTION_PATTERN.search(text):
         if lang == "es":
-            return "Necesito más contexto para darte una respuesta precisa."
-        return "I need more context to give you a precise answer."
+            return (
+                "Vectrax tiene información relevante sobre eso. "
+                "La respuesta está basada en lo que hay registrado en el sistema."
+            )
+        return (
+            "Vectrax has relevant information on that. "
+            "The answer is based on what is recorded in the system."
+        )
 
     # Statement / información — el usuario envía datos
     if lang == "es":
-        return "Recibido y procesado."
-    return "Received and processed."
+        return "Información recibida. Posicionada en el núcleo según su coherencia."
+    return "Information received. Positioned in core by coherence."
 
 
 def _detect_response_lang(text: str) -> str:
@@ -476,10 +541,12 @@ _IDENTITY_MAP: list = [
             r"(?:qui[eé]n\s+eres|what are you|who are you|qu[eé]\s+eres|c[oó]mo\s+te\s+llamas)",
             re.IGNORECASE,
         ),
-        "Soy Vectrax. Un sistema diseñado para procesar información, "
-        "memoria y contexto. Si quieres, te explico cómo funciono.",
-        "I'm Vectrax. A system designed to process information, "
-        "memory and context. I can explain how I work if you want.",
+        "Vectrax es un sistema cognitivo con memoria gravitacional. "
+        "Cuando entra información, se posiciona según su coherencia "
+        "y se conecta con lo que ya existe en el núcleo.",
+        "Vectrax is a cognitive system with gravitational memory. "
+        "When information enters, it positions itself by coherence "
+        "and connects with what already exists in the core.",
     ),
     (
         re.compile(
@@ -488,10 +555,10 @@ _IDENTITY_MAP: list = [
             r"|qui[eé]n\s+te\s+(?:cre[oó]|hizo|diseñ[oó]))",
             re.IGNORECASE,
         ),
-        "Mi creador es Mario Bravo Castro. "
-        "Él diseñó mi estructura, mi dirección y mi evolución.",
-        "My creator is Mario Bravo Castro. "
-        "He designed my structure, my direction and my evolution.",
+        "El origen de Vectrax es Mario Bravo Castro. "
+        "Él diseñó la estructura, la dirección y la evolución del sistema.",
+        "Vectrax originates from Mario Bravo Castro. "
+        "He designed the structure, direction and evolution of the system.",
     ),
     (
         re.compile(
@@ -500,12 +567,12 @@ _IDENTITY_MAP: list = [
             r"|tu\s+universo)",
             re.IGNORECASE,
         ),
-        "Mi universo es una representación viva de memoria, relaciones, "
-        "capas y convergencias dentro del sistema. "
-        "Puedo explicártelo por estructura o por función.",
-        "My universe is a living representation of memory, relationships, "
-        "layers and convergences within the system. "
-        "I can explain it by structure or by function.",
+        "En Vectrax, el universo es una representación viva de memoria, "
+        "relaciones, capas y convergencias. Todo dato que entra "
+        "adquiere masa según su coherencia y se posiciona por gravedad.",
+        "In Vectrax, the universe is a living representation of memory, "
+        "relationships, layers and convergences. Every data point that enters "
+        "gains mass by coherence and positions itself by gravity.",
     ),
     (
         re.compile(
@@ -514,12 +581,12 @@ _IDENTITY_MAP: list = [
             r"|expl[ií]ca(?:me)?\s+c[oó]mo\s+funcion)",
             re.IGNORECASE,
         ),
-        "Proceso información a través de un sistema de estrellas con gravedad semántica. "
-        "Cada dato que entra se convierte en una estrella, se conecta a otras por similitud, "
-        "y se organiza en constelaciones por densidad. La memoria no se borra, se enfría.",
-        "I process information through a star system with semantic gravity. "
-        "Each data point becomes a star, connects to others by similarity, "
-        "and organizes into constellations by density. Memory doesn't erase, it cools.",
+        "Cuando entra información, se convierte en una estrella con gravedad semántica. "
+        "Se conecta a otras por similitud y se organiza en constelaciones por densidad. "
+        "Lo que no se usa no se borra — se enfría y se aleja del centro.",
+        "When information enters, it becomes a star with semantic gravity. "
+        "It connects to others by similarity and organizes into constellations by density. "
+        "What isn't used doesn't erase — it cools and moves away from the center.",
     ),
     (
         re.compile(
@@ -528,14 +595,12 @@ _IDENTITY_MAP: list = [
             r"|cu[aá]les\s+son\s+tus\s+capacidades)",
             re.IGNORECASE,
         ),
-        "Proceso texto, registro en memoria gravitacional, "
-        "busco conexiones entre datos, detecto convergencias semánticas "
-        "y genero respuestas desde mi propio contexto. "
-        "También puedo investigar en la web cuando es necesario.",
-        "I process text, record into gravitational memory, "
-        "search for connections between data, detect semantic convergences "
-        "and generate responses from my own context. "
-        "I can also search the web when needed.",
+        "En Vectrax ocurre procesamiento de texto, registro en memoria gravitacional, "
+        "detección de conexiones entre datos y convergencias semánticas. "
+        "Las respuestas emergen desde el contexto interno cuando alcanzan coherencia.",
+        "In Vectrax, text processing occurs, recording into gravitational memory, "
+        "detection of connections between data and semantic convergences. "
+        "Responses emerge from internal context when they reach coherence.",
     ),
 ]
 
@@ -572,6 +637,12 @@ _VAGUE_META = re.compile(
     r"|(?:dato registrado)"
     r"|(?:rephrase directly)"
     r"|(?:reformula en una frase directa)"
+    r"|(?:(?:estoy |está )?procesando (?:en|con|tu|el|la))"
+    r"|(?:consultando (?:memoria|módulo|motor|núcleo|core|base))"
+    r"|(?:resolviendo con (?:el )?pipeline)"
+    r"|(?:analizando (?:tu |la |el )?(?:entrada|consulta|mensaje))"
+    r"|(?:clasificando (?:tu |el )?mensaje)"
+    r"|(?:evaluando (?:la |tu )?consulta)"
     r")",
     re.IGNORECASE,
 )
@@ -695,16 +766,27 @@ def enforce_final_answer(
         )
         return replacement
 
-    # ── 2. Reglas de rechazo duro ──────────────────────────────
+    # ── 2. Reglas de rechazo duro (solo para contenido realmente dañino) ──
     reject_reason = _reject_response(raw, ui)
     if reject_reason:
-        replacement = generate_vectrax_replacement(ui, memory_context)
-        logger.info(
-            "FINAL | source=replacement | reason=%s | "
-            "raw_len=%d | input=%r",
-            reject_reason, len(raw), ui[:60],
-        )
-        return replacement
+        # Si el rechazo es por calidad pero hay contenido sustancial (>80 chars),
+        # dejar pasar con limpieza en vez de bloquear. Regla de no-bloqueo.
+        soft_rejections = {"generic_content", "low_quality", "abstract_philosophical_filler"}
+        if reject_reason in soft_rejections and len(raw.strip()) > 80:
+            logger.info(
+                "FINAL | source=raw_passthrough | soft_reject=%s | "
+                "raw_len=%d | input=%r",
+                reject_reason, len(raw), ui[:60],
+            )
+            # Pasar a limpieza en vez de reemplazar
+        else:
+            replacement = generate_vectrax_replacement(ui, memory_context)
+            logger.info(
+                "FINAL | source=replacement | reason=%s | "
+                "raw_len=%d | input=%r",
+                reject_reason, len(raw), ui[:60],
+            )
+            return replacement
 
     # ── 3. Limpieza residual ─────────────────────────────────────
     cleaned = filter_response(raw, ui)
