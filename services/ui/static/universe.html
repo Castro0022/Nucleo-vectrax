@@ -76,9 +76,9 @@ function distToRadius(d) {
   return d * maxR;
 }
 
-// Mass → visual size
+// Mass → visual size (amplified for visibility)
 function massToSize(m) {
-  return 3 + m * 18;
+  return 4 + Math.pow(m, 0.5) * 22;
 }
 
 // Layer → color
@@ -224,6 +224,14 @@ function draw() {
     ctx.beginPath();
     ctx.arc(sx, sy, size * 0.3, 0, Math.PI * 2);
     ctx.fill();
+
+    // Pattern count label (visible for stars with > 5 patterns)
+    if (s.pattern_count > 5) {
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(s.pattern_count, sx, sy + size + 12);
+    }
 
     // Hover detection
     const dx = mouseX - sx, dy = mouseY - sy;
