@@ -169,6 +169,23 @@ class ExternalGateway:
         self._total_received += 1
 
         # ══════════════════════════════════════════════════════════════
+        # CICLO OPERATIVO — observador que sigue cada paso del ciclo
+        # percibir → interpretar → decidir → actuar → verificar → responder → registrar
+        # ══════════════════════════════════════════════════════════════
+        _cycle_obs = None
+        try:
+            from core.operational_cycle import CycleObserver
+            _user_tier = "free"
+            try:
+                from core.operator.user_tiers import get_tier
+                _user_tier = get_tier(user_id).value
+            except Exception:
+                pass
+            _cycle_obs = CycleObserver(channel=channel, user_tier=_user_tier)
+        except Exception:
+            pass
+
+        # ══════════════════════════════════════════════════════════════
         # STEP 0: IDENTITY ANCHOR — cargar identidad ANTES de todo
         # ══════════════════════════════════════════════════════════════
         identity_ctx = ""
@@ -194,6 +211,107 @@ class ExternalGateway:
             )
         except Exception as exc:
             logger.debug("Identity anchor unavailable: %s", exc)
+
+        # ══════════════════════════════════════════════════════════════
+        # STEP 0.5: INTAKE FILTER — triage antes de todo
+        # ══════════════════════════════════════════════════════════════
+        try:
+            from core.intake_filter import evaluate_intake, Action
+            intake = evaluate_intake(
+                content, user_id,
+                user_tier="free",
+                has_memory=bool(anchor and anchor.has_name),
+            )
+            logger.info(
+                "Pipeline: intake | importance=%s | action=%s | reason=%s",
+                intake.importance.value, intake.action.value, intake.reason,
+            )
+
+            # PERCIBIR + INTERPRETAR — huella del ciclo operativo
+            if _cycle_obs:
+                try:
+                    from vectrax.resolver import _detect_lang
+                    _op_lang = _detect_lang(content)
+                except Exception:
+                    _op_lang = "es"
+                _cycle_obs.set_perceive(
+                    intent=intake.reason,
+                    lang=_op_lang,
+                    words=len(content.split()),
+                )
+                _cycle_obs.set_interpret(
+                    action=intake.action.value,
+                    reason=intake.context_hint or intake.reason,
+                )
+
+            # Ignorar ruido y duplicados
+            if intake.action == Action.IGNORE:
+                return GatewayResult(
+                    event_id=correlation_id,
+                    user_id=user_id,
+                    channel=channel,
+                    response="",
+                    source="intake_filter",
+                    timestamp=ts,
+                    processed=True,
+                )
+
+            # Guardar sin respuesta (datos, statements cortos)
+            if intake.action == Action.STORE and not intake.context_hint == "identity":
+                try:
+                    from vectrax.engine import ingest_v2
+                    _topic = intake.context_hint or "general"
+                    ingest_v2(
+                        text=content,
+                        user_id=user_id,
+                        topic=_topic,
+                    )
+                    logger.info(
+                        "Pipeline: STORE → ingest_v2 | user=%s | topic=%s",
+                        user_id[:20], _topic,
+                    )
+                except Exception as _ie:
+                    logger.debug("ingest_v2 failed (passthrough): %s", _ie)
+                return GatewayResult(
+                    event_id=correlation_id,
+                    user_id=user_id,
+                    channel=channel,
+                    response="",
+                    source="intake_store",
+                    timestamp=ts,
+                    processed=True,
+                )
+        except Exception as exc:
+            logger.debug("Intake filter failed (passthrough): %s", exc)
+
+        # ══════════════════════════════════════════════════════════════
+        # STEP 0.6: DOMINANT VECTOR — un foco por ciclo
+        # ══════════════════════════════════════════════════════════════
+        try:
+            from core.dominant_vector import (
+                evaluate_vector, build_state_from_context, Vector,
+            )
+            from core.operator.user_tiers import get_tier
+
+            _tier = "free"
+            try:
+                _tier = get_tier(user_id).value
+            except Exception:
+                pass
+
+            dv_state = build_state_from_context(
+                has_pending_message=True,
+                has_new_data=True,
+                user_tier=_tier,
+            )
+            dv = evaluate_vector(dv_state)
+
+            # MONETIZE: si el vector dominante es monetizar, inyectar hint
+            if dv.vector == Vector.MONETIZE:
+                content = content  # procesar normalmente, pero al final...
+                # Se podría agregar un post-hook para sugerir upgrade
+        except Exception as exc:
+            logger.debug("Dominant vector failed (passthrough): %s", exc)
 
         # 1. Registrar entrada en ledger
         ledger.record_event(
@@ -241,6 +359,116 @@ class ExternalGateway:
         if identity_ctx:
             memory_context = identity_ctx + ("\n\n" + memory_context if memory_context else "")
 
+        # 4.1 Contexto de equipo — se inyecta antes del contexto personal
+        try:
+            from vectrax.team_memory import get_team_context
+            team_ctx = get_team_context(user_id)
+            if team_ctx:
+                memory_context = team_ctx + ("\n\n" + memory_context if memory_context else "")
+                logger.info("Pipeline: team context injected | user=%s", user_id[:20])
+        except Exception as exc:
+            logger.debug("Team context injection failed (passthrough): %s", exc)
+
+        # 4.1b Detección natural de actividad de lead
+        # "Hablé con Carlos hoy", "Carlos dice que está caro"
+        _lead_update_done = False
+        try:
+            from core.lead_tracker import get_leads, record_contact, update_lead_status
+            from core.preference_tracker import detect_and_store
+            import re as _re
+
+            _leads = get_leads(user_id)
+            _lead_names = {l["name"].lower(): l for l in _leads}
+
+            if _lead_names:
+                _text_lower = content.lower()
+                for _lname, _lead in _lead_names.items():
+                    if _lname in _text_lower:
+                        # Detectar tipo de actualización
+                        _contact_signals = ["hablé", "hable", "llame", "llamé", "escribí",
+                                            "escribi", "contacté", "contacte", "reuní",
+                                            "me dijo", "respondió", "respondio",
+                                            "spoke", "called", "contacted", "met with"]
+                        _objection_signals = ["dice que está caro", "está caro", "muy caro",
+                                              "no tiene presupuesto", "no puede pagar",
+                                              "says it's expensive", "too expensive"]
+
+                        if any(s in _text_lower for s in _objection_signals):
+                            # Guardar objeción de precio
+                            detect_and_store(user_id, content)
+                            record_contact(user_id, _lead["name"])
+                            response_text = (
+                                f"Actualizado.\n"
+                                f"Objeción detectada en {_lead['name']}: precio.\n"
+                                f"La tendré en cuenta en el próximo seguimiento."
+                            )
+                            _lead_update_done = True
+                            break
+                        elif any(s in _text_lower for s in _contact_signals):
+                            # Registrar contacto + detectar preferencias
+                            record_contact(user_id, _lead["name"])
+                            detect_and_store(user_id, content)
+                            # Detectar si sigue interesado
+                            _still_interested = any(
+                                w in _text_lower for w in
+                                ["interesado", "interested", "quiere", "quieren",
+                                 "le gusta", "avanzar", "sí quiere", "si quiere"]
+                            )
+                            if _still_interested:
+                                response_text = (
+                                    f"Actualizado.\n"
+                                    f"{_lead['name']} sigue interesado y queda en seguimiento."
+                                )
+                            else:
+                                response_text = (
+                                    f"Actualizado.\n"
+                                    f"Contacto registrado con {_lead['name']}."
+                                )
+                            _lead_update_done = True
+                            break
+        except Exception as _le:
+            logger.debug("Lead natural update failed: %s", _le)
+
+        # 4.2 Auto-contexto — Vectrax se observa a sí mismo (ruta prioritaria)
+        # Si el usuario habla SOBRE Vectrax, resolvemos ANTES del pipeline normal
+        # con un prompt donde el auto-contexto es fuente primaria obligatoria.
+        _self_resolved = False
+        try:
+            from vectrax.self_context import is_self_referential, resolve_self_aware
+            if is_self_referential(content):
+                from core.language_gate import get_user_language
+                _lang = get_user_language(user_id, content)
+                _self_answer = resolve_self_aware(content, lang=_lang)
+                if _self_answer:
+                    response_text = _self_answer
+                    _self_resolved = True
+                    logger.info(
+                        "Pipeline: SELF-AWARE resolved | user=%s | len=%d",
+                        user_id[:20], len(_self_answer),
+                    )
+        except Exception as exc:
+            logger.debug("Self-aware resolution failed (passthrough): %s", exc)
+
+        # ══════════════════════════════════════════════════════════════
+        # STEP 4.3: NUCLEUS RESOLVER — respond from accumulated knowledge
+        # If the nucleus KNOWS the answer (close to centroid + patterns),
+        # respond from its own knowledge before calling the LLM.
+        # ══════════════════════════════════════════════════════════════
+        _nucleus_resolved = False
+        if not response_text and not _self_resolved and not _lead_update_done:
+            try:
+                from vectrax.nucleus_resolver import resolve_from_nucleus
+                _nucleus_answer = resolve_from_nucleus(content, user_id)
+                if _nucleus_answer:
+                    response_text = _nucleus_answer
+                    _nucleus_resolved = True
+                    logger.info(
+                        "Pipeline: NUCLEUS resolved | user=%s | len=%d",
+                        user_id[:20], len(_nucleus_answer),
+                    )
+            except Exception as exc:
+                logger.debug("Nucleus resolver failed (passthrough): %s", exc)
+
         # 4.5 Política conversacional: idioma persistente + instrucciones
         try:
             from core.operator.conversational_policy import (
@@ -280,6 +508,14 @@ class ExternalGateway:
             except Exception as exc:
                 logger.debug("Memory resolve failed: %s", exc)
 
+        # DECIDIR — registrar ruta elegida
+        _resolve_start = time.time()
+        _final_source = (
+            "memory" if memory_resolved
+            else "self_aware" if _self_resolved
+            else ""
+        )
+
         if memory_resolved:
             # Memoria es soberana: enforce_final_answer sin rechazo/identidad
             try:
@@ -287,9 +523,14 @@ class ExternalGateway:
                 response_text = enforce_final_answer(
                     content, response_text, memory_context,
                     memory_resolved=True,
+                    user_id=user_id,
                 )
             except Exception:
                 pass
+        elif _self_resolved:
+            # Auto-aware ya resolvió — aplicar language gate y listo
+            source_path = "self_aware"
+
         else:
             # ══════════════════════════════════════════════════════════════
             # FAST-PATH: saludos y mensajes triviales (sin LLM)
@@ -322,6 +563,7 @@ class ExternalGateway:
                 # Solo el camino LLM pasa por identity layer (filtros de calidad)
                 response_text = self._apply_identity_layer(
                     response_text, content, memory_context,
+                    user_id=user_id,
                 )
             elif source_path == "places":
                 # Places solo pasa por enforce_style (datos reales, no filtrar)
@@ -342,8 +584,24 @@ class ExternalGateway:
                 except Exception as exc:
                     logger.debug("Identity guard failed: %s", exc)
 
-        # ══════════════════════════════════════════════════════════════
+        # ACTUAR — registrar latencia y si la respuesta fue vacía
+        _act_latency = (time.time() - _resolve_start) * 1000
+        _is_fallback = hasattr(locals(), 'source_path') and 'fallback' in str(locals().get('source_path', ''))
+        if _cycle_obs:
+            _cycle_obs.set_decide(
+                route=_final_source or locals().get('source_path', ''),
+                strategy=locals().get('source_path', ''),
+                confidence=1.0 if memory_resolved or _self_resolved else 0.7,
+            )
+            _cycle_obs.set_act(
+                latency_ms=_act_latency,
+                empty=not bool(response_text),
+                fallback=_is_fallback,
+            )
+
+        # ════════════════════════════════════════════════════════════
         # STEP 8: REFRESH ANCHOR — actualizar cache si usuario dio su nombre
+        # Si el anchor acaba de obtener nombre por primera vez → enviar capacidades
         # ══════════════════════════════════════════════════════════════
         if anchor and not anchor.has_name:
             try:
@@ -353,6 +611,23 @@ class ExternalGateway:
                         "Pipeline: identity updated post-store | name=%s",
                         refreshed.name,
                     )
+                    # Primera vez que Vectrax sabe el nombre → mostrar capacidades
+                    _name = refreshed.name.split()[0]  # solo primer nombre
+                    _lang = refreshed.language or "es"
+                    if _lang == "en":
+                        response_text = (
+                            f"Nice to meet you, {_name}.\n\n"
+                            f"I'm Vectrax.\n"
+                            f"Save a follow-up with:\n"
+                            f"/lead add name"
+                        )
+                    else:
+                        response_text = (
+                            f"Mucho gusto, {_name}.\n\n"
+                            f"Soy Vectrax.\n"
+                            f"Guarda un seguimiento con:\n"
+                            f"/lead add nombre"
+                        )
             except Exception:
                 pass
 
@@ -432,6 +707,32 @@ class ExternalGateway:
         except Exception:
             pass
 
+        # 10.1 Feed the user's star (gravitational v2)
+        #   - Always activate (tracks engagement)
+        #   - Ingest as pattern only for statements with real content
+        #     (questions just activate, noise is already filtered by intake)
+        try:
+            from vectrax.db import activate_user_star
+            activate_user_star(user_id)
+
+            # Ingest content as pattern if it's a statement (not a question)
+            _is_question = "?" in content or "¿" in content
+            _is_short_noise = len(content.split()) <= 3
+            if not _is_question and not _is_short_noise:
+                from vectrax.engine import ingest_v2
+                _route_topic = "general"
+                try:
+                    _route_topic = locals().get('_smart_topic', 'general') or 'general'
+                except Exception:
+                    pass
+                ingest_v2(
+                    text=content,
+                    user_id=user_id,
+                    topic=_route_topic,
+                )
+        except Exception as _gv2:
+            logger.debug("Gravitational v2 feed failed (passthrough): %s", _gv2)
+
         # 11. Registrar respuesta en ledger
         ledger.record_event(
             action="external.message_response",
@@ -449,6 +750,68 @@ class ExternalGateway:
         )
 
         self._total_responded += 1
+
+        # ════════════════════════════════════════════════════════════
+        # RESPONSE AUDITOR — evaluar y reescribir si es genérica
+        # Solo para respuestas LLM o self-aware, no para memoria/fast-path
+        # ════════════════════════════════════════════════════════════
+        _audit_ran = False
+        _audit_passed = True
+        _audit_rewritten = False
+        if response_text and not memory_resolved:
+            try:
+                from vectrax.response_auditor import run_audit, audit_fast
+                from core.language_gate import get_user_language
+                _audit_lang = get_user_language(user_id, content)
+                _pre_audit = response_text
+                response_text = run_audit(
+                    response=response_text,
+                    query=content,
+                    user_id=user_id,
+                    lang=_audit_lang,
+                )
+                _audit_ran = True
+                _audit_rewritten = response_text != _pre_audit
+                _audit_passed = not _audit_rewritten
+            except Exception as exc:
+                logger.debug("Response auditor failed (passthrough): %s", exc)
+
+        # VERIFICAR — registrar resultado del auditor
+        if _cycle_obs:
+            _cycle_obs.set_verify(
+                ran=_audit_ran,
+                passed=_audit_passed,
+                rewritten=_audit_rewritten,
+            )
+
+        # ════════════════════════════════════════════════════════════
+        # LANGUAGE GATE FINAL — OBLIGATORIO para TODA respuesta
+        # Última puerta: fuerza idioma correcto sin importar la ruta.
+        # Cubre: fast, places, online, identity, llm, memory, etc.
+        # ══════════════════════════════════════════════════════════════
+        if response_text:
+            try:
+                from core.language_gate import enforce_language, get_user_language
+                _user_lang = get_user_language(user_id, content)
+                response_text = enforce_language(response_text, _user_lang, user_id)
+            except Exception as exc:
+                logger.debug("Final language gate failed (passthrough): %s", exc)
+
+        # RESPONDER + REGISTRAR — última huella del ciclo
+        if _cycle_obs:
+            _final_source_path = (
+                "memory" if memory_resolved
+                else "self_aware" if _self_resolved
+                else locals().get('source_path', '')
+            )
+            _cycle_obs.set_respond(
+                length=len(response_text) if response_text else 0,
+                source=_final_source_path,
+            )
+            try:
+                _cycle_obs.commit()
+            except Exception:
+                pass
 
         return GatewayResult(
             event_id=correlation_id,
@@ -512,27 +875,29 @@ class ExternalGateway:
         ):
             return "Entendido."
 
-        # Identidad propia de Vectrax
+        # Identidad de Vectrax — respuesta fija desde core_identity, sin LLM
         if _re.search(
-            r"(?:c[oó]mo te llamas|cu[aá]l es tu nombre|who are you"
+            r"(?:c[oó]mo te llamas|cu[áa]l es tu nombre|who are you"
             r"|what(?:'?s| is) your name|qui[eé]n eres|tu nombre"
             r"|your name|tienes nombre|ten[eé]s nombre"
-            r"|c[oó]mo te digo|como te digo|dime tu nombre"
-            r"|tell me your name)",
+            r"|c[oó]mo te digo|como te digo|dime tu nombre|tell me your name"
+            r"|qu[eé] (?:eres|es|hace|ofrece|puedes hacer)"
+            r"|para qu[eé] sirves|c[oó]mo funciona[s]?"
+            r"|qu[eé] es vectrax|what is vectrax|what are you|q eres"
+            r"|cosa sei|was bist du|qui es[- ]tu|wat ben je)",
             t,
         ):
-            return (
-                "Soy Vectrax Core. Mi creador es Mario Bravo Castro."
-            )
-
-        if _re.search(
-            r"(?:qu[eé] eres|what are you|q eres)",
-            t,
-        ):
-            return (
-                "Soy Vectrax, un sistema cognitivo autónomo con memoria gravitacional. "
-                "Mi creador es Mario Bravo Castro."
-            )
+            _lang = "es"
+            try:
+                from vectrax.resolver import _detect_lang
+                _lang = _detect_lang(content)
+            except Exception:
+                pass
+            try:
+                from vectrax.core_identity import get_product_identity
+                return get_product_identity(_lang)
+            except Exception:
+                return "Vectrax es tu memoria inteligente. Recuerda todo lo que le dices y te ayuda a decidir mejor con el tiempo."
 
         return ""
 
@@ -848,8 +1213,25 @@ class ExternalGateway:
                     return answer, resolve_mode
 
             elif smart_route.strategy == Strategy.RESOLVE_MEMORY:
-                resolve_mode = "memory"
-                # Continúa al ingest + LLM más abajo
+                # RESOLVE_MEMORY = el SmartRouter no encontró ruta clara
+                # Ir directo al LLM con el contexto de memoria disponible.
+                # Esto evita que se cuente como fallback cuando el LLM sí responde.
+                resolve_mode = "llm"
+                local_ctx = ""
+                try:
+                    from vectrax.resolver import resolve_local
+                    local_res = resolve_local(content, internal_channel, user_id)
+                    if local_res.context_stars > 0:
+                        local_ctx = local_res.sovereign_answer or ""
+                except Exception:
+                    pass
+                answer = self._generate_cognitive_response(
+                    content, user_id, internal_channel, local_ctx,
+                )
+                if answer:
+                    sr.record_feedback(smart_route, success=True, word_count=word_count)
+                    return answer, resolve_mode
+                # Solo llega aquí si el LLM falló completamente
 
             elif smart_route.strategy in (
                 Strategy.ROUTE_SINGLE, Strategy.ROUTE_MULTI, Strategy.ROUTE_COGNITIVE,
@@ -903,7 +1285,7 @@ class ExternalGateway:
             except Exception as exc:
                 logger.warning("Resolver fallback failed: %s", exc)
 
-        # ── Ingest (registrar en memoria como estrella) ────────────
+        # ── Ingest (registrar en memoria como estrella) ────────────────────────────
         memory_context = ""
         try:
             from vectrax.engine import ingest
@@ -939,7 +1321,18 @@ class ExternalGateway:
                 except Exception:
                     pass
         else:
+            # Solo aquí hubo un fallo REAL — ni SmartRouter ni LLM pudieron resolver
             logger.warning("Pipeline: no response generated for %r", content[:60])
+            try:
+                from core.fallback_intents import record_fallback
+                record_fallback(
+                    intent_category=smart_route.topic if smart_route else "unknown",
+                    resolve_mode=smart_route.strategy.value if smart_route else "unknown",
+                    reason="llm_empty_response",
+                    word_count=len(content.split()),
+                )
+            except Exception:
+                pass
             if smart_route:
                 try:
                     sr.record_feedback(
@@ -969,11 +1362,14 @@ class ExternalGateway:
         response: str,
         user_input: str,
         memory_context: str = "",
+        user_id: str = "",
     ) -> str:
         """Puerta final: enforce_final_answer decide toda salida."""
         try:
             from vectrax.identity_layer import enforce_final_answer
-            return enforce_final_answer(user_input, response, memory_context)
+            return enforce_final_answer(
+                user_input, response, memory_context, user_id=user_id,
+            )
         except Exception as exc:
             logger.debug("Identity layer failed (passthrough): %s", exc)
             return response
@@ -989,14 +1385,15 @@ class ExternalGateway:
     ) -> str:
         """
         Genera respuesta usando el Intelligence Router (multi-IA).
-        Usa el system prompt y prompt builder del identity_layer.
+        La identidad de Vectrax se inyecta a nivel de provider (core_identity.py).
+        NO pasar system_prompt aquí — los providers ya lo manejan.
         """
-        from vectrax.identity_layer import SYSTEM_PROMPT, build_prompt
+        from vectrax.identity_layer import build_prompt
 
-        system_prompt = SYSTEM_PROMPT
         prompt = build_prompt(content, memory_context, user_id)
 
         # Intentar vía Intelligence Bridge (multi-modelo)
+        # system_prompt=None — los providers inyectan VECTRAX_SYSTEM_PROMPT
         try:
             from vectrax.intelligence_bridge import (
                 initialize,
@@ -1011,10 +1408,7 @@ class ExternalGateway:
                 )
 
             if is_ready():
-                result = route_single(
-                    prompt,
-                    system_prompt=system_prompt,
-                )
+                result = route_single(prompt)
                 if result.get("success") and result.get("content"):
                     logger.info(
                         "LLM response via %s (%s) | tokens=%s",
@@ -1033,27 +1427,24 @@ class ExternalGateway:
 
         # Fallback: OpenAI directo si el bridge falla
         try:
-            return self._generate_openai_direct(
-                prompt, system_prompt,
-            )
+            return self._generate_openai_direct(prompt)
         except Exception as exc:
             logger.warning("OpenAI direct fallback failed: %s", exc)
 
         return ""
 
     @staticmethod
-    def _generate_openai_direct(
-        prompt: str,
-        system_prompt: str,
-    ) -> str:
+    def _generate_openai_direct(prompt: str) -> str:
         """
         Fallback directo a OpenAI si el Intelligence Router no está disponible.
+        Usa VECTRAX_SYSTEM_PROMPT como único system message (identidad estricta).
         """
         import os
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
             return ""
 
+        from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT
         import httpx
         resp = httpx.post(
             "https://api.openai.com/v1/chat/completions",
@@ -1064,7 +1455,7 @@ class ExternalGateway:
             json={
                 "model": "gpt-4o-mini",
                 "messages": [
-                    {"role": "system", "content": system_prompt},
+                    {"role": "system", "content": VECTRAX_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
                 "max_tokens": 500,
