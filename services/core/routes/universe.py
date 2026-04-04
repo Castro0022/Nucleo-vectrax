@@ -10,11 +10,23 @@ No auth required for basic status (read-only, no PII).
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import APIRouter
+from fastapi.responses import HTMLResponse
 
 router = APIRouter(tags=["universe"])
+
+_UNIVERSE_HTML = Path(__file__).resolve().parent.parent.parent / "ui" / "static" / "universe.html"
+
+
+@router.get("/universe/view", response_class=HTMLResponse)
+async def universe_view():
+    """Visual rendering of the Vectrax universe (HTML/Canvas)."""
+    if _UNIVERSE_HTML.exists():
+        return HTMLResponse(_UNIVERSE_HTML.read_text())
+    return HTMLResponse("<h1>universe.html not found</h1>", status_code=404)
 
 
 @router.get("/universe")

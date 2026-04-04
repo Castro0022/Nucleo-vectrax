@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vectrax — Universe</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; font-family: 'SF Mono', 'Fira Code', monospace; }
+  canvas { display: block; }
+  #hud {
+    position: fixed; top: 16px; left: 16px; color: #0ff; font-size: 12px;
+    line-height: 1.6; pointer-events: none; z-index: 10;
+    text-shadow: 0 0 8px rgba(0,255,255,0.4);
+  }
+  #hud .label { color: #888; }
+  #hud .val { color: #0ff; }
+  #hud .creator { color: #f0c040; }
+  #hud .core { color: #ff4040; }
+  #hud .title { font-size: 16px; color: #fff; margin-bottom: 8px; letter-spacing: 2px; }
+  #tooltip {
+    position: fixed; display: none; background: rgba(0,20,40,0.92);
+    border: 1px solid #0ff; border-radius: 6px; padding: 10px 14px;
+    color: #fff; font-size: 11px; line-height: 1.5; z-index: 20;
+    pointer-events: none; max-width: 260px;
+    box-shadow: 0 0 20px rgba(0,255,255,0.15);
+  }
+  #tooltip .tt-name { font-size: 13px; font-weight: bold; color: #0ff; }
+  #tooltip .tt-creator { color: #f0c040; }
+  #tooltip .tt-core { color: #ff6060; }
+</style>
+</head>
+<body>
+<div id="hud"></div>
+<div id="tooltip"></div>
+<canvas id="c"></canvas>
+<script>
+const API = '/v1/universe';
+const POLL_MS = 3000;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hud = document.getElementById('hud');
+const tooltip = document.getElementById('tooltip');
+
+let W, H, cx, cy;
+let data = null;
+let hoveredStar = null;
+let mouseX = 0, mouseY = 0;
+let pulse = 0;
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  cx = W / 2;
+  cy = H / 2;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Fetch data
+async function fetchUniverse() {
+  try {
+    const r = await fetch(API);
+    if (r.ok) data = await r.json();
+  } catch(e) {}
+}
+fetchUniverse();
+setInterval(fetchUniverse, POLL_MS);
+
+// Mouse tracking for tooltip
+canvas.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+
+// Map distance_to_core (0=center, 1=edge) to screen radius
+function distToRadius(d) {
+  const maxR = Math.min(W, H) * 0.42;
+  return d * maxR;
+}
+
+// Mass → visual size
+function massToSize(m) {
+  return 3 + m * 18;
+}
+
+// Layer → color
+function layerColor(layer, role) {
+  if (role === 'creator') return '#f0c040';
+  if (layer === 'core') return '#ff4040';
+  if (layer === 'mid') return '#00ccff';
+  return '#336688';
+}
+
+function layerGlow(layer, role) {
+  if (role === 'creator') return 'rgba(240,192,64,0.3)';
+  if (layer === 'core') return 'rgba(255,64,64,0.3)';
+  if (layer === 'mid') return 'rgba(0,204,255,0.2)';
+  return 'rgba(51,102,136,0.1)';
+}
+
+// Draw
+function draw() {
+  pulse += 0.02;
+  ctx.clearRect(0, 0, W, H);
+
+  // Background stars (decoration)
+  if (!draw._bgStars) {
+    draw._bgStars = [];
+    for (let i = 0; i < 200; i++) {
+      draw._bgStars.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        s: Math.random() * 1.2,
+        a: Math.random(),
+      });
+    }
+  }
+  for (const s of draw._bgStars) {
+    ctx.fillStyle = `rgba(255,255,255,${0.1 + s.a * 0.3})`;
+    ctx.fillRect(s.x, s.y, s.s, s.s);
+  }
+
+  if (!data || !data.stars) {
+    ctx.fillStyle = '#0ff';
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Conectando al núcleo...', cx, cy);
+    requestAnimationFrame(draw);
+    return;
+  }
+
+  const stars = data.stars;
+
+  // Orbital rings
+  for (const d of [0.3, 0.6, 1.0]) {
+    const r = distToRadius(d);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(0,255,255,0.06)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // Layer labels
+  ctx.font = '10px monospace';
+  ctx.fillStyle = 'rgba(0,255,255,0.15)';
+  ctx.textAlign = 'left';
+  ctx.fillText('CORE', cx + distToRadius(0.15), cy - 6);
+  ctx.fillText('MID', cx + distToRadius(0.45), cy - 6);
+  ctx.fillText('OUTER', cx + distToRadius(0.8), cy - 6);
+
+  // Nucleus (pulsing center)
+  const nucleusPulse = 1 + Math.sin(pulse * 2) * 0.15;
+  const nucleusR = 12 * nucleusPulse;
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, nucleusR * 3);
+  grad.addColorStop(0, 'rgba(0,255,255,0.8)');
+  grad.addColorStop(0.3, 'rgba(0,200,255,0.3)');
+  grad.addColorStop(1, 'rgba(0,100,200,0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, nucleusR * 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(cx, cy, nucleusR, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#0ff';
+  ctx.beginPath();
+  ctx.arc(cx, cy, nucleusR * 0.6, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Convergence lines
+  if (data.convergences) {
+    for (const c of data.convergences) {
+      const a = stars.find(s => s.user_id === c.star_a);
+      const b = stars.find(s => s.user_id === c.star_b);
+      if (a && b && a._sx != null && b._sx != null) {
+        ctx.beginPath();
+        ctx.moveTo(a._sx, a._sy);
+        ctx.lineTo(b._sx, b._sy);
+        ctx.strokeStyle = `rgba(0,255,255,${0.1 + c.similarity * 0.3})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+  }
+
+  // Stars
+  hoveredStar = null;
+  const hoverDist = 20;
+
+  for (let i = 0; i < stars.length; i++) {
+    const s = stars[i];
+    const dist = s.distance_to_core;
+    const r = distToRadius(dist);
+    // Distribute angle by index + gentle orbit
+    const angle = (i / stars.length) * Math.PI * 2 + pulse * 0.1 * (1 - s.mass);
+    const sx = cx + Math.cos(angle) * r;
+    const sy = cy + Math.sin(angle) * r;
+    s._sx = sx;
+    s._sy = sy;
+
+    const size = massToSize(s.mass);
+    const color = layerColor(s.layer, s.role);
+    const glow = layerGlow(s.layer, s.role);
+
+    // Glow
+    const g2 = ctx.createRadialGradient(sx, sy, 0, sx, sy, size * 2.5);
+    g2.addColorStop(0, glow);
+    g2.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g2;
+    ctx.beginPath();
+    ctx.arc(sx, sy, size * 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Star body
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(sx, sy, size, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Inner bright spot
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(sx, sy, size * 0.3, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Hover detection
+    const dx = mouseX - sx, dy = mouseY - sy;
+    if (Math.sqrt(dx*dx + dy*dy) < size + hoverDist) {
+      hoveredStar = s;
+    }
+  }
+
+  // Tooltip
+  if (hoveredStar) {
+    const s = hoveredStar;
+    const nameClass = s.role === 'creator' ? 'tt-creator' : (s.layer === 'core' ? 'tt-core' : '');
+    tooltip.innerHTML = `
+      <div class="tt-name ${nameClass}">${s.role === 'creator' ? '★ ' : '☆ '}${s.user_id}</div>
+      <div>role: <b>${s.role}</b></div>
+      <div>mass: <b>${s.mass.toFixed(4)}</b></div>
+      <div>distance: <b>${s.distance_to_core.toFixed(4)}</b></div>
+      <div>layer: <b>${s.layer}</b></div>
+      <div>patterns: <b>${s.pattern_count}</b></div>
+      <div>activations: <b>${s.activation_count}</b></div>
+    `;
+    tooltip.style.display = 'block';
+    tooltip.style.left = (mouseX + 16) + 'px';
+    tooltip.style.top = (mouseY - 20) + 'px';
+  } else {
+    tooltip.style.display = 'none';
+  }
+
+  // HUD
+  const totalMass = data.nucleus?.total_mass || 0;
+  const heartbeat = data.heartbeat ? new Date(data.heartbeat * 1000).toLocaleTimeString() : '—';
+  hud.innerHTML = `
+    <div class="title">VECTRAX UNIVERSE</div>
+    <span class="label">nucleus:</span> <span class="val">${data.nucleus?.alive ? 'ALIVE' : 'DEAD'}</span><br>
+    <span class="label">heartbeat:</span> <span class="val">${heartbeat}</span><br>
+    <span class="label">total mass:</span> <span class="val">${totalMass.toFixed(4)}</span><br>
+    <span class="label">stars:</span> <span class="val">${data.star_count || 0}</span>
+    <span class="label"> patterns:</span> <span class="val">${data.pattern_count || 0}</span><br>
+    <span class="label">layers:</span>
+    <span class="core">core:${data.layers?.core || 0}</span>
+    <span class="val"> mid:${data.layers?.mid || 0}</span>
+    <span class="label"> outer:${data.layers?.outer || 0}</span><br>
+    <span class="label">convergences:</span> <span class="val">${data.convergences?.length || 0}</span>
+  `;
+
+  requestAnimationFrame(draw);
+}
+
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
