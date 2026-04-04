@@ -1,19 +1,26 @@
 """
-Vectrax Engine — orchestrates the full pipeline:
+Vectrax Engine — orchestrates the full pipeline.
 
-  ingest(text, success) →
-    1. Embed the event
-    2. Find similar existing stars
-    3. Create/update the Star record
-    4. Link to similar stars in the graph
-    5. Detect/update constellations in dense components
-    6. Recompute gravity scores
-    7. Check if any constellation qualifies for a structural proposal
+v2 (gravitational):
+  ingest_v2(text, user_id, topic) →
+    1. Embed the text
+    2. Insert as Pattern linked to user_id
+    3. Get or create the UserStar
+    4. Recalculate star centroid (mean of pattern embeddings)
+    5. Recalculate mass (activity × diversity × convergence)
+    6. Recalculate distance to core
+    7. Detect convergence with other user-stars
+    8. Update nucleus centroid
+
+Legacy ingest() is preserved for backward compatibility.
 """
 from __future__ import annotations
 
 import time
 from typing import List, Optional, Tuple
+
+import json as _json
+import logging
 
 from vectrax import db, graph as g
 from vectrax.embeddings import (
@@ -22,12 +29,15 @@ from vectrax.embeddings import (
     encode_embedding,
     embed,
     find_similar,
+    mean_embedding,
 )
 from vectrax.models import STAR_TYPE_PRIMARY
 from vectrax.gravity import (
     assign_layer,
     compute_constellation_gravity,
+    compute_distance_from_mass,
     compute_star_gravity,
+    compute_user_star_mass,
 )
 from vectrax.identity import (
     CHANNEL_CREATOR,
@@ -42,14 +52,24 @@ from vectrax.models import (
     COLLECTIVE_CONSTELLATION_MIN_STARS,
     COLLECTIVE_OWNER,
     CONSTELLATION_MIN_STARS,
+    CREATOR_CENTROID_WEIGHT,
     PROPOSAL_GRAVITY_THRESHOLD,
     PROPOSAL_MIN_MEMBERS,
+    ROLE_CREATOR,
+    ROLE_USER,
     SIMILARITY_THRESHOLD,
     STAR_TYPE_CONVERGENCE,
     Constellation,
+    Pattern,
     Proposal,
     Star,
+    UserStar,
 )
+
+logger = logging.getLogger("vectrax.engine")
+
+# Max patterns used to compute centroid (recent window)
+_CENTROID_WINDOW = 200
 
 
 # ---------------------------------------------------------------------------
@@ -445,3 +465,135 @@ def reorganize() -> dict:
     """
     from vectrax.gravity import recompute_all
     return recompute_all()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v2 GRAVITATIONAL INGEST — 1 star per user
+# ═══════════════════════════════════════════════════════════════════════════
+
+def ingest_v2(
+    text: str,
+    user_id: str,
+    topic: str = "general",
+    is_creator: bool = False,
+) -> UserStar:
+    """
+    Gravitational ingest: feed a user's star with a new pattern.
+
+    Pipeline:
+      1. Embed the text
+      2. Insert as Pattern
+      3. Get or create the UserStar
+      4. Recalculate centroid (mean of recent pattern embeddings)
+      5. Recalculate mass (activity × diversity × convergence)
+      6. Recalculate distance to core + layer
+      7. Detect convergence with other user-stars
+      8. Update nucleus centroid
+
+    Returns the updated UserStar.
+    """
+    db.init_db()
+    t0 = time.time()
+
+    # ── 1. Embed ───────────────────────────────────────────────
+    vec = embed(text)
+
+    # ── 2. Insert pattern ──────────────────────────────────────
+    pattern = Pattern(
+        user_id=user_id,
+        content=text,
+        embedding=encode_embedding(vec),
+        topic=topic,
+    )
+    db.insert_pattern(pattern)
+
+    # ── 3. Get or create UserStar ──────────────────────────────
+    star = db.get_user_star(user_id)
+    if star is None:
+        role = ROLE_CREATOR if is_creator else ROLE_USER
+        star = UserStar(
+            user_id=user_id,
+            role=role,
+            created_at=time.time(),
+        )
+        logger.info("New star born: %s (role=%s)", user_id[:20], role)
+
+    star.pattern_count = db.get_pattern_count(user_id)
+    star.last_active = time.time()
+    star.activation_count += 1
+
+    # ── 4. Recalculate centroid ────────────────────────────────
+    patterns = db.get_patterns_for_user(user_id, limit=_CENTROID_WINDOW)
+    pattern_vecs = [
+        decode_embedding(p.embedding)
+        for p in patterns
+        if p.embedding is not None
+    ]
+    if pattern_vecs:
+        centroid = mean_embedding(pattern_vecs)
+        star.embedding = encode_embedding(centroid)
+
+    # ── 5. Recalculate mass ───────────────────────────────────
+    topic_dist = db.get_topic_distribution(user_id)
+    star.topic_fingerprint = _json.dumps(topic_dist, ensure_ascii=False)
+    convergence_links = len(g.get_neighbors(user_id)) if g.get_graph().has_node(user_id) else 0
+
+    star.mass = compute_user_star_mass(
+        pattern_count=star.pattern_count,
+        topic_diversity=len(topic_dist),
+        convergence_connections=convergence_links,
+        is_creator=star.is_creator,
+    )
+
+    # ── 6. Distance + layer ───────────────────────────────────
+    star.distance_to_core = compute_distance_from_mass(star.mass)
+    star.layer = assign_layer(star.mass)  # mass IS the gravity for user-stars
+
+    # ── 7. Persist star ───────────────────────────────────────
+    db.upsert_user_star(star)
+
+    # ── 8. Graph: ensure node exists ──────────────────────────
+    g.add_star(user_id, layer=star.layer, mass=star.mass)
+
+    # ── 9. Convergence with other user-stars ──────────────────
+    _detect_user_convergence(star, user_id)
+
+    # ── 10. Update nucleus ────────────────────────────────────
+    try:
+        from vectrax.core_nucleus import refresh_centroid_v2
+        refresh_centroid_v2()
+    except Exception:
+        pass  # non-fatal
+
+    elapsed = time.time() - t0
+    logger.info(
+        "ingest_v2: %s | mass=%.4f | dist=%.4f | layer=%s | patterns=%d | %.0fms",
+        user_id[:20], star.mass, star.distance_to_core,
+        star.layer, star.pattern_count, elapsed * 1000,
+    )
+    return star
+
+
+def _detect_user_convergence(star: UserStar, user_id: str) -> None:
+    """Check if this user-star converges with any other user-star."""
+    if star.embedding is None:
+        return
+
+    from vectrax.embeddings import cosine_similarity
+
+    my_vec = decode_embedding(star.embedding)
+    all_stars = db.get_all_user_stars()
+
+    for other in all_stars:
+        if other.user_id == user_id or other.embedding is None:
+            continue
+        other_vec = decode_embedding(other.embedding)
+        sim = cosine_similarity(my_vec, other_vec)
+        if sim >= SIMILARITY_THRESHOLD:
+            # Convergence! Link in graph
+            if not g.get_graph().has_edge(user_id, other.user_id):
+                g.link_stars(user_id, other.user_id, sim)
+                logger.info(
+                    "CONVERGENCE: %s ↔ %s (sim=%.3f)",
+                    user_id[:15], other.user_id[:15], sim,
+                )

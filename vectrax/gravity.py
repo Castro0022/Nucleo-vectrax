@@ -18,6 +18,7 @@ from typing import List
 
 from vectrax.models import (
     COLLECTIVE_OWNER_DIVERSITY_WEIGHT,
+    CREATOR_INITIAL_MASS,
     GRAVITY_CORE_THRESHOLD,
     GRAVITY_MID_THRESHOLD,
     LAYER_CORE,
@@ -30,6 +31,7 @@ from vectrax.models import (
     MIN_MASS,
     Constellation,
     Star,
+    UserStar,
 )
 
 
@@ -173,6 +175,56 @@ def compute_distance_from_mass(mass: float) -> float:
     mass → 1.0   ⇒  distance → 0.0   (nucleus)
     """
     return round(float(max(0.0, min(1.0 - mass, 1.0))), 6)
+
+
+# ---------------------------------------------------------------------------
+# User Star mass (v2 gravitational model)
+# ---------------------------------------------------------------------------
+
+def compute_user_star_mass(
+    pattern_count: int,
+    topic_diversity: int = 1,
+    convergence_connections: int = 0,
+    is_creator: bool = False,
+) -> float:
+    """
+    Compute gravitational mass for a user star.
+
+    Three pillars:
+      1. Activity volume  (40%) — log(pattern_count)
+         1 pattern → ~0.0, 10 → ~0.5, 100 → ~1.0
+      2. Topic diversity  (35%) — breadth of knowledge
+         1 topic → 0.1, 5 topics → ~0.7, 10+ → ~1.0
+      3. Convergence connections (25%) — links to other user-stars
+         0 → 0.0, 5 → 0.5, 10+ → 1.0
+
+    Creator stars have a floor of CREATOR_INITIAL_MASS.
+
+    Returns mass in [MIN_MASS, MAX_MASS].
+    """
+    # 1. Activity
+    if pattern_count <= 1:
+        activity = 0.0
+    else:
+        activity = min(math.log10(pattern_count) / 2.0, 1.0)
+
+    # 2. Diversity
+    diversity = min(math.log2(max(topic_diversity, 1) + 1) / 3.5, 1.0)
+
+    # 3. Convergence
+    convergence = min(convergence_connections / 10.0, 1.0)
+
+    raw = (
+        0.40 * activity
+        + 0.35 * diversity
+        + 0.25 * convergence
+    )
+
+    # Creator floor
+    if is_creator:
+        raw = max(raw, CREATOR_INITIAL_MASS)
+
+    return round(float(max(MIN_MASS, min(raw, MAX_MASS))), 6)
 
 
 # ---------------------------------------------------------------------------

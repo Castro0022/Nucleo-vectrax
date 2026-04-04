@@ -104,3 +104,60 @@ def _reset() -> None:
     _centroid = None
     _core_star_count = 0
     _initialised = False
+
+
+# ---------------------------------------------------------------------------
+# v2 — Nucleus centroid from UserStars (mass-weighted)
+# ---------------------------------------------------------------------------
+
+def refresh_centroid_v2() -> Optional[np.ndarray]:
+    """
+    Recalculate the nucleus centroid from all user-stars, weighted by mass.
+
+    Creator stars weigh CREATOR_CENTROID_WEIGHT times more than regular stars.
+    The nucleus literally gets richer with every interaction.
+    """
+    global _centroid, _core_star_count, _initialised
+    _initialised = True
+
+    from vectrax import db
+    from vectrax.embeddings import decode_embedding
+    from vectrax.models import CREATOR_CENTROID_WEIGHT, ROLE_CREATOR
+
+    all_stars = db.get_all_user_stars()
+    _core_star_count = len(all_stars)
+
+    vecs: List[np.ndarray] = []
+    weights: List[float] = []
+
+    for s in all_stars:
+        if s.embedding is None:
+            continue
+        vec = decode_embedding(s.embedding)
+        weight = s.mass
+        # Creator star amplification
+        if s.role == ROLE_CREATOR:
+            weight *= CREATOR_CENTROID_WEIGHT
+        vecs.append(vec)
+        weights.append(weight)
+
+    if not vecs:
+        _centroid = None
+        return None
+
+    # Weighted mean
+    mat = np.stack(vecs)
+    w = np.array(weights, dtype=np.float32)
+    w_sum = w.sum()
+    if w_sum > 0:
+        weighted = (mat.T * w).T.sum(axis=0) / w_sum
+    else:
+        weighted = mat.mean(axis=0)
+
+    # Normalise
+    norm = np.linalg.norm(weighted)
+    if norm > 0:
+        weighted /= norm
+
+    _centroid = weighted.astype(np.float32)
+    return _centroid
