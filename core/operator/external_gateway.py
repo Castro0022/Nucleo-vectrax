@@ -257,21 +257,14 @@ class ExternalGateway:
                 )
 
             # Guardar sin respuesta (datos, statements cortos)
+            # This path returns early (no response), so we must
+            # feed the star HERE before returning.
             if intake.action == Action.STORE and not intake.context_hint == "identity":
                 try:
                     from vectrax.engine import ingest_v2
-                    _topic = intake.context_hint or "general"
-                    ingest_v2(
-                        text=content,
-                        user_id=user_id,
-                        topic=_topic,
-                    )
-                    logger.info(
-                        "Pipeline: STORE → ingest_v2 | user=%s | topic=%s",
-                        user_id[:20], _topic,
-                    )
-                except Exception as _ie:
-                    logger.debug("ingest_v2 failed (passthrough): %s", _ie)
+                    ingest_v2(text=content, user_id=user_id, topic="general")
+                except Exception:
+                    pass
                 return GatewayResult(
                     event_id=correlation_id,
                     user_id=user_id,
@@ -708,28 +701,24 @@ class ExternalGateway:
             pass
 
         # 10.1 Feed the user's star (gravitational v2)
-        #   - Always activate (tracks engagement)
-        #   - Ingest as pattern only for statements with real content
-        #     (questions just activate, noise is already filtered by intake)
+        #   Every real interaction feeds the star. Questions indicate interests.
+        #   Statements add knowledge. Only pure noise is filtered (by intake).
+        #   The star grows with EVERY meaningful interaction.
         try:
-            from vectrax.db import activate_user_star
-            activate_user_star(user_id)
-
-            # Ingest content as pattern if it's a statement (not a question)
-            _is_question = "?" in content or "¿" in content
-            _is_short_noise = len(content.split()) <= 3
-            if not _is_question and not _is_short_noise:
-                from vectrax.engine import ingest_v2
-                _route_topic = "general"
-                try:
-                    _route_topic = locals().get('_smart_topic', 'general') or 'general'
-                except Exception:
-                    pass
-                ingest_v2(
-                    text=content,
-                    user_id=user_id,
-                    topic=_route_topic,
-                )
+            from vectrax.engine import ingest_v2
+            _route_topic = "general"
+            try:
+                from core.smart_router import get_smart_router
+                _sr = get_smart_router()
+                _ctx = _sr.detect_context(content, channel, user_id)
+                _route_topic = _ctx.get("topic", "general")
+            except Exception:
+                pass
+            ingest_v2(
+                text=content,
+                user_id=user_id,
+                topic=_route_topic,
+            )
         except Exception as _gv2:
             logger.debug("Gravitational v2 feed failed (passthrough): %s", _gv2)
 
