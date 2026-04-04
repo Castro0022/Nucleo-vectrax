@@ -352,6 +352,28 @@ class ExternalGateway:
         if identity_ctx:
             memory_context = identity_ctx + ("\n\n" + memory_context if memory_context else "")
 
+        # 4.0.1 TEMPORAL CONTEXT — anchor Vectrax to the present moment
+        try:
+            from vectrax.temporal_context import (
+                build_temporal_context, register_user_fact,
+                filter_echo_from_context,
+            )
+            from core.language_gate import get_user_language
+            _user_lang = get_user_language(user_id, content)
+            temporal_ctx = build_temporal_context(lang=_user_lang)
+            memory_context = temporal_ctx + ("\n\n" + memory_context if memory_context else "")
+
+            # Register what the user said (for echo filtering)
+            register_user_fact(user_id, content)
+
+            # Filter echo from memory context
+            if memory_context:
+                lines = memory_context.split("\n")
+                lines = filter_echo_from_context(user_id, lines)
+                memory_context = "\n".join(lines)
+        except Exception as exc:
+            logger.debug("Temporal context failed (passthrough): %s", exc)
+
         # 4.1 Contexto de equipo — se inyecta antes del contexto personal
         try:
             from vectrax.team_memory import get_team_context
