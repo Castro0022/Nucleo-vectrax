@@ -150,8 +150,7 @@ def _process_one(msg):
             response = result.response
         else:
             response = (result.response or "").strip()
-        if not response:
-            response = "Vectrax activo."
+        # Respuesta vacía = silencio. No mandar ruido al usuario.
 
         # === ENVIAR DIRECTO A TELEGRAM ===
         sent = _tg_send(msg.chat_id, response)
@@ -211,6 +210,28 @@ def run_worker() -> None:
     signal.signal(signal.SIGINT, _stop)
 
     last_heartbeat = 0.0
+    last_proactive = 0.0  # última ejecución del motor proactivo
+
+    # Discard stale messages from previous sessions (>5 min old)
+    _STALE_AGE = 300  # 5 minutes
+    try:
+        import sqlite3
+        _qdb = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            '..', 'vault', 'message_queue.db')
+        _qdb = os.path.normpath(_qdb)
+        _conn = sqlite3.connect(_qdb, timeout=5)
+        _stale_count = _conn.execute(
+            "UPDATE queue SET status='error', error='stale_on_startup' "
+            "WHERE status IN ('pending','processing') AND created_at < ?",
+            (time.time() - _STALE_AGE,)
+        ).rowcount
+        _conn.commit()
+        _conn.close()
+        if _stale_count:
+            logger.info("Discarded %d stale messages on startup", _stale_count)
+    except Exception as _se:
+        logger.debug("Stale cleanup failed: %s", _se)
+
     logger.info("Worker started (PID %d, %d concurrent, fire-and-deliver)", os.getpid(), CONCURRENT)
 
     while running:
@@ -237,9 +258,15 @@ def run_worker() -> None:
             if len(active) < CONCURRENT:
                 msg = dequeue()
                 if msg:
-                    logger.info("DEQUEUE %s | %s | chat=%d", msg.id, msg.content[:30], msg.chat_id)
-                    future = pool.submit(_process_one, msg)
-                    active[msg.id] = (future, time.time())
+                    # Skip messages older than 2 minutes (stale from crash/restart)
+                    msg_age = time.time() - msg.created_at
+                    if msg_age > 120:
+                        logger.warning("SKIP stale %s | %.0fs old | %s", msg.id, msg_age, msg.content[:30])
+                        mark_error(msg.id, f"stale_{msg_age:.0f}s")
+                    else:
+                        logger.info("DEQUEUE %s | %s | chat=%d", msg.id, msg.content[:30], msg.chat_id)
+                        future = pool.submit(_process_one, msg)
+                        active[msg.id] = (future, time.time())
                 else:
                     time.sleep(POLL_INTERVAL)
             else:
@@ -254,6 +281,18 @@ def run_worker() -> None:
             if time.time() - last_cleanup > CLEANUP_INTERVAL:
                 cleanup()
                 last_cleanup = time.time()
+
+            # Motor proactivo — anticipa y avisa (cada 10 minutos)
+            try:
+                from core.proactive_engine import run_proactive_scan, CHECK_INTERVAL
+                if time.time() - last_proactive > CHECK_INTERVAL:
+                    n = run_proactive_scan(_tg_send)
+                    if n:
+                        logger.info("Proactive: %d messages sent", n)
+                    last_proactive = time.time()
+            except Exception as _pe:
+                logger.debug("Proactive engine error (passthrough): %s", _pe)
+                last_proactive = time.time()  # evitar loop de errores
 
         except Exception as exc:
             logger.error("Worker loop: %s", exc)
