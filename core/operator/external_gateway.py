@@ -897,6 +897,10 @@ class ExternalGateway:
             r"|qu[eé] (?:eres|es|hace|ofrece|puedes hacer)"
             r"|para qu[eé] sirves|c[oó]mo funciona[s]?"
             r"|qu[eé] es vectrax|what is vectrax|what are you|q eres"
+            r"|cu[eé]ntame (?:sobre|de|acerca) vectrax"
+            r"|h[aá]blame (?:sobre|de) vectrax"
+            r"|para qu[eé] sirve vectrax"
+            r"|describe vectrax|descr[ií]bete"
             r"|cosa sei|was bist du|qui es[- ]tu|wat ben je)",
             t,
         ):
