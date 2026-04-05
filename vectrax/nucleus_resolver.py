@@ -43,13 +43,19 @@ PATTERN_RELEVANCE_THRESHOLD = 0.55
 
 
 # Questions the nucleus should NEVER try to answer
-# (temporal, real-time data — the main LLM has context for these)
 _SKIP_PATTERNS = re.compile(
     r"(?:"
+    # Temporal (the main LLM has the context)
     r"\b(?:qu[eé]\s+(?:hora|d[ií]a|fecha)|what\s+(?:time|day|date)|quelle\s+heure)\b"
     r"|\b(?:hora\s+(?:es|actual)|time\s+(?:is\s+it|now)|heure\s+est)\b"
     r"|\b(?:cu[aá]ndo|when\s+is|qu[eé]\s+d[ií]a\s+es)\b"
     r"|\b(?:hoy\s+es|today\s+is|estamos\s+a)\b"
+    # Greetings (fast-path handles these)
+    r"|^(?:hola|hi|hey|hello|buenas?|buenos?|saludos|bonjour|ciao)\b"
+    # Casual Vectrax mentions (self-context or main LLM handles these)
+    r"|\bvectrax\b"
+    # Identity questions (memory resolver handles these)
+    r"|\b(?:qui[eé]n\s+(?:soy|eres)|who\s+(?:am\s+i|are\s+you)|c[oó]mo\s+me\s+llamo)\b"
     r")",
     re.IGNORECASE,
 )
