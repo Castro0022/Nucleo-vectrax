@@ -856,10 +856,11 @@ class ExternalGateway:
         # Nombre del usuario para personalizar
         name = anchor.name if anchor and anchor.has_name else ""
 
-        # Saludos
+        # Saludos (with optional 'vectrax' after)
         if _re.match(
             r"^(?:hola|hi|hey|buenas?|buenos?\s+d[ií]as?|buenas\s+tardes?"
-            r"|buenas\s+noches?|que tal|qu[eé] tal|saludos|hello|sup|yo)$",
+            r"|buenas\s+noches?|que tal|qu[eé] tal|saludos|hello|sup|yo)"
+            r"(?:\s+vectrax)?$",
             t,
         ):
             if name:
