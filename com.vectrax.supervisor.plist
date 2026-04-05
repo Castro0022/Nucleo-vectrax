@@ -8,7 +8,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>/Users/mariobravo/Vectrax/.venv/bin/python3</string>
         <string>/Users/mariobravo/Vectrax/vectrax_supervisor.py</string>
     </array>
 

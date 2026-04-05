@@ -30,10 +30,13 @@ import numpy as np
 logger = logging.getLogger("vectrax.nucleus_resolver")
 
 # Distance to centroid below which the nucleus "knows" the topic
-NUCLEUS_RESOLVE_THRESHOLD = 0.40
+# 0.40 was too aggressive — intercepted greetings and casual mentions.
+# 0.25 means the nucleus only responds when VERY confident it has knowledge.
+NUCLEUS_RESOLVE_THRESHOLD = 0.25
 
 # Minimum patterns needed to synthesize an answer
-MIN_PATTERNS_FOR_SYNTHESIS = 3
+# Raised from 3 to 5 — need stronger evidence before synthesizing
+MIN_PATTERNS_FOR_SYNTHESIS = 5
 
 # Maximum patterns to include in synthesis context
 MAX_SYNTHESIS_PATTERNS = 8
