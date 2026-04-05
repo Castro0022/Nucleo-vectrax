@@ -723,27 +723,27 @@ class ExternalGateway:
         except Exception:
             pass
 
-        # 10.1 Feed the user's star (gravitational v2)
-        #   Every real interaction feeds the star. Questions indicate interests.
-        #   Statements add knowledge. Only pure noise is filtered (by intake).
+        # 10.1 Feed the user's star (gravitational v2) — BACKGROUND
+        #   Runs in a thread so it doesn't block response delivery.
         #   The star grows with EVERY meaningful interaction.
-        try:
-            from vectrax.engine import ingest_v2
-            _route_topic = "general"
+        import threading
+        def _bg_ingest(_content, _user_id, _channel):
             try:
-                from core.smart_router import get_smart_router
-                _sr = get_smart_router()
-                _ctx = _sr.detect_context(content, channel, user_id)
-                _route_topic = _ctx.get("topic", "general")
-            except Exception:
-                pass
-            ingest_v2(
-                text=content,
-                user_id=user_id,
-                topic=_route_topic,
-            )
-        except Exception as _gv2:
-            logger.debug("Gravitational v2 feed failed (passthrough): %s", _gv2)
+                from vectrax.engine import ingest_v2
+                _topic = "general"
+                try:
+                    from core.smart_router import get_smart_router
+                    _ctx = get_smart_router().detect_context(_content, _channel, _user_id)
+                    _topic = _ctx.get("topic", "general")
+                except Exception:
+                    pass
+                ingest_v2(text=_content, user_id=_user_id, topic=_topic)
+            except Exception as _e:
+                logger.debug("bg ingest_v2 failed: %s", _e)
+        threading.Thread(
+            target=_bg_ingest, args=(content, user_id, channel),
+            daemon=True,
+        ).start()
 
         # 11. Registrar respuesta en ledger
         ledger.record_event(
