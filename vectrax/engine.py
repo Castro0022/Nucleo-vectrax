@@ -495,15 +495,31 @@ def ingest_v2(
     db.init_db()
     t0 = time.time()
 
-    # ── 1. Embed ───────────────────────────────────────────────
+    # ── 1. Evaluate memory value ───────────────────────────────
+    from vectrax.memory_evaluator import evaluate_memory_value
+    from vectrax.models import PATTERN_DISCARDED, PATTERN_STORED
+    mem_status, mem_score = evaluate_memory_value(text, user_id)
+
+    # Discarded patterns still activate the star but don't get embedded
+    if mem_status == PATTERN_DISCARDED:
+        # Just activate the star (track engagement) without embedding
+        existing = db.get_user_star(user_id)
+        if existing:
+            db.activate_user_star(user_id)
+        logger.debug("ingest_v2: DISCARDED (score=%.2f) | %s", mem_score, text[:40])
+        return existing or UserStar(user_id=user_id)
+
+    # ── 2. Embed ───────────────────────────────────────────────
     vec = embed(text)
 
-    # ── 2. Insert pattern ──────────────────────────────────────
+    # ── 3. Insert pattern with status ───────────────────────────
     pattern = Pattern(
         user_id=user_id,
         content=text,
         embedding=encode_embedding(vec),
         topic=topic,
+        status=mem_status,
+        value_score=mem_score,
     )
     db.insert_pattern(pattern)
 
@@ -522,8 +538,10 @@ def ingest_v2(
     star.last_active = time.time()
     star.activation_count += 1
 
-    # ── 4. Recalculate centroid ────────────────────────────────
-    patterns = db.get_patterns_for_user(user_id, limit=_CENTROID_WINDOW)
+    # ── 5. Recalculate centroid (STORED patterns only) ────────
+    patterns = db.get_patterns_for_user(
+        user_id, limit=_CENTROID_WINDOW, status=PATTERN_STORED,
+    )
     pattern_vecs = [
         decode_embedding(p.embedding)
         for p in patterns
@@ -567,8 +585,9 @@ def ingest_v2(
 
     elapsed = time.time() - t0
     logger.info(
-        "ingest_v2: %s | mass=%.4f | dist=%.4f | layer=%s | patterns=%d | %.0fms",
-        user_id[:20], star.mass, star.distance_to_core,
+        "ingest_v2: %s | %s(%.2f) | mass=%.4f | dist=%.4f | layer=%s | patterns=%d | %.0fms",
+        user_id[:20], mem_status, mem_score,
+        star.mass, star.distance_to_core,
         star.layer, star.pattern_count, elapsed * 1000,
     )
     return star

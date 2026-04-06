@@ -194,12 +194,23 @@ class UserStar:
 # Pattern — individual interaction that feeds a star
 # ---------------------------------------------------------------------------
 
+# Pattern status
+PATTERN_STORED = "stored"         # confirmed valuable — affects centroid
+PATTERN_CANDIDATE = "candidate"   # potentially valuable — pending resolution
+PATTERN_DISCARDED = "discarded"   # trivial — kept for audit, ignored by centroid
+
+
 @dataclass
 class Pattern:
     """A single interaction that enriches a UserStar.
 
     Patterns are the raw material. They have no gravity of their own —
     the gravity belongs to the star they feed.
+
+    Status:
+      stored    — confirmed valuable, affects the star's centroid
+      candidate — potentially valuable, pending resolution
+      discarded — trivial, kept for audit but ignored by centroid
     """
 
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -207,6 +218,8 @@ class Pattern:
     content: str = ""                        # the interaction text
     embedding: Optional[bytes] = None        # float32 BLOB
     topic: str = "general"                   # detected topic
+    status: str = PATTERN_STORED             # stored / candidate / discarded
+    value_score: float = 0.0                 # 0.0–1.0 memory value
     timestamp: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
@@ -215,6 +228,8 @@ class Pattern:
             "user_id": self.user_id,
             "content": self.content[:200],
             "topic": self.topic,
+            "status": self.status,
+            "value_score": round(self.value_score, 4),
             "timestamp": self.timestamp,
         }
 

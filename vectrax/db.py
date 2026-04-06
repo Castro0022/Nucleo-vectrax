@@ -20,7 +20,7 @@ from vectrax.identity import CHANNEL_USER
 from vectrax.models import (
     COLLECTIVE_OWNER,
     CREATOR_INITIAL_MASS,
-    Constellation, MIN_MASS, Pattern, Proposal, Star,
+    Constellation, MIN_MASS, Pattern, PATTERN_STORED, Proposal, Star,
     ROLE_CREATOR, ROLE_USER, USER_INITIAL_MASS, UserStar,
     STAR_TYPE_CONVERGENCE, STAR_TYPE_PRIMARY,
 )
@@ -192,6 +192,8 @@ def init_db() -> None:
                 content     TEXT NOT NULL,
                 embedding   BLOB,
                 topic       TEXT NOT NULL DEFAULT 'general',
+                status      TEXT NOT NULL DEFAULT 'stored',
+                value_score REAL NOT NULL DEFAULT 0.0,
                 timestamp   REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_patterns_user
@@ -966,10 +968,11 @@ def insert_pattern(pattern: Pattern) -> str:
     with _get_conn() as conn:
         conn.execute(
             """INSERT INTO patterns
-               (id, user_id, content, embedding, topic, timestamp)
-               VALUES (?,?,?,?,?,?)""",
+               (id, user_id, content, embedding, topic, status, value_score, timestamp)
+               VALUES (?,?,?,?,?,?,?,?)""",
             (pattern.id, pattern.user_id, pattern.content,
-             pattern.embedding, pattern.topic, pattern.timestamp),
+             pattern.embedding, pattern.topic, pattern.status,
+             pattern.value_score, pattern.timestamp),
         )
     return pattern.id
 
@@ -977,14 +980,17 @@ def insert_pattern(pattern: Pattern) -> str:
 def get_patterns_for_user(
     user_id: str,
     limit: int = 200,
+    status: Optional[str] = None,
 ) -> List[Pattern]:
-    """Return the most recent patterns for a user."""
+    """Return the most recent patterns for a user, optionally filtered by status."""
+    if status:
+        sql = "SELECT * FROM patterns WHERE user_id=? AND status=? ORDER BY timestamp DESC LIMIT ?"
+        params: tuple = (user_id, status, limit)
+    else:
+        sql = "SELECT * FROM patterns WHERE user_id=? ORDER BY timestamp DESC LIMIT ?"
+        params = (user_id, limit)
     with _get_conn() as conn:
-        rows = conn.execute(
-            """SELECT * FROM patterns WHERE user_id=?
-               ORDER BY timestamp DESC LIMIT ?""",
-            (user_id, limit),
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [_row_to_pattern(r) for r in reversed(rows)]
 
 
@@ -1009,12 +1015,15 @@ def get_topic_distribution(user_id: str) -> Dict[str, int]:
 
 
 def _row_to_pattern(row: sqlite3.Row) -> Pattern:
+    keys = row.keys()
     return Pattern(
         id=row["id"],
         user_id=row["user_id"],
         content=row["content"],
         embedding=row["embedding"],
         topic=row["topic"],
+        status=row["status"] if "status" in keys else PATTERN_STORED,
+        value_score=float(row["value_score"]) if "value_score" in keys else 0.0,
         timestamp=float(row["timestamp"]),
     )
 
