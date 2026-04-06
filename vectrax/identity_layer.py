@@ -101,21 +101,46 @@ def build_prompt(
 
     # 3. Memoria activa — qué sabe Vectrax del usuario que es relevante PARA ESTE MENSAJE
     # Búsqueda semántica: solo se inyectan estrellas relacionadas con la pregunta actual.
-    # Esto hace que el contexto sea activo, no un bloque genérico.
+    # Temporal references are resolved: "mañana" from yesterday → "hoy".
     if user_id and content:
         try:
             from vectrax.resolver import resolve_local
             _local = resolve_local(content, channel="user", owner=user_id, top_k=4, threshold=0.38)
             if _local.context_stars > 0 and _local.sovereign_answer:
+                _mem_text = _local.sovereign_answer
+                # Resolve stale temporal references
+                try:
+                    from vectrax.temporal_context import resolve_temporal_references
+                    import time as _time
+                    # Use the oldest star's timestamp as reference
+                    # (approximate — resolve_local doesn't expose timestamps)
+                    _mem_text = resolve_temporal_references(
+                        _mem_text,
+                        _time.time() - 86400,  # assume ~1 day old as safe default
+                        lang=_lang if '_lang' in dir() else 'es',
+                    )
+                except Exception:
+                    pass
                 parts.append(
                     "[Lo que sé de ti relevante para esto]\n"
-                    f"{_local.sovereign_answer}"
+                    f"{_mem_text}"
                 )
         except Exception:
             pass
 
     # 4. Contexto de memoria conversacional (historial reciente)
     if memory_context:
+        # Resolve stale temporal references in history too
+        try:
+            from vectrax.temporal_context import resolve_temporal_references
+            import time as _time
+            memory_context = resolve_temporal_references(
+                memory_context,
+                _time.time() - 86400,
+                lang=_lang if '_lang' in dir() else 'es',
+            )
+        except Exception:
+            pass
         parts.append(
             "[Historial reciente]\n"
             f"{memory_context}"
