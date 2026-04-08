@@ -336,6 +336,30 @@ def evaluate_intake(
             context_hint="online_search",
         )
 
+    # ── Filtro 6.9: emociones / conversación casual → siempre ejecutar
+    # Estos mensajes necesitan respuesta humana, no silencio.
+    _EMOTIONAL = re.compile(
+        r"(?:"
+        r"\b(?:estoy|me siento|I'?m|I feel)\s+"
+        r"(?:cansad[oa]|tired|triste|sad|sol[oa]|lonely|aburrid[oa]|bored"
+        r"|feliz|happy|content[oa]|ansios[oa]|anxious|nervios[oa]|nervous"
+        r"|frustrad[oa]|frustrated|enferm[oa]|sick|bien|mal|mejor|peor"
+        r"|preocupad[oa]|worried|estresad[oa]|stressed|confundid[oa]|confused)"
+        r"|\b(?:tengo\s+(?:hambre|sueño|sed|fr[ií]o|calor|miedo|dolor|fiebre))"
+        r"|\b(?:I'?m\s+(?:hungry|sleepy|thirsty|cold|hot|scared))"
+        r"|\b(?:qu[eé]\s+d[ií]a\s+tan|what a day|vaya d[ií]a)"
+        r"|\b(?:no puedo m[aá]s|I can'?t anymore|estoy harto|I'?m done)"
+        r")",
+        re.IGNORECASE,
+    )
+    if _EMOTIONAL.search(text):
+        return IntakeResult(
+            importance=Importance.MEDIUM,
+            action=Action.EXECUTE,
+            reason="emotional_conversational",
+            context_hint="empathy",
+        )
+
     # ── Filtro 7: mensaje corto sin pregunta → guardar ───────
     word_count = len(text.split())
     has_question = (
