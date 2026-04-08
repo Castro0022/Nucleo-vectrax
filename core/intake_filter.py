@@ -336,6 +336,28 @@ def evaluate_intake(
             context_hint="online_search",
         )
 
+    # ── Filtro 6.85: natural memory triggers → guardar + confirmar
+    # El usuario dice 'recuérdame', 'guarda', 'anota', 'no olvides' →
+    # guardar en memoria Y responder confirmando.
+    _MEMORY_TRIGGER = re.compile(
+        r"(?:"
+        r"\b(?:recu[eé]rdame|recu[eé]rda\s+(?:que|esto)|recuerda)"
+        r"|\b(?:guarda|guárda(?:me|lo)?|guardar|anota|anóta(?:me|lo)?)"
+        r"|\b(?:no\s+(?:te\s+)?olvides|no\s+olvid(?:ar|es))"
+        r"|\b(?:remember|save|note\s+(?:this|that)|don'?t\s+forget)"
+        r"|\b(?:tengo\s+(?:que|una?)\s+(?:reuni[oó]n|cita|junta|examen|entrevista|vuelo|evento))"
+        r"|\b(?:mañana\s+(?:tengo|voy|necesito|debo))"
+        r")",
+        re.IGNORECASE,
+    )
+    if _MEMORY_TRIGGER.search(text):
+        return IntakeResult(
+            importance=Importance.HIGH,
+            action=Action.EXECUTE,
+            reason="natural_memory_trigger",
+            context_hint="memory_store_and_confirm",
+        )
+
     # ── Filtro 6.9: emociones / conversación casual → siempre ejecutar
     # Estos mensajes necesitan respuesta humana, no silencio.
     _EMOTIONAL = re.compile(
