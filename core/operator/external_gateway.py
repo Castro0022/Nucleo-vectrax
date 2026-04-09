@@ -444,25 +444,35 @@ class ExternalGateway:
         except Exception as _le:
             logger.debug("Lead natural update failed: %s", _le)
 
-        # 4.2 Auto-contexto — Vectrax se observa a sí mismo (ruta prioritaria)
-        # Si el usuario habla SOBRE Vectrax, resolvemos ANTES del pipeline normal
-        # con un prompt donde el auto-contexto es fuente primaria obligatoria.
-        _self_resolved = False
+        # 4.2 FAST-PATH (moved here — before self-context and nucleus)
+        # Greetings, Vectrax identity questions, confirmations — instant, no LLM.
+        _fast_response = ""
         try:
-            from vectrax.self_context import is_self_referential, resolve_self_aware
-            if is_self_referential(content):
-                from core.language_gate import get_user_language
-                _lang = get_user_language(user_id, content)
-                _self_answer = resolve_self_aware(content, lang=_lang)
-                if _self_answer:
-                    response_text = _self_answer
-                    _self_resolved = True
-                    logger.info(
-                        "Pipeline: SELF-AWARE resolved | user=%s | len=%d",
-                        user_id[:20], len(_self_answer),
-                    )
-        except Exception as exc:
-            logger.debug("Self-aware resolution failed (passthrough): %s", exc)
+            _fast_response = self._try_fast_response(content, anchor)
+            if _fast_response:
+                response_text = _fast_response
+                logger.info("Pipeline: FAST-PATH | %s", content[:30])
+        except Exception:
+            pass
+
+        # 4.2b Auto-contexto — Vectrax se observa a sí mismo
+        _self_resolved = False
+        if not response_text:
+            try:
+                from vectrax.self_context import is_self_referential, resolve_self_aware
+                if is_self_referential(content):
+                    from core.language_gate import get_user_language
+                    _lang = get_user_language(user_id, content)
+                    _self_answer = resolve_self_aware(content, lang=_lang)
+                    if _self_answer:
+                        response_text = _self_answer
+                        _self_resolved = True
+                        logger.info(
+                            "Pipeline: SELF-AWARE resolved | user=%s | len=%d",
+                            user_id[:20], len(_self_answer),
+                        )
+            except Exception as exc:
+                logger.debug("Self-aware resolution failed (passthrough): %s", exc)
 
         # ══════════════════════════════════════════════════════════════
         # STEP 4.3: NUCLEUS RESOLVER — respond from accumulated knowledge
@@ -887,6 +897,24 @@ class ExternalGateway:
             t,
         ):
             return "Entendido."
+
+        # Temporal questions — respond from system clock, no LLM needed
+        if _re.match(
+            r"^(?:qu[eé]\s+(?:hora|d[ií]a|fecha)|what\s+(?:time|day|date)"
+            r"|que\s+hora|que\s+dia|quelle\s+heure)",
+            t,
+        ):
+            from datetime import datetime as _dt
+            _now = _dt.now()
+            _days_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+            _months_es = ["","enero","febrero","marzo","abril","mayo","junio",
+                          "julio","agosto","septiembre","octubre","noviembre","diciembre"]
+            _day = _days_es[_now.weekday()]
+            _month = _months_es[_now.month]
+            _time_str = _now.strftime("%H:%M")
+            if "hora" in t or "time" in t or "heure" in t:
+                return f"Son las {_time_str}."
+            return f"Hoy es {_day} {_now.day} de {_month} de {_now.year}."
 
         # Identidad de Vectrax — respuesta fija desde core_identity, sin LLM
         if _re.search(

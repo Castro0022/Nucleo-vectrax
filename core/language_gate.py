@@ -32,78 +32,161 @@ logger = logging.getLogger("vectrax.language_gate")
 # Language detection (heuristic, fast, no external deps)
 # ---------------------------------------------------------------------------
 
-# Marcadores fuertes de español
-_ES_MARKERS = re.compile(
-    r"[áéíóúñü¡¿]"
-    r"|\b(?:el|la|los|las|del|una?|unos?|unas?)\b"
-    r"|\b(?:qué|cómo|cuándo|dónde|por\s+qué|cuál|quién)\b"
-    r"|\b(?:es|son|fue|era|tiene|están|para|por|como|pero|también)\b"
-    r"|\b(?:hola|gracias|buenas?|puede|hacer|tiene|desde|hasta|entre)\b",
-    re.IGNORECASE,
-)
+# ---------------------------------------------------------------------------
+# Multi-language markers
+# ---------------------------------------------------------------------------
 
-# Marcadores fuertes de inglés
-_EN_MARKERS = re.compile(
-    r"\b(?:the|is|are|was|were|have|has|been|with|from)\b"
-    r"|\b(?:this|that|which|would|could|should|will|can)\b"
-    r"|\b(?:hello|thanks|please|because|about|their|there|where)\b"
-    r"|\b(?:you|your|they|them|some|more|than|then|just|very)\b",
-    re.IGNORECASE,
-)
+_LANG_MARKERS: dict = {
+    "es": re.compile(
+        r"[ñ¡¿ü]"
+        r"|\b(?:el|la|los|las|del|una?|unos?|unas?)\b"
+        r"|\b(?:qué|cómo|cuándo|dónde|por\s+qué|cuál|quién)\b"
+        r"|\b(?:es|son|fue|era|tiene|están|pero|también|hay|ya|muy|algo|nada)\b"
+        r"|\b(?:hola|gracias|buenas?|puede|hacer|desde|hasta|entre|sobre|todo|este|esta)\b"
+        r"|\b(?:núcleo|sistema|información|respuesta|registro|memoria|activo|estable)\b",
+        re.IGNORECASE,
+    ),
+    "en": re.compile(
+        r"\b(?:the|is|are|was|were|have|has|been|with|from)\b"
+        r"|\b(?:this|that|which|would|could|should|will|can)\b"
+        r"|\b(?:hello|thanks|please|because|about|their|there|where)\b"
+        r"|\b(?:you|your|they|them|some|more|than|then|just|very)\b",
+        re.IGNORECASE,
+    ),
+    "fr": re.compile(
+        r"[àâçéèêëîïôùûü]"
+        r"|\b(?:je|tu|il|elle|nous|vous|ils|elles|le|la|les|de|du|des|un|une)\b"
+        r"|\b(?:est|sont|avec|pour|dans|sur|mais|que|qui|pas|très|aussi)\b"
+        r"|\b(?:bonjour|merci|oui|non|comment|pourquoi|quand|où|quel|cette)\b"
+        r"|\b(?:c'est|j'ai|qu'est|n'est|l'on|d'accord|s'il|parce|bien)\b",
+        re.IGNORECASE,
+    ),
+    "it": re.compile(
+        r"[àèéìòù]"
+        r"|\b(?:io|tu|lui|lei|noi|voi|loro|il|la|lo|gli|le|di|del|della)\b"
+        r"|\b(?:un|una|è|sono|con|per|che|non|come|questo|questa|molto|anche)\b"
+        r"|\b(?:ciao|grazie|buongiorno|perché|quando|dove|quale|cosa|bene)\b",
+        re.IGNORECASE,
+    ),
+    "de": re.compile(
+        r"[äöüß]"
+        r"|\b(?:ich|du|er|sie|wir|ihr|das|die|der|den|dem|ein|eine|ist|sind)\b"
+        r"|\b(?:mit|für|und|aber|oder|nicht|von|auf|aus|nach|bei|über)\b"
+        r"|\b(?:hallo|danke|bitte|warum|wann|wo|wie|was|wer|guten|ja|nein)\b",
+        re.IGNORECASE,
+    ),
+    "pt": re.compile(
+        r"[ãõ]"
+        r"|\b(?:eu|ele|ela|nós|vós|eles|elas|você|vocês)\b"
+        r"|\b(?:são|não|muito|isso|tudo|ainda|aqui|aquilo|então|agora|já|mais)\b"
+        r"|\b(?:olá|obrigad[oa]|bom|boa|quando|onde|qual|sempre|depois|antes)\b",
+        re.IGNORECASE,
+    ),
+    "nl": re.compile(
+        r"\b(?:ik|jij|hij|zij|wij|jullie|het|de|een|van|met|voor|dat|niet)\b"
+        r"|\b(?:maar|ook|hoe|wat|waar|wanneer|wie|waarom|goed|hoi|bedankt)\b",
+        re.IGNORECASE,
+    ),
+}
 
-# Umbral: si >30% de las palabras son de un idioma, se considera ese idioma
 _LANG_DOMINANCE_RATIO = 0.15
+
+# Nombre legible de cada idioma
+LANG_NAMES: dict = {
+    "es": "español", "en": "English", "fr": "français",
+    "it": "italiano", "de": "Deutsch", "pt": "português",
+    "nl": "Nederlands",
+}
+
+
+# Exclusive markers that disambiguate ES vs PT when scores are close
+_ES_EXCLUSIVE = re.compile(
+    r"[ñ¡¿]"
+    r"|\b(?:hola|gracias|tiene|puede|hacer|desde|hasta|entre|sobre|pero|hay"
+    r"|núcleo|están|somos|tenemos|nosotros|ustedes|vosotros)\b",
+    re.IGNORECASE,
+)
+_PT_EXCLUSIVE = re.compile(
+    r"[ãõ]"
+    r"|\b(?:você|vocês|não|são|isso|tudo|então|olá|obrigad[oa]"
+    r"|ainda|aqui|depois|antes|agora|sempre)\b",
+    re.IGNORECASE,
+)
 
 
 def detect_language(text: str) -> str:
     """
     Detect the dominant language of a text.
 
-    Returns:
-        "es" for Spanish, "en" for English, "unknown" if ambiguous.
+    Returns ISO code: es, en, fr, it, de, pt, nl, or "unknown".
     """
     if not text or not text.strip():
         return "unknown"
 
     word_count = max(len(text.split()), 1)
-    es_hits = len(_ES_MARKERS.findall(text))
-    en_hits = len(_EN_MARKERS.findall(text))
+    scores: dict = {}
+    for lang, pattern in _LANG_MARKERS.items():
+        scores[lang] = len(pattern.findall(text))
 
-    es_ratio = es_hits / word_count
-    en_ratio = en_hits / word_count
+    if not scores or max(scores.values()) == 0:
+        return "unknown"
 
-    # Si ambos son muy bajos → ambiguo (texto corto, código, números)
-    if es_ratio < _LANG_DOMINANCE_RATIO and en_ratio < _LANG_DOMINANCE_RATIO:
-        # Fallback: buscar caracteres específicos del español
-        if re.search(r"[áéíóúñ¡¿]", text):
+    top = max(scores, key=scores.get)
+    top_ratio = scores[top] / word_count
+
+    # ── ES/PT disambiguation ─────────────────────────────────────
+    # These languages share too many words. When both score high,
+    # use exclusive markers to break the tie.
+    es_score = scores.get("es", 0)
+    pt_score = scores.get("pt", 0)
+    if es_score > 0 and pt_score > 0:
+        # Both triggered → use exclusive markers
+        es_excl = len(_ES_EXCLUSIVE.findall(text))
+        pt_excl = len(_PT_EXCLUSIVE.findall(text))
+        if es_excl > 0 and pt_excl == 0:
+            return "es"
+        if pt_excl > 0 and es_excl == 0:
+            return "pt"
+        # Both have exclusive markers (rare) or neither → prefer ES
+        # if scores are within 30% of each other
+        if es_excl >= pt_excl and es_score >= pt_score * 0.7:
+            return "es"
+        if pt_excl > es_excl:
+            return "pt"
+
+    # Require minimum signal
+    if top_ratio < _LANG_DOMINANCE_RATIO and word_count > 3:
+        # Fallback: check for unique characters
+        if re.search(r"[ñ¡¿]", text):
+            return "es"
+        if re.search(r"[ãõ]", text):
+            return "pt"
+        if re.search(r"[àâçèêëîïôùûü]", text):
+            return "fr"
+        if re.search(r"[äöüß]", text):
+            return "de"
+        # Shared accents (áéíóú) — default to ES (primary user language)
+        if re.search(r"[áéíóú]", text):
             return "es"
         return "unknown"
 
-    if es_ratio > en_ratio:
-        return "es"
-    if en_ratio > es_ratio:
-        return "en"
-
-    return "unknown"
+    return top
 
 
 def is_mixed_language(text: str) -> bool:
     """
-    Detect if a text contains significant mixing of Spanish and English.
-
-    A text is mixed if both languages have >20% presence.
+    Detect if a text contains significant mixing of two or more languages.
     """
     if not text or len(text.split()) < 5:
         return False
 
     word_count = max(len(text.split()), 1)
-    es_hits = len(_ES_MARKERS.findall(text))
-    en_hits = len(_EN_MARKERS.findall(text))
-
-    es_ratio = es_hits / word_count
-    en_ratio = en_hits / word_count
-
-    return es_ratio > 0.15 and en_ratio > 0.15
+    significant = 0
+    for lang, pattern in _LANG_MARKERS.items():
+        ratio = len(pattern.findall(text)) / word_count
+        if ratio > 0.15:
+            significant += 1
+    return significant >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -146,26 +229,16 @@ def enforce_language(
         return response
 
     # Language mismatch or mixed → translate
-    if response_lang != user_lang and response_lang != "unknown":
+    if (response_lang != user_lang and response_lang != "unknown") or mixed:
         logger.info(
-            "Language gate: MISMATCH | user=%s target=%s response=%s → translating",
+            "Language gate: %s | user=%s target=%s response=%s → translating",
+            "MIXED" if mixed else "MISMATCH",
             user_id[:20] if user_id else "?", user_lang, response_lang,
         )
         translated = _translate(response, user_lang)
         if translated:
             return translated
-        # Fail-safe: return original
-        logger.warning("Language gate: translation failed, returning original")
-        return response
-
-    if mixed:
-        logger.info(
-            "Language gate: MIXED detected | user=%s target=%s → translating",
-            user_id[:20] if user_id else "?", user_lang,
-        )
-        translated = _translate(response, user_lang)
-        if translated:
-            return translated
+        # Ollama not available on this server — return original silently
         return response
 
     # Unknown response language but user_lang is set → trust it
@@ -180,8 +253,9 @@ def get_user_language(user_id: str, user_input: str) -> str:
     """
     Determine the user's language with priority:
       1. Locked language from identity anchor (absolute priority)
-      2. Detected from current message
-      3. Default: "es"
+      2. Saved language from DB (conversational policy)
+      3. Detected from current message
+      4. Default: "es"
     """
     # 1. Check identity anchor lock
     try:
@@ -192,12 +266,21 @@ def get_user_language(user_id: str, user_input: str) -> str:
     except Exception:
         pass
 
-    # 2. Detect from current message
+    # 2. Check saved language from DB
+    try:
+        from core.operator.conversational_policy import _get_user_language
+        saved = _get_user_language(user_id)
+        if saved:
+            return saved
+    except Exception:
+        pass
+
+    # 3. Detect from current message (multi-language)
     detected = detect_language(user_input)
     if detected != "unknown":
         return detected
 
-    # 3. Default
+    # 4. Default
     return "es"
 
 
@@ -211,7 +294,7 @@ def _translate(text: str, target_lang: str) -> str:
 
     Fail-safe: returns empty string if translation fails.
     """
-    lang_name = "español" if target_lang == "es" else "English"
+    lang_name = LANG_NAMES.get(target_lang, target_lang)
 
     prompt = (
         f"Translate the following text to {lang_name}. "
