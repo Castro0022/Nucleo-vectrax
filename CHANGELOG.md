@@ -2,6 +2,36 @@
 
 All notable changes to Vectrax are documented in this file.
 
+## [2026-04-11] — Gateway Debug Logging + Bottleneck Analysis
+
+### Changes
+- Added `RotatingFileHandler` to gateway (`~/.vectrax/gateway.log`, 5MB x3)
+- Instrumented poll cycles (POLL), message receipt (RECV), fast-path (FAST),
+  queue-path (QUEUED), handler errors (HANDLE ERROR), slow handlers (HANDLE SLOW)
+- Added periodic STATUS summary every 5 min with all operational counters
+- Fixed supervisor `stdout=DEVNULL` → `stdout=None` for docker log visibility
+- Commit: `175d63f`
+
+### Bottleneck Analysis (from real traffic load test)
+
+**LLM cold-start**: First invocation after deploy takes ~15s (vs 1-4s warm).
+Affects first user post-restart. Consider pre-warming the LLM provider on startup.
+
+**Language leak**: "En chile ?" (Spanish) got an English response from the
+pipeline worker. The `language_gate` / `enforce_final_answer` didn't catch it
+on the worker path. The gate only applies to fast-path responses in the gateway.
+Needs enforcement in `pipeline_worker.py` post-processing.
+
+**Duplicate processing**: "Yo vivo en Miami" processed twice (49s apart).
+`should_accept_job` dedup window is too narrow. Consider extending to 120s
+or hashing by (user_id + content).
+
+**No bottlenecks found in**:
+- Queue wait time: 0.13-0.25s (excellent)
+- Poll cycle: avg 28.6s, no anomalies
+- Thread pool: 1/6 used, zero saturation
+- Error rate: 0 handler errors, 0 poll errors
+
 ## [2026-04-10] — Gateway Heartbeat Stability Fix
 
 ### Problem
