@@ -42,7 +42,7 @@ logger = logging.getLogger("vectrax.system_monitor")
 MAX_QUEUE_DEPTH = 50          # máx mensajes en cola antes de rechazar
 MAX_MEMORY_MB = 800           # máx RAM por proceso antes de alerta
 MAX_LATENCY_S = 15.0          # latencia promedio máxima antes de alerta
-DUPLICATE_WINDOW_S = 5        # ventana para detectar mensajes duplicados
+DUPLICATE_WINDOW_S = 120      # ventana para detectar mensajes duplicados (2 min)
 ACTIVE_USER_WINDOW_S = 300    # 5 minutos para considerar usuario "activo"
 
 
@@ -144,14 +144,29 @@ def collect_metrics() -> SystemMetrics:
         logger.debug("Queue metrics failed: %s", exc)
 
     # --- System resources ---
+    # Primero intentar /proc/self/status (Linux — más confiable)
     try:
-        import resource
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        m.memory_mb = round(usage.ru_maxrss / (1024 * 1024), 1)  # macOS: bytes
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    m.memory_mb = round(int(line.split()[1]) / 1024, 1)
+                    break
     except Exception:
         pass
 
-    # Fallback: read from /proc or ps
+    # macOS: resource.getrusage retorna bytes
+    if m.memory_mb == 0:
+        try:
+            import resource, platform
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            if platform.system() == "Darwin":
+                m.memory_mb = round(usage.ru_maxrss / (1024 * 1024), 1)
+            else:
+                m.memory_mb = round(usage.ru_maxrss / 1024, 1)  # Linux: KB → MB
+        except Exception:
+            pass
+
+    # Último fallback: ps
     if m.memory_mb == 0:
         try:
             import subprocess
@@ -203,8 +218,14 @@ def is_duplicate(user_id: str, content: str) -> bool:
     """
     Detecta si el mismo usuario envió el mismo mensaje en los últimos N segundos.
     Previene jobs duplicados por doble-tap o reintentos.
+
+    Uses a stable hash of (user_id + normalized content) to catch duplicates
+    even with minor whitespace differences.
     """
-    key = f"{user_id}:{hash(content)}"
+    import hashlib
+    _normalized = content.strip().lower()
+    _hash = hashlib.md5(f"{user_id}:{_normalized}".encode()).hexdigest()[:16]
+    key = f"{user_id}:{_hash}"
     now = time.time()
 
     # Cleanup old entries
@@ -215,7 +236,8 @@ def is_duplicate(user_id: str, content: str) -> bool:
     if key in _recent_messages:
         age = now - _recent_messages[key]
         if age < DUPLICATE_WINDOW_S:
-            logger.info("Duplicate detected: %s (%.1fs ago)", user_id[:20], age)
+            logger.info("Duplicate detected: %s (%.1fs ago, hash=%s)",
+                        user_id[:20], age, _hash[:8])
             return True
 
     _recent_messages[key] = now

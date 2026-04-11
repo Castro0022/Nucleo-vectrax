@@ -152,6 +152,15 @@ def _process_one(msg):
             response = (result.response or "").strip()
         # Respuesta vacía = silencio. No mandar ruido al usuario.
 
+        # === LANGUAGE ENFORCEMENT (prevent language leaks) ===
+        if response:
+            try:
+                from core.language_gate import enforce_language, get_user_language
+                user_lang = get_user_language(msg.user_id, msg.content)
+                response = enforce_language(response, user_lang, msg.user_id)
+            except Exception as _le:
+                logger.debug("Language enforce skipped: %s", _le)
+
         # === ENVIAR DIRECTO A TELEGRAM ===
         sent = _tg_send(msg.chat_id, response)
 
@@ -233,6 +242,15 @@ def run_worker() -> None:
         logger.debug("Stale cleanup failed: %s", _se)
 
     logger.info("Worker started (PID %d, %d concurrent, fire-and-deliver)", os.getpid(), CONCURRENT)
+
+    # --- LLM warm-up: pre-initialize ExternalGateway to avoid cold-start ---
+    try:
+        from core.operator.external_gateway import ExternalGateway
+        t_warm = time.time()
+        _process_one._gw = ExternalGateway()
+        logger.info("LLM warm-up: ExternalGateway initialized in %.1fs", time.time() - t_warm)
+    except Exception as _we:
+        logger.warning("LLM warm-up failed (will init on first message): %s", _we)
 
     while running:
         try:
