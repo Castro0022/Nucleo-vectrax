@@ -21,6 +21,7 @@ Creador: Mario Bravo Castro
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import os
 import re
 import signal
@@ -28,6 +29,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -39,12 +41,24 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+# --- Logging: stdout + persistent file ---
+_LOG_FMT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
+_LOG_DATE = "%Y-%m-%d %H:%M:%S"
+
+logging.basicConfig(level=logging.INFO, format=_LOG_FMT, datefmt=_LOG_DATE)
 logger = logging.getLogger("vectrax.telegram_gateway")
+
+# Persistent log file (survives stdout=DEVNULL from supervisor)
+_LOG_DIR = os.path.join(os.path.expanduser("~"), ".vectrax")
+os.makedirs(_LOG_DIR, exist_ok=True)
+_file_handler = logging.handlers.RotatingFileHandler(
+    os.path.join(_LOG_DIR, "gateway.log"),
+    maxBytes=5 * 1024 * 1024,  # 5 MB
+    backupCount=3,
+    encoding="utf-8",
+)
+_file_handler.setFormatter(logging.Formatter(_LOG_FMT, datefmt=_LOG_DATE))
+logger.addHandler(_file_handler)
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}"
 POLL_TIMEOUT = 30
@@ -54,6 +68,7 @@ CONFLICT_RETRY_DELAY = 60  # 409 Conflict: espera 60s antes de reintentar
 RESPONSE_WAIT_TIMEOUT = 25.0
 WORKERS = 6
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeat writes
+STATUS_LOG_INTERVAL = 300  # log status summary every 5 min
 
 
 class TelegramGateway:
@@ -66,6 +81,11 @@ class TelegramGateway:
         self._running: bool = False
         self._processed: int = 0
         self._errors: int = 0
+        self._polls: int = 0
+        self._empty_polls: int = 0
+        self._handler_errors: int = 0
+        self._last_status_log: float = 0
+        self._last_update_time: float = 0
         self._start_time: float = time.time()
         self._poll_http = httpx.Client(
             timeout=httpx.Timeout(POLL_TIMEOUT + 10, connect=10),
@@ -313,16 +333,36 @@ class TelegramGateway:
 
         return ""
 
-    # == Heartbeat (background thread) =======================================
+    # == Heartbeat + periodic status (background thread) ====================
 
     def _heartbeat_loop(self) -> None:
-        """Background daemon thread: writes heartbeat every HEARTBEAT_INTERVAL seconds.
-
-        Decoupled from the polling cycle so the heartbeat stays fresh even when
-        getUpdates blocks for 30-40s.  Only stops when self._running becomes False.
+        """Background daemon thread: writes heartbeat every HEARTBEAT_INTERVAL seconds
+        and logs a status summary every STATUS_LOG_INTERVAL seconds.
         """
         while self._running:
             self._write_heartbeat()
+
+            # Periodic status summary
+            now = time.time()
+            if now - self._last_status_log >= STATUS_LOG_INTERVAL:
+                uptime = int(now - self._start_time)
+                h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
+                pool_active = len([t for t in threading.enumerate()
+                                   if t.name.startswith("tg")])
+                since_last = (
+                    f"{now - self._last_update_time:.0f}s ago"
+                    if self._last_update_time else "never"
+                )
+                logger.info(
+                    "STATUS | up=%dh%dm%ds | processed=%d | polls=%d "
+                    "(empty=%d) | errors=%d | handler_err=%d | "
+                    "pool_threads=%d/%d | last_msg=%s",
+                    h, m, s, self._processed, self._polls,
+                    self._empty_polls, self._errors, self._handler_errors,
+                    pool_active, WORKERS, since_last,
+                )
+                self._last_status_log = now
+
             # Sleep in small increments so we notice _running=False quickly
             for _ in range(HEARTBEAT_INTERVAL * 2):
                 if not self._running:
@@ -343,15 +383,30 @@ class TelegramGateway:
         logger.info("Bot started — queue-based polling (heartbeat thread active)")
         while self._running:
             try:
+                t0 = time.time()
                 r = self._poll_http.post(
                     f"{self._base}/getUpdates",
                     json={"offset": self._offset, "timeout": POLL_TIMEOUT,
                           "allowed_updates": ["message"]},
                 )
                 r.raise_for_status()
+                poll_ms = (time.time() - t0) * 1000
                 d = r.json()
                 updates = d.get("result", []) if d.get("ok") else []
+                self._polls += 1
                 self._errors = 0
+
+                if updates:
+                    self._last_update_time = time.time()
+                    logger.info("POLL #%d | %d updates | %.0fms",
+                                self._polls, len(updates), poll_ms)
+                else:
+                    self._empty_polls += 1
+                    # Log empty polls only at debug (every poll) or warn if unusually slow
+                    if poll_ms > (POLL_TIMEOUT + 5) * 1000:
+                        logger.warning("POLL #%d slow empty | %.0fms (>%ds)",
+                                       self._polls, poll_ms, POLL_TIMEOUT + 5)
+
                 for u in updates:
                     uid = u.get("update_id", 0)
                     self._offset = uid + 1
@@ -365,15 +420,18 @@ class TelegramGateway:
                         "Esperando %ds antes de reintentar...", CONFLICT_RETRY_DELAY,
                     )
                     time.sleep(CONFLICT_RETRY_DELAY)
-                    self._errors = 0   # resetear: el conflicto se resolverá solo
+                    self._errors = 0
                     continue
                 self._errors += 1
-                logger.error("Poll (%d/%d): %s", self._errors, MAX_CONSECUTIVE_ERRORS, e)
+                logger.error("Poll (%d/%d): %s\n%s", self._errors,
+                             MAX_CONSECUTIVE_ERRORS, e, traceback.format_exc())
                 if self._errors >= MAX_CONSECUTIVE_ERRORS:
+                    logger.critical("MAX POLL ERRORS — shutting down gateway")
                     self._running = False
                     break
                 time.sleep(RETRY_DELAY)
-        logger.info("Bot stopped | processed=%d", self._processed)
+        logger.info("Bot stopped | processed=%d | polls=%d | errors=%d",
+                    self._processed, self._polls, self._handler_errors)
 
     @staticmethod
     def _write_heartbeat() -> None:
@@ -391,16 +449,24 @@ class TelegramGateway:
     # == Message handler (worker thread) ===================================
 
     def _handle(self, update: Dict) -> None:
+        t_start = time.time()
+        _uid_short = "??"
+        _text_short = ""
         try:
             msg = update.get("message")
             if not msg:
+                logger.debug("HANDLE skip: no message in update %s",
+                             update.get("update_id", "?"))
                 return
             cid = msg.get("chat", {}).get("id")
             if not cid:
                 return
             uid = str(msg.get("from", {}).get("id", "unknown"))
+            _uid_short = uid
             tg_uid = f"tg:{uid}"
             text = msg.get("text", "")
+            _text_short = text[:40] if text else "(no text)"
+            logger.info("RECV %s | %s", uid, _text_short)
 
             # Location
             loc = msg.get("location")
@@ -670,13 +736,22 @@ class TelegramGateway:
             logger.info("QUEUED %s | %s → %s", uid, text[:30], msg_id)
 
         except Exception as e:
-            logger.error("Handler: %s", e)
+            self._handler_errors += 1
+            logger.error(
+                "HANDLE ERROR user=%s text=%s | %s\n%s",
+                _uid_short, _text_short, e, traceback.format_exc(),
+            )
             try:
                 cid = update.get("message", {}).get("chat", {}).get("id")
                 if cid:
                     self._send(cid, "Error interno. Intenta de nuevo.")
             except Exception:
                 pass
+        finally:
+            elapsed = (time.time() - t_start) * 1000
+            if elapsed > 2000:  # warn if handler takes >2s
+                logger.warning("HANDLE SLOW user=%s | %.0fms | %s",
+                               _uid_short, elapsed, _text_short)
 
     # == Sub-handlers ======================================================
 

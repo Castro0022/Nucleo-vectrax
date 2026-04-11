@@ -183,7 +183,7 @@ class ManagedService:
                 self.cmd,
                 cwd=self.cwd,
                 env=env,
-                stdout=subprocess.DEVNULL,
+                stdout=None,   # inherit parent stdout → visible in docker logs
                 stderr=subprocess.PIPE,
             )
             self.last_start = time.time()
