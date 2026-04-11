@@ -32,6 +32,23 @@ or hashing by (user_id + content).
 - Thread pool: 1/6 used, zero saturation
 - Error rate: 0 handler errors, 0 poll errors
 
+### Fixes Applied + Verified (commit `02b13f6`)
+
+**1. LLM cold-start → warmup on startup**
+- `pipeline_worker.py`: Pre-initializes `ExternalGateway` before main loop
+- Before: first message post-deploy took 15s
+- After: first message took 0.1s (150x faster)
+
+**2. Language enforcement in pipeline worker**
+- `pipeline_worker.py`: `enforce_language(response, user_lang)` applied before send
+- Before: "En chile ?" → English response (language leak)
+- After: "Yo vivo en Miami" → Spanish response (lang=es confirmed)
+
+**3. Deduplication window 5s → 120s**
+- `system_monitor.py`: `DUPLICATE_WINDOW_S` 5 → 120, stable `md5` hash
+- Before: "Yo vivo en Miami" processed 2x (49s apart)
+- After: 0 duplicates in queue across 8h session
+
 ## [2026-04-10] — Gateway Heartbeat Stability Fix
 
 ### Problem
