@@ -78,6 +78,7 @@ class KnowledgeNodeType(str, Enum):
     PRINCIPLE = "principle"
     CONNECTOR = "connector"
     MODEL_PERFORMANCE = "model_performance"
+    VALUE_OUTPUT = "value_output"  # nodo de valor generado por output clasificado
 
 
 # ---------------------------------------------------------------------------

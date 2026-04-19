@@ -220,6 +220,7 @@ def run_worker() -> None:
 
     last_heartbeat = 0.0
     last_proactive = 0.0  # última ejecución del motor proactivo
+    last_scheduler = 0.0  # última ejecución del scheduler
 
     # Discard stale messages from previous sessions (>5 min old)
     _STALE_AGE = 300  # 5 minutes
@@ -311,6 +312,18 @@ def run_worker() -> None:
             except Exception as _pe:
                 logger.debug("Proactive engine error (passthrough): %s", _pe)
                 last_proactive = time.time()  # evitar loop de errores
+
+            # Scheduler — tareas programadas (cada 60s)
+            try:
+                from core.scheduler import run_scheduler_tick, TICK_INTERVAL
+                if time.time() - last_scheduler > TICK_INTERVAL:
+                    n = run_scheduler_tick(_tg_send)
+                    if n:
+                        logger.info("Scheduler: %d tasks executed", n)
+                    last_scheduler = time.time()
+            except Exception as _se:
+                logger.debug("Scheduler error (passthrough): %s", _se)
+                last_scheduler = time.time()
 
         except Exception as exc:
             logger.error("Worker loop: %s", exc)

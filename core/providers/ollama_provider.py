@@ -12,6 +12,7 @@ from core.abstraction.base import (
     GenerateResponse
 )
 from core.observability import get_metrics_collector
+from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT, enrich_user_prompt
 
 
 class OllamaProvider(BaseLLMProvider):
@@ -39,17 +40,17 @@ class OllamaProvider(BaseLLMProvider):
         
         try:
             # Build Ollama-specific request
+            # Strict identity: VECTRAX_SYSTEM_PROMPT is the ONLY system message
+            user_content = enrich_user_prompt(request.prompt, request.system_prompt)
             ollama_request = {
                 "model": request.model,
-                "prompt": request.prompt,
+                "prompt": user_content,
+                "system": VECTRAX_SYSTEM_PROMPT,
                 "stream": False,
                 "options": {
                     "temperature": request.temperature,
                 }
             }
-            
-            if request.system_prompt:
-                ollama_request["system"] = request.system_prompt
                 
             if request.max_tokens:
                 ollama_request["options"]["num_predict"] = request.max_tokens
@@ -112,17 +113,17 @@ class OllamaProvider(BaseLLMProvider):
     
     async def stream(self, request: GenerateRequest) -> AsyncIterator[str]:
         """Stream response from Ollama"""
+        # Strict identity: single system message only
+        user_content = enrich_user_prompt(request.prompt, request.system_prompt)
         ollama_request = {
             "model": request.model,
-            "prompt": request.prompt,
+            "prompt": user_content,
+            "system": VECTRAX_SYSTEM_PROMPT,
             "stream": True,
             "options": {
                 "temperature": request.temperature,
             }
         }
-        
-        if request.system_prompt:
-            ollama_request["system"] = request.system_prompt
             
         if request.max_tokens:
             ollama_request["options"]["num_predict"] = request.max_tokens

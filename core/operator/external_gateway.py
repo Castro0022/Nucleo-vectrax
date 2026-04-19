@@ -256,20 +256,95 @@ class ExternalGateway:
                     processed=True,
                 )
 
-            # Guardar sin respuesta (datos, statements cortos)
-            # This path returns early (no response), so we must
-            # feed the star HERE before returning.
+            # Guardar con recibo estructurado (ritual de escritura).
+            # Antes devolvía response="" — ahora emite confirmación explícita
+            # cuando la ingesta es ACEPTADA. CUARENTENA y DESCARTE se registran
+            # sin ruido para el usuario.
             if intake.action == Action.STORE and not intake.context_hint == "identity":
+                # 1) Política de ingesta ARGOS — decide si entra
+                _ingest_result = None
+                try:
+                    from core.argos_ingesta import (
+                        evaluar_ingesta, Origen, Veredicto,
+                    )
+                    _origen = Origen.TELEGRAM if channel == "telegram" else Origen.WEB
+                    _ingest_result = evaluar_ingesta(content, origen=_origen)
+                except Exception as exc:
+                    logger.debug("argos_ingesta unavailable: %s", exc)
+
+                # 2) Si la política descarta, no escribimos ni confirmamos.
+                if _ingest_result and _ingest_result.veredicto.value == "descartar":
+                    return GatewayResult(
+                        event_id=correlation_id,
+                        user_id=user_id,
+                        channel=channel,
+                        response="",
+                        source="intake_store_discarded",
+                        timestamp=ts,
+                        processed=True,
+                    )
+
+                # 3) Escritura real (estrella gravitacional + memoria usuario)
+                _facts = 0
+                _absorbed = False
                 try:
                     from vectrax.engine import ingest_v2
                     ingest_v2(text=content, user_id=user_id, topic="general")
                 except Exception:
                     pass
+                try:
+                    from vectrax.user_memory import store_memory
+                    store_memory(user_id, content, "")
+                except Exception:
+                    pass
+                try:
+                    from vectrax.fact_memory import store_facts
+                    _facts = store_facts(user_id, content) or 0
+                except Exception:
+                    pass
+                try:
+                    from vectrax.core_memory import absorb
+                    _absorbed = bool(absorb(user_id, content, ""))
+                except Exception:
+                    pass
+
+                # 4) Ritual de escritura — recibo estructurado al usuario
+                _confirmation = ""
+                try:
+                    from core.ritual_escritura import (
+                        emit_receipt, format_user_confirmation,
+                    )
+                    _layer = "core" if _absorbed else (
+                        "facts" if _facts else "interactions"
+                    )
+                    _sources = []
+                    if _ingest_result:
+                        _sources.append(f"argos:{_ingest_result.intencion.value}")
+                    _receipt = emit_receipt(
+                        user_id=user_id,
+                        user_input=content,
+                        layer=_layer,
+                        facts_extracted=_facts,
+                        absorbed_in_core=_absorbed,
+                        sources=_sources,
+                    )
+                    _lang = (anchor.language if anchor and anchor.language else "es")
+                    # En CUARENTENA, reducir el recibo para no generar ruido.
+                    if _ingest_result and _ingest_result.veredicto.value == "cuarentena":
+                        _confirmation = (
+                            "✓ Anotado (cuarentena, peso bajo). id="
+                            + _receipt.receipt_id
+                        )
+                    else:
+                        _confirmation = format_user_confirmation(_receipt, lang=_lang)
+                except Exception as exc:
+                    logger.debug("ritual_escritura unavailable: %s", exc)
+
                 return GatewayResult(
                     event_id=correlation_id,
                     user_id=user_id,
                     channel=channel,
-                    response="",
+                    response=_confirmation,
                     source="intake_store",
                     timestamp=ts,
                     processed=True,

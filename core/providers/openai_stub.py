@@ -17,6 +17,7 @@ from core.abstraction.base import (
     GenerateResponse,
     ProviderType,
 )
+from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT, enrich_user_prompt
 
 
 # Backward-compatible re-export
@@ -63,15 +64,17 @@ class OpenAIProvider(BaseLLMProvider):
         self._ensure_client()
         start = time.time()
 
+        # Strict identity: VECTRAX_SYSTEM_PROMPT is the ONLY system message.
+        # Any extra system_prompt is demoted to user context.
+        user_content = enrich_user_prompt(request.prompt, request.system_prompt)
         payload = {
             "model": request.model,
-            "messages": [{"role": "user", "content": request.prompt}],
+            "messages": [
+                {"role": "system", "content": VECTRAX_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
             "temperature": request.temperature,
         }
-        if request.system_prompt:
-            payload["messages"].insert(
-                0, {"role": "system", "content": request.system_prompt}
-            )
         if request.max_tokens:
             payload["max_tokens"] = request.max_tokens
 
@@ -97,16 +100,17 @@ class OpenAIProvider(BaseLLMProvider):
     async def stream(self, request: GenerateRequest) -> AsyncIterator[str]:
         self._ensure_client()
 
+        # Strict identity: single system message only
+        user_content = enrich_user_prompt(request.prompt, request.system_prompt)
         payload = {
             "model": request.model,
-            "messages": [{"role": "user", "content": request.prompt}],
+            "messages": [
+                {"role": "system", "content": VECTRAX_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
             "temperature": request.temperature,
             "stream": True,
         }
-        if request.system_prompt:
-            payload["messages"].insert(
-                0, {"role": "system", "content": request.system_prompt}
-            )
 
         async with self._client.stream(
             "POST", f"{self.endpoint}/chat/completions", json=payload

@@ -55,22 +55,23 @@ class PressureLevel(str, Enum):
 # Thresholds
 # ---------------------------------------------------------------------------
 
+# Umbrales ajustados para sistema con LLM (latencias de 3-10s son normales)
 THRESHOLDS = {
     # GREEN → YELLOW
-    "yellow_queue": 10,
-    "yellow_latency": 8.0,
+    "yellow_queue": 15,
+    "yellow_latency": 15.0,
     # YELLOW → ORANGE
-    "orange_queue": 25,
-    "orange_latency": 12.0,
+    "orange_queue": 35,
+    "orange_latency": 25.0,
     # ORANGE → RED
-    "red_queue": 40,
-    "red_latency": 20.0,
-    # Recovery (hysteresis to prevent oscillation)
-    "green_queue": 5,
-    "green_latency": 5.0,
-    "yellow_recover_queue": 10,
-    "yellow_recover_latency": 8.0,
-    "orange_recover_queue": 20,
+    "red_queue": 50,
+    "red_latency": 40.0,
+    # Recovery (hysteresis)
+    "green_queue": 8,
+    "green_latency": 10.0,
+    "yellow_recover_queue": 15,
+    "yellow_recover_latency": 15.0,
+    "orange_recover_queue": 30,
 }
 
 # Minimum time between level changes (prevents oscillation)

@@ -19,6 +19,7 @@ from core.abstraction.base import (
     ProviderType,
 )
 from core.resilience.errors import NotConfiguredError
+from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT, enrich_user_prompt
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -57,17 +58,18 @@ class GeminiProvider(BaseLLMProvider):
     # -- Payload helpers ----------------------------------------------------
 
     def _build_payload(self, request: GenerateRequest) -> Dict:
-        """Build the Gemini API payload with optional systemInstruction."""
+        """Build the Gemini API payload. Identity is always the sole systemInstruction."""
+        # Strict identity: VECTRAX_SYSTEM_PROMPT is the ONLY system instruction
+        user_content = enrich_user_prompt(request.prompt, request.system_prompt)
         payload: Dict = {
-            "contents": [{"parts": [{"text": request.prompt}]}],
+            "contents": [{"parts": [{"text": user_content}]}],
             "generationConfig": {"temperature": request.temperature},
+            "systemInstruction": {
+                "parts": [{"text": VECTRAX_SYSTEM_PROMPT}]
+            },
         }
         if request.max_tokens:
             payload["generationConfig"]["maxOutputTokens"] = request.max_tokens
-        if request.system_prompt:
-            payload["systemInstruction"] = {
-                "parts": [{"text": request.system_prompt}]
-            }
         return payload
 
     @staticmethod

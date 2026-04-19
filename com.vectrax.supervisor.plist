@@ -8,17 +8,19 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/mariobravo/Vectrax/.venv/bin/python3</string>
-        <string>/Users/mariobravo/Vectrax/vectrax_supervisor.py</string>
+        <string>/bin/bash</string>
+        <string>/Users/mariobravo/vectrax/scripts/vectrax_boot.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/mariobravo/Vectrax</string>
+    <string>/Users/mariobravo/vectrax</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PYTHONPATH</key>
-        <string>/Users/mariobravo/Vectrax</string>
+        <string>/Users/mariobravo/vectrax</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
 
     <key>RunAtLoad</key>

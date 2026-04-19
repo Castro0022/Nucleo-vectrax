@@ -20,3 +20,6 @@ sentence-transformers>=5.1.0
 
 # Filesystem monitoring
 watchdog>=6.0.0
+
+# Payments
+stripe>=11.0.0

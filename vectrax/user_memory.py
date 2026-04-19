@@ -535,13 +535,31 @@ def store_memory(user_id: str, user_input: str, bot_output: str) -> None:
     """Almacena una interacción usuario ↔ Vectrax + extrae hechos + absorbe en core."""
     _get_store().store(user_id, user_input, bot_output)
     # Extraer y almacenar hechos de negocio (nombres, cifras, fechas)
+    _facts_stored = 0
     try:
         from vectrax.fact_memory import store_facts
-        stored = store_facts(user_id, user_input)
-        if stored:
-            logger.info("Facts extracted | user=%s | count=%d", user_id[:20], stored)
+        _facts_stored = store_facts(user_id, user_input)
+        if _facts_stored:
+            logger.info("Facts extracted | user=%s | count=%d", user_id[:20], _facts_stored)
     except Exception as exc:
         logger.debug("Fact extraction failed: %s", exc)
+    # Cognitive bridge: auto-create scheduler tasks from temporal facts
+    if _facts_stored:
+        try:
+            from core.cognitive_bridge import bridge_facts_to_scheduler
+            # Extract chat_id from user_id (format: "tg:XXXXX")
+            _chat_id = 0
+            if user_id.startswith("tg:"):
+                try:
+                    _chat_id = int(user_id.split(":", 1)[1])
+                except ValueError:
+                    pass
+            if _chat_id:
+                bridged = bridge_facts_to_scheduler(user_id, _chat_id, user_input, _facts_stored)
+                if bridged:
+                    logger.info("Bridge: %d auto-tasks created | user=%s", bridged, user_id[:20])
+        except Exception as exc:
+            logger.debug("Cognitive bridge failed: %s", exc)
     # Detectar preferencias reveladas de contactos (detector híbrido)
     try:
         from core.preference_tracker import detect_and_store

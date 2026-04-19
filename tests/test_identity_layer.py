@@ -51,16 +51,17 @@ class TestSystemPrompt:
         assert "Vectrax" in SYSTEM_PROMPT
 
     def test_contains_personality_rules(self):
-        assert "conciso" in SYSTEM_PROMPT.lower() or "preciso" in SYSTEM_PROMPT.lower()
+        assert "directa" in SYSTEM_PROMPT.lower() or "resultado" in SYSTEM_PROMPT.lower()
 
     def test_no_generic_assistant(self):
-        assert "asistente genérico" in SYSTEM_PROMPT  # explicitly says NOT generic
+        assert "IA genérica" in SYSTEM_PROMPT  # explicitly says NOT generic
 
-    def test_prohibits_emoji(self):
-        assert "emoji" in SYSTEM_PROMPT.lower()
+    def test_prohibits_processing_narration(self):
+        assert "procesando" in SYSTEM_PROMPT.lower()
+        assert "consultando memoria" in SYSTEM_PROMPT.lower()
 
-    def test_prohibits_model_disclosure(self):
-        assert "modelo de lenguaje" in SYSTEM_PROMPT
+    def test_prohibits_pipeline_description(self):
+        assert "pipeline" in SYSTEM_PROMPT.lower()
 
 
 # ---------------------------------------------------------------------------

@@ -27,5 +27,20 @@ launch.log
 # Logs (tracked via git but content rotated)
 logs/*.log
 
+# Runtime vault data (operational, not code)
+vault/*.jsonl
+vault/*.json
+vault/cognition_signals.jsonl
+vault/candidates.jsonl
+vault/causal_ledger.jsonl
+vault/semantic_meta.jsonl
+vault/learned_rules.jsonl
+vault/cognition_trace.jsonl
+vault/cognition_decisions.jsonl
+
+# Learning feedback data (runtime)
+data/router_feedback.jsonl
+data/router_proposals.jsonl
+
 # Reports are tracked
 vault/*.db

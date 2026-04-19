@@ -204,7 +204,7 @@ class IntelligenceRouter:
                 latency_ms=(time.time() - t0) * 1000,
             )
 
-        # Execute
+        # Execute — identity injected at provider level
         try:
             request = GenerateRequest(
                 prompt=prompt,
@@ -351,7 +351,7 @@ class IntelligenceRouter:
         decision = self._model_router.route(prompt, context)
         task_type = decision.task_classification.task_type.value
 
-        # Step 2: Parallel query
+        # Step 2: Parallel query — identity injected at provider level
         parallel_result = await self.query_parallel(
             prompt,
             providers=providers,

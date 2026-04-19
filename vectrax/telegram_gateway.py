@@ -69,6 +69,39 @@ RESPONSE_WAIT_TIMEOUT = 25.0
 WORKERS = 6
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeat writes
 STATUS_LOG_INTERVAL = 300  # log status summary every 5 min
+POLL_CLIENT_REFRESH = 1800  # recreate HTTP client every 30 min to avoid stale TCP
+POLL_STUCK_THRESHOLD = 60  # seconds without a completed poll = stuck (under supervisor's 75s)
+POLL_ALARM_TIMEOUT = POLL_TIMEOUT + 15  # hard OS-level timeout per poll (45s)
+_OFFSET_FILE = os.path.join(os.path.expanduser("~"), ".vectrax", "gateway_offset")
+
+
+# --- SIGALRM handler: interrupts stuck C-level calls (SSL read, etc.) ---
+class _PollTimeout(Exception):
+    """Raised by SIGALRM when a poll exceeds the hard timeout."""
+
+def _poll_alarm_handler(signum, frame):
+    raise _PollTimeout(f"Poll exceeded {POLL_ALARM_TIMEOUT}s hard timeout")
+
+
+def _load_offset() -> int:
+    """Load persisted Telegram offset from disk."""
+    try:
+        if os.path.exists(_OFFSET_FILE):
+            with open(_OFFSET_FILE, "r") as f:
+                return int(f.read().strip())
+    except Exception:
+        pass
+    return 0
+
+
+def _save_offset(offset: int) -> None:
+    """Persist Telegram offset to disk so restarts don't re-process messages."""
+    try:
+        os.makedirs(os.path.dirname(_OFFSET_FILE), exist_ok=True)
+        with open(_OFFSET_FILE, "w") as f:
+            f.write(str(offset))
+    except Exception:
+        pass
 
 
 class TelegramGateway:
@@ -77,7 +110,7 @@ class TelegramGateway:
             raise ValueError("TELEGRAM_BOT_TOKEN vacío")
         self._token = token
         self._base = TELEGRAM_API.format(token=token)
-        self._offset: int = 0
+        self._offset: int = _load_offset()
         self._running: bool = False
         self._processed: int = 0
         self._errors: int = 0
@@ -87,9 +120,9 @@ class TelegramGateway:
         self._last_status_log: float = 0
         self._last_update_time: float = 0
         self._start_time: float = time.time()
-        self._poll_http = httpx.Client(
-            timeout=httpx.Timeout(POLL_TIMEOUT + 10, connect=10),
-        )
+        self._poll_http = self._make_poll_client()
+        self._poll_http_created: float = time.time()
+        self._last_poll_ok: float = time.time()
         self._send_http = httpx.Client(
             timeout=httpx.Timeout(15, connect=5),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
@@ -98,6 +131,30 @@ class TelegramGateway:
         self._pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="tg")
         self._heartbeat_thread: threading.Thread | None = None
         logger.info("Gateway ready (%d workers, queue-based)", WORKERS)
+
+    @staticmethod
+    def _make_poll_client() -> httpx.Client:
+        """Create a fresh HTTP client for long-polling.
+        Uses max_keepalive_connections=1 to minimize stale TCP connections.
+        """
+        return httpx.Client(
+            timeout=httpx.Timeout(POLL_TIMEOUT + 10, connect=10),
+            limits=httpx.Limits(
+                max_connections=5,
+                max_keepalive_connections=1,
+                keepalive_expiry=300,  # 5 min max for idle connections
+            ),
+        )
+
+    def _refresh_poll_client(self) -> None:
+        """Close and recreate the poll HTTP client to avoid stale connections."""
+        try:
+            self._poll_http.close()
+        except Exception:
+            pass
+        self._poll_http = self._make_poll_client()
+        self._poll_http_created = time.time()
+        logger.info("Poll HTTP client refreshed")
 
     # == Telegram API ======================================================
 
@@ -117,6 +174,13 @@ class TelegramGateway:
         if len(text) > 4096:
             text = text[:4093] + "..."
         return self._tg("sendMessage", chat_id=cid, text=text, **extra) is not None
+
+    def _send_photo(self, cid: int, photo_url: str, caption: str = "") -> bool:
+        """Send a photo to Telegram by URL."""
+        params = {"chat_id": cid, "photo": photo_url}
+        if caption:
+            params["caption"] = caption[:1024]
+        return self._tg("sendPhoto", **params) is not None
 
     def _venue(self, cid: int, p: Dict) -> bool:
         lat, lng = p.get("lat", 0), p.get("lng", 0)
@@ -336,14 +400,38 @@ class TelegramGateway:
     # == Heartbeat + periodic status (background thread) ====================
 
     def _heartbeat_loop(self) -> None:
-        """Background daemon thread: writes heartbeat every HEARTBEAT_INTERVAL seconds
-        and logs a status summary every STATUS_LOG_INTERVAL seconds.
+        """Background daemon thread: writes heartbeat every HEARTBEAT_INTERVAL seconds,
+        logs a status summary every STATUS_LOG_INTERVAL seconds,
+        and acts as a watchdog for the polling loop.
         """
         while self._running:
             self._write_heartbeat()
 
-            # Periodic status summary
             now = time.time()
+
+            # === WATCHDOG: detect stuck poll client ===
+            poll_age = now - self._last_poll_ok
+            if poll_age > POLL_STUCK_THRESHOLD:
+                logger.warning(
+                    "WATCHDOG | Poll stuck for %.0fs (>%ds) — forcing process exit for supervisor restart",
+                    poll_age, POLL_STUCK_THRESHOLD,
+                )
+                # CRITICAL: Do NOT call self._poll_http.close() here!
+                # close() waits for the active request to finish, which
+                # deadlocks because the main thread is stuck in that request.
+                # Instead, force-terminate the process. The supervisor will
+                # restart us cleanly in ~5 seconds.
+                self._write_heartbeat()  # one last heartbeat to log the event
+                os._exit(1)
+
+            # === Periodic HTTP client refresh ===
+            if now - self._poll_http_created > POLL_CLIENT_REFRESH:
+                logger.info("REFRESH | Poll client age %.0fs — refreshing",
+                            now - self._poll_http_created)
+                self._refresh_poll_client()
+                self._last_poll_ok = now
+
+            # Periodic status summary
             if now - self._last_status_log >= STATUS_LOG_INTERVAL:
                 uptime = int(now - self._start_time)
                 h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
@@ -374,15 +462,32 @@ class TelegramGateway:
     def run(self) -> None:
         self._running = True
 
+        # Install SIGALRM handler — this is the HARD timeout that can interrupt
+        # stuck C-level calls (SSL read, etc.) which freeze the entire process.
+        # signal.alarm() operates at the OS level, independent of GIL.
+        signal.signal(signal.SIGALRM, _poll_alarm_handler)
+
         # Start dedicated heartbeat thread (daemon — dies with main process)
         self._heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop, name="gw-heartbeat", daemon=True,
         )
         self._heartbeat_thread.start()
 
-        logger.info("Bot started — queue-based polling (heartbeat thread active)")
+        if self._offset:
+            logger.info("Bot started — resumed at offset %d (heartbeat thread active)",
+                        self._offset)
+        else:
+            logger.info("Bot started — queue-based polling (heartbeat thread active)")
+
         while self._running:
             try:
+                # Refresh poll client if it was closed by watchdog
+                if self._poll_http.is_closed:
+                    self._refresh_poll_client()
+
+                # Set OS-level hard timeout — interrupts even stuck C calls
+                signal.alarm(POLL_ALARM_TIMEOUT)
+
                 t0 = time.time()
                 r = self._poll_http.post(
                     f"{self._base}/getUpdates",
@@ -390,7 +495,12 @@ class TelegramGateway:
                           "allowed_updates": ["message"]},
                 )
                 r.raise_for_status()
-                poll_ms = (time.time() - t0) * 1000
+
+                # Cancel alarm — poll completed successfully
+                signal.alarm(0)
+
+                self._last_poll_ok = time.time()
+                poll_ms = (self._last_poll_ok - t0) * 1000
                 d = r.json()
                 updates = d.get("result", []) if d.get("ok") else []
                 self._polls += 1
@@ -402,7 +512,6 @@ class TelegramGateway:
                                 self._polls, len(updates), poll_ms)
                 else:
                     self._empty_polls += 1
-                    # Log empty polls only at debug (every poll) or warn if unusually slow
                     if poll_ms > (POLL_TIMEOUT + 5) * 1000:
                         logger.warning("POLL #%d slow empty | %.0fms (>%ds)",
                                        self._polls, poll_ms, POLL_TIMEOUT + 5)
@@ -411,7 +520,24 @@ class TelegramGateway:
                     uid = u.get("update_id", 0)
                     self._offset = uid + 1
                     self._pool.submit(self._handle, u)
+
+                # Persist offset after processing updates
+                if updates:
+                    _save_offset(self._offset)
+
+            except _PollTimeout:
+                # SIGALRM fired — the poll was stuck at the C/OS level
+                signal.alarm(0)  # cancel any pending alarm
+                logger.warning(
+                    "SIGALRM | Poll exceeded %ds hard timeout — refreshing client",
+                    POLL_ALARM_TIMEOUT,
+                )
+                self._refresh_poll_client()
+                self._last_poll_ok = time.time()
+                continue
+
             except Exception as e:
+                signal.alarm(0)  # cancel any pending alarm
                 err_str = str(e)
                 # 409 Conflict = otra instancia corriendo — esperar más y resetear
                 if "409" in err_str or "Conflict" in err_str:
@@ -430,6 +556,8 @@ class TelegramGateway:
                     self._running = False
                     break
                 time.sleep(RETRY_DELAY)
+
+        signal.alarm(0)  # cleanup
         logger.info("Bot stopped | processed=%d | polls=%d | errors=%d",
                     self._processed, self._polls, self._handler_errors)
 
@@ -489,6 +617,13 @@ class TelegramGateway:
                 text = self._voice(cid, voice)
                 if not text:
                     return
+
+            # Photo — analyze with GPT-4o vision
+            photo = msg.get("photo")
+            if photo:
+                self._handle_photo(cid, tg_uid, photo, caption=msg.get("caption", ""))
+                self._processed += 1
+                return
 
             if not text:
                 return
@@ -609,6 +744,11 @@ class TelegramGateway:
                     ))
                 return
 
+            # === TASKS COMMANDS: /tasks — tareas programadas ===
+            if re.match(r"^/?(?:tasks|remind|schedule|recordar|alarma)\b", _t, re.IGNORECASE):
+                self._handle_tasks(cid, tg_uid, _t)
+                return
+
             # === TEAM COMMANDS: /team — accesibles a todos los usuarios ===
             if re.match(r"^/?team\b", _t, re.IGNORECASE):
                 self._handle_team(cid, tg_uid, _t)
@@ -682,6 +822,42 @@ class TelegramGateway:
             except Exception:
                 pass
 
+            # === IMAGE GENERATION: crear imágenes con DALL-E 3 ===
+            try:
+                from vectrax.integrations.vision import detect_generation_intent, generate_image
+                _gen_prompt = detect_generation_intent(text)
+                if _gen_prompt:
+                    self._send(cid, "⏳ Generando imagen...")
+                    _img_url = generate_image(_gen_prompt)
+                    if _img_url:
+                        self._send_photo(cid, _img_url, caption=_gen_prompt[:200])
+                        logger.info("DALLE %s | %s", uid, _gen_prompt[:40])
+                    else:
+                        self._send(cid, "No pude generar la imagen.")
+                    self._processed += 1
+                    return
+            except Exception:
+                pass
+
+            # === WEATHER: respuesta directa de clima ===
+            try:
+                from vectrax.integrations.weather import detect_weather_intent, get_weather_text
+                _weather_city = detect_weather_intent(text)
+                if _weather_city:
+                    _wlang = "es"
+                    try:
+                        from core.language_gate import get_user_language
+                        _wlang = get_user_language(tg_uid, text)
+                    except Exception:
+                        pass
+                    _weather_resp = get_weather_text(_weather_city, lang=_wlang)
+                    self._send(cid, _weather_resp)
+                    self._processed += 1
+                    logger.info("WEATHER %s | %s → %d ch", uid, _weather_city, len(_weather_resp))
+                    return
+            except Exception:
+                pass
+
             # === FAST-PATH: respuesta instantánea ===
             fast = self._fast(text, tg_uid)
             if fast:
@@ -697,6 +873,11 @@ class TelegramGateway:
                 # Places map pins (non-blocking, best-effort)
                 self._places(cid, tg_uid, text)
                 logger.info("FAST %s | %s → %d ch", uid, text[:30], len(fast))
+                return
+
+            # === SCHEDULING: recordatorios y tareas programadas ===
+            if self._detect_schedule(cid, tg_uid, text):
+                self._processed += 1
                 return
 
             # === LOAD GOVERNOR + QUEUE GATE ===
@@ -1610,6 +1791,224 @@ class TelegramGateway:
         except Exception:
             pass
         self._send(cid, f"✅ {target} → {lang}")
+
+    # == Scheduling: detect and handle scheduled tasks ====================
+
+    _SCHEDULE_PATTERN = re.compile(
+        r'(?:despi[eé]rtame|recu[eé]rdame|av[ií]same|rem[ií]ndme'
+        r'|wake me|remind me|alert me|alarma'
+        r'|todas? las ma[ñn]anas|every (?:morning|day|monday|tuesday|wednesday|thursday|friday)'
+        r'|cada (?:ma[ñn]ana|d[ií]a|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)'
+        r'|dame (?:el|la|los|las) .+? (?:todas?|cada|every)'
+        r'|en \d+\s*(?:minutos?|horas?|min|hr)\s+(?:av[ií]same|recu[eé]rdame|remind))',
+        re.IGNORECASE,
+    )
+
+    def _detect_schedule(self, cid: int, tg_uid: str, text: str) -> bool:
+        """
+        Detect scheduling intent in natural language and create task.
+        Returns True if handled (message was a scheduling instruction).
+        """
+        if not self._SCHEDULE_PATTERN.search(text):
+            return False
+
+        try:
+            from core.scheduler import add_task, format_task_confirmation
+
+            # Get user timezone (default Miami)
+            tz = "America/New_York"
+            try:
+                from vectrax.user_memory import get_user_profile
+                profile = get_user_profile(tg_uid)
+                if profile.get("timezone"):
+                    tz = profile["timezone"]
+            except Exception:
+                pass
+
+            task = add_task(tg_uid, cid, text, tz=tz)
+            if task:
+                confirmation = format_task_confirmation(task, tz=tz)
+                self._send(cid, confirmation)
+                logger.info("SCHED %s | %s → task #%d", tg_uid[:15], text[:30], task["id"])
+                return True
+        except Exception as e:
+            logger.error("_detect_schedule error: %s", e)
+
+        return False
+
+    def _handle_tasks(self, cid: int, tg_uid: str, text: str) -> None:
+        """
+        Handle /tasks, /remind, /schedule commands.
+
+        /tasks              — list active tasks
+        /tasks del <id>     — delete a task
+        /remind <text>      — create a reminder
+        """
+        clean = re.sub(
+            r'^/?(?:tasks|remind|schedule|recordar|alarma)\s*',
+            '', text, flags=re.IGNORECASE,
+        ).strip()
+
+        try:
+            from core.scheduler import (
+                add_task, list_tasks, delete_task,
+                format_task_confirmation, format_task_list,
+            )
+
+            # /tasks del <id>
+            m_del = re.match(r'(?:del|delete|eliminar|borrar|cancelar)\s+(\d+)', clean, re.I)
+            if m_del:
+                task_id = int(m_del.group(1))
+                ok = delete_task(tg_uid, task_id)
+                if ok:
+                    self._send(cid, f"✅ Tarea #{task_id} eliminada.")
+                else:
+                    self._send(cid, f"Tarea #{task_id} no encontrada.")
+                return
+
+            # /tasks (no args) — list
+            if not clean:
+                tasks = list_tasks(tg_uid)
+                self._send(cid, format_task_list(tasks))
+                return
+
+            # /remind <instruction> — create task
+            tz = "America/New_York"
+            try:
+                from vectrax.user_memory import get_user_profile
+                profile = get_user_profile(tg_uid)
+                if profile.get("timezone"):
+                    tz = profile["timezone"]
+            except Exception:
+                pass
+
+            task = add_task(tg_uid, cid, clean, tz=tz)
+            if task:
+                self._send(cid, format_task_confirmation(task, tz=tz))
+            else:
+                self._send(cid, "No pude interpretar la instrucción. Ejemplo:\n/remind mañana a las 7am llamar a Carlos")
+
+        except Exception as e:
+            self._send(cid, f"Error: {e}")
+            logger.error("_handle_tasks error: %s", e)
+
+    def _handle_photo(self, cid: int, tg_uid: str, photo_list: list, caption: str = "") -> None:
+        """Handle photos: face registration, face recognition, or visual analysis."""
+        try:
+            from vectrax.integrations.vision import analyze_image, get_telegram_photo_url
+
+            # Telegram sends multiple sizes; pick the largest
+            best = max(photo_list, key=lambda p: p.get("file_size", 0))
+            file_id = best.get("file_id", "")
+            if not file_id:
+                return
+
+            # === FACE REGISTRATION: "Este soy yo" / "Esta es Ana" ===
+            try:
+                from vectrax.integrations.face_memory import (
+                    detect_registration, register_face, download_photo,
+                    recognize_faces,
+                )
+                reg = detect_registration(caption)
+                if reg:
+                    reg_type, reg_name = reg
+                    # Get the person's name
+                    if reg_type == "self":
+                        try:
+                            from vectrax.user_memory import get_user_profile
+                            profile = get_user_profile(tg_uid)
+                            reg_name = profile.get("name", "") or "Creador"
+                        except Exception:
+                            reg_name = "Creador"
+
+                    # Download photo bytes
+                    img_data = download_photo(self._token, file_id)
+                    if img_data:
+                        result = register_face(tg_uid, reg_name, img_data)
+                        if result:
+                            self._send(cid, (
+                                f"📸 {reg_name} registrado en memoria visual.\n"
+                                f"Vectrax no olvidará esa cara."
+                            ))
+                            logger.info("FACE REG %s | %s", tg_uid[:15], reg_name)
+                        else:
+                            self._send(cid, "No pude registrar la cara. Intenta con otra foto.")
+                    else:
+                        self._send(cid, "No pude descargar la imagen.")
+                    return
+            except Exception as e:
+                logger.debug("Face registration check failed: %s", e)
+
+            # Get direct URL for analysis
+            url = get_telegram_photo_url(self._token, file_id)
+            if not url:
+                self._send(cid, "No pude acceder a la imagen.")
+                return
+
+            # === FACE RECOGNITION: check if known people appear ===
+            recognized_names = []
+            try:
+                from vectrax.integrations.face_memory import recognize_faces
+                recognized = recognize_faces(tg_uid, url)
+                if recognized:
+                    recognized_names = recognized
+            except Exception:
+                pass
+
+            # Get user language
+            lang = "es"
+            try:
+                from core.language_gate import get_user_language
+                lang = get_user_language(tg_uid, caption or "")
+            except Exception:
+                pass
+
+            # Get user context for richer analysis
+            user_ctx = ""
+            try:
+                from vectrax.user_memory import get_user_profile
+                profile = get_user_profile(tg_uid)
+                name = profile.get("name", "")
+                if name:
+                    user_ctx = f"Usuario: {name}"
+            except Exception:
+                pass
+
+            # Add recognized people to context + custom prompt
+            vision_prompt = caption
+            if recognized_names:
+                names_str = ", ".join(recognized_names)
+                user_ctx += (
+                    f"\nIMPORTANTE: Ya identifiqué a estas personas en la foto: {names_str}. "
+                    f"Reférete a ellas por nombre. NO digas que no puedes identificar personas."
+                )
+                if not caption:
+                    vision_prompt = f"En esta foto aparece {names_str}. Analiza la imagen."
+
+            # Analyze with vision
+            result = analyze_image(url, user_prompt=vision_prompt, lang=lang, user_context=user_ctx)
+
+            # Prepend recognition header
+            if recognized_names and result:
+                result = f"👤 Reconocido: {names_str}\n\n{result}"
+
+            if result:
+                try:
+                    from core.language_gate import enforce_language
+                    result = enforce_language(result, lang, tg_uid)
+                except Exception:
+                    pass
+                self._send(cid, result)
+                logger.info("VISION %s | %d ch | faces=%s | caption=%s",
+                            tg_uid[:15], len(result),
+                            recognized_names or "none",
+                            caption[:30] if caption else "(none)")
+            else:
+                self._send(cid, "No pude analizar la imagen.")
+
+        except Exception as e:
+            logger.error("_handle_photo error: %s", e)
+            self._send(cid, "Error procesando la imagen.")
 
     def _places(self, cid: int, tg_uid: str, text: str) -> None:
         try:

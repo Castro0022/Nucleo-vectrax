@@ -18,6 +18,7 @@ from core.abstraction.base import (
     ProviderType,
 )
 from core.resilience.errors import NotConfiguredError
+from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT, enrich_user_prompt
 
 
 class AnthropicProvider(BaseLLMProvider):
@@ -61,13 +62,14 @@ class AnthropicProvider(BaseLLMProvider):
         self._ensure_client()
         start = time.time()
 
+        # Strict identity: VECTRAX_SYSTEM_PROMPT is the ONLY system message
+        user_content = enrich_user_prompt(request.prompt, request.system_prompt)
         payload = {
             "model": request.model,
             "max_tokens": request.max_tokens or 4096,
-            "messages": [{"role": "user", "content": request.prompt}],
+            "messages": [{"role": "user", "content": user_content}],
+            "system": VECTRAX_SYSTEM_PROMPT,
         }
-        if request.system_prompt:
-            payload["system"] = request.system_prompt
 
         resp = await self._client.post(
             f"{self.endpoint}/messages", json=payload
@@ -99,14 +101,15 @@ class AnthropicProvider(BaseLLMProvider):
     async def stream(self, request: GenerateRequest) -> AsyncIterator[str]:
         self._ensure_client()
 
+        # Strict identity: single system message only
+        user_content = enrich_user_prompt(request.prompt, request.system_prompt)
         payload = {
             "model": request.model,
             "max_tokens": request.max_tokens or 4096,
-            "messages": [{"role": "user", "content": request.prompt}],
+            "messages": [{"role": "user", "content": user_content}],
+            "system": VECTRAX_SYSTEM_PROMPT,
             "stream": True,
         }
-        if request.system_prompt:
-            payload["system"] = request.system_prompt
 
         async with self._client.stream(
             "POST", f"{self.endpoint}/messages", json=payload

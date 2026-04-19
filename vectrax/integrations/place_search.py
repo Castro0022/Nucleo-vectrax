@@ -41,7 +41,7 @@ logger = logging.getLogger("vectrax.integrations.place_search")
 # Legacy Places API endpoints
 PLACES_API_BASE = "https://maps.googleapis.com/maps/api/place"
 DEFAULT_LANGUAGE = "es"
-DEFAULT_MAX_RESULTS = 5
+DEFAULT_MAX_RESULTS = 3  # máximo 3 — no explicar, solo resolver
 DEFAULT_RADIUS_METERS = 5000  # 5 km para búsquedas nearby
 
 # ---------------------------------------------------------------------------
@@ -575,8 +575,8 @@ def search_places(
     raw_places: List[Dict[str, Any]] = []
     search_type = "text"
 
-    # Estrategia: Nearby si hay ubicación y quiere cercanía
-    if user_location and wants_near:
+    # Estrategia: Nearby cuando hay ubicación (siempre — no solo cuando dice "cerca")
+    if user_location:
         search_type = "nearby"
         raw_places = _nearby_search(
             location=user_location,
@@ -595,12 +595,11 @@ def search_places(
                 included_type=detected_type,
             )
     else:
-        # Text Search (con location bias si hay ubicación)
+        # Sin ubicación: text search puro
         raw_places = _text_search(
             query=search_query,
             max_results=max_results,
             language=language,
-            location_bias=user_location,
             included_type=detected_type,
         )
 
@@ -640,32 +639,30 @@ def search_places(
 
 def format_results(results: List[Dict[str, Any]], query: str = "") -> str:
     """
-    Formatea resultados de búsqueda en estilo Vectrax limpio y directo.
+    Formato directo: máximo 3, sin intro, ordenados por distancia.
 
-    Ejemplo de salida:
-        Encontré estos lugares:
-        1. Taller San José — 4.6★ — 800 m — Av. Principal 123
-        2. Taller Express — 4.4★ — 1.2 km — Calle Sur 456
+    Ejemplo:
+        Farmacia Cruz Verde — 4.2★ — 200 m
+        Farmacia Ahumada — 4.0★ — 350 m
+        Salcobrand — 3.8★ — 600 m
     """
     if not results:
         return _no_results_message(query)
 
-    lines = ["Encontré estos lugares:\n"]
-
-    for i, place in enumerate(results, 1):
-        parts = [f"{i}. {place['nombre']}"]
+    lines = []
+    for place in results[:3]:  # máximo 3
+        parts = [place['nombre']]
 
         if place.get("rating"):
             parts.append(f"{place['rating']}★")
 
         if place.get("distancia_label"):
             parts.append(place["distancia_label"])
-
-        if place.get("direccion"):
-            # Acortar dirección si es muy larga
+        elif place.get("direccion"):
+            # Solo mostrar dirección si no hay distancia
             addr = place["direccion"]
-            if len(addr) > 60:
-                addr = addr[:57] + "..."
+            if len(addr) > 50:
+                addr = addr[:47] + "..."
             parts.append(addr)
 
         lines.append(" — ".join(parts))

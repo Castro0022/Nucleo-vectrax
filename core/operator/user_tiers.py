@@ -6,6 +6,7 @@ Cada usuario tiene un tier que define qué puede hacer y cuánto.
 Tiers:
   FREE    — default, 20 msgs/día, solo fast-path + búsqueda web
   PRO     — ilimitado, voz, mapas, mercado, memoria completa
+  TEAM    — igual que PRO + memoria de equipo compartida
   CREATOR — todo + aprobar reglas, monitor, alertas del sistema
 
 Persistence: SQLite en vault/user_memory.db (tabla user_tiers)
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS user_tiers (
 class Tier(str, Enum):
     FREE = "free"
     PRO = "pro"
+    TEAM = "team"
     CREATOR = "creator"
 
 
@@ -73,6 +75,16 @@ TIER_LIMITS = {
         "memory_full": True,
         "fast_path_only": False,
         "web_search": True,
+    },
+    Tier.TEAM: {
+        "daily_messages": -1,
+        "voice": True,
+        "maps": True,
+        "market": True,
+        "memory_full": True,
+        "fast_path_only": False,
+        "web_search": True,
+        "team_memory": True,
     },
     Tier.CREATOR: {
         "daily_messages": -1,
@@ -237,9 +249,10 @@ def check_access(user_id: str) -> UserAccess:
         # Check limit
         if msgs_today >= daily_limit:
             conn.close()
+            reason = _build_limit_message(user_id, msgs_today, daily_limit)
             return UserAccess(
                 user_id=user_id, tier=tier, allowed=False,
-                reason=f"Límite diario alcanzado ({msgs_today}/{daily_limit}). Vuelve mañana o actualiza a PRO.",
+                reason=reason,
                 msgs_today=msgs_today, daily_limit=daily_limit, features=limits,
             )
 
@@ -263,6 +276,34 @@ def check_access(user_id: str) -> UserAccess:
             user_id=user_id, tier=tier, allowed=True,
             features=limits,
         )
+
+
+def _build_limit_message(user_id: str, msgs_today: int, daily_limit: int) -> str:
+    """
+    Build the daily limit reached message with upgrade link if available.
+
+    Includes Stripe checkout URL so the user can upgrade directly.
+    """
+    base = f"Límite diario alcanzado ({msgs_today}/{daily_limit})."
+
+    # Try to generate Stripe checkout link
+    try:
+        from services.billing.stripe_billing import create_checkout_session
+        url = create_checkout_session(user_id)
+        if url:
+            return (
+                f"{base}\n\n"
+                f"Vectrax PRO: memoria completa, voz, mapas, mercado, sin límites.\n\n"
+                f"Activar aquí: {url}"
+            )
+    except Exception as exc:
+        logger.debug("Stripe checkout failed: %s", exc)
+
+    # Fallback: suggest /upgrade command
+    return (
+        f"{base}\n\n"
+        f"Escribe /upgrade para activar Vectrax PRO sin límites."
+    )
 
 
 def can_use_feature(user_id: str, feature: str) -> bool:

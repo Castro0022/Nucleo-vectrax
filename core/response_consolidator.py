@@ -85,6 +85,7 @@ class ResponseFragment:
     source: str                  # memory, identity, places, online, local, llm
     confidence: float = 0.0
     is_complete: bool = True     # ¿resuelve la consulta por sí solo?
+    value_type: str = ""         # value_classifier: memory_store, info_response, etc.
 
     @property
     def priority(self) -> int:
@@ -119,22 +120,31 @@ class ResponseConsolidator:
     def consolidate(
         self,
         fragments: List[ResponseFragment],
+        input_text: str = "",
+        intent: str = "",
+        strategy: str = "",
+        user_id: str = "",
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Consolida fragmentos de respuesta en una sola salida.
 
         Args:
             fragments: Lista de fragmentos producidos por distintas rutas.
+            input_text: Texto original del usuario (para clasificación de valor).
+            intent: Intent del SmartRoute.
+            strategy: Estrategia seleccionada.
+            user_id: ID del usuario.
 
         Returns:
-            (final_text, trace) donde trace contiene las fuentes usadas
-            y decisiones de consolidación (solo para auditoría interna).
+            (final_text, trace) donde trace contiene las fuentes usadas,
+            decisiones de consolidación y clasificación de valor.
         """
         trace: Dict[str, Any] = {
             "input_fragments": len(fragments),
             "sources_seen": [],
             "duplicates_removed": 0,
             "strategy": "",
+            "value": None,
         }
 
         if not fragments:
@@ -152,7 +162,11 @@ class ResponseConsolidator:
         # --- 1. Si hay exactamente un fragmento, retornar directo ---
         if len(fragments) == 1:
             trace["strategy"] = "single_fragment"
-            return fragments[0].text.strip(), trace
+            final_text = fragments[0].text.strip()
+            trace["value"] = self._classify_and_register_value(
+                final_text, input_text, intent, strategy, user_id,
+            )
+            return final_text, trace
 
         # --- 2. Ordenar por prioridad (menor = mejor) ---
         fragments.sort(key=lambda f: f.priority)
@@ -162,7 +176,11 @@ class ResponseConsolidator:
         if best.is_complete and best.priority <= SourcePriority.ONLINE:
             trace["strategy"] = f"best_complete:{best.source}"
             trace["discarded"] = [f.source for f in fragments[1:]]
-            return best.text.strip(), trace
+            final_text = best.text.strip()
+            trace["value"] = self._classify_and_register_value(
+                final_text, input_text, intent, strategy, user_id,
+            )
+            return final_text, trace
 
         # --- 4. Eliminar duplicados textuales exactos ---
         seen_hashes = set()
@@ -181,7 +199,11 @@ class ResponseConsolidator:
 
         if len(unique) == 1:
             trace["strategy"] = "dedup_single"
-            return unique[0].text.strip(), trace
+            final_text = unique[0].text.strip()
+            trace["value"] = self._classify_and_register_value(
+                final_text, input_text, intent, strategy, user_id,
+            )
+            return final_text, trace
 
         # --- 6. Fusionar fragmentos complementarios ---
         # Prioridad: el mejor fragmento primero, complementar con otros
@@ -190,7 +212,13 @@ class ResponseConsolidator:
         trace["strategy"] = f"merged:{len(unique)}_fragments"
         trace["final_sources"] = [f.source for f in unique]
 
-        return merged.strip(), trace
+        # --- 7. Clasificación de valor + puente gravitacional ---
+        final_text = merged.strip()
+        trace["value"] = self._classify_and_register_value(
+            final_text, input_text, intent, strategy, user_id,
+        )
+
+        return final_text, trace
 
     # -- Consolidar respuesta simple (shortcut) ---
 
@@ -362,6 +390,53 @@ class ResponseConsolidator:
                 merged = merged[:last_end + 1]
 
         return merged
+
+
+    # =====================================================================
+    # Value classification + gravitational bridge
+    # =====================================================================
+
+    @staticmethod
+    def _classify_and_register_value(
+        final_text: str,
+        input_text: str,
+        intent: str,
+        strategy: str,
+        user_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Clasifica el valor del output y registra en el grafo gravitacional.
+
+        Fail-safe: si el value_classifier no está disponible, retorna None.
+        """
+        if not input_text:
+            return None
+
+        try:
+            from core.value_classifier import (
+                get_value_classifier,
+                register_value_in_graph,
+            )
+
+            vc = get_value_classifier()
+            pkg = vc.classify(
+                text=input_text,
+                intent=intent,
+                strategy=strategy,
+                user_id=user_id,
+            )
+
+            # Registrar en grafo gravitacional (solo si tiene valor almacenable)
+            node_id = register_value_in_graph(pkg, final_text, user_id)
+
+            result = pkg.to_dict()
+            if node_id:
+                result["graph_node_id"] = node_id
+            return result
+
+        except Exception as exc:
+            logger.debug("Value classification failed (non-critical): %s", exc)
+            return None
 
 
 # ---------------------------------------------------------------------------

@@ -172,31 +172,38 @@ def resolve_temporal_references(
 
     result = text
 
+    # Use markers to avoid cascading substitutions
+    # ("mañana" → "hoy" → "ayer" bug)
+    _M1 = "\x00M1\x00"  # placeholder for "mañana" replacement
+    _M2 = "\x00M2\x00"  # placeholder for "hoy" replacement
+
     if lang in ("es",):
         if days_ago == 1:
-            # "mañana" from yesterday → "hoy"
-            result = re.sub(r"\bmañana\b", "hoy", result, flags=re.IGNORECASE)
-            # "hoy" from yesterday → "ayer"
-            result = re.sub(r"\bhoy\b", "ayer", result, flags=re.IGNORECASE)
+            result = re.sub(r"\bmañana\b", _M1, result, flags=re.IGNORECASE)
+            result = re.sub(r"\bhoy\b", _M2, result, flags=re.IGNORECASE)
+            result = result.replace(_M1, "hoy").replace(_M2, "ayer")
         elif days_ago == 2:
-            result = re.sub(r"\bmañana\b", "ayer", result, flags=re.IGNORECASE)
-            result = re.sub(r"\bhoy\b", "anteayer", result, flags=re.IGNORECASE)
+            result = re.sub(r"\bmañana\b", _M1, result, flags=re.IGNORECASE)
+            result = re.sub(r"\bhoy\b", _M2, result, flags=re.IGNORECASE)
+            result = result.replace(_M1, "ayer").replace(_M2, "anteayer")
         elif days_ago > 2:
             day_label = f"hace {days_ago} días"
             result = re.sub(r"\bmañana\b", day_label, result, flags=re.IGNORECASE)
             result = re.sub(r"\bhoy\b", day_label, result, flags=re.IGNORECASE)
     elif lang in ("en",):
         if days_ago == 1:
-            result = re.sub(r"\btomorrow\b", "today", result, flags=re.IGNORECASE)
-            result = re.sub(r"\btoday\b", "yesterday", result, flags=re.IGNORECASE)
+            result = re.sub(r"\btomorrow\b", _M1, result, flags=re.IGNORECASE)
+            result = re.sub(r"\btoday\b", _M2, result, flags=re.IGNORECASE)
+            result = result.replace(_M1, "today").replace(_M2, "yesterday")
         elif days_ago > 1:
             day_label = f"{days_ago} days ago"
             result = re.sub(r"\btomorrow\b", day_label, result, flags=re.IGNORECASE)
             result = re.sub(r"\btoday\b", day_label, result, flags=re.IGNORECASE)
     elif lang in ("fr",):
         if days_ago == 1:
-            result = re.sub(r"\bdemain\b", "aujourd'hui", result, flags=re.IGNORECASE)
-            result = re.sub(r"\baujourd'hui\b", "hier", result, flags=re.IGNORECASE)
+            result = re.sub(r"\bdemain\b", _M1, result, flags=re.IGNORECASE)
+            result = re.sub(r"\baujourd'hui\b", _M2, result, flags=re.IGNORECASE)
+            result = result.replace(_M1, "aujourd'hui").replace(_M2, "hier")
         elif days_ago > 1:
             day_label = f"il y a {days_ago} jours"
             result = re.sub(r"\bdemain\b", day_label, result, flags=re.IGNORECASE)

@@ -103,16 +103,21 @@ _LANG_MARKERS: Dict[str, re.Pattern] = {
 
 _LANG_INSTRUCTIONS: list[Tuple[re.Pattern, str]] = [
     # Spanish
-    (re.compile(r"h[aá]blame\s+(?:solo\s+)?en\s+(\w+)", re.I), None),
-    (re.compile(r"responde\s+(?:solo\s+)?en\s+(\w+)", re.I), None),
-    (re.compile(r"quiero\s+que\s+(?:me\s+)?hables?\s+en\s+(\w+)", re.I), None),
+    (re.compile(r"h[aá]blame\s+(?:solo\s+)?(?:en\s+)?(\w+)", re.I), None),
+    (re.compile(r"resp[oó]nde(?:me)?\s+(?:solo\s+)?(?:en\s+)?(\w+)", re.I), None),
+    (re.compile(r"quiero\s+que\s+(?:me\s+)?hables?\s+(?:en\s+)?(\w+)", re.I), None),
+    (re.compile(r"cambia(?:te)?\s+(?:a|al?)\s+(\w+)", re.I), None),
     # English
     (re.compile(r"speak\s+(?:only\s+)?(?:in\s+)?(\w+)", re.I), None),
-    (re.compile(r"respond\s+(?:only\s+)?in\s+(\w+)", re.I), None),
-    (re.compile(r"(?:talk|write)\s+(?:to me\s+)?in\s+(\w+)", re.I), None),
+    (re.compile(r"respond\s+(?:only\s+)?(?:in\s+)?(\w+)", re.I), None),
+    (re.compile(r"(?:talk|write|switch)\s+(?:to\s+)?(?:me\s+)?(?:in\s+)?(\w+)", re.I), None),
     # French
-    (re.compile(r"parle[- ]moi\s+(?:uniquement\s+)?en\s+(\w+)", re.I), None),
-    (re.compile(r"r[eé]ponds?\s+en\s+(\w+)", re.I), None),
+    (re.compile(r"parle[- ]moi\s+(?:uniquement\s+)?(?:en\s+)?(\w+)", re.I), None),
+    (re.compile(r"r[eé]ponds?(?:[- ]moi)?\s+(?:en\s+)?(\w+)", re.I), None),
+    # Italian
+    (re.compile(r"parla(?:mi)?\s+(?:solo\s+)?(?:in\s+)?(\w+)", re.I), None),
+    # German
+    (re.compile(r"sprich\s+(?:nur\s+)?(?:auf\s+)?(\w+)", re.I), None),
 ]
 
 _LANG_NAME_MAP: Dict[str, str] = {

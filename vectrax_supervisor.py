@@ -298,7 +298,7 @@ WORKER_HEARTBEAT_PATH = RUNTIME_DIR / "worker_heartbeat"
 WORKER_HEARTBEAT_MAX_AGE = 30  # seconds without heartbeat = hung
 
 GATEWAY_HEARTBEAT_PATH = RUNTIME_DIR / "gateway_heartbeat"
-GATEWAY_HEARTBEAT_MAX_AGE = 120  # heartbeat thread writes every 10s; 120s = safe margin
+GATEWAY_HEARTBEAT_MAX_AGE = 75  # heartbeat thread writes every 10s; 75s = aggressive (gateway watchdog at 60s)
 
 
 class VectraxSupervisor:

@@ -63,6 +63,8 @@ def create_app() -> FastAPI:
 
     # Mount all routes under /v1
     app.include_router(health.router, prefix="/v1")
+    # Convenience alias: also expose /health at root for monitoring tools
+    app.include_router(health.router)
     app.include_router(auth.router, prefix="/v1")
     app.include_router(chat.router, prefix="/v1")
     app.include_router(memory.router, prefix="/v1")

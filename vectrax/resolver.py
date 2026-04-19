@@ -58,8 +58,11 @@ class Resolution:
 _QUESTION_STARTS = re.compile(
     r"^(what|who|where|when|why|how|is|are|was|were|do|does|did|can|could|"
     r"should|would|will|which|tell me|explain|describe|define|compare|analyze|summarize|"
+    r"give me|find|search|look up|show me|list|fetch|get me|"
     r"qué|quién|quien|cómo|como|cuándo|cuando|dónde|donde|por qué|por que|cuál|cual|cuánto|cuanto|"
-    r"explica|explícame|explicame|dime|analiza|compara|resume|resúmeme|resumeme|describe)\b",
+    r"dame|dime|busca|buscar|encuentra|muéstrame|muestrame|muestrame|lista|trae|consigue|"
+    r"explica|explícame|explicame|analiza|compara|resume|resúmeme|resumeme|describe|"
+    r"noticias|noticia|últimas noticias|que pasó|qué pasó|qué paso|que paso)\b",
     re.IGNORECASE,
 )
 
@@ -68,9 +71,11 @@ _QUESTION_STARTS = re.compile(
 # (e.g. "por favor explica cómo funciona la gravedad").
 _QUERY_INTENT = re.compile(
     r"(?:"
-    r"\b(?:explica|explícame|explicame|dime|analiza|compara|resume|resúmeme|resumeme|describe)\b"
+    r"\b(?:explica|explícame|explicame|dime|dame|analiza|compara|resume|resúmeme|resumeme|describe)\b"
+    r"|\b(?:busca|buscar|encuentra|muéstrame|muestrame|lista|trae|consigue|muestra)\b"
     r"|\b(?:quién|quien|qué|cómo|cuándo|dónde|por qué|cuál|cuánto)\b"
-    r"|\b(?:what is|who is|how does|how do|how is|what are|tell me|explain)\b"
+    r"|\b(?:what is|who is|how does|how do|how is|what are|tell me|explain|find|search|give me|show me)\b"
+    r"|\b(?:noticias|noticia|precio de|precio del|cotización|tendencia|hoy en|últimas)\b"
     r")",
     re.IGNORECASE,
 )
@@ -201,8 +206,19 @@ def resolve_local(
 
 _ES_MARKERS = re.compile(
     r"[áéíóúñü¿¡]"
-    r"|\b(el|la|los|las|del|una|unos|un|es|fue|son|está|por|para|con|como|que|"
-    r"pero|más|sobre|entre|desde|hasta|tiene|puede|había|ser|también|y|o|se)\b",
+    r"|\b(el|la|los|las|del|de|una|unos|un|es|fue|son|est[aá]|por|para|con|como|que|"
+    r"pero|m[aá]s|sobre|entre|desde|hasta|tiene|puede|hab[ií]a|ser|tambi[eé]n|y|o|se|"
+    r"hoy|hay|dame|busca|noticias?|tambi[eé]n|mi|al|lo|ya|yo|tu|su|"
+    r"qu[eé]|c[oó]mo|cu[aá]ndo|d[oó]nde|cu[aá]l|cu[aá]nto)\b",
+    re.IGNORECASE,
+)
+
+# Palabras unívocamente españolas (cualquiera es suficiente para clasificar como ES)
+_ES_UNAMBIGUOUS = re.compile(
+    r"\b(hoy|dame|noticias?|busca|buscar|encuentra|ayuda|gracias|por\s+favor|"
+    r"también|todavía|siempre|nunca|ahora|antes|después|mientras|aunque|"
+    r"porque|entonces|además|sin\s+embargo|"
+    r"clima|tiempo|temperatura|lluvia|sol|calor|fr[ií]o|pron[oó]stico)\b",
     re.IGNORECASE,
 )
 
@@ -220,10 +236,13 @@ def _detect_lang(text: str) -> str:
     # Fast-path: starts with unambiguously Spanish verb/interrogative
     if _ES_VERB_START.match(stripped):
         return "es"
+    # Fast-path: contains unambiguously Spanish word
+    if _ES_UNAMBIGUOUS.search(stripped):
+        return "es"
     es_hits = len(_ES_MARKERS.findall(stripped))
     word_count = max(len(stripped.split()), 1)
-    # If >15% of words trigger ES markers → Spanish
-    if es_hits / word_count > 0.15:
+    # If >10% of words trigger ES markers → Spanish (threshold lowered from 15%)
+    if es_hits / word_count > 0.10:
         return "es"
     return "en"
 
@@ -610,6 +629,150 @@ _DDG_URL = "https://html.duckduckgo.com/html/"
 _USER_AGENT = "Vectrax/1.0 (Cognitive Memory Platform)"
 
 
+def _search_tavily(query: str, max_results: int = 5) -> List[Source]:
+    """
+    Search via Tavily API — diseñado para agentes de IA.
+    Requiere TAVILY_API_KEY. Tier gratuito: 1000 búsquedas/mes.
+    Es el motor principal cuando la clave está disponible.
+    """
+    import os
+    try:
+        from dotenv import load_dotenv
+        from pathlib import Path
+        _env = Path(__file__).resolve().parent.parent / ".env"
+        if _env.exists():
+            load_dotenv(_env, override=False)
+    except ImportError:
+        pass
+
+    api_key = os.environ.get("TAVILY_API_KEY", "")
+    if not api_key:
+        return []
+
+    import requests
+    try:
+        resp = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": api_key,
+                "query": query,
+                "max_results": max_results,
+                "search_depth": "basic",
+                "include_answer": False,
+                "include_raw_content": False,
+            },
+            timeout=8,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("Tavily search failed: %s", exc)
+        return []
+
+    sources: List[Source] = []
+    for item in (data.get("results", []))[:max_results]:
+        title = item.get("title", "").strip()
+        snippet = item.get("content", "").strip()
+        url = item.get("url", "")
+        if title and snippet:
+            sources.append(Source(title=title, url=url, snippet=snippet))
+    return sources
+
+
+# Cache simple en memoria para resultados de búsqueda (5 min TTL)
+_search_cache: dict = {}  # query_key → (timestamp, sources, engines)
+_SEARCH_CACHE_TTL = 300   # 5 minutos
+
+
+def _get_cached_search(query: str) -> Optional[Tuple[List[Source], List[str]]]:
+    """Retorna resultados cacheados o None si no hay / expiraron."""
+    import time
+    key = query.lower().strip()[:120]
+    entry = _search_cache.get(key)
+    if entry and (time.time() - entry[0]) < _SEARCH_CACHE_TTL:
+        logger.debug("Search cache HIT: %r", query[:50])
+        return entry[1], entry[2]
+    return None
+
+
+def _cache_search(query: str, sources: List[Source], engines: List[str]) -> None:
+    """Guarda resultados en cache. Limpia entradas viejas si hay demasiadas."""
+    import time
+    if len(_search_cache) > 200:
+        # Limpiar el 50% más antiguo
+        sorted_keys = sorted(_search_cache, key=lambda k: _search_cache[k][0])
+        for k in sorted_keys[: len(sorted_keys) // 2]:
+            _search_cache.pop(k, None)
+    key = query.lower().strip()[:120]
+    _search_cache[key] = (time.time(), sources, engines)
+
+
+def _enrich_with_jina(
+    sources: List[Source],
+    max_enrich: int = 2,
+    skip_if_rich: bool = True,
+) -> List[Source]:
+    """
+    Jina Reader — enriquece resultados con snippets cortos.
+
+    Optimizaciones:
+    - skip_if_rich: si la mayoría de snippets ya son ricos (>150 chars), no hace nada
+    - Paralelo: fetch de múltiples URLs en hilos concurrentes
+    - Timeout reducido: 2s por URL (antes 6s)
+    """
+    import requests
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # Calcular cuántos snippets son cortos
+    short_count = sum(1 for s in sources if len(s.snippet) < 150)
+
+    # Si la mayoría de snippets ya son ricos, omitir Jina completamente
+    if skip_if_rich and short_count == 0:
+        return sources
+    if skip_if_rich and short_count <= 1 and len(sources) >= 2:
+        # Solo 1 corto de 2+ resultados: no merece el costo
+        return sources
+
+    # Identificar cuales enriquecer
+    to_enrich = [
+        (i, src) for i, src in enumerate(sources)
+        if len(src.snippet) < 150 and src.url.startswith("http")
+    ][:max_enrich]
+
+    if not to_enrich:
+        return sources
+
+    def _fetch_jina(i: int, src: Source):
+        try:
+            r = requests.get(
+                f"https://r.jina.ai/{src.url}",
+                headers={"Accept": "text/plain", "X-Return-Format": "text"},
+                timeout=2,  # reducido de 6s a 2s
+            )
+            if r.status_code == 200:
+                content = r.text.strip()[:600]
+                if content and len(content) > len(src.snippet):
+                    return i, Source(title=src.title, url=src.url, snippet=content)
+        except Exception:
+            pass
+        return i, src
+
+    # Fetch en paralelo
+    enriched = list(sources)
+    with ThreadPoolExecutor(max_workers=max_enrich) as executor:
+        futures = {executor.submit(_fetch_jina, i, src): i for i, src in to_enrich}
+        for future in as_completed(futures, timeout=3):
+            try:
+                idx, new_src = future.result()
+                if new_src != sources[idx]:
+                    enriched[idx] = new_src
+                    logger.info("Jina enriched: %s", new_src.url[:60])
+            except Exception:
+                pass
+
+    return enriched
+
+
 def _search_duckduckgo(query: str, max_results: int = 5) -> List[Source]:
     """
     Search DuckDuckGo HTML endpoint (no API key required).
@@ -760,15 +923,17 @@ def _search_multi_engine(
     min_sources: int = 3,
 ) -> Tuple[List[Source], List[str]]:
     """
-    Multi-engine search with automatic fallback.
+    Multi-engine search con prioridad automática.
 
-    Strategy:
-      1. DuckDuckGo first (free, no key)
-      2. If insufficient results → Brave Search (if key available)
-      3. If still insufficient → Google CSE (if keys available)
+    Prioridad:
+      1. Tavily (si TAVILY_API_KEY disponible) — motor principal para IA
+      2. DuckDuckGo (siempre, sin clave) — fallback gratuito
+      3. Brave Search (si BRAVE_API_KEY disponible)
+      4. Google CSE (si GOOGLE_CSE_KEY + GOOGLE_CSE_CX disponibles)
+      5. Jina Reader — enriquece snippets cortos con contenido real de la página
 
-    Deduplicates by URL across engines.
-    Returns (sources, engines_used).
+    Deduplica por URL entre motores.
+    Retorna (sources, engines_used).
     """
     all_sources: List[Source] = []
     seen_urls: set = set()
@@ -790,25 +955,45 @@ def _search_multi_engine(
                 engine_name, added, len(all_sources),
             )
 
-    # Engine 1: DuckDuckGo (always available)
-    ddg_results = _search_duckduckgo(query, max_results=max_results)
-    _add_sources(ddg_results, "duckduckgo")
+    # Cache check — evitar búsquedas repetidas en < 5 min
+    cached = _get_cached_search(query)
+    if cached:
+        return cached[0][:max_results], cached[1]
 
-    # Engine 2: Brave (if needed + key available)
+    # Motor 1: Tavily (principal cuando hay clave — más fiable para IA)
+    tavily_results = _search_tavily(query, max_results=max_results)
+    _add_sources(tavily_results, "tavily")
+    tavily_active = len(tavily_results) >= min_sources
+
+    # Motor 2: DuckDuckGo (solo si Tavily no llenó el mínimo)
+    if len(all_sources) < min_sources:
+        ddg_results = _search_duckduckgo(query, max_results=max_results)
+        _add_sources(ddg_results, "duckduckgo")
+
+    # Motor 3: Brave (si hay clave y aun falta)
     if len(all_sources) < min_sources:
         brave_results = _search_brave(query, max_results=max_results)
         _add_sources(brave_results, "brave")
 
-    # Engine 3: Google CSE (if needed + keys available)
+    # Motor 4: Google CSE (si hay claves y aun falta)
     if len(all_sources) < min_sources:
         google_results = _search_google_cse(query, max_results=max_results)
         _add_sources(google_results, "google_cse")
 
-    # If no engines produced results, mark the fallback chain
+    # Jina Reader: solo cuando Tavily NO está activo (sus snippets ya son ricos)
+    # Cuando viene de DDG los snippets son cortos y Jina sí agrega valor.
+    if all_sources and not tavily_active:
+        before = [s.snippet for s in all_sources]
+        all_sources = _enrich_with_jina(all_sources, max_enrich=2, skip_if_rich=True)
+        if any(all_sources[i].snippet != before[i] for i in range(len(before))):
+            engines_used.append("jina")
+
     if not engines_used:
         engines_used = ["none"]
 
-    return all_sources[:max_results], engines_used
+    result = all_sources[:max_results]
+    _cache_search(query, result, engines_used)
+    return result, engines_used
 
 
 def _strip_html(text: str) -> str:
@@ -899,6 +1084,7 @@ def _interpret_with_llm(
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if api_key:
             import requests as _req
+            from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT
             resp = _req.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={
@@ -907,7 +1093,10 @@ def _interpret_with_llm(
                 },
                 json={
                     "model": "gpt-4o-mini",
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": [
+                        {"role": "system", "content": VECTRAX_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},  # single user msg, no extra system
+                    ],
                     "max_tokens": 400,
                     "temperature": 0.5,
                 },

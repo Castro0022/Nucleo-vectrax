@@ -243,13 +243,33 @@ def _generate_protection_hypothesis(
 def _add_failure_evidence(
     hypothesis_id: str, category: str, cause: str, count: int,
 ) -> None:
-    """Add evidence of repeated failure to the hypothesis."""
+    """Add evidence of repeated failure to the hypothesis.
+
+    Skips silently if the hypothesis is already resolved (CONFIRMED/REFUTED/
+    ARCHIVED), avoiding the recurrent WARNING noise on stable failure patterns.
+    """
     try:
         from core.operator.hypothesis_engine import (
-            get_hypothesis_engine, Evidence, EvidenceType,
+            get_hypothesis_engine, Evidence, EvidenceType, HypothesisStatus,
         )
 
         engine = get_hypothesis_engine()
+
+        # Idempotency guard: once a hypothesis is resolved we no longer push
+        # repeat-failure evidence into it (the protection rule should be the
+        # actor that gets revisited, not the original hypothesis).
+        existing = engine._hypotheses.get(hypothesis_id) if hasattr(engine, "_hypotheses") else None
+        if existing is not None and existing.status in (
+            HypothesisStatus.CONFIRMED,
+            HypothesisStatus.REFUTED,
+            HypothesisStatus.ARCHIVED,
+        ):
+            logger.debug(
+                "Skipping evidence for resolved hypothesis %s (status=%s, count=%d)",
+                hypothesis_id, existing.status.value, count,
+            )
+            return
+
         engine.add_evidence(
             hypothesis_id,
             Evidence(
