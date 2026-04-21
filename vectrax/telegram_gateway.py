@@ -147,14 +147,24 @@ class TelegramGateway:
         )
 
     def _refresh_poll_client(self) -> None:
-        """Close and recreate the poll HTTP client to avoid stale connections."""
-        try:
-            self._poll_http.close()
-        except Exception:
-            pass
+        """Create a fresh poll HTTP client without closing the old one.
+
+        The old client is abandoned; Python's GC cleans it up once the
+        active request held by the main thread completes.
+
+        Rationale: close() deadlocks when the main thread is blocked on
+        self._poll_http.post() with the same object.  The watchdog at
+        line 419-423 documents this invariant; previous implementation
+        of this method violated it, causing the 3600+75 crash loop
+        (every ~61min the periodic refresh triggered the deadlock,
+        watchdog killed the process 60s later, supervisor detected 15s
+        after that).  Leaking ~1 connection for up to POLL_TIMEOUT
+        seconds is preferable to killing the whole gateway.
+        """
+        # No self._poll_http.close() — would deadlock with active request.
         self._poll_http = self._make_poll_client()
         self._poll_http_created = time.time()
-        logger.info("Poll HTTP client refreshed")
+        logger.info("Poll HTTP client refreshed (old client left for GC)")
 
     # == Telegram API ======================================================
 
