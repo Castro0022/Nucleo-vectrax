@@ -130,6 +130,7 @@ class TelegramGateway:
         self._dl_http = httpx.Client(timeout=30)
         self._pool = ThreadPoolExecutor(max_workers=WORKERS, thread_name_prefix="tg")
         self._heartbeat_thread: threading.Thread | None = None
+        self._needs_poll_refresh: bool = False
         logger.info("Gateway ready (%d workers, queue-based)", WORKERS)
 
     @staticmethod
@@ -146,25 +147,34 @@ class TelegramGateway:
             ),
         )
 
-    def _refresh_poll_client(self) -> None:
-        """Create a fresh poll HTTP client without closing the old one.
+    def _refresh_poll_client(self, close_old: bool = False) -> None:
+        """Create a fresh poll HTTP client.
 
-        The old client is abandoned; Python's GC cleans it up once the
-        active request held by the main thread completes.
+        If close_old=True, closes the previous client. Only safe when the
+        caller guarantees no request is active on it (e.g., after SIGALRM
+        interrupt where the poll was already aborted, or in main thread
+        between polls).
 
-        Rationale: close() deadlocks when the main thread is blocked on
-        self._poll_http.post() with the same object.  The watchdog at
-        line 419-423 documents this invariant; previous implementation
-        of this method violated it, causing the 3600+75 crash loop
-        (every ~61min the periodic refresh triggered the deadlock,
-        watchdog killed the process 60s later, supervisor detected 15s
-        after that).  Leaking ~1 connection for up to POLL_TIMEOUT
-        seconds is preferable to killing the whole gateway.
+        If close_old=False (default), abandons the old client. Used when:
+          - The old client is already in is_closed state (close() is no-op).
+          - Caller can't guarantee no active request on the old client
+            (e.g., heartbeat thread — would deadlock; but heartbeat now
+            uses the flag pattern instead of calling this method).
+
+        Original deadlock bug (3600+75 crash loop): the heartbeat thread
+        used to call this with an effective close_old=True while the main
+        thread held an active post() on the same client. Fixed by the
+        flag pattern in _heartbeat_loop + consumer in run().
         """
-        # No self._poll_http.close() — would deadlock with active request.
+        old_client = self._poll_http
         self._poll_http = self._make_poll_client()
         self._poll_http_created = time.time()
-        logger.info("Poll HTTP client refreshed (old client left for GC)")
+        if close_old:
+            try:
+                old_client.close()
+            except Exception as _e:
+                logger.debug("old_client.close() raised (ignored): %s", _e)
+        logger.info("Poll HTTP client refreshed (close_old=%s)", close_old)
 
     # == Telegram API ======================================================
 
@@ -434,12 +444,17 @@ class TelegramGateway:
                 self._write_heartbeat()  # one last heartbeat to log the event
                 os._exit(1)
 
-            # === Periodic HTTP client refresh ===
-            if now - self._poll_http_created > POLL_CLIENT_REFRESH:
-                logger.info("REFRESH | Poll client age %.0fs — refreshing",
+            # === Signal main thread to refresh poll client ===
+            # We CAN'T call _refresh_poll_client() here: abandoning the old
+            # client without close() leaks sockets/handles (observed: gateway
+            # killed by supervisor at uptime=10306s due to stale heartbeat
+            # after ~5 refreshes accumulated half-closed resources).
+            # Set a flag; main thread does the swap between polls where
+            # close() is safe (no active request on the old client).
+            if now - self._poll_http_created > POLL_CLIENT_REFRESH and not self._needs_poll_refresh:
+                logger.info("REFRESH SIGNAL | Poll client age %.0fs — requesting refresh",
                             now - self._poll_http_created)
-                self._refresh_poll_client()
-                self._last_poll_ok = now
+                self._needs_poll_refresh = True
 
             # Periodic status summary
             if now - self._last_status_log >= STATUS_LOG_INTERVAL:
@@ -495,6 +510,20 @@ class TelegramGateway:
                 if self._poll_http.is_closed:
                     self._refresh_poll_client()
 
+                # Consume refresh signal from heartbeat thread.
+                # Safe HERE: we're between polls, no active post() on old client.
+                if self._needs_poll_refresh:
+                    logger.info("REFRESH | consuming signal from heartbeat thread")
+                    old_client = self._poll_http
+                    self._poll_http = self._make_poll_client()
+                    self._poll_http_created = time.time()
+                    self._last_poll_ok = time.time()
+                    self._needs_poll_refresh = False
+                    try:
+                        old_client.close()  # safe: self._poll_http already points to new client
+                    except Exception as _e:
+                        logger.debug("old_client.close() raised (ignored): %s", _e)
+
                 # Set OS-level hard timeout — interrupts even stuck C calls
                 signal.alarm(POLL_ALARM_TIMEOUT)
 
@@ -542,8 +571,11 @@ class TelegramGateway:
                     "SIGALRM | Poll exceeded %ds hard timeout — refreshing client",
                     POLL_ALARM_TIMEOUT,
                 )
-                self._refresh_poll_client()
+                # close_old=True: SIGALRM already aborted the post; no active request on old client.
+                self._refresh_poll_client(close_old=True)
                 self._last_poll_ok = time.time()
+                # Fresh client just created; any pending refresh signal is obsolete.
+                self._needs_poll_refresh = False
                 continue
 
             except Exception as e:
