@@ -70,8 +70,8 @@ WORKERS = 6
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeat writes
 STATUS_LOG_INTERVAL = 300  # log status summary every 5 min
 POLL_CLIENT_REFRESH = 1800  # recreate HTTP client every 30 min to avoid stale TCP
-POLL_STUCK_THRESHOLD = 60  # seconds without a completed poll = stuck (under supervisor's 75s)
-POLL_ALARM_TIMEOUT = POLL_TIMEOUT + 15  # hard OS-level timeout per poll (45s)
+POLL_STUCK_THRESHOLD = 35  # PALLIATIVE (was 60): tighter while Bug #3 under investigation
+POLL_ALARM_TIMEOUT = POLL_TIMEOUT + 2   # PALLIATIVE (was +15, now 32s): tight margin vs long-poll
 _OFFSET_FILE = os.path.join(os.path.expanduser("~"), ".vectrax", "gateway_offset")
 
 
