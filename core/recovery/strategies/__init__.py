@@ -56,6 +56,9 @@ class RecoveryStrategy:
     cooldown_s: int = 1800  # 30 min
     escalation_target: str = "file"
     require_human_approval: bool = False
+    force_dry_run: bool = False  # if True, this strategy ALWAYS runs in
+    # dry-run regardless of the executor's global flag. Used to keep a
+    # strategy in observation while others are promoted to real mode.
     description: str = ""
 
     def matches(self, detector_id: str, evidence: Dict[str, Any]) -> bool:

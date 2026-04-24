@@ -147,6 +147,12 @@ def build() -> RecoveryStrategy:
         cooldown_s=3600,  # 1 alert per hour per strategy
         escalation_target="file",
         require_human_approval=False,
+        # Stay in dry-run until the I2 observation window closes
+        # (~48h after 2026-04-24 17:05 UTC activation). Even if the
+        # executor's global dry_run is removed to promote Class A,
+        # Class G keeps observing without side-effects until its
+        # own window is sealed. Flip to False manually after I2 pass.
+        force_dry_run=True,
         description=(
             "Emits a refactor proposal when the runtime detector observes "
             "a response text repeated identically across multiple users. "

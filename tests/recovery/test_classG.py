@@ -258,6 +258,12 @@ class TestStrategyG(unittest.TestCase):
         self.assertEqual(strat.max_attempts_per_window, 1)
         self.assertFalse(strat.require_human_approval)
 
+    def test_build_has_force_dry_run_during_i2_window(self):
+        """Class G must remain in forced dry-run until I2 observation closes,
+        independent of the executor's global dry_run flag."""
+        strat = cg.build()
+        self.assertTrue(strat.force_dry_run)
+
     def test_precondition_accepts_valid_evidence(self):
         ev = {"top_hash": "abc123def456", "top_count": 7}
         self.assertTrue(cg._precondition(ev))

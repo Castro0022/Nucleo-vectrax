@@ -185,8 +185,10 @@ class RecoveryExecutor:
                 )
                 return
 
-            # Execute for real (or dry-run if global flag)
-            self.execute(strategy, event, dry_run=self._dry_run_global)
+            # Execute for real (or dry-run if global flag OR this strategy
+            # has opted into forced dry-run independent of the global flag).
+            effective_dry_run = self._dry_run_global or strategy.force_dry_run
+            self.execute(strategy, event, dry_run=effective_dry_run)
         finally:
             lock.release()
 
