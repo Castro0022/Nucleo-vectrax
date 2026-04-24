@@ -44,3 +44,10 @@ data/router_proposals.jsonl
 
 # Reports are tracked
 vault/*.db
+
+
+# FUSE artifacts (appear when vault/ is mounted via cloud FS)
+vault/.fuse_hidden*
+
+# Archived backups
+archive/
