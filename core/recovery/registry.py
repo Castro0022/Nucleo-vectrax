@@ -32,9 +32,11 @@ def build_engine(dry_run: bool = False) -> Tuple[HealthOrchestrator, RecoveryExe
     """
     # === Detectors ===
     from core.recovery.detectors import gateway_silent
+    from core.recovery.detectors import hardcoded_handler_runtime
 
     # === Strategies ===
     from core.recovery.strategies import classA_revert_webhook
+    from core.recovery.strategies import classG_hardcoded_handler
 
     # Compose
     env_path = os.environ.get("RECOVERY_ENV_PATH", "/app/.env")
@@ -42,6 +44,7 @@ def build_engine(dry_run: bool = False) -> Tuple[HealthOrchestrator, RecoveryExe
 
     strategies = [
         classA_revert_webhook.build(env_path=env_path, compose_dir=compose_dir),
+        classG_hardcoded_handler.build(),
     ]
 
     executor = RecoveryExecutor(strategies=strategies, dry_run_global=dry_run)
@@ -54,6 +57,11 @@ def build_engine(dry_run: bool = False) -> Tuple[HealthOrchestrator, RecoveryExe
         detector_id=gateway_silent.DETECTOR_ID,
         probe=gateway_silent.probe,
         interval_s=int(os.environ.get("RECOVERY_INTERVAL_GATEWAY_SILENT", "60")),
+    )
+    orchestrator.register_detector(
+        detector_id=hardcoded_handler_runtime.DETECTOR_ID,
+        probe=hardcoded_handler_runtime.probe,
+        interval_s=int(os.environ.get("RECOVERY_INTERVAL_HARDCODED_HANDLER", "300")),
     )
 
     logger.info(

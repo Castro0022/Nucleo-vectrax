@@ -193,6 +193,16 @@ class TelegramGateway:
             return False
         if len(text) > 4096:
             text = text[:4093] + "..."
+        # Class G runtime observation: register the final outgoing response
+        # so the hardcoded_handler_runtime detector can notice duplicates.
+        # Defensive: never let observation break delivery.
+        try:
+            from core.recovery.detectors.hardcoded_handler_runtime import (
+                register_response,
+            )
+            register_response(user_id=str(cid), text=text, lang="")
+        except Exception:
+            pass
         return self._tg("sendMessage", chat_id=cid, text=text, **extra) is not None
 
     def _send_photo(self, cid: int, photo_url: str, caption: str = "") -> bool:
