@@ -27,8 +27,15 @@ echo ""
 # 1. Subir proyecto al servidor
 # ------------------------------------------
 echo "[1/4] Subiendo proyecto al servidor..."
+# IMPORTANT: .env is NEVER rsynced from local. Runtime config is managed
+# manually on the server (or via a secrets manager later). Sync’ing .env
+# caused Apr-22 outage by overwriting server USE_WEBHOOK=0 with local=1.
+# Also excluding vault/ data/ logs/ so cognitive + operational data stay
+# local to the server (they are large and owned by the runtime).
 rsync -azP --delete \
     -e "ssh $SSH_OPTS" \
+    --exclude='.env' \
+    --exclude='.env.*' \
     --exclude='.venv' \
     --exclude='__pycache__' \
     --exclude='.git' \
@@ -36,7 +43,12 @@ rsync -azP --delete \
     --exclude='.pytest_cache' \
     --exclude='*.db-shm' \
     --exclude='*.db-wal' \
+    --exclude='*.db' \
     --exclude='node_modules' \
+    --exclude='vault/' \
+    --exclude='data/' \
+    --exclude='logs/' \
+    --exclude='.DS_Store' \
     "$LOCAL_DIR/" "$SERVER:$REMOTE_DIR/"
 
 echo "    ✓ Proyecto subido"
