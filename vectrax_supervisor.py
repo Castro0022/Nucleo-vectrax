@@ -310,7 +310,18 @@ class VectraxSupervisor:
         self.services: Dict[str, ManagedService] = {}
         self._running = False
 
+        # When USE_WEBHOOK=1, the telegram_gateway service is NOT started as
+        # a separate process. Instead, TelegramGateway is instantiated inside
+        # the core_api (FastAPI) process and receives updates via HTTPS POST.
+        # See services/core/routes/webhook.py and services/core/app.py.
+        use_webhook = os.environ.get("USE_WEBHOOK", "0") == "1"
+        skip_services = {"telegram_gateway"} if use_webhook else set()
+        if use_webhook:
+            logger.info("USE_WEBHOOK=1 — skipping long-poll telegram_gateway service")
+
         for name, config in SERVICES.items():
+            if name in skip_services:
+                continue
             self.services[name] = ManagedService(name, config)
 
     def start_all(self) -> None:

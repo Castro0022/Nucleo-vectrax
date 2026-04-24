@@ -2,6 +2,10 @@
 # Vectrax Production — Docker Compose
 # ============================================
 # Single command: docker-compose up -d
+#
+# Services:
+#   vectrax   — core + gateway (long-poll OR webhook mode via USE_WEBHOOK env)
+#   caddy     — HTTPS reverse proxy (only needed for webhook mode)
 # ============================================
 
 
@@ -15,10 +19,13 @@ services:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
     ports:
+      # Kept bound to host for local curl/debug; public traffic goes via caddy:443
       - "8900:8900"
     volumes:
       - ./:/app
       - vectrax-runtime:/root/.vectrax
+    networks:
+      - vectrax-net
     healthcheck:
       test: ["CMD", "python", "/app/vectrax_supervisor.py", "--check"]
       interval: 30s
@@ -33,5 +40,35 @@ services:
         reservations:
           memory: 512M
 
+  # Reverse proxy with automatic Let's Encrypt TLS.
+  # OPTIONAL: only needed for production HTTPS with a real domain.
+  # Start with:  docker compose --profile tls up -d
+  # If using a temporary tunnel (cloudflared, ngrok) Caddy is not required.
+  caddy:
+    image: caddy:2-alpine
+    container_name: vectrax-caddy
+    restart: unless-stopped
+    profiles:
+      - tls
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data            # stores Let's Encrypt certs
+      - caddy-config:/config         # Caddy runtime config
+      - caddy-logs:/var/log/caddy    # access logs
+    networks:
+      - vectrax-net
+    depends_on:
+      - vectrax
+
 volumes:
   vectrax-runtime:
+  caddy-data:
+  caddy-config:
+  caddy-logs:
+
+networks:
+  vectrax-net:
+    driver: bridge

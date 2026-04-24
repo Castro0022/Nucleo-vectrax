@@ -1,0 +1,62 @@
+# ============================================================
+# Vectrax — Caddy reverse proxy for HTTPS webhook
+# ============================================================
+# Provides:
+#   - Automatic TLS cert via Let's Encrypt (ACME HTTP-01 challenge)
+#   - HTTPS termination (Telegram webhooks require TLS)
+#   - Reverse proxy to the vectrax container on port 8900
+#   - Structured access log for webhook traffic observability
+#
+# Requires:
+#   - DNS: api.vectrax.app → 140.82.28.181 (A record)
+#   - Ports 80 + 443 open on the host (firewall)
+#   - Docker network shared with vectrax container
+# ============================================================
+
+{
+    # Global options
+    email admin@vectrax.app
+    # Uncomment to use staging CA during setup (less strict, for testing):
+    # acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+api.vectrax.app {
+    # Reverse proxy to vectrax service on internal Docker network
+    reverse_proxy vectrax:8900 {
+        # Telegram retries if response > 60s; respond fast.
+        transport http {
+            read_timeout 30s
+            write_timeout 10s
+            dial_timeout 5s
+        }
+
+        # Forward original client IP for logging in app layer
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    # Structured access log (JSON) — useful to correlate with gateway logs
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50MiB
+            roll_keep 5
+        }
+        format json
+    }
+
+    # Security headers (don't hurt, may help)
+    header {
+        # Clickjacking protection
+        X-Frame-Options "DENY"
+        # MIME type sniffing protection
+        X-Content-Type-Options "nosniff"
+        # Remove Caddy fingerprint
+        -Server
+    }
+}
+
+# Optional: redirect HTTP → HTTPS (automatic with Caddy but explicit here)
+http://api.vectrax.app {
+    redir https://{host}{uri} permanent
+}
