@@ -365,26 +365,11 @@ class TelegramGateway:
             return "Sistema de pago en configuración."
 
         # Identidad de Vectrax — respuesta fija desde core_identity, sin LLM
-        if re.search(
-            r"(?:c[oó]mo te llamas|cu[áa]l es tu nombre|who are you"
-            r"|what(?:'?s| is) your name|qui[eé]n eres"
-            r"|qu[eé] (?:eres|es vectrax|hace|ofrece|puedes hacer|puedo hacer contigo)"
-            r"|para qu[eé] sirves|c[oó]mo funciona[s]?"
-            r"|what is vectrax|what are you|what can you do"
-            r"|qu[eé] hace[s]?|cu[aá]les son tus capacidades"
-            r"|chi sei|cosa sei|was bist du|qui es[- ]tu|wat ben je)", t,
-        ):
-            _lang = "es"
-            try:
-                from vectrax.resolver import _detect_lang
-                _lang = _detect_lang(text)
-            except Exception:
-                pass
-            try:
-                from vectrax.core_identity import get_product_identity
-                return get_product_identity(_lang)
-            except Exception:
-                return "Vectrax es tu memoria inteligente. Recuerda todo lo que le dices y te ayuda a decidir mejor con el tiempo."
+
+        from vectrax.identity_handler import respond_if_identity
+        identity_response = respond_if_identity(t, lang=_lang if "_lang" in locals() else "es")
+        if identity_response:
+            return identity_response
 
         # Identidad del usuario
         if re.search(

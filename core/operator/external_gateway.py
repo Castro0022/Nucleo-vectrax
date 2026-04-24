@@ -459,63 +459,22 @@ class ExternalGateway:
         except Exception as exc:
             logger.debug("Team context injection failed (passthrough): %s", exc)
 
-        # 4.1b Detección natural de actividad de lead
-        # "Hablé con Carlos hoy", "Carlos dice que está caro"
+        # 4.1b Detección natural de actividad de lead — Clase G (unificado)
+        # El handler vive en vectrax/lead_activity_handler.py y devuelve
+        # un update declarativo. Ya no se producen strings "Actualizado..."
+        # aquí: el context_note se inyecta al LLM para que responda con tono.
         _lead_update_done = False
         try:
-            from core.lead_tracker import get_leads, record_contact, update_lead_status
-            from core.preference_tracker import detect_and_store
-            import re as _re
-
-            _leads = get_leads(user_id)
-            _lead_names = {l["name"].lower(): l for l in _leads}
-
-            if _lead_names:
-                _text_lower = content.lower()
-                for _lname, _lead in _lead_names.items():
-                    if _lname in _text_lower:
-                        # Detectar tipo de actualización
-                        _contact_signals = ["hablé", "hable", "llame", "llamé", "escribí",
-                                            "escribi", "contacté", "contacte", "reuní",
-                                            "me dijo", "respondió", "respondio",
-                                            "spoke", "called", "contacted", "met with"]
-                        _objection_signals = ["dice que está caro", "está caro", "muy caro",
-                                              "no tiene presupuesto", "no puede pagar",
-                                              "says it's expensive", "too expensive"]
-
-                        if any(s in _text_lower for s in _objection_signals):
-                            # Guardar objeción de precio
-                            detect_and_store(user_id, content)
-                            record_contact(user_id, _lead["name"])
-                            response_text = (
-                                f"Actualizado.\n"
-                                f"Objeción detectada en {_lead['name']}: precio.\n"
-                                f"La tendré en cuenta en el próximo seguimiento."
-                            )
-                            _lead_update_done = True
-                            break
-                        elif any(s in _text_lower for s in _contact_signals):
-                            # Registrar contacto + detectar preferencias
-                            record_contact(user_id, _lead["name"])
-                            detect_and_store(user_id, content)
-                            # Detectar si sigue interesado
-                            _still_interested = any(
-                                w in _text_lower for w in
-                                ["interesado", "interested", "quiere", "quieren",
-                                 "le gusta", "avanzar", "sí quiere", "si quiere"]
-                            )
-                            if _still_interested:
-                                response_text = (
-                                    f"Actualizado.\n"
-                                    f"{_lead['name']} sigue interesado y queda en seguimiento."
-                                )
-                            else:
-                                response_text = (
-                                    f"Actualizado.\n"
-                                    f"Contacto registrado con {_lead['name']}."
-                                )
-                            _lead_update_done = True
-                            break
+            from vectrax.lead_activity_handler import process_lead_activity
+            _lead_update = process_lead_activity(user_id, content)
+            if _lead_update:
+                _note = _lead_update.get("context_note", "")
+                if _note:
+                    memory_context = (memory_context + "\n\n" + _note) if memory_context else _note
+                logger.info(
+                    "Pipeline: lead_update kind=%s lead=%s",
+                    _lead_update.get("kind"), _lead_update.get("lead_name"),
+                )
         except Exception as _le:
             logger.debug("Lead natural update failed: %s", _le)
 
@@ -992,32 +951,10 @@ class ExternalGateway:
             return f"Hoy es {_day} {_now.day} de {_month} de {_now.year}."
 
         # Identidad de Vectrax — respuesta fija desde core_identity, sin LLM
-        if _re.search(
-            r"(?:c[oó]mo te llamas|cu[áa]l es tu nombre|who are you"
-            r"|what(?:'?s| is) your name|qui[eé]n eres|tu nombre"
-            r"|your name|tienes nombre|ten[eé]s nombre"
-            r"|c[oó]mo te digo|como te digo|dime tu nombre|tell me your name"
-            r"|qu[eé] (?:eres|es|hace|ofrece|puedes hacer)"
-            r"|para qu[eé] sirves|c[oó]mo funciona[s]?"
-            r"|qu[eé] es vectrax|what is vectrax|what are you|q eres"
-            r"|cu[eé]ntame (?:sobre|de|acerca) vectrax"
-            r"|h[aá]blame (?:sobre|de) vectrax"
-            r"|para qu[eé] sirve vectrax"
-            r"|describe vectrax|descr[ií]bete"
-            r"|cosa sei|was bist du|qui es[- ]tu|wat ben je)",
-            t,
-        ):
-            _lang = "es"
-            try:
-                from vectrax.resolver import _detect_lang
-                _lang = _detect_lang(content)
-            except Exception:
-                pass
-            try:
-                from vectrax.core_identity import get_product_identity
-                return get_product_identity(_lang)
-            except Exception:
-                return "Vectrax es tu memoria inteligente. Recuerda todo lo que le dices y te ayuda a decidir mejor con el tiempo."
+        from vectrax.identity_handler import respond_if_identity
+        identity_response = respond_if_identity(t, lang=_lang if "_lang" in locals() else "es")
+        if identity_response:
+            return identity_response
 
         return ""
 
