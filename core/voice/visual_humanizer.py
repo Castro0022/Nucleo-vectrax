@@ -5,14 +5,26 @@ Convierte descripciones crudas del modelo de visión en texto humano,
 breve y conversacional. Parte del Motor de Voz Viva: lo que sale al
 usuario suena a Vectrax mirando, no a un reporte forense.
 
+Filosofía: una foto es una INTERACCIÓN, no una descripción. Vectrax
+está viendo la foto contigo, no analizándola desde afuera. Por eso:
+  - Si el usuario aparece en la foto, le hablamos de tú.
+  - Si lo reconocemos solo, le hablamos directamente con un opener
+    de compañero ("Sales genial en esa foto, Mario.").
+  - Las menciones en tercera persona del usuario ("a Mario y otra
+    persona", "Mario sonríe") se reescriben a segunda persona.
+  - El relleno atmosférico forense ("el clima es soleado", "el día
+    está despejado", "hace buen tiempo") se descarta: no aporta a la
+    interacción humana.
+
 Reglas duras (cumplidas por tests):
   - Evitar lenguaje de reporte ("se observa", "se aprecia").
   - Evitar aperturas tipo "la imagen muestra", "en la foto", "I can see".
   - Evitar descripción exhaustiva (cada objeto, cada color, cada esquina).
   - Priorizar percepción humana (lo más cargado emocionalmente o lo
     más "vivo" — no la metadata).
+  - Prohibir tercera persona distante sobre el usuario reconocido.
   - Máximo 4 frases.
-  - Tono natural y conversacional.
+  - Tono natural y conversacional, de compañero mirando contigo.
   - Si reconoce personas frecuentes (faces=["Mario","Naomy"]),
     responder con continuidad contextual ("Mario y Naomy otra vez")
     en vez de descripción anónima.
@@ -27,7 +39,7 @@ incluir el propio nombre del usuario si tiene su cara registrada).
 "tú" de "ellos").
 `lang` ajusta plantillas de continuidad ("es"|"en").
 
-Ejemplo:
+Ejemplos:
     raw = ("La imagen muestra a dos personas sonriendo. "
            "En el fondo se observa una playa. La luz es cálida. "
            "Hay palmeras y arena dorada. Las personas parecen felices.")
@@ -35,6 +47,12 @@ Ejemplo:
     user_name = "Mario"
     →
     "Tú y Naomy en la playa. Se les ve bien."
+
+    raw = "A Mario y otra persona en una terraza. El clima es soleado."
+    faces = ["Mario"]
+    user_name = "Mario"
+    →
+    "Sales genial en esa foto, Mario. Tú y alguien en una terraza."
 """
 
 from __future__ import annotations
@@ -84,6 +102,57 @@ _REPORT_INTERNAL = re.compile(
 # Marcadores estructurales que parecen viñetas / listas (eliminamos)
 _BULLETS = re.compile(r"^[\s•\-\*]+", re.MULTILINE)
 
+# Oraciones "atmosféricas" puras (clima/escenario sin gente). Las
+# dropeamos porque son lenguaje de reporte forense, no interacción.
+# Solo se considera atmosférica una oración cuyo CUERPO COMPLETO
+# matchea el patrón.
+_ATMOSPHERIC_FULL = re.compile(
+    r"^\s*(?:"
+    # Español
+    r"(?:el|la)\s+(?:clima|d[ií]a|sol|cielo|tiempo|temperatura|luz|horizonte|atm[oó]sfera|ambiente|escenario|paisaje|fondo)"
+    r"\s+(?:es|est[aá]|se\s+ve|parece)\s+[^.!?]{2,80}"
+    r"|hace\s+(?:buen|mal|mucho|bastante)\s+(?:tiempo|sol|calor|fr[ií]o|d[ií]a)[^.!?]{0,40}"
+    r"|hay\s+(?:un|una)?\s*(?:cielo|sol|atardecer|amanecer|nubes|nieve|lluvia)[^.!?]{0,40}"
+    # Inglés
+    r"|the\s+(?:weather|sky|sun|light|day|atmosphere|background|scenery)"
+    r"\s+(?:is|looks|seems|appears)\s+[^.!?]{2,80}"
+    r"|it\s+(?:is|looks|seems)\s+(?:a\s+)?(?:sunny|cloudy|rainy|nice|warm|cold|bright|dark)[^.!?]{0,40}"
+    r")\s*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+
+# Companion openers — cuando reconozco al usuario en la foto le hablo
+# directamente, como un compañero mirando la foto con él. Pool pequeño
+# para variabilidad sin parecer aleatorio. Selección determinista por
+# hash del raw input para tests estables.
+_COMPANION_OPENERS = {
+    "es": [
+        "Sales genial en esa foto, {name}.",
+        "Te ves bien, {name}.",
+        "Buena foto, {name}.",
+        "Qué buen momento, {name}.",
+    ],
+    "en": [
+        "You look great in that one, {name}.",
+        "Nice shot of you, {name}.",
+        "Good moment, {name}.",
+        "Looking sharp, {name}.",
+    ],
+}
+
+# Sustantivos genéricos (singular) que designan a la persona en la foto.
+# Cuando el user está RECONOCIDO Y SOLO en la foto, los reescribimos a
+# segunda persona ("una persona sonriendo" → "sonriendo", o lo absorbe
+# el companion opener).
+_GENERIC_SUBJECT_ES = re.compile(
+    r"\b(?:una|la|un|el)\s+(?:persona|hombre|mujer|chico|chica|tipo|se\u00f1or|se\u00f1ora|joven|individuo|sujeto)\b",
+    re.IGNORECASE,
+)
+_GENERIC_SUBJECT_EN = re.compile(
+    r"\b(?:a|the|one)\s+(?:person|man|woman|guy|girl|individual|figure)\b",
+    re.IGNORECASE,
+)
+
 
 def humanize_visual(
     raw: str,
@@ -128,26 +197,56 @@ def humanize_visual(
     # 3. Recortar conectores internos de reporte
     text = _REPORT_INTERNAL.sub("Y", text)
 
-    # 4. Limitar a MAX_SENTENCES oraciones
+    # 4. Drop oraciones puramente atmosféricas (clima/escenario sin gente).
+    #    Esto convierte una descripción forense en interacción humana:
+    #    "Mario en la playa. El clima es soleado." → "Mario en la playa."
+    text = _drop_atmospheric_only(text)
+
+    # 5. Limitar a MAX_SENTENCES oraciones
     text = _limit_sentences(text, MAX_SENTENCES)
 
-    # 5. Limpiar espacios y puntuación
+    # 6. Limpiar espacios y puntuación
     text = re.sub(r" {2,}", " ", text)
     text = re.sub(r"\n{2,}", "\n", text)
     text = re.sub(r" +([.,;:!?])", r"\1", text)
     text = text.strip()
 
-    # 6. Capitalizar primera letra si se perdió por strip de opener
+    # 7. Capitalizar primera letra si se perdió por strip de opener
     if text and text[0].islower():
         text = text[0].upper() + text[1:]
 
-    # 7. Continuidad contextual si hay rostros reconocidos
+    # 8. Reescritura a segunda persona cuando el usuario está reconocido
+    #    en la foto. Convierte "a Mario y otra persona", "Mario sonríe",
+    #    "una persona" (si Mario está solo) en tú/ti/segunda persona.
+    user_in_faces = bool(user_name) and bool(faces) and any(
+        _match_name(user_name, f) for f in (faces or [])
+    )
+    others = []
     if faces:
-        prefix = _continuity_prefix(faces, user_name, lang)
+        others = [
+            f for f in faces
+            if not (user_name and _match_name(user_name, f))
+        ]
+    if user_in_faces:
+        text = _rewrite_user_to_second_person(
+            text, user_name=user_name, alone=(not others), lang=lang,
+        )
+
+    # 9. Continuidad contextual si hay rostros reconocidos. Si el user
+    #    está SOLO en la foto, usamos un companion opener que se dirige
+    #    a él directamente ("Sales genial en esa foto, Mario."). En los
+    #    otros casos mantenemos la continuidad clásica ("Tú y Naomy.").
+    if faces:
+        if user_in_faces and not others:
+            prefix = _companion_opener_for_user(
+                user_name, lang=lang, seed=raw,
+            )
+        else:
+            prefix = _continuity_prefix(faces, user_name, lang)
         if prefix and not _starts_with_names(text, faces, user_name):
             text = f"{prefix} {text}".strip()
 
-    # 8. Sustancia mínima
+    # 10. Sustancia mínima
     if len(text.strip()) < 4:
         return ""
 
@@ -159,6 +258,138 @@ def humanize_visual(
 # ---------------------------------------------------------------------------
 
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+
+def _drop_atmospheric_only(text: str) -> str:
+    """Descarta oraciones cuyo cuerpo completo es relleno atmosférico
+    (clima/escenario sin gente). No toca oraciones que mezclan gente y
+    ambiente. Si todo el texto era atmosférico, devuelve cadena vacía.
+    """
+    if not text:
+        return text
+    sentences = [s.strip() for s in _SENT_SPLIT.split(text) if s.strip()]
+    kept = []
+    for s in sentences:
+        if _ATMOSPHERIC_FULL.match(s):
+            continue
+        kept.append(s)
+    return " ".join(kept)
+
+
+def _rewrite_user_to_second_person(
+    text: str,
+    user_name: str,
+    alone: bool,
+    lang: str = "es",
+) -> str:
+    """Reescribe referencias en tercera persona al user reconocido en
+    segunda persona. No toca otros nombres.
+
+    `alone=True` indica que el user es la única cara reconocida en la
+    foto. En ese caso reescribimos también sustantivos genéricos
+    singulares ("una persona") porque sabemos que se refieren a él.
+    """
+    if not user_name or not text:
+        return text
+    first = user_name.strip().split()[0]
+    if not first:
+        return text
+    name_re = re.escape(first)
+
+    if lang == "en":
+        # "X and another person/guy/girl/man/woman" → "you and someone"
+        text = re.sub(
+            rf"\b{name_re}\s+and\s+(?:another|a|one)\s+(?:person|guy|girl|man|woman)\b",
+            "you and someone",
+            text, flags=re.IGNORECASE,
+        )
+        # "X is/looks/seems" → "you're/you look/you seem"
+        text = re.sub(
+            rf"\b{name_re}\s+is\b", "you're", text, flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            rf"\b{name_re}\s+(looks|seems|appears)\b",
+            r"you \1", text, flags=re.IGNORECASE,
+        )
+        # bare "X" → "you"
+        text = re.sub(
+            rf"\b{name_re}\b", "you", text, flags=re.IGNORECASE,
+        )
+        if alone:
+            text = _GENERIC_SUBJECT_EN.sub("you", text)
+    else:
+        # "a X y otra persona" → "tú y alguien"
+        text = re.sub(
+            rf"\ba\s+{name_re}\s+y\s+(?:otra|una)\s+persona\b",
+            "tú y alguien", text, flags=re.IGNORECASE,
+        )
+        # "X y otra persona" → "tú y alguien"
+        text = re.sub(
+            rf"\b{name_re}\s+y\s+(?:otra|una)\s+persona\b",
+            "tú y alguien", text, flags=re.IGNORECASE,
+        )
+        # "a X" (objeto preposicional) → "a ti"
+        text = re.sub(
+            rf"\ba\s+{name_re}\b", "a ti", text, flags=re.IGNORECASE,
+        )
+        # "X aparece/sonríe/posa/mira/está" → "tú apareces/sonríes/..."
+        text = re.sub(
+            rf"\b{name_re}\s+(aparece|sonr[ií]e|posa|mira|est[aá]|se\s+ve|se\s+r[ií]e)\b",
+            lambda m: "tú " + _to_second_person_verb(m.group(1)),
+            text, flags=re.IGNORECASE,
+        )
+        # bare "X" → "tú"
+        text = re.sub(
+            rf"\b{name_re}\b", "tú", text, flags=re.IGNORECASE,
+        )
+        if alone:
+            # "una persona" / "la persona" → "tú" cuando solo él está en la foto
+            text = _GENERIC_SUBJECT_ES.sub("tú", text)
+
+    # Recapitalizar tras posibles reemplazos al inicio.
+    text = text.strip()
+    if text:
+        # Capitaliza primera letra preservando diéresis/acentos
+        text = text[0].upper() + text[1:]
+    return text
+
+
+_VERB_THIRD_TO_SECOND_ES = {
+    "aparece": "apareces",
+    "sonríe": "sonríes",
+    "sonrie": "sonríes",
+    "posa": "posas",
+    "mira": "miras",
+    "está": "estás",
+    "esta": "estás",
+    "se ve": "te ves",
+    "se ríe": "te ríes",
+    "se rie": "te ríes",
+}
+
+
+def _to_second_person_verb(verb: str) -> str:
+    key = verb.strip().lower()
+    return _VERB_THIRD_TO_SECOND_ES.get(key, verb)
+
+
+def _companion_opener_for_user(
+    user_name: str, lang: str = "es", seed: str = "",
+) -> str:
+    """Genera un opener directo al usuario cuando lo reconozco solo en
+    la foto. Selección determinista por hash de `seed` (raw text) para
+    que el mismo input siempre produzca el mismo opener (tests estables)
+    y diferentes inputs roten naturalmente.
+    """
+    if not user_name:
+        return ""
+    pool = _COMPANION_OPENERS.get(lang) or _COMPANION_OPENERS["es"]
+    first = user_name.strip().split()[0]
+    if seed:
+        idx = sum(ord(c) for c in seed) % len(pool)
+    else:
+        idx = 0
+    return pool[idx].format(name=first)
 
 
 def _limit_sentences(text: str, max_sentences: int) -> str:

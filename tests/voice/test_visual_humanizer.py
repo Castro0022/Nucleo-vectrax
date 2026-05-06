@@ -186,5 +186,112 @@ class TestEndToEndExample(unittest.TestCase):
         self.assertLessEqual(n, 5)  # +1 por la frase de continuidad
 
 
+class TestInteractionNotDescription(unittest.TestCase):
+    """Reglas nuevas: la respuesta debe ser INTERACCIÓN, no descripción.
+
+    Cuando el usuario está reconocido en la foto, Vectrax le habla a él
+    directamente. Las menciones en tercera persona del usuario y el
+    relleno atmosférico forense ("el clima es soleado") se eliminan.
+    """
+
+    def test_companion_opener_when_user_recognized_alone(self):
+        out = humanize_visual(
+            "Una persona sonriendo en una playa.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="es",
+        )
+        # Debe dirigirse a Mario directamente con un companion opener
+        self.assertIn("Mario", out)
+        # Y debe ser uno de los openers de compañero (al menos un
+        # token característico).
+        opener_signal = any(
+            tok in out
+            for tok in ("Sales genial", "Te ves bien", "Buena foto", "Qué buen momento")
+        )
+        self.assertTrue(opener_signal, f"opener missing in: {out!r}")
+
+    def test_distant_third_person_about_user_rewritten(self):
+        out = humanize_visual(
+            "A Mario y otra persona en una terraza.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="es",
+        )
+        # No debe haber referencia distante "a Mario" o "Mario y otra persona"
+        self.assertNotIn("a Mario", out)
+        self.assertNotIn("Mario y otra persona", out)
+        # Debe haber una segunda-persona ("tú y alguien")
+        self.assertIn("alguien", out.lower())
+        self.assertIn("tú", out.lower())
+
+    def test_atmospheric_filler_dropped(self):
+        out = humanize_visual(
+            "Mario en la playa. El clima es soleado. El día está despejado.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="es",
+        )
+        # El relleno atmosférico debe haberse ido
+        self.assertNotIn("el clima es soleado", out.lower())
+        self.assertNotIn("el día está", out.lower())
+        self.assertNotIn("despejado", out.lower())
+
+    def test_user_alone_generic_subject_becomes_second_person(self):
+        out = humanize_visual(
+            "Una persona posando frente a un edificio.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="es",
+        )
+        # "una persona" debe convertirse a "tú" porque Mario está solo
+        self.assertNotIn("una persona", out.lower())
+        self.assertIn("tú", out.lower())
+
+    def test_companion_opener_english(self):
+        out = humanize_visual(
+            "A person standing on a beach.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="en",
+        )
+        self.assertIn("Mario", out)
+        opener_signal = any(
+            tok in out
+            for tok in ("You look great", "Nice shot", "Good moment", "Looking sharp")
+        )
+        self.assertTrue(opener_signal, f"english opener missing in: {out!r}")
+
+    def test_user_with_others_uses_classic_continuity(self):
+        """Cuando el user está con otros, mantenemos 'Tú y X' (no companion opener).
+
+        El companion opener es solo para foto del user solo.
+        """
+        out = humanize_visual(
+            "La imagen muestra a dos personas felices en la playa.",
+            faces=["Mario", "Naomy"],
+            user_name="Mario",
+            lang="es",
+        )
+        self.assertIn("Tú", out)
+        self.assertIn("Naomy", out)
+        # No debe usar el companion opener (ese es solo para user solo)
+        self.assertNotIn("Sales genial", out)
+
+    def test_atmospheric_does_not_drop_mixed_sentences(self):
+        """Una oración que mezcla gente + ambiente NO debe dropearse."""
+        out = humanize_visual(
+            "Mario riendo bajo un cielo soleado.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="es",
+        )
+        # "riendo" o "cielo" debe seguir presente
+        self.assertTrue(
+            "riendo" in out.lower() or "cielo" in out.lower(),
+            f"mixed sentence got dropped: {out!r}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
