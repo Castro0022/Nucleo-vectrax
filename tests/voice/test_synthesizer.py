@@ -74,18 +74,31 @@ class TestSynthesizeBehavior(unittest.TestCase):
                 self.assertEqual(args[1], "nova")        # voice default
                 self.assertEqual(args[2], "tts-1")       # model default
 
-    def test_cache_hit_avoids_second_api_call(self):
-        fake_audio = b"\x4f\x67\x67\x53cached"
+    def test_each_call_hits_api_fresh(self):
+        """Cache fue eliminado para garantizar audio único por envío.
+
+        Antes: dos calls con el mismo texto compartían bytes (cache hit).
+        Ahora: cada call genera bytes nuevos. El Anti-Repetition Filter
+        garantiza que dos respuestas nunca tengan el mismo texto.
+        """
+        fake_audio_a = b"\x4f\x67\x67\x53first"
+        fake_audio_b = b"\x4f\x67\x67\x53second"
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=False):
             os.environ.pop("VECTRAX_TTS_DISABLED", None)
-            with patch.object(synthesizer, "_call_openai_tts",
-                              return_value=fake_audio) as mock_call:
-                synthesizer.synthesize("hola")
-                synthesizer.synthesize("hola")
-                # Second call must come from cache
-                self.assertEqual(mock_call.call_count, 1)
+            with patch.object(
+                synthesizer, "_call_openai_tts",
+                side_effect=[fake_audio_a, fake_audio_b],
+            ) as mock_call:
+                a = synthesizer.synthesize("hola")
+                b = synthesizer.synthesize("hola")
+                # Ambas calls deben pegarle al API
+                self.assertEqual(mock_call.call_count, 2)
+                # Y obtener bytes distintos (proviniendo del side_effect)
+                self.assertEqual(a, fake_audio_a)
+                self.assertEqual(b, fake_audio_b)
+                self.assertNotEqual(a, b)
 
-    def test_cache_separates_by_voice(self):
+    def test_different_voices_produce_different_audio(self):
         fake_audio_a = b"\x4f\x67\x67\x53nova"
         fake_audio_b = b"\x4f\x67\x67\x53echo"
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=False):

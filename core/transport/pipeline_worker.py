@@ -356,6 +356,26 @@ def _process_one(msg):
             except Exception as _le:
                 logger.debug("Language enforce skipped: %s", _le)
 
+        # === ANTI-REPETITION FILTER ===================================
+        # Strip de clichés prohibidos (redes sociales / community manager)
+        # y rotación estructural si la respuesta es muy similar a las
+        # últimas 10 enviadas al user. Si el filter devuelve None la
+        # respuesta era 100% cliché — silencio antes que ruido.
+        if response:
+            try:
+                from core.voice.anti_repetition import filter_response
+                filtered = filter_response(response, msg.user_id)
+                if filtered:
+                    response = filtered
+                else:
+                    logger.info(
+                        "anti_repetition: blocked all-cliche response for %s",
+                        msg.user_id,
+                    )
+                    response = ""
+            except Exception as _ae:
+                logger.debug("anti_repetition skipped: %s", _ae)
+
         # === SCALE GOVERNOR: cache la respuesta para futuras idénticas ===
         if (
             decision is not None
@@ -372,6 +392,18 @@ def _process_one(msg):
 
         # === ENVIAR DIRECTO A TELEGRAM ===
         sent = _tg_send(msg.chat_id, response)
+
+        # === REGISTRAR EN ANTI-REPETITION RING BUFFER =================
+        # Tras un envío exitoso, grabamos la salida en el ring buffer
+        # del user. Solo grabamos cuando se envió (sent=True) y la
+        # respuesta no es vacía — evita contaminar el buffer con
+        # respuestas que el user nunca vio.
+        if sent and response:
+            try:
+                from core.voice.anti_repetition import record_response
+                record_response(msg.user_id, response)
+            except Exception as _re:
+                logger.debug("record_response skipped: %s", _re)
 
         # === MAPAS DE LUGARES ===
         try:
@@ -394,6 +426,18 @@ def _process_one(msg):
             "DONE %s | %.1fs | %d ch | sent=%s | %s",
             msg.id, elapsed, len(response), sent, msg.content[:30],
         )
+
+        # === EXPLICIT MESSAGE LIFECYCLE END ============================
+        # Liberamos referencias al objeto `msg` y a `response` para que
+        # el GC pueda recoger los buffers de inmediato. Evita cualquier
+        # ilusión de "audio del mensaje anterior arrastrado" causada
+        # por buffers viejos en memoria del thread del worker.
+        msg_id_for_log = msg.id
+        try:
+            del msg
+            del response
+        except Exception:
+            pass
         return True
 
     except Exception as exc:

@@ -2076,8 +2076,16 @@ class TelegramGateway:
                 if not caption:
                     vision_prompt = f"En esta foto aparece {names_str}. Analiza la imagen."
 
-            # Analyze with vision
-            result = analyze_image(url, user_prompt=vision_prompt, lang=lang, user_context=user_ctx)
+            # Analyze with vision (incluyendo nonce + recent-responses
+            # como contexto anti-repetición para que el LLM evite
+            # repetir estructuras ya usadas con este usuario)
+            result = analyze_image(
+                url,
+                user_prompt=vision_prompt,
+                lang=lang,
+                user_context=user_ctx,
+                user_id=tg_uid,
+            )
 
             # Visual Humanizer: convertir descripción cruda en texto humano
             # (máximo 4 frases, sin "la imagen muestra", con continuidad si
@@ -2105,6 +2113,23 @@ class TelegramGateway:
                 except Exception as exc:
                     logger.debug("visual_humanizer skipped: %s", exc)
 
+            # === Anti-Repetition Filter ====================================
+            # Drop de clichés prohibidos (redes sociales) y rotación
+            # estructural si la respuesta es muy parecida a las últimas
+            # 10 enviadas a este user. Defensa en profundidad: aunque
+            # el LLM ignore el system prompt, la salida no llega.
+            if result:
+                try:
+                    from core.voice.anti_repetition import (
+                        filter_response, record_response,
+                    )
+                    filtered = filter_response(result, tg_uid, lang=lang)
+                    if filtered:
+                        result = filtered
+                    # else: dejamos el result original; el caller decide
+                except Exception as exc:
+                    logger.debug("anti_repetition skipped: %s", exc)
+
             if result:
                 try:
                     from core.language_gate import enforce_language
@@ -2112,6 +2137,14 @@ class TelegramGateway:
                 except Exception:
                     pass
                 self._send(cid, result)
+                # Registrar la salida final en el ring buffer del user
+                # (después del send para no contaminar el filter del propio
+                # request actual).
+                try:
+                    from core.voice.anti_repetition import record_response
+                    record_response(tg_uid, result)
+                except Exception:
+                    pass
                 logger.info("VISION %s | %d ch | faces=%s | caption=%s",
                             tg_uid[:15], len(result),
                             recognized_names or "none",

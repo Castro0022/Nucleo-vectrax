@@ -5,11 +5,19 @@ Convierte texto en bytes de audio listos para enviar como `sendVoice` de
 Telegram. Usa OpenAI TTS por defecto (voz `nova` — cálida, neutra).
 
 Diseño:
-  - synthesize(text, voice, lang) → bytes (OGG/Opus, mono).
+  - synthesize(text, voice, lang) → bytes (MP3) — cada call genera
+    BYTES NUEVOS, sin cache compartida. Garantiza unicidad: el audio
+    enviado al usuario corresponde EXACTAMENTE a este request, sin
+    heredar nada de mensajes anteriores.
   - Defensive: NUNCA levanta excepción que rompa el envío de texto. Si
     el TTS falla, devuelve None y el caller manda solo texto.
-  - Cache opcional por hash del (text, voice) para evitar re-pedir
-    audios idénticos (ahorro de costo y latencia). LRU acotado.
+  - NO hay cache compartida ni en memoria ni en disco. La cache
+    anterior (LRU por hash de texto) se eliminó porque generaba la
+    sensación de "audio anterior arrastrado" cuando el mismo texto
+    se repetía. Ahora cada call → audio nuevo. El Anti-Repetition
+    Filter (core/voice/anti_repetition.py) ya garantiza que dos
+    respuestas nunca son textualmente idénticas, así que el costo
+    de re-sintetizar es despreciable.
   - Filtros: si el texto excede MAX_TTS_CHARS, recorta a un punto
     natural antes de llamar al API (ahorro adicional de tokens).
 
@@ -29,11 +37,8 @@ Variables de entorno:
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
-import threading
-from collections import OrderedDict
 from typing import Optional
 
 logger = logging.getLogger("vectrax.voice.synthesizer")
@@ -44,11 +49,6 @@ DEFAULT_MODEL = os.environ.get("VECTRAX_TTS_MODEL", "tts-1")
 
 # Caracter limit antes de cortar (ahorro de costo en respuestas largas)
 MAX_TTS_CHARS = 1000
-
-# LRU cache acotada
-_CACHE_MAX = 64
-_cache: "OrderedDict[str, bytes]" = OrderedDict()
-_cache_lock = threading.Lock()
 
 
 def is_tts_enabled() -> bool:
@@ -90,16 +90,8 @@ def synthesize(
         raw = _smart_truncate(raw, MAX_TTS_CHARS)
 
     voice = voice or DEFAULT_VOICE
-    cache_key = _cache_key(raw, voice, DEFAULT_MODEL)
 
-    # Lookup en cache
-    with _cache_lock:
-        cached = _cache.get(cache_key)
-        if cached is not None:
-            _cache.move_to_end(cache_key)
-            logger.debug("TTS cache hit (%d bytes)", len(cached))
-            return cached
-
+    # Sin cache: cada synth produce audio nuevo. Ver docstring del modulo.
     try:
         audio = _call_openai_tts(raw, voice, DEFAULT_MODEL)
     except Exception as exc:
@@ -109,10 +101,7 @@ def synthesize(
     if audio is None:
         return None
 
-    with _cache_lock:
-        _cache[cache_key] = audio
-        if len(_cache) > _CACHE_MAX:
-            _cache.popitem(last=False)
+    logger.debug("TTS synth ok (%d bytes, %d chars)", len(audio), len(raw))
     return audio
 
 
@@ -158,11 +147,6 @@ def _call_openai_tts(text: str, voice: str, model: str) -> Optional[bytes]:
         return None
 
 
-def _cache_key(text: str, voice: str, model: str) -> str:
-    raw = f"{model}|{voice}|{text}"
-    return hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()[:24]
-
-
 def _smart_truncate(text: str, max_len: int) -> str:
     """Trunca al último punto/oración antes de max_len."""
     if len(text) <= max_len:
@@ -175,8 +159,22 @@ def _smart_truncate(text: str, max_len: int) -> str:
 
 
 def clear_cache() -> int:
-    """Test helper / utility: limpia el cache. Devuelve cuántos había."""
-    with _cache_lock:
-        n = len(_cache)
-        _cache.clear()
-    return n
+    """Compat shim: el cache fue eliminado. Mantener la función para
+    no romper callers/tests existentes. Devuelve siempre 0.
+
+    Adicionalmente, limpia (best-effort) cualquier directorio residual
+    `cache/voice_segments/` que pudiera quedar de versiones previas.
+    """
+    cleaned = 0
+    for d in ("cache/voice_segments", "voice_segments"):
+        try:
+            if os.path.isdir(d):
+                for fn in os.listdir(d):
+                    try:
+                        os.remove(os.path.join(d, fn))
+                        cleaned += 1
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    return cleaned

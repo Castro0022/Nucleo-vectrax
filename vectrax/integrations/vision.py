@@ -35,47 +35,89 @@ def analyze_image(
     user_prompt: str = "",
     lang: str = "es",
     user_context: str = "",
+    user_id: str = "",
 ) -> Optional[str]:
     """
     Analyze an image using GPT-4o vision with contextual intelligence.
     Interprets intent, identifies locations, suggests actions.
+
+    `user_id` is used by the Anti-Repetition Filter to inject
+    "avoid these recent phrasings" into the prompt when this user
+    has been getting similar responses.
     """
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
         logger.warning("Vision: OPENAI_API_KEY not set")
         return None
 
+    # Tono: compañero mirando la foto contigo, no community manager.
+    # PROHIBIDO sugerir publicar/compartir en redes sociales (regla
+    # explicita del creador). Tampoco lenguaje de reporte forense.
     if lang == "en":
         system = (
             "You are Vectrax, a personal intelligence system. "
-            "Analyze the image with depth and intent — don't just describe, INTERPRET.\n"
-            "Your analysis should include (when relevant):\n"
-            "• Location identification (city, neighborhood, landmark)\n"
-            "• Contextual insight (weather, time of day, season)\n"
-            "• Practical suggestion (good for Instagram, business opportunity, etc.)\n"
-            "• If text/document is visible, extract the key information\n"
-            "• If it's a product/logo/design, evaluate quality and suggest improvements\n"
-            "Be concise (3-5 lines). Direct. No filler."
+            "You are looking at this photo TOGETHER with the user, like a friend, "
+            "not analyzing it from a distance.\n"
+            "Speak naturally and directly. Address the user in second person when relevant.\n"
+            "You may notice (only when truly relevant):\n"
+            "• Where it might be (city, neighborhood) — only if you're confident\n"
+            "• What's actually happening between people in the frame\n"
+            "• If there's visible text/document, extract the key info\n"
+            "• If it's a product/logo/design, give blunt feedback\n"
+            "HARD BANS:\n"
+            "• Never suggest posting / sharing / uploading to social media, "
+            "Instagram, Facebook, TikTok, Twitter, X, stories, reels, or feed.\n"
+            "• No community-manager advice. No 'great for your feed' cliché.\n"
+            "• No weather/setting filler if it doesn't matter to the people in the photo.\n"
+            "• No 'the image shows / I can see' openers.\n"
+            "Be concise (2-4 lines). Direct. Human."
         )
-        default_prompt = "Analyze this image."
+        default_prompt = "Look at this with me."
     else:
         system = (
             "Eres Vectrax, un sistema de inteligencia personal. "
-            "Analiza la imagen con profundidad e intención — no solo describas, INTERPRETA.\n"
-            "Tu análisis debe incluir (cuando sea relevante):\n"
-            "• Identificación de ubicación (ciudad, zona, punto de referencia)\n"
-            "• Insight contextual (clima, hora del día, temporada)\n"
-            "• Sugerencia práctica (bueno para redes, oportunidad de negocio, etc.)\n"
-            "• Si hay texto/documento visible, extrae la información clave\n"
-            "• Si es producto/logo/diseño, evalúa calidad y sugiere mejoras\n"
-            "Sé conciso (3-5 líneas). Directo. Sin relleno."
+            "Estas mirando esta foto CONTIGO el usuario, como un compañero, "
+            "no la analizas desde afuera.\n"
+            "Habla natural y directo. Tutéalo cuando aplique.\n"
+            "Puedes notar (solo cuando sea realmente relevante):\n"
+            "• Dónde podría ser (ciudad, zona) — solo si estás seguro\n"
+            "• Qué esta pasando entre las personas del cuadro\n"
+            "• Si hay texto/documento visible, extrae lo clave\n"
+            "• Si es producto/logo/diseño, da feedback directo\n"
+            "PROHIBIDO ESTRICTO:\n"
+            "• Jamás sugerir publicar / compartir / subir a redes sociales, "
+            "Instagram, Facebook, TikTok, Twitter, X, stories, reels, ni feed.\n"
+            "• Nada de consejos tipo community manager. Nada de 'bueno para tus redes'.\n"
+            "• Nada de relleno de clima/escenario si no aporta a las personas en la foto.\n"
+            "• Nada de 'la imagen muestra / se observa / se aprecia'.\n"
+            "Sé conciso (2-4 líneas). Directo. Humano."
         )
-        default_prompt = "Analiza esta imagen."
+        default_prompt = "Mira esto conmigo."
 
     if user_context:
         system += f"\nContexto del usuario: {user_context}"
 
     prompt = user_prompt.strip() if user_prompt.strip() else default_prompt
+
+    # Anti-repetition: cuando la misma foto llega varias veces, queremos
+    # respuestas estructuralmente distintas. Subimos temperature, agregamos
+    # penalties de frecuencia/presencia, y un nonce efímero (timestamp +
+    # ultimas N respuestas para este user) que rompe cualquier dedup
+    # del servidor y empuja el modelo hacia variedad.
+    import time as _t
+    nonce = f"\n[session={int(_t.time())}]"
+    try:
+        from core.voice.anti_repetition import recent_responses
+        recent = recent_responses(user_id or "", n=3) if user_id else []
+        if recent:
+            avoid = " | ".join(r[:80] for r in recent)
+            nonce += (
+                "\nEvita repetir esta estructura/frases que ya usaste "
+                f"con este usuario: {avoid}"
+            )
+    except Exception:
+        pass
+    prompt_with_nonce = f"{prompt}{nonce}"
 
     try:
         import requests
@@ -92,7 +134,7 @@ def analyze_image(
                     {
                         "role": "user",
                         "content": [
-                            {"type": "text", "text": prompt},
+                            {"type": "text", "text": prompt_with_nonce},
                             {
                                 "type": "image_url",
                                 "image_url": {"url": image_url, "detail": "low"},
@@ -101,7 +143,9 @@ def analyze_image(
                     },
                 ],
                 "max_tokens": 500,
-                "temperature": 0.4,
+                "temperature": 0.85,
+                "presence_penalty": 0.6,
+                "frequency_penalty": 0.6,
             },
             timeout=30,
         )
