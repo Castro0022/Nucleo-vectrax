@@ -50,8 +50,21 @@ CREATE TABLE IF NOT EXISTS queue (
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
 """
 
-# Max age before a "processing" message is considered stuck (seconds)
-STUCK_TIMEOUT = 30
+# Max age before a "processing" message is considered stuck (seconds).
+#
+# CRITICAL: con valor 30s habia un bug grave (descubierto 2026-05-06):
+#   - Voice + LLM + memoria + TTS toma legitimamente 30-60s.
+#   - El dequeue() resetea cualquier msg processing > STUCK_TIMEOUT a
+#     pending. Si Worker A toma 35s, Worker B lo retoma a los 30s y
+#     ambos procesan el MISMO mensaje en paralelo. Cada uno llama
+#     _tg_send + dispatch_audio_async => el usuario recibe 2 textos +
+#     2 audios para un solo voice. Sintoma reportado: "habla del
+#     anterior despues del audio ultimo".
+#
+# 180s es margen suficiente para vision + memoria + LLM + TTS (peor
+# caso real observado: ~16s). Mantiene la recuperacion de workers
+# que crashearon (msg queda en processing >180s sin avanzar => reset).
+STUCK_TIMEOUT = 180
 # Max age before a completed message is cleaned up (seconds)
 CLEANUP_AGE = 300
 
