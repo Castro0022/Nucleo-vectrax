@@ -165,6 +165,76 @@ def _tg_venue(chat_id: int, place: dict) -> bool:
 # Process one message
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Scale Governor middleware helpers (opt-in via SCALE_GOVERNOR_ENABLED=1)
+# ---------------------------------------------------------------------------
+
+def _resolve_user_tier(user_id: str):
+    """Best-effort tier resolution. Defaults to FREE.
+
+    Lee `tier` o `plan` desde user_memory si existe. INTERNAL para el
+    creador (Mario). Cualquier excepción cae a FREE.
+    """
+    from core.scale import Tier
+    creator_uid = os.environ.get("VX_CREATOR_ID", "") or "2030762343"
+    norm_uid = (user_id or "").replace("tg:", "")
+    if norm_uid == creator_uid:
+        return Tier.INTERNAL
+    try:
+        from vectrax.user_memory import get_user_profile
+        prof = get_user_profile(user_id) or {}
+        raw = (prof.get("tier") or prof.get("plan") or "").upper().strip()
+        if raw in ("PRO", "BUSINESS", "INTERNAL", "FREE"):
+            return Tier(raw)
+    except Exception:
+        pass
+    return Tier.FREE
+
+
+def _quick_intent(content: str) -> str:
+    """Reusa el classifier del VoiceEngine. Defensive."""
+    try:
+        from core.voice.intent import classify_intent
+        return classify_intent(content or "")
+    except Exception:
+        return "casual"
+
+
+def _scale_governor_preflight(msg):
+    """Si SCALE_GOVERNOR_ENABLED=1, corre la decisión del governor antes
+    del pipeline. Devuelve (decision, sg) o (None, None) si está off o
+    falló.
+
+    El caller usa decision.cache_hit / decision.rate_limited para corto
+    circuitar el pipeline.
+    """
+    if os.environ.get("SCALE_GOVERNOR_ENABLED") != "1":
+        return None, None
+    try:
+        from core.scale import ScaleGovernor
+        if not hasattr(_scale_governor_preflight, "_sg"):
+            _scale_governor_preflight._sg = ScaleGovernor()
+        sg = _scale_governor_preflight._sg
+        tier = _resolve_user_tier(msg.user_id)
+        intent = _quick_intent(msg.content)
+        decision = sg.select_minimal_pipeline(
+            user_id=msg.user_id,
+            tier=tier,
+            intent=intent,
+            message=msg.content,
+        )
+        logger.info(
+            "SG | user=%s tier=%s intent=%s profile=%s model=%s cache=%s rl=%s",
+            msg.user_id, tier.value, intent,
+            decision.profile.value, decision.chosen_model,
+            decision.cache_hit, decision.rate_limited,
+        )
+        return decision, sg
+    except Exception as exc:
+        logger.debug("scale_governor preflight skipped: %s", exc)
+        return None, None
+
+
 def _process_one(msg):
     """Process a single queued message: pipeline → send to Telegram."""
     from core.transport.message_queue import mark_done, mark_error
@@ -176,6 +246,32 @@ def _process_one(msg):
 
     t0 = time.time()
     try:
+        # === SCALE GOVERNOR PREFLIGHT (opt-in) ===
+        decision, sg = _scale_governor_preflight(msg)
+
+        # Cache hit → responde y termina sin tocar el pipeline
+        if decision is not None and decision.cache_hit and decision.cached_response:
+            _tg_send(msg.chat_id, decision.cached_response)
+            mark_done(msg.id, decision.cached_response)
+            elapsed = time.time() - t0
+            logger.info(
+                "SG_CACHE_HIT %s | %.3fs | %d ch | %s",
+                msg.id, elapsed, len(decision.cached_response),
+                msg.content[:30],
+            )
+            return True
+
+        # Rate limited → responde con mensaje de límite y termina
+        if decision is not None and decision.rate_limited:
+            _tg_send(msg.chat_id, decision.rate_limit_message)
+            mark_done(msg.id, decision.rate_limit_message)
+            elapsed = time.time() - t0
+            logger.info(
+                "SG_RATE_LIMITED %s | %.3fs | %s",
+                msg.id, elapsed, msg.content[:30],
+            )
+            return True
+
         result = gw.receive_message(
             user_id=msg.user_id,
             content=msg.content,
@@ -198,6 +294,20 @@ def _process_one(msg):
                 response = enforce_language(response, user_lang, msg.user_id)
             except Exception as _le:
                 logger.debug("Language enforce skipped: %s", _le)
+
+        # === SCALE GOVERNOR: cache la respuesta para futuras idénticas ===
+        if (
+            decision is not None
+            and sg is not None
+            and response
+            and not decision.cache_hit
+            and not decision.rate_limited
+            and len(response) < 1000
+        ):
+            try:
+                sg.semantic_cache_set(decision.cache_key, response, ttl=300)
+            except Exception:
+                pass
 
         # === ENVIAR DIRECTO A TELEGRAM ===
         sent = _tg_send(msg.chat_id, response)
