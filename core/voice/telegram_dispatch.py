@@ -72,6 +72,7 @@ def dispatch_audio_async(
     text: str,
     http_client: Any,
     executor: Optional[ThreadPoolExecutor] = None,
+    reply_to_message_id: Optional[int] = None,
 ) -> None:
     """Dispara síntesis + sendAudio en background. Nunca bloquea ni levanta.
 
@@ -82,17 +83,27 @@ def dispatch_audio_async(
         (en vez de crear uno nuevo) ahorra TCP handshakes.
       executor: opcional, ThreadPoolExecutor del caller. Si None se
         usa el pool compartido del módulo.
+      reply_to_message_id: opcional. Si está dado, el audio se envía
+        como REPLY al mensaje de texto correspondiente — Telegram
+        ancla visualmente el audio a ese texto aunque llegue fuera
+        de orden temporal. Resuelve la sensación de "repite el
+        diálogo anterior" cuando hay varios mensajes seguidos.
     """
     if not should_speak(text):
         return
     pool = executor or _get_default_pool()
     try:
-        pool.submit(_synth_and_send, chat_id, text, http_client)
+        pool.submit(_synth_and_send, chat_id, text, http_client, reply_to_message_id)
     except Exception as exc:
         logger.debug("dispatch submit swallowed: %s", exc)
 
 
-def _synth_and_send(chat_id: int, text: str, http_client: Any) -> None:
+def _synth_and_send(
+    chat_id: int,
+    text: str,
+    http_client: Any,
+    reply_to_message_id: Optional[int] = None,
+) -> None:
     """Worker: sintetiza el texto y envía como sendAudio. Defensive."""
     try:
         from core.voice.synthesizer import synthesize
@@ -103,7 +114,7 @@ def _synth_and_send(chat_id: int, text: str, http_client: Any) -> None:
     if not audio:
         return
     try:
-        send_audio_bytes(chat_id, audio, http_client)
+        send_audio_bytes(chat_id, audio, http_client, reply_to_message_id)
     except Exception as exc:
         logger.debug("sendAudio failed in dispatch: %s", exc)
 
@@ -112,11 +123,16 @@ def send_audio_bytes(
     chat_id: int,
     audio: bytes,
     http_client: Any,
+    reply_to_message_id: Optional[int] = None,
 ) -> bool:
     """POST sendAudio a Telegram con multipart/form-data.
 
     Devuelve True si HTTP 200, False en cualquier otro caso. Logs en
     warning si falla.
+
+    Si `reply_to_message_id` se provee, el audio queda anclado a ese
+    mensaje en la UI de Telegram (audio aparece como reply al texto
+    correspondiente, evitando confusión de orden).
 
     Requiere TELEGRAM_BOT_TOKEN en env.
     """
@@ -136,6 +152,10 @@ def send_audio_bytes(
         "title": "Vectrax",
         "performer": "Vectrax",
     }
+    if reply_to_message_id:
+        data["reply_to_message_id"] = str(reply_to_message_id)
+        # Si el mensaje al que respondemos no existe, no fallar el send
+        data["allow_sending_without_reply"] = "true"
     try:
         r = http_client.post(url, data=data, files=files)
         if r.status_code != 200:

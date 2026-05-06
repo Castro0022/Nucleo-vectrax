@@ -88,13 +88,19 @@ def _tg_send(chat_id: int, text: str) -> bool:
         return False
     if len(text) > 4096:
         text = text[:4093] + "..."
+    sent_message_id = None
     try:
         r = _TG_HTTP.post(
             f"{_TG_BASE}/sendMessage",
             json={"chat_id": chat_id, "text": text},
         )
         r.raise_for_status()
-        ok = r.json().get("ok", False)
+        body = r.json()
+        ok = body.get("ok", False)
+        # Capturar message_id del mensaje enviado por el bot — lo usaremos
+        # como reply_to_message_id para anclar el audio a ESTE texto.
+        if ok:
+            sent_message_id = (body.get("result") or {}).get("message_id")
     except Exception as exc:
         logger.warning("TG send failed: %s", exc)
         return False
@@ -109,13 +115,16 @@ def _tg_send(chat_id: int, text: str) -> bool:
         except Exception:
             pass
 
-        # Voice dispatch — unified path (same as gateway)
+        # Voice dispatch — unified path con reply_to_message_id para
+        # anclar el audio al texto correcto. Si el TTS llega fuera de
+        # orden, Telegram lo muestra anclado al mensaje correcto.
         try:
             from core.voice.telegram_dispatch import dispatch_audio_async
             dispatch_audio_async(
                 chat_id=chat_id,
                 text=text,
                 http_client=_TG_HTTP,
+                reply_to_message_id=sent_message_id,
             )
         except Exception as exc:
             logger.debug("audio dispatch swallowed: %s", exc)

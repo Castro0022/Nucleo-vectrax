@@ -193,9 +193,6 @@ class TelegramGateway:
             return False
         if len(text) > 4096:
             text = text[:4093] + "..."
-        # Class G runtime observation: register the final outgoing response
-        # so the hardcoded_handler_runtime detector can notice duplicates.
-        # Defensive: never let observation break delivery.
         try:
             from core.recovery.detectors.hardcoded_handler_runtime import (
                 register_response,
@@ -203,12 +200,13 @@ class TelegramGateway:
             register_response(user_id=str(cid), text=text, lang="")
         except Exception:
             pass
-        ok = self._tg("sendMessage", chat_id=cid, text=text, **extra) is not None
-        # Voice + text: dispara síntesis y sendAudio en paralelo. El
-        # despacho usa el módulo unificado core.voice.telegram_dispatch
-        # para que TODOS los paths de envío (gateway + pipeline_worker)
-        # compartan la misma capa de TTS — evita que solo el fast-path
-        # tenga voz.
+        # sendMessage retorna el message_id del mensaje del bot. Lo
+        # capturamos para que el audio sea reply_to_message_id de ESE
+        # texto — ancla visualmente texto + audio aunque el TTS llegue
+        # fuera de orden temporal.
+        result = self._tg("sendMessage", chat_id=cid, text=text, **extra)
+        ok = result is not None
+        sent_message_id = result.get("message_id") if isinstance(result, dict) else None
         if ok:
             try:
                 from core.voice.telegram_dispatch import dispatch_audio_async
@@ -217,6 +215,7 @@ class TelegramGateway:
                     text=text,
                     http_client=self._send_http,
                     executor=self._pool,
+                    reply_to_message_id=sent_message_id,
                 )
             except Exception as exc:
                 logger.debug("audio dispatch swallowed: %s", exc)
