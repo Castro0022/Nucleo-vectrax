@@ -43,6 +43,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger("vectrax.pipeline_worker")
 
+# === FileHandler para capturar logs del worker en archivo persistente ===
+# Sin esto, el subprocess loguea a stderr que se pierde. Con esto, todos
+# los eventos del worker (DONE, SG, DISPATCH, errores) quedan en
+# /root/.vectrax/worker.log para diagnostico.
+try:
+    _WORKER_LOG_PATH = os.path.join(
+        os.path.expanduser("~"), ".vectrax", "worker.log",
+    )
+    os.makedirs(os.path.dirname(_WORKER_LOG_PATH), exist_ok=True)
+    _file_handler = logging.FileHandler(_WORKER_LOG_PATH, encoding="utf-8")
+    _file_handler.setLevel(logging.INFO)
+    _file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    # Anadir al root para capturar tambien telegram_dispatch, voice, etc.
+    logging.getLogger().addHandler(_file_handler)
+except Exception as _e:
+    print(f"[worker] could not attach FileHandler: {_e}", file=sys.stderr)
+
 POLL_INTERVAL = 0.3
 CLEANUP_INTERVAL = 60
 MSG_TIMEOUT = 20
@@ -272,6 +292,12 @@ def _process_one(msg):
             )
             return True
 
+        # Diagnostic: log el input que llega al pipeline cognitivo
+        logger.info(
+            "PROC_IN msg_id=%s user=%s content=%r",
+            msg.id, msg.user_id, (msg.content or "")[:120],
+        )
+
         result = gw.receive_message(
             user_id=msg.user_id,
             content=msg.content,
@@ -285,6 +311,12 @@ def _process_one(msg):
         else:
             response = (result.response or "").strip()
         # Respuesta vacía = silencio. No mandar ruido al usuario.
+
+        # Diagnostic: log la respuesta cruda + source
+        logger.info(
+            "PROC_OUT msg_id=%s source=%s len=%d response=%r",
+            msg.id, result.source, len(response), response[:200],
+        )
 
         # === LANGUAGE ENFORCEMENT (prevent language leaks) ===
         if response:
