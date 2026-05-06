@@ -74,6 +74,13 @@ def dispatch_audio_async(
     executor: Optional[ThreadPoolExecutor] = None,
     reply_to_message_id: Optional[int] = None,
 ) -> None:
+    # Diagnostic logging: WHAT we will synthesize, for which chat, with
+    # which reply anchor. Helps debug "the audio repeats the previous
+    # message" reports.
+    logger.info(
+        "DISPATCH chat=%s reply_to=%s text=%r",
+        chat_id, reply_to_message_id, (text or "")[:80],
+    )
     """Dispara síntesis + sendAudio en background. Nunca bloquea ni levanta.
 
     Args:
