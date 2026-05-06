@@ -494,42 +494,40 @@ def generate_vectrax_replacement(
     """
     Genera una respuesta corta y humana con voz Vectrax.
 
-    Se usa cuando la respuesta del LLM fue genérica o de baja calidad.
-    Máximo 1–3 líneas. Humana, no robótica. Primera persona.
-    Usa el nombre del usuario si está disponible (anchor).
+    Encapsulada detrás del Motor de Voz Viva (core/voice). El intent y
+    el tono se infieren con `classify_tone`, y la respuesta concreta la
+    construye `fallback_response` con plantillas variables.
 
-    Reglas de tono (alineadas con VECTRAX_SYSTEM_PROMPT):
-      - hablar como amigo que te conoce, no como sistema reportando estado
-      - sin jerga interna ("núcleo", "coherencia", "masa", "estrellas")
-      - sin meta-respuestas ("no tengo", "no puedo")
-      - breve siempre
+    Mantiene firma original para compatibilidad con callers existentes.
+    Si el VoiceEngine no carga (entorno parcial), cae a comportamiento
+    legado humano — nunca al jerga-de-sistema anterior.
     """
     text = user_input.strip() if user_input else ""
     lang = _get_locked_or_detected_lang(text)
     name = _get_anchor_name()
 
-    # Saludo
+    try:
+        from core.voice import classify_tone, fallback_response
+        c = classify_tone(text, context={"name": name, "lang": lang})
+        return fallback_response(
+            c["intent"], c["tone"], name or None,
+            lang=lang, seed=text,
+        )
+    except Exception as exc:
+        logger.debug("VoiceEngine fallback path failed (%s); legacy human", exc)
+
+    # Legado humano — nunca jerga sistémica
     if _GREETING_PATTERN.match(text):
         if lang == "es":
             return f"Hola{f', {name}' if name else ''}. ¿Qué necesitas?"
         return f"Hey{f', {name}' if name else ''}. What do you need?"
-
-    # Agradecimiento
     if _THANKS_PATTERN.match(text):
-        if lang == "es":
-            return "De nada."
-        return "You're welcome."
-
-    # Pregunta → pedir un poco más sin bloquear ni sonar burocrático
+        return "De nada." if lang == "es" else "You're welcome."
     if _QUESTION_PATTERN.search(text):
         if lang == "es":
             return "Cuéntame un poco más, así te ayudo mejor."
         return "Tell me a bit more, so I can help better."
-
-    # Statement / información — el usuario envía datos
-    if lang == "es":
-        return "Lo guardo."
-    return "Got it."
+    return "Lo guardo." if lang == "es" else "Got it."
 
 
 def _get_anchor_name() -> str:
@@ -640,9 +638,39 @@ _IDENTITY_MAP: list = [
 
 
 def _match_identity_query(user_input: str) -> str:
-    """Si el input coincide con una pregunta de identidad, retorna respuesta en el idioma del usuario."""
+    """Si el input coincide con una pregunta de identidad, devuelve
+    una respuesta humana construida por el Motor de Voz Viva.
+
+    `_IDENTITY_MAP` se mantiene como tabla de DETECCIÓN (regex). La
+    respuesta concreta se delega al VoiceEngine.fallback_response con
+    intent=identity, que tiene múltiples plantillas humanas. Las
+    cadenas legadas en `_IDENTITY_MAP` quedan como fallback de última
+    instancia si VoiceEngine no carga.
+    """
     text = user_input.strip()
     lang = _get_locked_or_detected_lang(text)
+
+    matched = False
+    for pattern, _es, _en in _IDENTITY_MAP:
+        if pattern.search(text):
+            matched = True
+            break
+    if not matched:
+        return ""
+
+    # Intentar VoiceEngine primero — voz humana, no jerga
+    try:
+        from core.voice import fallback_response
+        from core.voice.intent import INTENT_IDENTITY, TONE_CASUAL
+        name = _get_anchor_name()
+        return fallback_response(
+            INTENT_IDENTITY, TONE_CASUAL, name or None,
+            lang=lang, seed=text,
+        )
+    except Exception as exc:
+        logger.debug("VoiceEngine identity path failed (%s); legacy table", exc)
+
+    # Legado: tabla canónica (ya humanizada en deploy previo)
     for pattern, response_es, response_en in _IDENTITY_MAP:
         if pattern.search(text):
             return response_es if lang == "es" else response_en
