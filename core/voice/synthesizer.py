@@ -39,9 +39,18 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+import uuid
 from typing import Optional
 
 logger = logging.getLogger("vectrax.voice.synthesizer")
+
+# Directorio para audios persistidos a disco. La ruta se construye
+# relativa al CWD del proceso por convención del Gravity spec
+# (cache/audio/...). Si una llamada quiere persistir audio, usa los
+# helpers `get_unique_output_path` / `write_unique_audio` /
+# `cleanup_audio_file` definidos al final del módulo.
+_AUDIO_CACHE_DIR = os.environ.get("VECTRAX_AUDIO_CACHE_DIR", "cache/audio")
 
 # OpenAI TTS voices: alloy, echo, fable, onyx, nova, shimmer
 DEFAULT_VOICE = os.environ.get("VECTRAX_TTS_VOICE", "nova")
@@ -178,3 +187,79 @@ def clear_cache() -> int:
         except Exception:
             pass
     return cleaned
+
+
+# ===========================================================================
+# Persistencia opcional a disco (Gravity spec: tts_{uid}_{ts_ns}_{uuid}.mp3)
+# ===========================================================================
+
+def _sanitize_user_id(user_id: str) -> str:
+    """Normaliza el user_id para uso en filename (sin / : espacios).
+
+    Ejemplo: 'tg:2030762343' -> 'tg_2030762343'.
+    """
+    if not user_id:
+        return "anon"
+    safe = []
+    for ch in str(user_id):
+        if ch.isalnum() or ch in ("-", "_"):
+            safe.append(ch)
+        else:
+            safe.append("_")
+    return "".join(safe)[:64] or "anon"
+
+
+def get_unique_output_path(user_id: str, ext: str = "mp3") -> str:
+    """Devuelve una ruta única de salida para un audio de TTS.
+
+    Forma: cache/audio/tts_{user_id}_{ts_ns}_{uuid4_hex8}.{ext}
+
+    Entropía combinada (timestamp en nanosegundos + 4 bytes de uuid4)
+    garantiza unicidad incluso bajo concurrencia y relojes con baja
+    resolución. NO crea el archivo — solo devuelve la ruta. El caller
+    es responsable de escribir y luego limpiarlo.
+    """
+    uid = _sanitize_user_id(user_id)
+    ts = time.time_ns()
+    rand = uuid.uuid4().hex[:8]
+    fname = f"tts_{uid}_{ts}_{rand}.{ext}"
+    return os.path.join(_AUDIO_CACHE_DIR, fname)
+
+
+def write_unique_audio(audio: bytes, user_id: str, ext: str = "mp3") -> Optional[str]:
+    """Escribe `audio` a una ruta única y la devuelve.
+
+    Crea el directorio destino si no existe. Devuelve None si la
+    escritura falla (NUNCA raise: el caller decide fallback).
+
+    Cada llamada produce un archivo nuevo — sin sobrescritura, sin
+    cache compartido entre requests. Esto es la garantía estructural
+    contra el bug "el audio anterior se arrastra".
+    """
+    if not audio:
+        return None
+    path = get_unique_output_path(user_id, ext=ext)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(audio)
+        return path
+    except Exception as exc:
+        logger.warning("write_unique_audio failed for %s: %s", path, exc)
+        return None
+
+
+def cleanup_audio_file(path: Optional[str]) -> bool:
+    """Borra un archivo de audio tras envío exitoso. Best-effort.
+
+    Devuelve True si el archivo se borró, False si no existía o falla.
+    """
+    if not path:
+        return False
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+            return True
+    except Exception as exc:
+        logger.debug("cleanup_audio_file %s: %s", path, exc)
+    return False
