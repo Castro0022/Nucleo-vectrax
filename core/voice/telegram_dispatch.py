@@ -10,6 +10,17 @@ Esto resuelve estructuralmente la situación donde el gateway tenía
 hook al TTS pero el pipeline_worker (que envía la mayoría de respuestas
 QUEUED) no — Clase G aplicada al envío de Telegram.
 
+Garantías estructurales contra el bug "el audio anterior se repite":
+  - Dedup por (chat_id, sha256(text)) en ventana VECTRAX_AUDIO_DEDUP_WINDOW_S
+    (default 60s). Si el mismo chat recibió el mismo texto en la ventana,
+    el dispatch se SKIP. Cierra la clase de bug "dos audios idénticos
+    seguidos por race entre paths o retry".
+  - Lock per-chat: dos dispatches al MISMO chat_id se serializan. Así,
+    aunque dos paths intenten enviar audio al mismo tiempo, uno espera
+    al otro y el dedup bloquea el segundo si el texto es el mismo.
+  - Cada call a synthesize() es fresh (sin cache; ver synthesizer.py).
+  - Si VECTRAX_AUDIO_DISABLED=1, todos los dispatches son no-op (kill switch).
+
 Uso:
     from core.voice.telegram_dispatch import dispatch_audio_async
     dispatch_audio_async(chat_id=cid, text=resp, http_client=client, executor=pool)
@@ -19,11 +30,14 @@ Si no se pasa executor, se usa un ThreadPoolExecutor compartido del módulo.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import threading
+import time
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Any
+from typing import Optional, Any, Dict
 
 logger = logging.getLogger("vectrax.voice.telegram_dispatch")
 
@@ -32,6 +46,72 @@ logger = logging.getLogger("vectrax.voice.telegram_dispatch")
 _DEFAULT_POOL_WORKERS = 3
 _default_pool: Optional[ThreadPoolExecutor] = None
 _pool_lock = threading.Lock()
+
+# === Anti-duplicate dispatch state =========================================
+# (chat_id, sha256(text)[:16]) -> last_dispatch_ts. Bounded LRU.
+_DEDUP_MAX = 256
+_dedup_seen: "OrderedDict[str, float]" = OrderedDict()
+_dedup_lock = threading.Lock()
+
+# Per-chat send lock map. Garantiza que dos audios al mismo chat se
+# serialicen — sin afectar el throughput entre chats distintos.
+_chat_locks: Dict[int, threading.Lock] = {}
+_chat_locks_lock = threading.Lock()
+
+
+def _get_chat_lock(chat_id: int) -> threading.Lock:
+    with _chat_locks_lock:
+        lk = _chat_locks.get(chat_id)
+        if lk is None:
+            lk = threading.Lock()
+            _chat_locks[chat_id] = lk
+            # Limitar el dict (no fugar locks en sistemas con millones
+            # de users); 4096 chats activos en simultáneo es mucho.
+            if len(_chat_locks) > 4096:
+                # drop the oldest (insertion order)
+                first_key = next(iter(_chat_locks))
+                if first_key != chat_id:
+                    _chat_locks.pop(first_key, None)
+        return lk
+
+
+def _dedup_key(chat_id: int, text: str) -> str:
+    h = hashlib.sha256((text or "").encode("utf-8", "ignore")).hexdigest()[:16]
+    return f"{chat_id}|{h}"
+
+
+def _is_recent_duplicate(chat_id: int, text: str) -> bool:
+    """True si (chat_id, hash(text)) ya fue dispatched dentro de la ventana.
+    Mark-on-check: si NO es duplicado, lo registra ahora.
+    """
+    try:
+        window = float(os.environ.get("VECTRAX_AUDIO_DEDUP_WINDOW_S", "60"))
+    except Exception:
+        window = 60.0
+    if window <= 0:
+        return False
+    key = _dedup_key(chat_id, text)
+    now = time.time()
+    with _dedup_lock:
+        last = _dedup_seen.get(key)
+        if last is not None and (now - last) < window:
+            # Refresh timestamp para mantener la ventana activa
+            _dedup_seen[key] = now
+            _dedup_seen.move_to_end(key)
+            return True
+        _dedup_seen[key] = now
+        _dedup_seen.move_to_end(key)
+        if len(_dedup_seen) > _DEDUP_MAX:
+            _dedup_seen.popitem(last=False)
+        return False
+
+
+def reset_dedup_for_tests() -> None:
+    """Test helper: limpia el cache de dedup."""
+    with _dedup_lock:
+        _dedup_seen.clear()
+    with _chat_locks_lock:
+        _chat_locks.clear()
 
 
 def _get_default_pool() -> ThreadPoolExecutor:
@@ -49,11 +129,15 @@ def should_speak(text: str) -> bool:
     """Gate para decidir si vale la pena sintetizar este texto.
 
     Reglas:
+      - Kill switch global (VECTRAX_AUDIO_DISABLED=1) prohibe TODO
+        dispatch de audio. Útil para emergencia desde producción.
       - TTS habilitado por env (OPENAI_API_KEY presente,
         VECTRAX_TTS_DISABLED != "1").
       - Texto no vacío.
       - Texto <= MAX_TTS_CHARS (no malgastar TTS en muros largos).
     """
+    if os.environ.get("VECTRAX_AUDIO_DISABLED") == "1":
+        return False
     try:
         from core.voice.synthesizer import is_tts_enabled, MAX_TTS_CHARS
     except Exception:
@@ -74,14 +158,16 @@ def dispatch_audio_async(
     executor: Optional[ThreadPoolExecutor] = None,
     reply_to_message_id: Optional[int] = None,
 ) -> None:
-    # Diagnostic logging: WHAT we will synthesize, for which chat, with
-    # which reply anchor. Helps debug "the audio repeats the previous
-    # message" reports.
-    logger.info(
-        "DISPATCH chat=%s reply_to=%s text=%r",
-        chat_id, reply_to_message_id, (text or "")[:80],
-    )
     """Dispara síntesis + sendAudio en background. Nunca bloquea ni levanta.
+
+    Garantías estructurales:
+      - DEDUP: si (chat_id, sha256(text)) fue dispatched en la ventana
+        VECTRAX_AUDIO_DEDUP_WINDOW_S (default 60s), se SKIP. Esto cierra
+        la clase de bug "dos audios idénticos seguidos".
+      - SERIALIZACIÓN PER-CHAT: dos dispatches al mismo chat_id corren
+        en serie (lock). Distintos chats siguen paralelos.
+      - LOG INSTRUMENTADO: cada dispatch loggea (chat, reply_to, text)
+        Y cada SKIP loggea la razón. Permite diagnóstico desde logs.
 
     Args:
       chat_id: destinatario en Telegram.
@@ -97,10 +183,30 @@ def dispatch_audio_async(
         diálogo anterior" cuando hay varios mensajes seguidos.
     """
     if not should_speak(text):
+        logger.debug(
+            "DISPATCH SKIP (gate) chat=%s text=%r",
+            chat_id, (text or "")[:60],
+        )
         return
+
+    # === DEDUP por (chat_id, hash(text)) en ventana corta ============
+    if _is_recent_duplicate(chat_id, text):
+        logger.warning(
+            "DISPATCH SKIP (duplicate) chat=%s text=%r reply_to=%s",
+            chat_id, (text or "")[:80], reply_to_message_id,
+        )
+        return
+
+    logger.info(
+        "DISPATCH chat=%s reply_to=%s text=%r",
+        chat_id, reply_to_message_id, (text or "")[:80],
+    )
     pool = executor or _get_default_pool()
     try:
-        pool.submit(_synth_and_send, chat_id, text, http_client, reply_to_message_id)
+        pool.submit(
+            _synth_and_send,
+            chat_id, text, http_client, reply_to_message_id,
+        )
     except Exception as exc:
         logger.debug("dispatch submit swallowed: %s", exc)
 
@@ -111,19 +217,40 @@ def _synth_and_send(
     http_client: Any,
     reply_to_message_id: Optional[int] = None,
 ) -> None:
-    """Worker: sintetiza el texto y envía como sendAudio. Defensive."""
-    try:
-        from core.voice.synthesizer import synthesize
-        audio = synthesize(text)
-    except Exception as exc:
-        logger.debug("TTS synth failed in dispatch: %s", exc)
-        return
-    if not audio:
-        return
-    try:
-        send_audio_bytes(chat_id, audio, http_client, reply_to_message_id)
-    except Exception as exc:
-        logger.debug("sendAudio failed in dispatch: %s", exc)
+    """Worker: sintetiza el texto y envía como sendAudio. Defensive.
+
+    Toma un lock per-chat para garantizar que dos audios al mismo
+    chat_id se manden en serie (sin overlap), aun en presencia de un
+    pool con varios threads. Esto es la última barrera contra el bug
+    de "audio anterior arrastrado" si el dedup no atrapara el caso.
+    """
+    chat_lock = _get_chat_lock(chat_id)
+    with chat_lock:
+        try:
+            from core.voice.synthesizer import synthesize
+            audio = synthesize(text)
+        except Exception as exc:
+            logger.debug("TTS synth failed in dispatch: %s", exc)
+            return
+        if not audio:
+            return
+        try:
+            ok = send_audio_bytes(
+                chat_id, audio, http_client, reply_to_message_id,
+            )
+            logger.info(
+                "DISPATCH SENT chat=%s ok=%s bytes=%d text=%r",
+                chat_id, ok, len(audio), (text or "")[:60],
+            )
+        except Exception as exc:
+            logger.debug("sendAudio failed in dispatch: %s", exc)
+        finally:
+            # Liberar referencias al buffer de audio inmediatamente
+            # para evitar cualquier ilusión de "audio arrastrado".
+            try:
+                del audio
+            except Exception:
+                pass
 
 
 def send_audio_bytes(
