@@ -77,7 +77,13 @@ _TG_HTTP = httpx.Client(
 # ---------------------------------------------------------------------------
 
 def _tg_send(chat_id: int, text: str) -> bool:
-    """Send message directly to Telegram."""
+    """Send message directly to Telegram, then dispatch voice.
+
+    Pipeline-worker path. Symmetric with TelegramGateway._send: tras
+    sendMessage exitoso, dispara TTS + sendAudio en background a través
+    de core.voice.telegram_dispatch. Garantiza que respuestas QUEUED
+    (la mayoría) también viajen con voz, no solo el fast-path.
+    """
     if not _TG_HTTP or not text:
         return False
     if len(text) > 4096:
@@ -88,10 +94,33 @@ def _tg_send(chat_id: int, text: str) -> bool:
             json={"chat_id": chat_id, "text": text},
         )
         r.raise_for_status()
-        return r.json().get("ok", False)
+        ok = r.json().get("ok", False)
     except Exception as exc:
         logger.warning("TG send failed: %s", exc)
         return False
+
+    # Class G runtime observation — register response hash for the detector
+    if ok:
+        try:
+            from core.recovery.detectors.hardcoded_handler_runtime import (
+                register_response,
+            )
+            register_response(user_id=str(chat_id), text=text, lang="")
+        except Exception:
+            pass
+
+        # Voice dispatch — unified path (same as gateway)
+        try:
+            from core.voice.telegram_dispatch import dispatch_audio_async
+            dispatch_audio_async(
+                chat_id=chat_id,
+                text=text,
+                http_client=_TG_HTTP,
+            )
+        except Exception as exc:
+            logger.debug("audio dispatch swallowed: %s", exc)
+
+    return ok
 
 
 def _tg_venue(chat_id: int, place: dict) -> bool:

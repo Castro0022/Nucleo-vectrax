@@ -121,32 +121,32 @@ class TestSynthesizeBehavior(unittest.TestCase):
 
 
 class TestShouldSpeakGate(unittest.TestCase):
-    """The _should_speak gate in TelegramGateway uses these rules."""
+    """Gate compartido del telegram_dispatch unificado."""
 
     def test_should_speak_when_enabled_and_short(self):
-        from vectrax.telegram_gateway import TelegramGateway
+        from core.voice.telegram_dispatch import should_speak
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=False):
             os.environ.pop("VECTRAX_TTS_DISABLED", None)
-            self.assertTrue(TelegramGateway._should_speak("hola"))
+            self.assertTrue(should_speak("hola"))
 
     def test_should_not_speak_long_text(self):
-        from vectrax.telegram_gateway import TelegramGateway
+        from core.voice.telegram_dispatch import should_speak
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=False):
             os.environ.pop("VECTRAX_TTS_DISABLED", None)
             long = "x" * 2000
-            self.assertFalse(TelegramGateway._should_speak(long))
+            self.assertFalse(should_speak(long))
 
     def test_should_not_speak_when_tts_disabled(self):
-        from vectrax.telegram_gateway import TelegramGateway
+        from core.voice.telegram_dispatch import should_speak
         with patch.dict(os.environ, {"VECTRAX_TTS_DISABLED": "1"}):
-            self.assertFalse(TelegramGateway._should_speak("hola"))
+            self.assertFalse(should_speak("hola"))
 
     def test_should_not_speak_empty(self):
-        from vectrax.telegram_gateway import TelegramGateway
+        from core.voice.telegram_dispatch import should_speak
         with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=False):
             os.environ.pop("VECTRAX_TTS_DISABLED", None)
-            self.assertFalse(TelegramGateway._should_speak(""))
-            self.assertFalse(TelegramGateway._should_speak("   "))
+            self.assertFalse(should_speak(""))
+            self.assertFalse(should_speak("   "))
 
 
 if __name__ == "__main__":

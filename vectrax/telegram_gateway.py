@@ -204,94 +204,23 @@ class TelegramGateway:
         except Exception:
             pass
         ok = self._tg("sendMessage", chat_id=cid, text=text, **extra) is not None
-        # Voice + text: dispara síntesis en paralelo después del texto.
-        # El audio llega cuando esté listo; el texto ya fue leíble.
-        if ok and self._should_speak(text):
+        # Voice + text: dispara síntesis y sendAudio en paralelo. El
+        # despacho usa el módulo unificado core.voice.telegram_dispatch
+        # para que TODOS los paths de envío (gateway + pipeline_worker)
+        # compartan la misma capa de TTS — evita que solo el fast-path
+        # tenga voz.
+        if ok:
             try:
-                self._pool.submit(self._send_audio_async, cid, text)
+                from core.voice.telegram_dispatch import dispatch_audio_async
+                dispatch_audio_async(
+                    chat_id=cid,
+                    text=text,
+                    http_client=self._send_http,
+                    executor=self._pool,
+                )
             except Exception as exc:
                 logger.debug("audio dispatch swallowed: %s", exc)
         return ok
-
-    # ---- Voice (TTS + sendAudio) -----------------------------------------
-    # Usamos sendAudio (no sendVoice) porque sendVoice está sujeto a la
-    # restricción de privacidad VOICE_MESSAGES_FORBIDDEN del recipient.
-    # sendAudio envía el TTS como archivo de audio reproducible inline.
-
-    @staticmethod
-    def _should_speak(text: str) -> bool:
-        """Decide si una respuesta de texto debe acompañarse de voz.
-
-        Reglas:
-          - TTS debe estar habilitado por env (OPENAI_API_KEY presente,
-            VECTRAX_TTS_DISABLED != 1).
-          - Texto entre 1 y 1000 chars (filtros para no malgastar TTS
-            en muros de texto técnico).
-          - No es un mensaje vacío / sólo whitespace.
-        """
-        try:
-            from core.voice.synthesizer import is_tts_enabled, MAX_TTS_CHARS
-        except Exception:
-            return False
-        if not is_tts_enabled():
-            return False
-        if not text or not text.strip():
-            return False
-        if len(text) > MAX_TTS_CHARS:
-            return False
-        return True
-
-    def _send_audio_async(self, cid: int, text: str) -> None:
-        """Worker que sintetiza y envía audio. Nunca rompe la entrega de
-        texto: si TTS o sendAudio fallan, solo se logea.
-        """
-        try:
-            from core.voice.synthesizer import synthesize
-            audio = synthesize(text)
-        except Exception as exc:
-            logger.debug("TTS synth failed: %s", exc)
-            return
-        if not audio:
-            return
-        try:
-            self._send_audio_bytes(cid, audio)
-        except Exception as exc:
-            logger.debug("sendAudio failed: %s", exc)
-
-    def _send_audio_bytes(self, cid: int, audio: bytes) -> bool:
-        """Envía audio (MP3) a Telegram como sendAudio.
-
-        Usa multipart/form-data; httpx requiere `files=` para subir
-        bytes con MIME específico. sendAudio renderiza como audio
-        player inline (no como voice note) y NO sufre la restricción
-        de VOICE_MESSAGES_FORBIDDEN.
-
-        Campos opcionales pasados:
-          - title="Vectrax"
-          - performer="Vectrax"
-        Para que el reproductor de Telegram muestre algo coherente.
-        """
-        if not audio:
-            return False
-        url = f"{self._base}/sendAudio"
-        files = {
-            "audio": ("vectrax.mp3", audio, "audio/mpeg"),
-        }
-        data = {
-            "chat_id": str(cid),
-            "title": "Vectrax",
-            "performer": "Vectrax",
-        }
-        try:
-            r = self._send_http.post(url, data=data, files=files)
-            if r.status_code != 200:
-                logger.warning("sendAudio HTTP %d: %s",
-                               r.status_code, r.text[:200])
-                return False
-            return True
-        except Exception as exc:
-            logger.warning("sendAudio crashed: %s", exc)
-            return False
 
     def _send_photo(self, cid: int, photo_url: str, caption: str = "") -> bool:
         """Send a photo to Telegram by URL."""
