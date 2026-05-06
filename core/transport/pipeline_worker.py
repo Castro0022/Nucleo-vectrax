@@ -484,7 +484,14 @@ def run_worker() -> None:
             # Motor proactivo — anticipa y avisa (cada 10 minutos)
             try:
                 from core.proactive_engine import run_proactive_scan, CHECK_INTERVAL
-                if time.time() - last_proactive > CHECK_INTERVAL:
+                # OPT-IN: el motor proactivo enviaba follow-ups automaticos
+                # al user (cada 10 min, max 1 por usuario cada 6h). Mario
+                # los percibia como 'el bot habla del anterior despues del
+                # ultimo'. Default OFF; activar con PROACTIVE_ENGINE_ENABLED=1.
+                if (
+                    os.environ.get("PROACTIVE_ENGINE_ENABLED") == "1"
+                    and time.time() - last_proactive > CHECK_INTERVAL
+                ):
                     n = run_proactive_scan(_tg_send)
                     if n:
                         logger.info("Proactive: %d messages sent", n)
