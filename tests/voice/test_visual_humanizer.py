@@ -293,5 +293,128 @@ class TestInteractionNotDescription(unittest.TestCase):
         )
 
 
+class TestActivePartnerTone(unittest.TestCase):
+    """Reglas nuevas: tono activo de socio. Prohibido pasivo, obligatorio
+    pregunta o reacción activa al final."""
+
+    def test_drops_parecen_disfrutar(self):
+        out = humanize_visual(
+            "Mario y Naomy en una terraza. Parecen disfrutar la tarde.",
+            faces=["Mario", "Naomy"],
+            user_name="Mario",
+            lang="es",
+        )
+        self.assertNotIn("parecen disfrutar", out.lower())
+        self.assertNotIn("disfrutar", out.lower())
+
+    def test_drops_dan_un_toque(self):
+        out = humanize_visual(
+            "Mario en la playa. Las palmeras dan un toque relajado.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="es",
+        )
+        self.assertNotIn("dan un toque", out.lower())
+        self.assertNotIn("toque relajado", out.lower())
+
+    def test_drops_parece_buena_ocasion(self):
+        out = humanize_visual(
+            "Mario en el parque. Parece una buena ocasión para celebrar.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="es",
+        )
+        self.assertNotIn("buena ocasión", out.lower())
+        self.assertNotIn("para celebrar", out.lower())
+
+    def test_drops_passive_english(self):
+        out = humanize_visual(
+            "Mario at the beach. They seem to enjoy the sunset.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="en",
+        )
+        self.assertNotIn("seem to enjoy", out.lower())
+        self.assertNotIn("enjoying", out.lower())
+
+    def test_appends_question_when_missing(self):
+        """Si la salida final no tiene pregunta, debe agregarse una."""
+        out = humanize_visual(
+            "Una persona sonriendo en una terraza.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="es",
+        )
+        # debe haber algún signo de pregunta
+        self.assertTrue(
+            "?" in out or "¿" in out,
+            f"esperaba pregunta de curiosidad en: {out!r}",
+        )
+
+    def test_does_not_duplicate_question_when_present(self):
+        """Si ya hay una pregunta, no se agrega otra del pool."""
+        # input que ya termina en pregunta
+        out = humanize_visual(
+            "Mario en la calle. ¿Qué hacías ahí?",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="es",
+        )
+        # solo debe haber una sola pregunta original
+        n_questions = out.count("?")
+        self.assertEqual(n_questions, 1, f"se duplicó pregunta en: {out!r}")
+        # y debe ser la original (no el pool por defecto)
+        self.assertIn("qué hacías", out.lower())
+
+    def test_active_closure_marker_skips_question_append(self):
+        """Si la salida ya tiene 'me da curiosidad' u otra reacción
+        activa, NO se agrega pregunta del pool."""
+        out = humanize_visual(
+            "Mario en la terraza. Tengo ganas de ir a ese lugar.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="es",
+        )
+        # No debe agregar pregunta del pool
+        self.assertNotIn("¿dónde fue?", out.lower())
+        self.assertNotIn("¿quién más", out.lower())
+        self.assertIn("tengo ganas", out.lower())
+
+    def test_question_appended_in_english(self):
+        out = humanize_visual(
+            "A person in a city street.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="en",
+        )
+        self.assertIn("?", out)
+
+    def test_full_passive_input_yields_companion_plus_question(self):
+        """Caso real reportado por Mario: input pasivo + descriptivo.
+        Output debe ser companion opener + pregunta o cierre activo."""
+        out = humanize_visual(
+            "A Mario y otra persona en una terraza. Parecen disfrutar el sol. "
+            "Las palmeras dan un toque relajado al ambiente.",
+            faces=["Mario"],
+            user_name="Mario",
+            lang="es",
+        )
+        self.assertIn("Mario", out)
+        self.assertNotIn("parecen disfrutar", out.lower())
+        self.assertNotIn("dan un toque", out.lower())
+        # Debe haber pregunta o cierre activo
+        has_q = "?" in out or "¿" in out
+        has_active = any(
+            tok in out.lower()
+            for tok in (
+                "me da curiosidad", "tengo ganas", "me gustaría",
+            )
+        )
+        self.assertTrue(
+            has_q or has_active,
+            f"faltó cierre activo/pregunta en: {out!r}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

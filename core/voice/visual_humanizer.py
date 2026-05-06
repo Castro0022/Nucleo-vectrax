@@ -153,6 +153,80 @@ _GENERIC_SUBJECT_EN = re.compile(
     re.IGNORECASE,
 )
 
+# Verbos descriptivos de estado emocional pasivo. Cualquier oración que
+# matchee se descarta entera. Vectrax es socio, no terapeuta: hablamos
+# CON el user, no DE él ni de las personas de la foto.
+_PASSIVE_DESCRIPTOR_PATTERNS = [
+    re.compile(
+        r"(?:"
+        # "parecen / parece / se ven / se nota / se aprecia" + estado emocional
+        r"\b(?:parec[ea]n?|se\s+ven?|se\s+nota|se\s+aprecia|se\s+percibe|transmit(?:e|en)|emana[ns]?)\s+"
+        r"(?:[^.!?]{0,30}\s+)?"
+        r"(?:disfrut\w+|relajad\w+|felic\w+|content\w+|c[oó]mod\w+|tranquil\w+|emocionad\w+|alegr\w+|paz|armon[ií]a|serenidad|calma|nostalgia|melancol[ií]a)"
+        # "dan / dar / aporta / aportan un toque/aire/ambiente <adj>"
+        r"|\b(?:dan|da|dar|aporta[ns]?)\s+(?:un|una)\s+(?:toque|aire|ambiente|vibra)\s+\w+"
+        # "parece / sería una (buena|gran|excelente|perfecta|ideal) (ocasión|oportunidad|forma|manera) (para|de) ..."
+        r"|\b(?:parece|ser[ií]a)\s+(?:una|un)?\s*(?:buena|gran|excelente|perfecta|ideal|linda|hermosa)\s+"
+        r"(?:ocasi[oó]n|oportunidad|forma|manera|momento|d[ií]a|tarde|noche)\s+(?:para|de)\b"
+        # "se respira / se siente <emocion>"
+        r"|\bse\s+(?:respira|siente)\s+(?:[^.!?]{0,30}\s+)?(?:paz|tranquilidad|calma|alegr[ií]a|amor|armon[ií]a)\b"
+        r")",
+        re.IGNORECASE,
+    ),
+    # Inglés
+    re.compile(
+        r"(?:"
+        # "seem/seems/look/looks to enjoy/be/have ..." (verb phrase)
+        r"\b(?:they|you|he|she|it)?\s*(?:seem|seems|look|looks|appear|appears)\s+"
+        r"to\s+(?:enjoy|be|have|love|find|share)\b"
+        # "seem/look + adjective de estado emocional"
+        r"|\b(?:they|you|he|she|it)?\s*(?:seem|seems|look|looks|appear|appears)\s+"
+        r"(?:so|very|really|quite|pretty)?\s*"
+        r"(?:enjoying|relaxed|happy|content|comfortable|calm|peaceful|joyful|excited|nostalgic|chill|cozy)"
+        r"|\b(?:gives|adds|brings)\s+(?:a|the)\s+(?:relaxed|chill|warm|nice|cool|cozy)\s+(?:touch|vibe|feel|atmosphere)"
+        r"|\b(?:looks|seems)\s+like\s+(?:a|the)?\s*(?:good|great|nice|perfect|ideal)\s+(?:occasion|opportunity|moment|time|day|spot)\s+(?:to|for)\b"
+        r"|\b(?:radiates|exudes)\s+\w+"
+        r")",
+        re.IGNORECASE,
+    ),
+]
+
+# Pool de cierres curiosos (preguntas) cuando la respuesta no contiene
+# ninguna interrogante. Mario reporta tono pasivo — cada salida debe
+# cerrar con una pregunta especifica que lo invite a continuar.
+_CURIOSITY_QUESTIONS = {
+    "es": [
+        "¿Dónde fue?",
+        "Cuéntame, ¿qué vibra había?",
+        "¿Eso al fondo es nuevo o ya estaba?",
+        "¿Quién más estaba ese día?",
+        "Oye, ¿qué ocasión era?",
+        "¿Cómo llegó ese momento?",
+        "¿Qué te llevó hasta ahí?",
+    ],
+    "en": [
+        "Where was that?",
+        "Tell me, what was the vibe?",
+        "Is that new in the background?",
+        "Who else was around?",
+        "What was the occasion?",
+        "How did that moment come together?",
+        "What got you there?",
+    ],
+}
+
+# Marcadores de cierre activo aceptables (alternativa a la pregunta):
+# si la respuesta contiene una de estas frases, NO se agrega pregunta.
+_ACTIVE_CLOSURE_MARKERS = re.compile(
+    r"(?:"
+    r"me\s+da\s+curiosidad|me\s+mata\s+la\s+curiosidad|tengo\s+ganas\s+de"
+    r"|me\s+gustar[ií]a\s+(?:ir|conocer|ver|saber)|esa\s+vista\s+me\s+mata"
+    r"|i'?m\s+curious|i\s+want\s+to\s+know|i'?d\s+love\s+to"
+    r"|that\s+(?:view|spot|place)\s+kills\s+me"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def humanize_visual(
     raw: str,
@@ -202,6 +276,11 @@ def humanize_visual(
     #    "Mario en la playa. El clima es soleado." → "Mario en la playa."
     text = _drop_atmospheric_only(text)
 
+    # 4b. Drop oraciones con verbos descriptivos de estado emocional
+    #     pasivo ('parecen disfrutar', 'dan un toque', 'parece una buena
+    #     ocasión para'). Vectrax es socio activo, no observador pasivo.
+    text = _drop_passive_descriptors(text)
+
     # 5. Limitar a MAX_SENTENCES oraciones
     text = _limit_sentences(text, MAX_SENTENCES)
 
@@ -246,7 +325,15 @@ def humanize_visual(
         if prefix and not _starts_with_names(text, faces, user_name):
             text = f"{prefix} {text}".strip()
 
-    # 10. Sustancia mínima
+    # 10. Tono activo de socio: si la respuesta no contiene ya una
+    #     pregunta o un marcador de cierre activo (curiosidad/deseo),
+    #     anexamos una pregunta corta del pool. Solo cuando hay
+    #     contexto de foto real (faces o user_name) — evita inflar
+    #     casos de prueba/uso sintético sin contexto de imagen.
+    if faces or user_name:
+        text = _ensure_curiosity_or_question(text, lang=lang, seed=raw)
+
+    # 11. Sustancia mínima
     if len(text.strip()) < 4:
         return ""
 
@@ -274,6 +361,52 @@ def _drop_atmospheric_only(text: str) -> str:
             continue
         kept.append(s)
     return " ".join(kept)
+
+
+def _drop_passive_descriptors(text: str) -> str:
+    """Descarta oraciones que contengan verbos descriptivos de estado
+    emocional pasivo o sugerencias de "buena ocasión para...".
+    Vectrax es socio activo: hablamos CON el user, no DE él/ellos.
+    """
+    if not text:
+        return text
+    sentences = [s.strip() for s in _SENT_SPLIT.split(text) if s.strip()]
+    kept = []
+    for s in sentences:
+        is_passive = any(p.search(s) for p in _PASSIVE_DESCRIPTOR_PATTERNS)
+        if is_passive:
+            continue
+        kept.append(s)
+    return " ".join(kept)
+
+
+def _ensure_curiosity_or_question(
+    text: str, lang: str = "es", seed: str = "",
+) -> str:
+    """Garantiza que la respuesta contenga al menos UN signo de
+    pregunta o un marcador de cierre activo (curiosidad/deseo). Si no,
+    anexa una pregunta corta del pool. La selección es determinista
+    por hash del seed — rota entre fotos distintas, estable para tests.
+    """
+    if not text or not text.strip():
+        return text
+    has_question = "?" in text or "¿" in text
+    has_active_closure = bool(_ACTIVE_CLOSURE_MARKERS.search(text))
+    if has_question or has_active_closure:
+        return text
+
+    pool = _CURIOSITY_QUESTIONS.get(lang) or _CURIOSITY_QUESTIONS["es"]
+    if seed:
+        idx = sum(ord(c) for c in seed) % len(pool)
+    else:
+        idx = 0
+    question = pool[idx]
+
+    # Asegurar separación natural entre el texto y la pregunta.
+    text = text.rstrip()
+    if text and text[-1] not in ".!?":
+        text = text + "."
+    return f"{text} {question}"
 
 
 def _rewrite_user_to_second_person(
