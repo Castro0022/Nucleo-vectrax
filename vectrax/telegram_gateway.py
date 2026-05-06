@@ -2042,9 +2042,31 @@ class TelegramGateway:
             # Analyze with vision
             result = analyze_image(url, user_prompt=vision_prompt, lang=lang, user_context=user_ctx)
 
-            # Prepend recognition header
-            if recognized_names and result:
-                result = f"👤 Reconocido: {names_str}\n\n{result}"
+            # Visual Humanizer: convertir descripción cruda en texto humano
+            # (máximo 4 frases, sin "la imagen muestra", con continuidad si
+            # hay rostros conocidos). Reemplaza el viejo header
+            # "👤 Reconocido: ..." por mención natural integrada.
+            if result:
+                try:
+                    from core.voice.visual_humanizer import humanize_visual
+                    user_name_for_visual = ""
+                    try:
+                        from vectrax.user_memory import get_user_profile
+                        user_name_for_visual = (
+                            get_user_profile(tg_uid).get("name", "") or ""
+                        )
+                    except Exception:
+                        pass
+                    humanized = humanize_visual(
+                        result,
+                        faces=recognized_names,
+                        user_name=user_name_for_visual,
+                        lang=lang,
+                    )
+                    if humanized:
+                        result = humanized
+                except Exception as exc:
+                    logger.debug("visual_humanizer skipped: %s", exc)
 
             if result:
                 try:
