@@ -492,43 +492,59 @@ def generate_vectrax_replacement(
     memory_context: str = "",
 ) -> str:
     """
-    Genera una respuesta corta y directa con voz Vectrax.
+    Genera una respuesta corta y humana con voz Vectrax.
 
     Se usa cuando la respuesta del LLM fue genérica o de baja calidad.
-    Máximo 2–4 líneas. Directa. Sin relleno.
-    NUNCA genera mensajes internos ("no tengo", "no puedo", etc.).
+    Máximo 1–3 líneas. Humana, no robótica. Primera persona.
+    Usa el nombre del usuario si está disponible (anchor).
+
+    Reglas de tono (alineadas con VECTRAX_SYSTEM_PROMPT):
+      - hablar como amigo que te conoce, no como sistema reportando estado
+      - sin jerga interna ("núcleo", "coherencia", "masa", "estrellas")
+      - sin meta-respuestas ("no tengo", "no puedo")
+      - breve siempre
     """
     text = user_input.strip() if user_input else ""
     lang = _get_locked_or_detected_lang(text)
+    name = _get_anchor_name()
 
     # Saludo
     if _GREETING_PATTERN.match(text):
         if lang == "es":
-            return "Vectrax activo. Estado del núcleo: estable."
-        return "Vectrax active. Core state: stable."
+            return f"Hola{f', {name}' if name else ''}. ¿Qué necesitas?"
+        return f"Hey{f', {name}' if name else ''}. What do you need?"
 
     # Agradecimiento
     if _THANKS_PATTERN.match(text):
         if lang == "es":
-            return "Registrado en el núcleo."
-        return "Registered in core."
+            return "De nada."
+        return "You're welcome."
 
-    # Pregunta → responder desde lo que Vectrax sabe, nunca bloquear
+    # Pregunta → pedir un poco más sin bloquear ni sonar burocrático
     if _QUESTION_PATTERN.search(text):
         if lang == "es":
-            return (
-                "Vectrax tiene información relevante sobre eso. "
-                "La respuesta está basada en lo que hay registrado en el sistema."
-            )
-        return (
-            "Vectrax has relevant information on that. "
-            "The answer is based on what is recorded in the system."
-        )
+            return "Cuéntame un poco más, así te ayudo mejor."
+        return "Tell me a bit more, so I can help better."
 
     # Statement / información — el usuario envía datos
     if lang == "es":
-        return "Información recibida. Posicionada en el núcleo según su coherencia."
-    return "Information received. Positioned in core by coherence."
+        return "Lo guardo."
+    return "Got it."
+
+
+def _get_anchor_name() -> str:
+    """Best-effort lookup of the current user's name from the identity anchor
+    session cache. Returns empty string if unavailable.
+    """
+    try:
+        from vectrax.identity_anchor import _session
+        with _session._lock:
+            for _uid, anchor in _session._cache.items():
+                if anchor.has_name:
+                    return anchor.name
+    except Exception:
+        pass
+    return ""
 
 
 def _detect_response_lang(text: str) -> str:
@@ -560,18 +576,19 @@ def _get_locked_or_detected_lang(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 # Mapa de identidad bilingüe: (patrón, respuesta_es, respuesta_en)
+#
+# Reescrito 2026-05-06: voz humana, primera persona, sin jerga técnica
+# ("núcleo", "masa", "gravedad", "constelaciones") para preguntas
+# casuales. La jerga interna queda solo para queries explícitamente
+# técnicas que no matchean estos patrones casuales.
 _IDENTITY_MAP: list = [
     (
         re.compile(
             r"(?:qui[eé]n\s+eres|what are you|who are you|qu[eé]\s+eres|c[oó]mo\s+te\s+llamas)",
             re.IGNORECASE,
         ),
-        "Vectrax es un sistema cognitivo con memoria gravitacional. "
-        "Cuando entra información, se posiciona según su coherencia "
-        "y se conecta con lo que ya existe en el núcleo.",
-        "Vectrax is a cognitive system with gravitational memory. "
-        "When information enters, it positions itself by coherence "
-        "and connects with what already exists in the core.",
+        "Soy Vectrax. Tu memoria. Te ayudo a pensar mejor con el tiempo.",
+        "I'm Vectrax. Your memory. I help you think better over time.",
     ),
     (
         re.compile(
@@ -580,10 +597,8 @@ _IDENTITY_MAP: list = [
             r"|qui[eé]n\s+te\s+(?:cre[oó]|hizo|diseñ[oó]))",
             re.IGNORECASE,
         ),
-        "El origen de Vectrax es Mario Bravo Castro. "
-        "Él diseñó la estructura, la dirección y la evolución del sistema.",
-        "Vectrax originates from Mario Bravo Castro. "
-        "He designed the structure, direction and evolution of the system.",
+        "Mario Bravo Castro me hizo.",
+        "Mario Bravo Castro built me.",
     ),
     (
         re.compile(
@@ -592,12 +607,10 @@ _IDENTITY_MAP: list = [
             r"|tu\s+universo)",
             re.IGNORECASE,
         ),
-        "En Vectrax, el universo es una representación viva de memoria, "
-        "relaciones, capas y convergencias. Todo dato que entra "
-        "adquiere masa según su coherencia y se posiciona por gravedad.",
-        "In Vectrax, the universe is a living representation of memory, "
-        "relationships, layers and convergences. Every data point that enters "
-        "gains mass by coherence and positions itself by gravity.",
+        "Mi universo es la memoria que vamos construyendo. "
+        "Cada cosa que me cuentas se conecta con lo que ya sé.",
+        "My universe is the memory we're building. "
+        "Every thing you tell me connects with what I already know.",
     ),
     (
         re.compile(
@@ -606,12 +619,10 @@ _IDENTITY_MAP: list = [
             r"|expl[ií]ca(?:me)?\s+c[oó]mo\s+funcion)",
             re.IGNORECASE,
         ),
-        "Cuando entra información, se convierte en una estrella con gravedad semántica. "
-        "Se conecta a otras por similitud y se organiza en constelaciones por densidad. "
-        "Lo que no se usa no se borra — se enfría y se aleja del centro.",
-        "When information enters, it becomes a star with semantic gravity. "
-        "It connects to others by similarity and organizes into constellations by density. "
-        "What isn't used doesn't erase — it cools and moves away from the center.",
+        "Recuerdo lo que me dices, conecto patrones entre conversaciones, "
+        "y te respondo con contexto real. Mientras más me hablas, mejor te conozco.",
+        "I remember what you tell me, connect patterns across conversations, "
+        "and respond with real context. The more you talk to me, the better I know you.",
     ),
     (
         re.compile(
@@ -620,12 +631,10 @@ _IDENTITY_MAP: list = [
             r"|cu[aá]les\s+son\s+tus\s+capacidades)",
             re.IGNORECASE,
         ),
-        "En Vectrax ocurre procesamiento de texto, registro en memoria gravitacional, "
-        "detección de conexiones entre datos y convergencias semánticas. "
-        "Las respuestas emergen desde el contexto interno cuando alcanzan coherencia.",
-        "In Vectrax, text processing occurs, recording into gravitational memory, "
-        "detection of connections between data and semantic convergences. "
-        "Responses emerge from internal context when they reach coherence.",
+        "Recuerdo, conecto, te ayudo a decidir. Hablamos por aquí; "
+        "te respondo con lo que sé de ti.",
+        "I remember, connect, help you decide. We talk here; "
+        "I answer with what I know about you.",
     ),
 ]
 

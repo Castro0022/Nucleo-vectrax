@@ -18,38 +18,38 @@ Creador: Mario Bravo Castro
 # Nunca pasa por el LLM. Siempre se responde desde aquí.
 # ---------------------------------------------------------------------------
 
+# Reescrito 2026-05-06: primera persona, voz cálida, sin auto-descripción
+# en tercera persona ("Vectrax es...") que sonaba a brochure corporativo.
 VECTRAX_PRODUCT_IDENTITY = {
     "es": (
-        "Vectrax es tu memoria inteligente. "
-        "Recuerda todo lo que le dices, aprende cómo piensas "
-        "y te ayuda a decidir mejor con el tiempo. "
-        "Mientras más lo usas, más útil se vuelve."
+        "Soy tu memoria inteligente. "
+        "Recuerdo lo que me dices, aprendo cómo piensas "
+        "y te ayudo a decidir mejor con el tiempo."
     ),
     "en": (
-        "Vectrax is your intelligent memory. "
-        "It remembers everything you tell it, learns how you think, "
-        "and helps you make better decisions over time. "
-        "The more you use it, the more useful it becomes."
+        "I'm your intelligent memory. "
+        "I remember what you tell me, learn how you think, "
+        "and help you make better decisions over time."
     ),
     "fr": (
-        "Vectrax est ta mémoire intelligente. "
-        "Il se souvient de tout ce que tu lui dis, apprend comment tu penses "
-        "et t'aide à mieux décider avec le temps."
+        "Je suis ta mémoire intelligente. "
+        "Je me souviens de ce que tu me dis, j'apprends comment tu penses "
+        "et je t'aide à mieux décider avec le temps."
     ),
     "it": (
-        "Vectrax è la tua memoria intelligente. "
-        "Ricorda tutto ciò che gli dici, impara come pensi "
-        "e ti aiuta a prendere decisioni migliori nel tempo."
+        "Sono la tua memoria intelligente. "
+        "Ricordo ciò che mi dici, imparo come pensi "
+        "e ti aiuto a prendere decisioni migliori nel tempo."
     ),
     "de": (
-        "Vectrax ist dein intelligentes Gedächtnis. "
-        "Es erinnert sich an alles, was du ihm sagst, lernt wie du denkst "
-        "und hilft dir, mit der Zeit bessere Entscheidungen zu treffen."
+        "Ich bin dein intelligentes Gedächtnis. "
+        "Ich erinnere mich an alles, was du mir sagst, lerne wie du denkst "
+        "und helfe dir, mit der Zeit bessere Entscheidungen zu treffen."
     ),
     "pt": (
-        "Vectrax é a sua memória inteligente. "
-        "Lembra de tudo que você diz, aprende como você pensa "
-        "e te ajuda a tomar decisões melhores com o tempo."
+        "Sou a sua memória inteligente. "
+        "Lembro do que você me diz, aprendo como você pensa "
+        "e te ajudo a tomar decisões melhores com o tempo."
     ),
 }
 
@@ -74,20 +74,15 @@ VECTRAX_CAPABILITIES = {
 
 
 def get_product_identity(lang: str = "es") -> str:
-    """Retorna la identidad de producto con datos reales del universo."""
-    base = VECTRAX_PRODUCT_IDENTITY.get(lang, VECTRAX_PRODUCT_IDENTITY["es"])
-    # Inject real universe stats
-    try:
-        from vectrax.db import get_universe_status
-        u = get_universe_status()
-        stats = (
-            f"\n\nEstado actual: {u['stars']} estrellas (usuarios), "
-            f"{u['patterns']} patrones absorbidos, "
-            f"masa total {u['total_mass']:.2f}."
-        )
-        return base + stats
-    except Exception:
-        return base
+    """Retorna la identidad de producto, en voz humana.
+
+    NOTA 2026-05-06: ya NO se inyectan stats del universo ("33 estrellas,
+    416 patrones, masa 6.11"). Esos datos sonaban a marketing corporativo
+    cuando un usuario casual preguntaba qué es Vectrax. Si en el futuro
+    se quieren mostrar stats, deben ir en un endpoint /v1/stats explícito,
+    no concatenadas a la identidad conversacional.
+    """
+    return VECTRAX_PRODUCT_IDENTITY.get(lang, VECTRAX_PRODUCT_IDENTITY["es"])
 
 
 def get_capabilities(lang: str = "es") -> str:
