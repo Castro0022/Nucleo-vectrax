@@ -39,6 +39,27 @@ from core.gravity.mass_tracker import (  # noqa: F401
     add_mass,
     get_mass,
 )
+from core.gravity.governor import (  # noqa: F401
+    MemoryGovernor,
+    PROTECTED_MEMORY_TYPES,
+)
+from core.gravity.concept_fusion import (  # noqa: F401
+    ConceptFusion,
+    derive_identity_key,
+)
+from core.gravity.decay import (  # noqa: F401
+    MemoryDecay,
+    DECAY_AFTER_DAYS,
+    DECAY_PER_CYCLE,
+)
+from core.gravity.essential_summary import (  # noqa: F401
+    EssentialSummaryEngine,
+)
+from core.gravity.retrieval import (  # noqa: F401
+    retrieve,
+    rank_results,
+    DEFAULT_WEIGHTS,
+)
 
 __all__ = [
     "SQLiteVectorStore",
@@ -52,4 +73,15 @@ __all__ = [
     "MASS_VALUES",
     "add_mass",
     "get_mass",
+    "MemoryGovernor",
+    "PROTECTED_MEMORY_TYPES",
+    "ConceptFusion",
+    "derive_identity_key",
+    "MemoryDecay",
+    "DECAY_AFTER_DAYS",
+    "DECAY_PER_CYCLE",
+    "EssentialSummaryEngine",
+    "retrieve",
+    "rank_results",
+    "DEFAULT_WEIGHTS",
 ]
