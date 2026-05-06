@@ -138,7 +138,11 @@ def _call_openai_tts(text: str, voice: str, model: str) -> Optional[bytes]:
         "model": model,
         "input": text,
         "voice": voice,
-        "response_format": "opus",
+        # MP3 chosen over Opus because Telegram sendAudio renders MP3
+        # natively as a playable audio file. Opus only works in sendVoice,
+        # which is blocked when the recipient has VOICE_MESSAGES_FORBIDDEN
+        # in their privacy settings.
+        "response_format": "mp3",
     }
     try:
         with httpx.Client(timeout=30.0) as client:
