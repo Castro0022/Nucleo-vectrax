@@ -203,7 +203,81 @@ class TelegramGateway:
             register_response(user_id=str(cid), text=text, lang="")
         except Exception:
             pass
-        return self._tg("sendMessage", chat_id=cid, text=text, **extra) is not None
+        ok = self._tg("sendMessage", chat_id=cid, text=text, **extra) is not None
+        # Voice + text: dispara síntesis en paralelo después del texto.
+        # El audio llega cuando esté listo; el texto ya fue leíble.
+        if ok and self._should_speak(text):
+            try:
+                self._pool.submit(self._send_voice_async, cid, text)
+            except Exception as exc:
+                logger.debug("voice dispatch swallowed: %s", exc)
+        return ok
+
+    # ---- Voice (TTS + sendVoice) -----------------------------------------
+
+    @staticmethod
+    def _should_speak(text: str) -> bool:
+        """Decide si una respuesta de texto debe acompañarse de voz.
+
+        Reglas:
+          - TTS debe estar habilitado por env (OPENAI_API_KEY presente,
+            VECTRAX_TTS_DISABLED != 1).
+          - Texto entre 1 y 1000 chars (filtros para no malgastar TTS
+            en muros de texto técnico).
+          - No es un mensaje vacío / sólo whitespace.
+        """
+        try:
+            from core.voice.synthesizer import is_tts_enabled, MAX_TTS_CHARS
+        except Exception:
+            return False
+        if not is_tts_enabled():
+            return False
+        if not text or not text.strip():
+            return False
+        if len(text) > MAX_TTS_CHARS:
+            return False
+        return True
+
+    def _send_voice_async(self, cid: int, text: str) -> None:
+        """Worker que sintetiza y envía voice. Nunca rompe la entrega de
+        texto: si TTS o sendVoice fallan, solo se logea.
+        """
+        try:
+            from core.voice.synthesizer import synthesize
+            audio = synthesize(text)
+        except Exception as exc:
+            logger.debug("TTS synth failed: %s", exc)
+            return
+        if not audio:
+            return
+        try:
+            self._send_voice_bytes(cid, audio)
+        except Exception as exc:
+            logger.debug("sendVoice failed: %s", exc)
+
+    def _send_voice_bytes(self, cid: int, audio: bytes) -> bool:
+        """Envía audio (OGG/Opus) a Telegram como sendVoice.
+
+        Usa multipart/form-data; httpx requiere `files=` para subir
+        bytes con MIME específico.
+        """
+        if not audio:
+            return False
+        url = f"{self._base}/sendVoice"
+        files = {
+            "voice": ("voice.ogg", audio, "audio/ogg"),
+        }
+        data = {"chat_id": str(cid)}
+        try:
+            r = self._send_http.post(url, data=data, files=files)
+            if r.status_code != 200:
+                logger.warning("sendVoice HTTP %d: %s",
+                               r.status_code, r.text[:200])
+                return False
+            return True
+        except Exception as exc:
+            logger.warning("sendVoice crashed: %s", exc)
+            return False
 
     def _send_photo(self, cid: int, photo_url: str, caption: str = "") -> bool:
         """Send a photo to Telegram by URL."""
