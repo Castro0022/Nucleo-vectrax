@@ -96,18 +96,47 @@ _TG_HTTP = httpx.Client(
 # Telegram send (worker sends directly, no gateway dependency)
 # ---------------------------------------------------------------------------
 
-def _tg_send(chat_id: int, text: str) -> bool:
+def _tg_send(chat_id: int, text: str, **kwargs) -> bool:
     """Send message directly to Telegram, then dispatch voice.
 
     Pipeline-worker path. Symmetric with TelegramGateway._send: tras
     sendMessage exitoso, dispara TTS + sendAudio en background a través
     de core.voice.telegram_dispatch. Garantiza que respuestas QUEUED
     (la mayoría) también viajen con voz, no solo el fast-path.
+
+    User Sovereignty Engine: cada envío pasa por require_authorization()
+    declarando un SendReason. Default USER_REPLY. Callers de motores
+    proactivos / schedulers pasan _sovereignty_reason= explícito.
+    En modo observe (default) no se bloquea, sólo se loggea. En modo
+    enforce se respetan las reglas de consent.
     """
     if not _TG_HTTP or not text:
         return False
     if len(text) > 4096:
         text = text[:4093] + "..."
+
+    # === User Sovereignty Engine — gate de salida =========================
+    try:
+        from core.sovereignty import require_authorization, SendReason
+        reason = kwargs.pop("_sovereignty_reason", SendReason.USER_REPLY)
+        sov_user_id = kwargs.pop("_sovereignty_user_id", None)
+        decision = require_authorization(
+            chat_id=int(chat_id),
+            reason=reason,
+            user_id=sov_user_id,
+            payload_size=len(text),
+        )
+        if not decision.is_allowed:
+            logger.warning(
+                "sovereignty: blocked send chat=%s reason=%s rule=%s",
+                chat_id, reason.value, decision.rule,
+            )
+            return False
+    except Exception as _se:
+        # Sovereignty engine NUNCA debe romper un envío legítimo.
+        # Cualquier fallo aquí cae a comportamiento legacy.
+        logger.debug("sovereignty bypass on _tg_send: %s", _se)
+
     sent_message_id = None
     try:
         r = _TG_HTTP.post(
@@ -484,15 +513,25 @@ def run_worker() -> None:
             # Motor proactivo — anticipa y avisa (cada 10 minutos)
             try:
                 from core.proactive_engine import run_proactive_scan, CHECK_INTERVAL
+                from core.sovereignty import SendReason as _SR
                 # OPT-IN: el motor proactivo enviaba follow-ups automaticos
                 # al user (cada 10 min, max 1 por usuario cada 6h). Mario
                 # los percibia como 'el bot habla del anterior despues del
                 # ultimo'. Default OFF; activar con PROACTIVE_ENGINE_ENABLED=1.
+                # Además ahora cada envío declara reason=PROACTIVE_INSIGHT,
+                # así que en modo enforce el Sovereignty Engine bloquea
+                # automaticamente a los users sin consent activo.
                 if (
                     os.environ.get("PROACTIVE_ENGINE_ENABLED") == "1"
                     and time.time() - last_proactive > CHECK_INTERVAL
                 ):
-                    n = run_proactive_scan(_tg_send)
+                    def _proactive_send(cid, text):
+                        return _tg_send(
+                            cid, text,
+                            _sovereignty_reason=_SR.PROACTIVE_INSIGHT,
+                            _sovereignty_user_id=f"tg:{cid}",
+                        )
+                    n = run_proactive_scan(_proactive_send)
                     if n:
                         logger.info("Proactive: %d messages sent", n)
                     last_proactive = time.time()
@@ -503,8 +542,15 @@ def run_worker() -> None:
             # Scheduler — tareas programadas (cada 60s)
             try:
                 from core.scheduler import run_scheduler_tick, TICK_INTERVAL
+                from core.sovereignty import SendReason as _SR2
                 if time.time() - last_scheduler > TICK_INTERVAL:
-                    n = run_scheduler_tick(_tg_send)
+                    def _scheduler_send(cid, text):
+                        return _tg_send(
+                            cid, text,
+                            _sovereignty_reason=_SR2.SCHEDULED_REMINDER,
+                            _sovereignty_user_id=f"tg:{cid}",
+                        )
+                    n = run_scheduler_tick(_scheduler_send)
                     if n:
                         logger.info("Scheduler: %d tasks executed", n)
                     last_scheduler = time.time()

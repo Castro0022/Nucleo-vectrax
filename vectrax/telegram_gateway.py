@@ -193,6 +193,34 @@ class TelegramGateway:
             return False
         if len(text) > 4096:
             text = text[:4093] + "..."
+
+        # === User Sovereignty Engine — gate de salida ======================
+        # Cada envío declara un SendReason. Default USER_REPLY (este sender
+        # se invoca como respuesta directa al usuario). Callers internos
+        # pueden overridear pasando _sovereignty_reason en extra.
+        # Modo observe (default) loggea pero NO bloquea — production-safe.
+        try:
+            from core.sovereignty import (
+                require_authorization, SendReason,
+            )
+            reason = extra.pop("_sovereignty_reason", SendReason.USER_REPLY)
+            sov_user_id = extra.pop("_sovereignty_user_id", None)
+            decision = require_authorization(
+                chat_id=int(cid),
+                reason=reason,
+                user_id=sov_user_id,
+                payload_size=len(text),
+            )
+            if not decision.is_allowed:
+                logger.warning(
+                    "sovereignty: blocked send chat=%s reason=%s rule=%s",
+                    cid, reason.value, decision.rule,
+                )
+                return False
+        except Exception as _se:
+            # El sovereignty engine NUNCA debe romper un envío legítimo.
+            logger.debug("sovereignty bypass on _send: %s", _se)
+
         try:
             from core.recovery.detectors.hardcoded_handler_runtime import (
                 register_response,
