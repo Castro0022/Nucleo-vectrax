@@ -1010,10 +1010,20 @@ class TelegramGateway:
                 os.unlink(path)
             except OSError:
                 pass
-            if text:
-                return text
-            self._send(cid, "No pude transcribir el audio.")
-            return ""
+            if not text:
+                self._send(cid, "No pude transcribir el audio.")
+                return ""
+            # Quality gate: si la transcripción es basura (caracteres
+            # raros, demasiado corta, baja densidad alfabética), NO
+            # procesar como mensaje real. Whisper a veces falla con
+            # voice-notes muy cortos o ruidosos y devuelve cosas como
+            # '.INNNl.hlد.دlلllll1.'. Si ese texto entra al pipeline,
+            # el LLM inventa una respuesta genérica.
+            if not _is_quality_transcription(text):
+                logger.info("VOICE LOW-QUALITY skip | %r", text[:80])
+                self._send(cid, "No te entendí bien. ¿Podés repetir?")
+                return ""
+            return text
         except Exception as e:
             logger.warning("Voice: %s", e)
             return ""
@@ -2111,6 +2121,66 @@ class TelegramGateway:
                     )
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Voice transcription quality gate
+# ---------------------------------------------------------------------------
+
+def _is_quality_transcription(text: str) -> bool:
+    """True si la transcripción parece tener contenido linguistic real.
+
+    Filtros (todos deben pasar):
+      1. Longitud mínima de letras: >= 4 letras alfabéticas (no
+         puntuación).
+      2. Densidad alfabética: >= 60% de caracteres son letras o
+         espacios. Whisper sobre ruido devuelve mucha puntuación y
+         caracteres raros.
+      3. No es solo puntuación / dígitos / un solo carácter repetido.
+      4. Tiene al menos 1 palabra de >= 2 letras.
+      5. No mezcla scripts incompatibles (latin + arabic + cyrillic
+         simultáneamente — indicador fuerte de fallo de whisper).
+
+    Si pasa todos los filtros, se considera transcripción válida y
+    el pipeline procede normalmente.
+    """
+    if not text or not text.strip():
+        return False
+    s = text.strip()
+
+    # 1. Letras mínimas
+    letters = sum(1 for c in s if c.isalpha())
+    if letters < 4:
+        return False
+
+    # 2. Densidad alfabética + espacios
+    alpha_or_space = sum(1 for c in s if c.isalpha() or c.isspace())
+    if alpha_or_space / max(1, len(s)) < 0.60:
+        return False
+
+    # 4. Al menos una palabra >= 2 letras
+    import re as _re
+    words = _re.findall(r"[A-Za-z\u00C0-\u017F]{2,}", s)
+    if not words:
+        return False
+
+    # 5. Mezcla de scripts incompatibles — si aparecen >= 2 de:
+    #    latin / arabic / cyrillic / cjk en la MISMA transcripción,
+    #    es casi siempre alucinación de whisper sobre ruido.
+    has_latin = any(
+        c.isalpha() and ord(c) < 0x0500 and (
+            ord(c) < 0x0370 or 0x1E00 <= ord(c) <= 0x1EFF
+        )
+        for c in s
+    )
+    has_arabic = any(0x0600 <= ord(c) <= 0x06FF for c in s)
+    has_cyrillic = any(0x0400 <= ord(c) <= 0x04FF for c in s)
+    has_cjk = any(0x4E00 <= ord(c) <= 0x9FFF for c in s)
+    scripts = sum([has_latin, has_arabic, has_cyrillic, has_cjk])
+    if scripts >= 2:
+        return False
+
+    return True
 
 
 def _load_token() -> str:
