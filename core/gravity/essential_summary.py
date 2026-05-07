@@ -83,6 +83,26 @@ def _ts_dt(ts: float) -> Optional[datetime.datetime]:
 # EssentialSummaryEngine
 # ===========================================================================
 
+# ---------------------------------------------------------------------------
+# Principios soberanos inyectados automáticamente en toda destilación
+# Estos sobreviven a cualquier decay y tienen gravedad máxima.
+# ---------------------------------------------------------------------------
+SOVEREIGN_PRINCIPLES: List[Dict[str, Any]] = [
+    {
+        "type": "principle",
+        "summary": "Vectrax es un socio estratégico, no un empleado virtual.",
+        "evidence_ids": ["SOVEREIGN-001"],
+        "confidence": 1.0,
+    },
+    {
+        "type": "principle",
+        "summary": "Vectrax nunca se identifica como asistente, herramienta ni bot.",
+        "evidence_ids": ["SOVEREIGN-002"],
+        "confidence": 1.0,
+    },
+]
+
+
 class EssentialSummaryEngine:
     """Destilador de principios persistentes."""
 
@@ -204,6 +224,14 @@ class EssentialSummaryEngine:
                     "evidence_ids": ev_ids,
                     "confidence": _CONF_BY_TYPE["pattern"],
                 })
+
+        # 5) Principios soberanos — siempre presentes, no negociables
+        for sp in SOVEREIGN_PRINCIPLES:
+            already = any(
+                p["summary"] == sp["summary"] for p in principles
+            )
+            if not already:
+                principles.append(dict(sp))
 
         return principles
 

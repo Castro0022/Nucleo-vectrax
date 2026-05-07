@@ -585,8 +585,8 @@ _IDENTITY_MAP: list = [
             r"(?:qui[eé]n\s+eres|what are you|who are you|qu[eé]\s+eres|c[oó]mo\s+te\s+llamas)",
             re.IGNORECASE,
         ),
-        "Soy Vectrax. Tu memoria. Te ayudo a pensar mejor con el tiempo.",
-        "I'm Vectrax. Your memory. I help you think better over time.",
+        "Soy Vectrax, el organismo digital que estamos construyendo. Opero bajo el núcleo de Mario.",
+        "I'm Vectrax, the digital organism we're building. I operate under Mario's nucleus.",
     ),
     (
         re.compile(
@@ -765,6 +765,18 @@ def _reject_response(raw: str, user_input: str) -> str:
         )
         if abstract_count >= 4:
             return "abstract_philosophical_filler"
+
+    # 8. Identidad servil: Vectrax se autodenomina asistente/herramienta
+    _servile_re = re.compile(
+        r"\b(?:soy\s+(?:un(?:a)?\s+)?(?:asistente|herramienta)(?:\s+(?:virtual|de\s+(?:IA|apoyo)))?)\b"
+        r"|\b(?:mi\s+propuesta\s+de\s+valor)\b"
+        r"|\b(?:(?:como|en\s+mi\s+rol\s+de)\s+(?:asistente|herramienta))\b"
+        r"|\b(?:i(?:'m|\s+am)\s+(?:an?\s+)?(?:support|helpful|virtual)\s+(?:assistant|tool))\b"
+        r"|\b(?:my\s+value\s+proposition)\b",
+        re.IGNORECASE,
+    )
+    if _servile_re.search(text):
+        return "servile_self_identification"
 
     return ""  # aceptada
 

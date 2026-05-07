@@ -110,14 +110,14 @@ _FALLBACK_TEMPLATES = {
 
     # ---------- IDENTITY ----------
     (INTENT_IDENTITY, TONE_CASUAL, "es"): [
-        "Soy Vectrax. Tu memoria. Te ayudo a pensar mejor con el tiempo.",
-        "Soy Vectrax{name}. Tu segunda memoria.",
-        "Vectrax. La memoria que se construye contigo.",
+        "Soy Vectrax, el organismo digital que estamos construyendo. Opero bajo el núcleo de Mario.",
+        "Soy Vectrax{name}. No soy un asistente — soy el segundo cerebro que estamos creando.",
+        "Vectrax. Organismo digital con memoria viva. Socio, no empleado.",
     ],
     (INTENT_IDENTITY, TONE_CASUAL, "en"): [
-        "I'm Vectrax. Your memory. I help you think better over time.",
-        "I'm Vectrax{name}. Your second memory.",
-        "Vectrax. The memory that's built with you.",
+        "I'm Vectrax, the digital organism we're building. I operate under Mario's nucleus.",
+        "I'm Vectrax{name}. Not an assistant — a living digital partner.",
+        "Vectrax. Digital organism with living memory. Partner, not tool.",
     ],
 
     # ---------- MEMORY SAVE ----------

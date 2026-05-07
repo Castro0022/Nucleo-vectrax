@@ -49,6 +49,24 @@ _ROBOTIC_OPENERS = re.compile(
     re.IGNORECASE,
 )
 
+# Identidad servil: frases que degradan a Vectrax a "asistente" — se eliminan
+_SERVILE_SELF_ID = re.compile(
+    r"(?:"
+    # Auto-identificación servil en español
+    r"\b(?:soy\s+(?:un(?:a)?\s+)?(?:asistente|herramienta|bot|programa)(?:\s+(?:virtual|de\s+(?:IA|apoyo|soporte|ayuda|inteligencia)))?)\b"
+    r"|\b(?:como\s+(?:tu\s+)?(?:asistente|herramienta)(?:\s+(?:virtual|de\s+(?:IA|apoyo)))?)\b"
+    r"|\b(?:mi\s+propuesta\s+de\s+valor)\b"
+    r"|\b(?:estoy\s+aqu[ií]\s+para\s+(?:servirte|ayudarte|asistirte))\b"
+    r"|\b(?:en\s+(?:resumen|conclusi[oó]n),?\s+(?:mi|como)\s+(?:propuesta|rol|funci[oó]n))\b"
+    r"|\b(?:(?:mi|como)\s+(?:IA|inteligencia\s+artificial)\s+de\s+apoyo)\b"
+    # Auto-identificación servil en inglés
+    r"|\b(?:i(?:'m|\s+am)\s+(?:an?\s+)?(?:support|helpful|virtual)\s+(?:assistant|tool|AI))\b"
+    r"|\b(?:my\s+value\s+proposition)\b"
+    r"|\b(?:i(?:'m|\s+am)\s+here\s+to\s+(?:serve|assist|help)\s+you)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 # Cierres genéricos / disclaimers al final
 _TRAILING_FILLERS = re.compile(
     r"\s*(?:"
@@ -114,35 +132,43 @@ def humanize_response(
 
     text = raw_llm_response.strip()
 
-    # 1. Quitar aperturas robóticas (puede haber varias en serie)
+    # 1. Quitar auto-identificación servil ("soy un asistente", etc.)
+    # Elimina la oración completa que contiene el patrón servil
+    # ANTES de robotic openers para evitar residuos parciales
+    if _SERVILE_SELF_ID.search(text):
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+        sentences = [s for s in sentences if not _SERVILE_SELF_ID.search(s)]
+        text = " ".join(sentences)
+
+    # 2. Quitar aperturas robóticas (puede haber varias en serie)
     while True:
         new_text = _ROBOTIC_OPENERS.sub("", text).lstrip(" ,;:.")
         if new_text == text:
             break
         text = new_text
 
-    # 2. Quitar emojis (regla Vectrax: sin emojis)
+    # 3. Quitar emojis (regla Vectrax: sin emojis)
     text = _EMOJI_RE.sub("", text)
 
-    # 3. Quitar trailing fillers
+    # 4. Quitar trailing fillers
     text = _TRAILING_FILLERS.sub("", text).rstrip()
 
-    # 4. Normalizar whitespace
+    # 5. Normalizar whitespace
     text = re.sub(r" {2,}", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r" +([.,;:!?])", r"\1", text)
     text = text.strip()
 
-    # 5. Capitalizar primera letra si se perdió por limpieza inicial
+    # 6. Capitalizar primera letra si se perdió por limpieza inicial
     if text and text[0].islower():
         text = text[0].upper() + text[1:]
 
-    # 6. Aplicar límite por tono — corte natural, no truncado seco
+    # 7. Aplicar límite por tono — corte natural, no truncado seco
     limit = _LIMITS_BY_TONE.get(tone, _DEFAULT_LIMIT)
     if len(text) > limit:
         text = _smart_truncate(text, limit)
 
-    # 7. Sustancia mínima
+    # 8. Sustancia mínima
     if len(text.strip()) < 2:
         return ""
 

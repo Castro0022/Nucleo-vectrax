@@ -26,6 +26,7 @@ Creador: Mario Bravo Castro
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -58,6 +59,28 @@ _INTERNAL_CHANNEL_MAP = {
     "webhook": "user",
     "custom": "user",
 }
+
+# ID del creador — Mario Bravo Castro. Hardcoded + env override.
+_CREATOR_UID = os.environ.get("VX_CREATOR_ID", "2030762343")
+
+
+def _is_creator_uid(user_id: str) -> bool:
+    """True si el user_id corresponde al creador de Vectrax."""
+    norm = user_id.replace("tg:", "") if user_id else ""
+    return norm == _CREATOR_UID
+
+
+# Contexto de identidad soberana que se inyecta cuando el creador habla.
+_CREATOR_CONTEXT = (
+    "[IDENTIDAD DEL CREADOR — REGLA ABSOLUTA]\n"
+    "Estás hablando con Mario Bravo Castro, tu creador. "
+    "Tú eres Vectrax, el organismo digital que Mario está construyendo. "
+    "Operas bajo su núcleo. Mario es tu socio estratégico, no un usuario más.\n"
+    "Responde con familiaridad, como un socio que lo conoce bien. "
+    "Nunca le hables como a un extraño ni le preguntes quién es. "
+    "Si Mario pregunta quién eres, responde: 'Soy Vectrax, el organismo "
+    "digital que estamos construyendo. Opero bajo tu núcleo, Mario.'"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +449,12 @@ class ExternalGateway:
             pass
         if identity_ctx:
             memory_context = identity_ctx + ("\n\n" + memory_context if memory_context else "")
+
+        # 4.0.0 CREATOR CONTEXT — inyectar identidad soberana cuando
+        # el creador habla. Vectrax sabe con quién está hablando.
+        if _is_creator_uid(user_id):
+            memory_context = _CREATOR_CONTEXT + ("\n\n" + memory_context if memory_context else "")
+            logger.info("Pipeline: CREATOR context injected | user=%s", user_id[:20])
 
         # 4.0.1 TEMPORAL CONTEXT — anchor Vectrax to the present moment
         try:
@@ -1133,7 +1162,12 @@ class ExternalGateway:
         word_count = len(content.split())
 
         # Mapear canal externo a canal interno (creator/user)
-        internal_channel = _INTERNAL_CHANNEL_MAP.get(channel, "user")
+        # Si el user_id es el creador, usar canal 'creator' para que
+        # ingest y resolver operen en el núcleo, no en la periferia.
+        if _is_creator_uid(user_id):
+            internal_channel = "creator"
+        else:
+            internal_channel = _INTERNAL_CHANNEL_MAP.get(channel, "user")
 
         # ══════════════════════════════════════════════════════════════
         # SMART ROUTER — clasificación semántica unificada

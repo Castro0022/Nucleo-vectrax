@@ -85,9 +85,9 @@ def _is_recent_duplicate(chat_id: int, text: str) -> bool:
     Mark-on-check: si NO es duplicado, lo registra ahora.
     """
     try:
-        window = float(os.environ.get("VECTRAX_AUDIO_DEDUP_WINDOW_S", "60"))
+        window = float(os.environ.get("VECTRAX_AUDIO_DEDUP_WINDOW_S", "120"))
     except Exception:
-        window = 60.0
+        window = 120.0
     if window <= 0:
         return False
     key = _dedup_key(chat_id, text)
@@ -185,6 +185,15 @@ def dispatch_audio_async(
     if not should_speak(text):
         logger.debug(
             "DISPATCH SKIP (gate) chat=%s text=%r",
+            chat_id, (text or "")[:60],
+        )
+        return
+
+    # === BLOCK ORPHAN AUDIO: sin reply_to, el audio se desancla del
+    # texto y parece "repetir el anterior". Mejor no enviar. ==========
+    if reply_to_message_id is None:
+        logger.info(
+            "DISPATCH SKIP (no reply_to) chat=%s text=%r",
             chat_id, (text or "")[:60],
         )
         return

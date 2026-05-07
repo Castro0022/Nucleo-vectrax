@@ -55,11 +55,11 @@ class TestDedup(unittest.TestCase):
             ) as mock_synth:
                 td.dispatch_audio_async(
                     chat_id=123, text="hola Mario",
-                    http_client=FakeHttp(),
+                    http_client=FakeHttp(), reply_to_message_id=1,
                 )
                 td.dispatch_audio_async(
                     chat_id=123, text="hola Mario",
-                    http_client=FakeHttp(),
+                    http_client=FakeHttp(), reply_to_message_id=1,
                 )
                 # Solo el primero debe haber submitted al pool
                 # (el segundo se duplica y se skipea).
@@ -82,11 +82,11 @@ class TestDedup(unittest.TestCase):
             ) as mock_synth:
                 td.dispatch_audio_async(
                     chat_id=123, text="hola",
-                    http_client=FakeHttp(),
+                    http_client=FakeHttp(), reply_to_message_id=1,
                 )
                 td.dispatch_audio_async(
                     chat_id=123, text="adiós",
-                    http_client=FakeHttp(),
+                    http_client=FakeHttp(), reply_to_message_id=1,
                 )
                 time.sleep(0.05)
                 self.assertEqual(mock_synth.call_count, 2)
@@ -105,11 +105,11 @@ class TestDedup(unittest.TestCase):
             ) as mock_synth:
                 td.dispatch_audio_async(
                     chat_id=123, text="hola",
-                    http_client=FakeHttp(),
+                    http_client=FakeHttp(), reply_to_message_id=1,
                 )
                 td.dispatch_audio_async(
                     chat_id=456, text="hola",
-                    http_client=FakeHttp(),
+                    http_client=FakeHttp(), reply_to_message_id=1,
                 )
                 time.sleep(0.05)
                 self.assertEqual(mock_synth.call_count, 2)
@@ -129,11 +129,11 @@ class TestDedup(unittest.TestCase):
             ) as mock_synth:
                 td.dispatch_audio_async(
                     chat_id=123, text="hola",
-                    http_client=FakeHttp(),
+                    http_client=FakeHttp(), reply_to_message_id=1,
                 )
                 td.dispatch_audio_async(
                     chat_id=123, text="hola",
-                    http_client=FakeHttp(),
+                    http_client=FakeHttp(), reply_to_message_id=1,
                 )
                 time.sleep(0.05)
                 self.assertEqual(mock_synth.call_count, 2)
@@ -155,7 +155,7 @@ class TestKillSwitch(unittest.TestCase):
             ) as mock_synth:
                 td.dispatch_audio_async(
                     chat_id=123, text="hola",
-                    http_client=FakeHttp(),
+                    http_client=FakeHttp(), reply_to_message_id=1,
                 )
                 time.sleep(0.05)
                 self.assertEqual(mock_synth.call_count, 0)
