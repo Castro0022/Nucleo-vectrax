@@ -22,8 +22,27 @@ services:
       # Kept bound to host for local curl/debug; public traffic goes via caddy:443
       - "8900:8900"
     volumes:
+      # Code mount: rsync deploys reemplazan código, NO datos.
+      # Excluir vault/, data/, logs/ del rsync (deploy_vultr.sh) para que
+      # las dbs operativas no se sobrescriban.
       - ./:/app
+      # === RUNTIME PERSISTENT VOLUME ===
+      # Sobrevive 'docker compose down/up' y 'down --rmi all'.
+      # SE PIERDE solo con 'docker compose down -v' o 'docker volume rm'.
+      # Contiene:
+      #   continuity.db        — idempotencia update_id Telegram
+      #   anti_repetition.db   — ring buffer 10 últimas respuestas/user
+      #   vectrax.db           — user_memory + fact_memory + leads
+              # gravity.db           — deep_memory + identidades + esenciales
+      #   sovereignty.jsonl    — audit log de envios
+      #   gateway_heartbeat    — heartbeat para watchdog
+      #   worker_heartbeat     — idem
+      #   gateway.log + worker.log + supervisor.log
+      #   vctx_identity (seed) — quien es Mario, su sistema, su misión
+      # Backup: scripts/backup_runtime.sh tarball completo.
       - vectrax-runtime:/root/.vectrax
+    labels:
+      - "vectrax.runtime.persist=true"
     networks:
       - vectrax-net
     healthcheck:
@@ -64,7 +83,12 @@ services:
       - vectrax
 
 volumes:
+  # Volume PERSISTENTE — contiene la identidad, memoria y continuidad
+  # de Vectrax. NO borrar excepto en bootstrap.
   vectrax-runtime:
+    labels:
+      - "vectrax.role=runtime-state"
+      - "vectrax.persist=critical"
   caddy-data:
   caddy-config:
   caddy-logs:

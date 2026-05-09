@@ -70,17 +70,14 @@ def _is_creator_uid(user_id: str) -> bool:
     return norm == _CREATOR_UID
 
 
-# Contexto de identidad soberana que se inyecta cuando el creador habla.
-_CREATOR_CONTEXT = (
-    "[IDENTIDAD DEL CREADOR — REGLA ABSOLUTA]\n"
-    "Estás hablando con Mario Bravo Castro, tu creador. "
-    "Tú eres Vectrax, el organismo digital que Mario está construyendo. "
-    "Operas bajo su núcleo. Mario es tu socio estratégico, no un usuario más.\n"
-    "Responde con familiaridad, como un socio que lo conoce bien. "
-    "Nunca le hables como a un extraño ni le preguntes quién es. "
-    "Si Mario pregunta quién eres, responde: 'Soy Vectrax, el organismo "
-    "digital que estamos construyendo. Opero bajo tu núcleo, Mario.'"
-)
+# === LEGACY _CREATOR_CONTEXT ELIMINADO ===
+# Reemplazado por identity_anchor.build_identity_context() que inyecta:
+#   [CREADOR — NO NEGOCIABLE]      identidad + relación creador/organismo
+#   [REGLAS DE TONO — CREATOR MODE] anti-asistente, anti-onboarding
+#   [PERCEPCIÓN OPERACIONAL]        estado, commits, módulos vivos
+# Single source of truth: vectrax/identity_anchor.py + core/identity/.
+# Mantener un placeholder vacío evita ImportError en código legacy.
+_CREATOR_CONTEXT = ""  # deprecated: ver identity_anchor.build_identity_context
 
 
 # ---------------------------------------------------------------------------
@@ -450,11 +447,16 @@ class ExternalGateway:
         if identity_ctx:
             memory_context = identity_ctx + ("\n\n" + memory_context if memory_context else "")
 
-        # 4.0.0 CREATOR CONTEXT — inyectar identidad soberana cuando
-        # el creador habla. Vectrax sabe con quién está hablando.
+        # === CREATOR CONTEXT ya inyectado por build_identity_context() ===
+        # Antes había una segunda inyección hardcoded aquí (legacy
+        # _CREATOR_CONTEXT). Eliminada — build_identity_context ya
+        # incluye [CREADOR] + [CREATOR MODE] + [PERCEPCIÓN] cuando
+        # anchor.is_creator. Una sola fuente de verdad.
         if _is_creator_uid(user_id):
-            memory_context = _CREATOR_CONTEXT + ("\n\n" + memory_context if memory_context else "")
-            logger.info("Pipeline: CREATOR context injected | user=%s", user_id[:20])
+            logger.info(
+                "Pipeline: CREATOR detected | user=%s | identity_ctx_len=%d",
+                user_id[:20], len(identity_ctx),
+            )
 
         # 4.0.1 TEMPORAL CONTEXT — anchor Vectrax to the present moment
         try:
@@ -509,14 +511,22 @@ class ExternalGateway:
 
         # 4.2 FAST-PATH (moved here — before self-context and nucleus)
         # Greetings, Vectrax identity questions, confirmations — instant, no LLM.
+        # CREATOR BYPASS: el creador NUNCA usa fast_path. Sus mensajes
+        # son técnicos/operacionales, no merecen respuestas hardcoded.
+        # Pasan al LLM con creator_context completo (reglas + percepción).
         _fast_response = ""
-        try:
-            _fast_response = self._try_fast_response(content, anchor)
-            if _fast_response:
-                response_text = _fast_response
-                logger.info("Pipeline: FAST-PATH | %s", content[:30])
-        except Exception:
-            pass
+        if not _is_creator_uid(user_id):
+            try:
+                _fast_response = self._try_fast_response(content, anchor)
+                if _fast_response:
+                    response_text = _fast_response
+                    logger.info("Pipeline: FAST-PATH | %s", content[:30])
+            except Exception:
+                pass
+        else:
+            logger.debug(
+                "Pipeline: fast_path BYPASSED for creator (will go to LLM)",
+            )
 
         # 4.2b Auto-contexto — Vectrax se observa a sí mismo
         _self_resolved = False
@@ -541,9 +551,13 @@ class ExternalGateway:
         # STEP 4.3: NUCLEUS RESOLVER — respond from accumulated knowledge
         # If the nucleus KNOWS the answer (close to centroid + patterns),
         # respond from its own knowledge before calling the LLM.
+        # CREATOR BYPASS: el creador no usa nucleus resolver — sus
+        # mensajes pasan al LLM con creator_context para respuesta
+        # operacional, no resolución clásica de patterns.
         # ══════════════════════════════════════════════════════════════
         _nucleus_resolved = False
-        if not response_text and not _self_resolved and not _lead_update_done:
+        if (not response_text and not _self_resolved and not _lead_update_done
+                and not _is_creator_uid(user_id)):
             try:
                 from vectrax.nucleus_resolver import resolve_from_nucleus
                 _nucleus_answer = resolve_from_nucleus(content, user_id)
@@ -632,6 +646,15 @@ class ExternalGateway:
 
             # 5.5 Pipeline cognitivo unificado (SmartRouter decide places/web/LLM)
             if not response_text:
+                # Diagnóstico: log el tamaño del bloque que viaja al LLM.
+                # Este context incluye identity_ctx (con [CREADOR] +
+                # [CREATOR MODE] + [PERCEPCIÓN] cuando aplica).
+                logger.info(
+                    "Pipeline: pipeline_v2 with extra_context=%d chars "
+                    "(creator=%s)",
+                    len(memory_context or ""),
+                    _is_creator_uid(user_id),
+                )
                 response_text, source_path = self._resolve_via_pipeline_v2(
                     user_id, content, channel,
                     extra_context=memory_context,
