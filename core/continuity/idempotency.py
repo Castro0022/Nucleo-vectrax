@@ -40,13 +40,22 @@ from typing import Optional
 logger = logging.getLogger("vectrax.continuity.idempotency")
 
 
-_DEFAULT_DB_PATH = os.environ.get(
-    "VECTRAX_CONTINUITY_DB",
-    os.path.join(
-        os.path.expanduser("~"),
-        ".vectrax", "continuity.db",
-    ),
-)
+def _resolve_db_path() -> str:
+    """Re-evalúa VECTRAX_CONTINUITY_DB en cada call. Permite a tests
+    cambiar la ruta sin reiniciar el módulo."""
+    return os.environ.get(
+        "VECTRAX_CONTINUITY_DB",
+        os.path.join(
+            os.path.expanduser("~"),
+            ".vectrax", "continuity.db",
+        ),
+    )
+
+
+# Constante legacy: algunos imports leen este nombre. Apunta al valor
+# del env al momento del import, pero los métodos usan _resolve_db_path()
+# para no quedar pegados a esa snapshot.
+_DEFAULT_DB_PATH = _resolve_db_path()
 
 _DEFAULT_PRUNE_AFTER_DAYS = 7
 
@@ -117,7 +126,7 @@ class SQLiteUpdateLedger:
     """
 
     def __init__(self, db_path: Optional[str] = None) -> None:
-        self.db_path = db_path or _DEFAULT_DB_PATH
+        self.db_path = db_path or _resolve_db_path()
         self._lock = threading.Lock()
         self._init_schema()
 
@@ -255,10 +264,10 @@ _singleton: Optional[SQLiteUpdateLedger] = None
 def _get_ledger() -> SQLiteUpdateLedger:
     global _singleton
     with _singleton_lock:
-        if _singleton is None or _singleton.db_path != _DEFAULT_DB_PATH:
-            # Re-instantiar si el env var cambió (tests)
-            db = os.environ.get("VECTRAX_CONTINUITY_DB", _DEFAULT_DB_PATH)
-            _singleton = SQLiteUpdateLedger(db_path=db)
+        current_path = _resolve_db_path()
+        # Re-instantiar si el env var cambió (tests con tmpdirs distintos).
+        if _singleton is None or _singleton.db_path != current_path:
+            _singleton = SQLiteUpdateLedger(db_path=current_path)
         return _singleton
 
 

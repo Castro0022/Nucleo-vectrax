@@ -43,16 +43,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger("vectrax.pipeline_worker")
 
-# === FileHandler para capturar logs del worker en archivo persistente ===
-# Sin esto, el subprocess loguea a stderr que se pierde. Con esto, todos
-# los eventos del worker (DONE, SG, DISPATCH, errores) quedan en
-# /root/.vectrax/worker.log para diagnostico.
+# === RotatingFileHandler con rotación size-based ====================
+# Antes: FileHandler crecía sin límite — worker.log llegaba a 100MB+ y
+# operational_reflection escaneaba todo cada call (lentitud).
+# Ahora: 10MB max + 5 backups = ~50MB total, autorrotación automática.
+from logging.handlers import RotatingFileHandler
 try:
     _WORKER_LOG_PATH = os.path.join(
         os.path.expanduser("~"), ".vectrax", "worker.log",
     )
     os.makedirs(os.path.dirname(_WORKER_LOG_PATH), exist_ok=True)
-    _file_handler = logging.FileHandler(_WORKER_LOG_PATH, encoding="utf-8")
+    _MAX_BYTES = int(os.environ.get(
+        "VECTRAX_WORKER_LOG_MAX_BYTES", str(10 * 1024 * 1024),
+    ))
+    _BACKUP_COUNT = int(os.environ.get(
+        "VECTRAX_WORKER_LOG_BACKUPS", "5",
+    ))
+    _file_handler = RotatingFileHandler(
+        _WORKER_LOG_PATH,
+        maxBytes=_MAX_BYTES,
+        backupCount=_BACKUP_COUNT,
+        encoding="utf-8",
+    )
     _file_handler.setLevel(logging.INFO)
     _file_handler.setFormatter(logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s — %(message)s",

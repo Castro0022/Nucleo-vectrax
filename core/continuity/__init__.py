@@ -32,6 +32,9 @@ from core.continuity.idempotency import (  # noqa: F401
     prune_older_than,
     reset_for_tests,
 )
+from core.continuity import voice_forbidden  # noqa: F401
+from core.continuity import working_memory  # noqa: F401
+from core.continuity import pending_actions  # noqa: F401
 
 __all__ = [
     "SQLiteUpdateLedger",
@@ -39,4 +42,7 @@ __all__ = [
     "mark_processed",
     "prune_older_than",
     "reset_for_tests",
+    "voice_forbidden",
+    "working_memory",
+    "pending_actions",
 ]

@@ -66,13 +66,42 @@ _voice_forbidden_lock = threading.Lock()
 
 
 def _mark_voice_forbidden(chat_id: int) -> None:
+    """Marca el chat como voice_forbidden en RAM + persiste en SQLite.
+
+    Persistencia via core.continuity.voice_forbidden — sobrevive
+    restarts. Best-effort: si la persistencia falla, el RAM cache
+    sigue protegiendo durante esta sesión.
+    """
+    cid = int(chat_id)
     with _voice_forbidden_lock:
-        _voice_forbidden_chats.add(int(chat_id))
+        _voice_forbidden_chats.add(cid)
+    try:
+        from core.continuity.voice_forbidden import mark_forbidden as _mf
+        _mf(cid)
+    except Exception as exc:
+        logger.debug("voice_forbidden persist skipped: %s", exc)
 
 
 def _is_voice_forbidden(chat_id: int) -> bool:
+    """True si chat está forbidden (RAM o DB persistente).
+
+    Primero RAM (latencia 0). Si no, consulta el módulo persistente,
+    que tiene su propio in-memory cache hidratado al boot desde DB.
+    """
+    cid = int(chat_id)
     with _voice_forbidden_lock:
-        return int(chat_id) in _voice_forbidden_chats
+        if cid in _voice_forbidden_chats:
+            return True
+    try:
+        from core.continuity.voice_forbidden import is_forbidden as _is
+        if _is(cid):
+            # Hidratar el RAM cache local con lo que vino de DB.
+            with _voice_forbidden_lock:
+                _voice_forbidden_chats.add(cid)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _get_chat_lock(chat_id: int) -> threading.Lock:

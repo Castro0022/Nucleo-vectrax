@@ -1141,16 +1141,20 @@ class ExternalGateway:
 
         Args:
             extra_context: additional context (temporal, identity, language)
-                           to inject into LLM prompts.
+                           to inject into LLM prompts. PASSED EXPLICITLY —
+                           NO singleton mutable state (race-free).
 
         Returns:
             (response_text, source_path) donde source_path es "places",
             "llm", "online", "local", "identity", etc.
         """
-        # Store extra_context so _generate_cognitive_response can use it
-        self._current_extra_context = extra_context
-        answer, source_path = self._resolve_via_pipeline(user_id, content, channel)
-        self._current_extra_context = ""
+        # Pasamos extra_context como ARG, no como atributo de instancia.
+        # Antes había race: dos requests concurrentes pisaban
+        # self._current_extra_context. Ahora flow explícito por la
+        # cadena de llamadas.
+        answer, source_path = self._resolve_via_pipeline(
+            user_id, content, channel, extra_context=extra_context,
+        )
         if answer:
             return answer, source_path
         return "", "llm"
@@ -1160,6 +1164,7 @@ class ExternalGateway:
         user_id: str,
         content: str,
         channel: str,
+        extra_context: str = "",
     ) -> Tuple[str, str]:
         """
         Pipeline cognitivo completo para mensajes externos.
@@ -1349,6 +1354,7 @@ class ExternalGateway:
                     pass
                 answer = self._generate_cognitive_response(
                     content, user_id, internal_channel, local_ctx,
+                    extra_context=extra_context,
                 )
                 if answer:
                     sr.record_feedback(smart_route, success=True, word_count=word_count)
@@ -1370,6 +1376,7 @@ class ExternalGateway:
 
                 answer = self._generate_cognitive_response(
                     content, user_id, internal_channel, local_ctx,
+                    extra_context=extra_context,
                 )
                 if answer:
                     sr.record_feedback(smart_route, success=True, word_count=word_count)
@@ -1432,6 +1439,7 @@ class ExternalGateway:
         # ── Generación LLM — respuesta real del sistema ────────────
         answer = self._generate_cognitive_response(
             content, user_id, internal_channel, memory_context,
+            extra_context=extra_context,
         )
         resolve_mode = "llm"
 
@@ -1504,19 +1512,28 @@ class ExternalGateway:
         user_id: str,
         channel: str,
         memory_context: str = "",
+        extra_context: str = "",
     ) -> str:
         """
         Genera respuesta usando el Intelligence Router (multi-IA).
         Inyecta contexto temporal + identidad + memoria en el prompt.
+
+        Args:
+          memory_context: contexto local resuelto (resolve_local/identity_ctx).
+          extra_context: contexto adicional pasado explícitamente desde
+            _resolve_via_pipeline_v2 (incluye identity_anchor +
+            CREATOR MODE + PERCEPCIÓN OPERACIONAL). Es race-safe —
+            ya no se lee de self.
         """
         from vectrax.identity_layer import build_prompt
 
-        # Merge local memory context with the full pipeline context
-        # (temporal, identity, language) stored by _resolve_via_pipeline_v2
+        # Merge contexts: extra (pipeline-level) primero, luego memory
+        # (resolver-level). El bloque CREATOR queda al inicio del prompt.
         full_context = memory_context
-        extra = getattr(self, '_current_extra_context', '')
-        if extra:
-            full_context = extra + ("\n\n" + full_context if full_context else "")
+        if extra_context:
+            full_context = extra_context + (
+                "\n\n" + full_context if full_context else ""
+            )
 
         prompt = build_prompt(content, full_context, user_id)
 

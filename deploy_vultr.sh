@@ -32,13 +32,16 @@ echo "[1/4] Subiendo proyecto al servidor..."
 # caused Apr-22 outage by overwriting server USE_WEBHOOK=0 with local=1.
 # Also excluding vault/ data/ logs/ so cognitive + operational data stay
 # local to the server (they are large and owned by the runtime).
+# Incluir .git/ deliberadamente: el container necesita git para que
+# core/self_observation/deployment_memory.py pueda leer commits/branches
+# y exponerlos en el CREATOR MODE. Sin .git, el bloque [PERCEPCIÓN
+# OPERACIONAL] sale con commits vacíos.
 rsync -azP --delete \
     -e "ssh $SSH_OPTS" \
     --exclude='.env' \
     --exclude='.env.*' \
     --exclude='.venv' \
     --exclude='__pycache__' \
-    --exclude='.git' \
     --exclude='*.pyc' \
     --exclude='.pytest_cache' \
     --exclude='*.db-shm' \
