@@ -272,21 +272,23 @@ def _synth_and_send(
         if mode == "off":
             return
 
-        # Si este chat ya devolvió VOICE_MESSAGES_FORBIDDEN antes,
-        # saltamos directo a sendAudio (MP3) sin gastar un round-trip
-        # a sendVoice que sabemos que va a fallar.
-        effective_mode = mode
+        # Si este chat YA está marcado como voice_forbidden (su privacy
+        # de Telegram bloquea voice memos), degradamos a TEXTO-SOLO.
+        # NO caemos a sendAudio porque sendAudio dispara autoplay del
+        # cliente y reintroduce el bug 'el audio anterior se reproduce'.
+        # Para volver a recibir audio, el user debe permitir voice
+        # messages en su Telegram privacy.
         if mode == "voice" and _is_voice_forbidden(chat_id):
-            effective_mode = "audio"
             logger.debug(
-                "dispatch: chat %s tiene voice_forbidden, usando sendAudio",
+                "dispatch: chat %s voice_forbidden → texto-solo (sin audio)",
                 chat_id,
             )
+            return
 
         # Acoplar formato de síntesis al endpoint:
         #   voice → opus (OGG/Opus, sendVoice, sin autoplay)
-        #   audio → mp3  (MP3, sendAudio, legacy)
-        fmt = "opus" if effective_mode == "voice" else "mp3"
+        #   audio → mp3  (MP3, sendAudio, legacy con autoplay)
+        fmt = "opus" if mode == "voice" else "mp3"
         try:
             from core.voice.synthesizer import synthesize
             audio = synthesize(text, fmt=fmt)
@@ -296,36 +298,23 @@ def _synth_and_send(
         if not audio:
             return
         try:
-            if effective_mode == "voice":
+            if mode == "voice":
                 ok, forbidden = _send_voice_with_forbidden_flag(
                     chat_id, audio, http_client, reply_to_message_id,
                 )
                 endpoint = "sendVoice"
-                # Fallback automatico: si voice está forbidden para este
-                # chat, recordar y reintentar AHORA con sendAudio.
+                # Si Telegram dice VOICE_MESSAGES_FORBIDDEN, marcamos
+                # el chat como voice_forbidden para futuros dispatches.
+                # NO reintentamos con sendAudio: degradación natural a
+                # texto-solo (el sendMessage ya se hizo en el caller).
                 if forbidden:
                     _mark_voice_forbidden(chat_id)
                     logger.info(
-                        "dispatch: chat %s VOICE_MESSAGES_FORBIDDEN, "
-                        "fallback a sendAudio (legacy MP3)",
+                        "dispatch: chat %s VOICE_MESSAGES_FORBIDDEN "
+                        "→ degradado a texto-solo. Para audio, el user "
+                        "debe permitir voice messages en su Telegram privacy.",
                         chat_id,
                     )
-                    # Re-sintetizar como MP3 y mandar como sendAudio.
-                    try:
-                        from core.voice.synthesizer import synthesize as _re
-                        mp3_audio = _re(text, fmt="mp3")
-                    except Exception:
-                        mp3_audio = None
-                    if mp3_audio:
-                        ok = send_audio_bytes(
-                            chat_id, mp3_audio, http_client,
-                            reply_to_message_id,
-                        )
-                        endpoint = "sendAudio (fallback)"
-                        try:
-                            del mp3_audio
-                        except Exception:
-                            pass
             else:
                 ok = send_audio_bytes(
                     chat_id, audio, http_client, reply_to_message_id,
