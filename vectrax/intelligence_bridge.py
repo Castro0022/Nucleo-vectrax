@@ -32,8 +32,39 @@ def _get_loop() -> asyncio.AbstractEventLoop:
 
 
 def _run(coro):
-    """Run an async coroutine synchronously."""
-    return _get_loop().run_until_complete(coro)
+    """
+    Run an async coroutine synchronously.
+
+    Race-safe: if a loop is already running in the current thread
+    (e.g. caller is inside async context), close the coroutine
+    cleanly and raise RuntimeError so caller can fall back to a
+    sync-friendly path. Avoids 'coroutine was never awaited'
+    warnings on RuntimeError paths.
+    """
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is not None:
+        # Cannot nest run_until_complete inside a running loop.
+        # Close the coroutine to suppress 'never awaited' warning.
+        try:
+            coro.close()
+        except Exception:
+            pass
+        raise RuntimeError(
+            "intelligence_bridge._run() called from within a running "
+            "event loop; bridge is sync-only"
+        )
+    try:
+        return _get_loop().run_until_complete(coro)
+    except BaseException:
+        # If run_until_complete fails *before* awaiting (rare), close.
+        try:
+            coro.close()
+        except Exception:
+            pass
+        raise
 
 
 def _get_router():
@@ -53,11 +84,34 @@ def initialize() -> Dict:
     """
     Initialize the Intelligence Router: auto-detect providers.
     Call once at chat session start. Returns status dict.
+
+    No-op when called from inside a running asyncio loop
+    (production async pipelines): the caller will fall back
+    to the direct httpx path in external_gateway.
     """
     global _initialized
+    # Bail early if we are inside an async loop — the sync bridge
+    # cannot run there. Caller falls back to httpx direct.
+    try:
+        asyncio.get_running_loop()
+        _initialized = False
+        return {
+            "error": "running event loop detected — bridge skipped",
+            "providers_detected": [],
+        }
+    except RuntimeError:
+        pass
+
     try:
         router = _get_router()
-        result = _run(router.initialize())
+    except Exception as exc:
+        logger.debug("Intelligence Router build failed: %s", exc)
+        _initialized = False
+        return {"error": str(exc), "providers_detected": []}
+
+    coro = router.initialize()
+    try:
+        result = _run(coro)
         _initialized = True
         return result
     except Exception as exc:
