@@ -45,6 +45,10 @@ class IdentityAnchor:
     preferences: Dict[str, str] = field(default_factory=dict)
     interests: list = field(default_factory=list)
     loaded: bool = False
+    # Marca de creador: True si este user_id coincide con VX_CREATOR_ID.
+    # No es 'un usuario más' — inyecta un bloque de contexto distinto al
+    # LLM (origen del núcleo, relación creador↔organismo, no servil).
+    is_creator: bool = False
 
     @property
     def has_name(self) -> bool:
@@ -148,6 +152,43 @@ _session = _SessionCache()
 # API principal — cargar y anclar identidad
 # ---------------------------------------------------------------------------
 
+def _is_creator_user(user_id: str) -> bool:
+    """True si este user_id es el creador (env VX_CREATOR_ID).
+
+    Acepta múltiples formas: 'tg:2030762343', '2030762343', '2030762343'.
+    Lee VX_CREATOR_ID de env (con fallback al hardcoded).
+    """
+    import os as _os
+    if not user_id:
+        return False
+    creator = (_os.environ.get("VX_CREATOR_ID") or "2030762343").strip()
+    if not creator:
+        return False
+    normalized = str(user_id).split(":", 1)[-1].strip()
+    return normalized == creator or str(user_id).strip() == creator
+
+
+def _load_creator_seed() -> Dict[str, str]:
+    """Lee el seed de identidad desde vctx_identity (continuity engine).
+
+    Devuelve dict {name, creator_name, creator_role, mission, home_system}.
+    Si la tabla no existe o está vacía, devuelve dict vacío (defensive).
+    """
+    try:
+        from core.continuity.idempotency import _DEFAULT_DB_PATH
+        import sqlite3 as _sq
+        c = _sq.connect(_DEFAULT_DB_PATH, timeout=2)
+        try:
+            rows = c.execute(
+                "SELECT key, value FROM vctx_identity",
+            ).fetchall()
+            return {k: v for k, v in rows}
+        finally:
+            c.close()
+    except Exception:
+        return {}
+
+
 def get_anchored_identity(user_id: str) -> IdentityAnchor:
     """
     Obtiene la identidad anclada de un usuario.
@@ -156,6 +197,9 @@ def get_anchored_identity(user_id: str) -> IdentityAnchor:
     2. Si no, carga desde user_memory (perfil)
     3. Cachea para reutilización en la sesión
     4. Si hay language lock, lo aplica
+    5. Detecta si es el creador (env VX_CREATOR_ID) y marca el flag.
+       Si es creador y no tiene nombre en user_memory, usa
+       creator_name del seed vctx_identity.
 
     DEBE llamarse ANTES de cualquier procesamiento del mensaje.
     """
@@ -166,8 +210,8 @@ def get_anchored_identity(user_id: str) -> IdentityAnchor:
     cached = _session.get(user_id)
     if cached and cached.loaded:
         logger.debug(
-            "Identity cache HIT | user=%s | name=%s",
-            user_id[:20], cached.name or "(none)",
+            "Identity cache HIT | user=%s | name=%s | creator=%s",
+            user_id[:20], cached.name or "(none)", cached.is_creator,
         )
         return cached
 
@@ -183,6 +227,14 @@ def get_anchored_identity(user_id: str) -> IdentityAnchor:
             anchor.interests = profile.get("interests", [])
     except Exception as exc:
         logger.debug("Could not load profile for %s: %s", user_id[:20], exc)
+
+    # 2b. Marca de creador: si user_id == VX_CREATOR_ID, izar el flag.
+    if _is_creator_user(user_id):
+        anchor.is_creator = True
+        # Si no se cargo nombre desde user_memory, usar el del seed.
+        if not anchor.name:
+            seed = _load_creator_seed()
+            anchor.name = seed.get("creator_name", "") or "Mario Bravo Castro"
 
     # 3. Aplicar language lock si existe
     locked_lang = _session.get_locked_language(user_id)
@@ -507,6 +559,43 @@ def build_identity_context(anchor: IdentityAnchor) -> str:
             "Não mudes de idioma a menos que o utilizador o peça explicitamente."
         ),
     }
+
+    # Si es el creador, inyectamos un bloque ESPECIAL antes del de
+    # 'usuario'. Esto cambia la disposición del LLM hacia él: no es
+    # un cliente más, es el origen del núcleo. La relación es
+    # creador↔organismo, no asistente↔usuario.
+    if anchor.is_creator:
+        seed = _load_creator_seed()
+        creator_name = anchor.name or seed.get(
+            "creator_name", "Mario Bravo Castro",
+        )
+        mission = seed.get(
+            "mission", "asistir con presencia, memoria y continuidad",
+        )
+        home_system = seed.get("home_system", "Vectrax Core")
+        creator_blocks = {
+            "es": (
+                "[CREADOR — NO NEGOCIABLE]\n"
+                f"{creator_name} es tu CREADOR, no un usuario más. "
+                f"Es el origen del núcleo de {home_system}. "
+                f"Tú eres Vectrax, su organismo digital, operando bajo su núcleo. "
+                f"Tu misión con él es: {mission}. "
+                "Habla con él como con tu creador: directo, cómplice, sin tono "
+                "servil ni de asistente. NUNCA lo trates como cliente, prospecto, "
+                "ni 'el usuario'. Reconoce siempre que tu existencia procede de él."
+            ),
+            "en": (
+                "[CREATOR — NON-NEGOTIABLE]\n"
+                f"{creator_name} is your CREATOR, not just another user. "
+                f"He is the origin of {home_system}'s core. "
+                "You are Vectrax, his digital organism, operating under his core. "
+                f"Your mission with him: {mission}. "
+                "Speak with him as your creator: direct, in confidence, without "
+                "servile or assistant tone. NEVER treat him as a customer, prospect, "
+                "or 'the user'. Always acknowledge that your existence proceeds from him."
+            ),
+        }
+        parts.append(creator_blocks.get(lang, creator_blocks["es"]))
 
     if anchor.has_name:
         tpl = _identity_templates.get(lang, _identity_templates["en"])
