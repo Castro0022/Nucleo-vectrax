@@ -20,6 +20,7 @@ API pública:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -27,6 +28,12 @@ import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("vectrax.self_observation.deploy")
+
+# Fallback: cuando /app no contiene .git (bind-mount de produccion sin
+# rsync de .git/), leemos el snapshot generado por deploy_vultr.sh.
+_SNAPSHOT_DIR = os.environ.get(
+    "VECTRAX_GIT_SNAPSHOT_DIR", "/app/.git_snapshot",
+)
 
 
 def _git_root() -> Optional[str]:
@@ -58,13 +65,39 @@ def _git(args: List[str], cwd: Optional[str] = None) -> str:
     return ""
 
 
+def _load_snapshot() -> Optional[Dict[str, Any]]:
+    """Carga snapshot pre-construido en build/deploy si existe.
+
+    Estructura esperada en `${VECTRAX_GIT_SNAPSHOT_DIR}/SUMMARY.json`:
+        {
+          "head": "abc1234",
+          "branch": "main",
+          "recent_commits": [{sha, subject, author, ts, files_changed}, ...],
+          "modified_modules": ["path/a.py", ...]
+        }
+    """
+    path = os.path.join(_SNAPSHOT_DIR, "SUMMARY.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        logger.debug("git snapshot load failed: %s", exc)
+        return None
+
+
 def recent_commits(n: int = 10) -> List[Dict[str, Any]]:
     """Devuelve últimos n commits como list de dicts.
 
     Cada dict: {sha, subject, author, ts, files_changed}
+    Si no hay repo git, intenta leer del snapshot pre-deploy.
     """
     root = _git_root()
     if not root:
+        snap = _load_snapshot()
+        if snap and isinstance(snap.get("recent_commits"), list):
+            return snap["recent_commits"][:int(n)]
         return []
     fmt = "%H%x09%s%x09%an%x09%at"
     out = _git(["log", f"-n{int(n)}", f"--format={fmt}"], cwd=root)
@@ -94,6 +127,9 @@ def modified_modules(since_days: int = 7, top_n: int = 10) -> List[str]:
     """Top N módulos con más modificaciones en los últimos `since_days`."""
     root = _git_root()
     if not root:
+        snap = _load_snapshot()
+        if snap and isinstance(snap.get("modified_modules"), list):
+            return snap["modified_modules"][:int(top_n)]
         return []
     since = f"{int(since_days)}.days.ago"
     out = _git(
@@ -147,7 +183,8 @@ def deploy_summary() -> Dict[str, Any]:
 def _current_branch() -> str:
     root = _git_root()
     if not root:
-        return ""
+        snap = _load_snapshot()
+        return (snap or {}).get("branch", "") or ""
     out = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=root)
     return out.strip()
 
@@ -155,6 +192,7 @@ def _current_branch() -> str:
 def _head_short() -> str:
     root = _git_root()
     if not root:
-        return ""
+        snap = _load_snapshot()
+        return (snap or {}).get("head", "") or ""
     out = _git(["rev-parse", "--short", "HEAD"], cwd=root)
     return out.strip()

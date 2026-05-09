@@ -1,0 +1,73 @@
+{
+  "head": "f7c14e7",
+  "branch": "main",
+  "recent_commits": [
+    {
+      "sha": "f7c14e74",
+      "subject": "fix(intelligence_bridge): silence 'never awaited' warning when called from async context",
+      "author": "Mario Bravo Castro",
+      "ts": 1778354866,
+      "files_changed": 8
+    },
+    {
+      "sha": "3c37604f",
+      "subject": "feat: items 4-10 de auditoría — caches, persistencia, race-fix, working_memory, pending_actions, logrotate",
+      "author": "Mario Bravo Castro",
+      "ts": 1778354193,
+      "files_changed": 12
+    },
+    {
+      "sha": "c38248ed",
+      "subject": "fix(core): P1+P2+P3 reparación estructural de runtime, wiring y CREATOR cleanup",
+      "author": "Mario Bravo Castro",
+      "ts": 1778307342,
+      "files_changed": 3
+    },
+    {
+      "sha": "8a01e507",
+      "subject": "feat(creator-mode): Self Perception Layer + Creator Cognitive Mode",
+      "author": "Mario Bravo Castro",
+      "ts": 1778305655,
+      "files_changed": 14
+    },
+    {
+      "sha": "caacbb7c",
+      "subject": "feat(identity): bloque CREADOR para Mario — no es 'un usuario más'",
+      "author": "Mario Bravo Castro",
+      "ts": 1778304165,
+      "files_changed": 1
+    },
+    {
+      "sha": "286c2496",
+      "subject": "feat(continuity): idempotencia de update_id Telegram para cerrar redelivery bug",
+      "author": "Mario Bravo Castro",
+      "ts": 1778303599,
+      "files_changed": 5
+    },
+    {
+      "sha": "eaed5e4a",
+      "subject": "fix(voice): voice_forbidden → texto-solo (NO fallback a sendAudio)",
+      "author": "Mario Bravo Castro",
+      "ts": 1778300879,
+      "files_changed": 1
+    },
+    {
+      "sha": "0409fdcb",
+      "subject": "fix(voice): fallback automático sendVoice→sendAudio si VOICE_MESSAGES_FORBIDDEN",
+      "author": "Mario Bravo Castro",
+      "ts": 1778300485,
+      "files_changed": 1
+    }
+  ],
+  "modified_modules": [
+    "core/voice/telegram_dispatch.py",
+    "vectrax/telegram_gateway.py",
+    "core/transport/pipeline_worker.py",
+    "core/voice/synthesizer.py",
+    "tests/voice/test_synthesizer.py",
+    "core/operator/external_gateway.py",
+    "vectrax/identity_layer.py",
+    "core/voice/visual_humanizer.py"
+  ],
+  "generated_at": 1778357564
+}

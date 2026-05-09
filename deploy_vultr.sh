@@ -24,6 +24,21 @@ echo "=========================================="
 echo ""
 
 # ------------------------------------------
+# 0. Generar snapshot git para el container
+# ------------------------------------------
+# core/self_observation/deployment_memory.py necesita conocer el HEAD,
+# branch y últimos commits. /app/.git/ no existe en runtime (el bind-mount
+# de docker-compose.yml ./:/app oculta el snapshot baked en imagen).
+# Generamos un .git_snapshot/SUMMARY.json fresco antes del rsync.
+echo "[0/4] Generando snapshot git para CREATOR MODE..."
+if command -v python3 >/dev/null 2>&1; then
+    python3 "$LOCAL_DIR/scripts/build_git_snapshot.py" || \
+        echo "    ⚠  build_git_snapshot falló (no bloquea deploy)"
+else
+    echo "    ⚠  python3 no presente local — snapshot omitido"
+fi
+
+# ------------------------------------------
 # 1. Subir proyecto al servidor
 # ------------------------------------------
 echo "[1/4] Subiendo proyecto al servidor..."
