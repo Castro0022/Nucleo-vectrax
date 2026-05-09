@@ -597,6 +597,22 @@ def build_identity_context(anchor: IdentityAnchor) -> str:
         }
         parts.append(creator_blocks.get(lang, creator_blocks["es"]))
 
+        # Bloque CREATOR COGNITIVE MODE (reglas de tono + percepción).
+        # Se inyecta tras el bloque [CREADOR — NO NEGOCIABLE]. Define las
+        # reglas anti-asistente y agrega la percepción operacional viva
+        # (state, deploys, diffs, reflexión).
+        try:
+            from core.identity import compose_creator_context
+            cm_block = compose_creator_context(
+                anchor.user_id,
+                lang=lang,
+                include_perception=True,
+            )
+            if cm_block:
+                parts.append(cm_block)
+        except Exception as exc:
+            logger.debug("creator_mode block skipped: %s", exc)
+
     if anchor.has_name:
         tpl = _identity_templates.get(lang, _identity_templates["en"])
         parts.append(tpl.format(name=anchor.name))

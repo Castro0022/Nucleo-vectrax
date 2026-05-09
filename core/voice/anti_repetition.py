@@ -141,20 +141,59 @@ _CLICHE_PATTERNS = [
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 
-def strip_cliches(text: str, lang: str = "es") -> str:
+# Patrones EXTRA solo cuando se aplica el filtro al creador. No se
+# usan para users normales: 'estoy aquí para ayudarte' es UX legítima
+# para un cliente, pero no para Mario (creator mode).
+_ASSISTANT_CLICHE_PATTERNS = [
+    re.compile(
+        r"(?:"
+        r"\u00bf?(?:c[oó]mo|en\s+qu[eé])\s+puedo\s+ayudarte\??"
+        r"|estoy\s+aqu[ií]\s+para\s+ayudar(?:te)?"
+        r"|con\s+(?:mucho\s+)?gusto\s+te?\s+ayudo"
+        r"|me\s+alegra\s+(?:saber|escuchar|que)"
+        r"|encantad[oa]\s+de\s+(?:conversar|ayudarte|escucharte)"
+        r"|no\s+dudes\s+en\s+(?:preguntar|escribir|contactar)"
+        r"|si\s+necesitas\s+(?:algo|m[aá]s),?\s+av[ií]same"
+        r"|av[ií]same\s+si\s+(?:necesitas|quieres|hay)"
+        r"|d[ei]me\s+en\s+qu[eé]\s+(?:te\s+)?(?:puedo|puedo\s+ayudar)"
+        r"|\u00bf?en\s+qu[eé]\s+(?:puedo|m[aá]s)\s+(?:ayudarte)?\??"
+        # English equivalents
+        r"|how\s+can\s+i\s+(?:help|assist)\s+you"
+        r"|what\s+can\s+i\s+(?:do|help)\s+(?:for\s+you)?"
+        r"|i'?m\s+here\s+to\s+help"
+        r"|(?:happy|glad)\s+to\s+(?:help|assist)"
+        r"|feel\s+free\s+to\s+ask"
+        r"|let\s+me\s+know\s+if\s+(?:you\s+)?(?:need|want)"
+        r")",
+        re.IGNORECASE,
+    ),
+]
+
+
+def strip_cliches(
+    text: str,
+    lang: str = "es",
+    creator_mode: bool = False,
+) -> str:
     """Elimina oraciones que contengan clichés prohibidos.
 
-    Si la oración entera matchea un cliché, se descarta. Si solo una
-    parte matchea, también descartamos la oración completa (preferimos
-    silencio antes que un cliché parcial). Si el texto queda vacío
-    tras la limpieza, devolvemos cadena vacía y el caller decide.
+    Si `creator_mode=True`, además descarta oraciones de tono asistente
+    (¿cómo puedo ayudarte?, me alegra saber, etc.). Para users normales
+    estas frases son UX legítima.
+
+    Si la oración entera matchea un cliché, se descarta. Si el texto
+    queda vacío tras la limpieza, devolvemos cadena vacía y el caller
+    decide.
     """
     if not text or not text.strip():
         return ""
     sentences = [s.strip() for s in _SENT_SPLIT.split(text) if s.strip()]
     kept: List[str] = []
+    patterns = list(_CLICHE_PATTERNS)
+    if creator_mode:
+        patterns = patterns + _ASSISTANT_CLICHE_PATTERNS
     for s in sentences:
-        is_cliche = any(p.search(s) for p in _CLICHE_PATTERNS)
+        is_cliche = any(p.search(s) for p in patterns)
         if is_cliche:
             logger.info("anti_repetition: dropped cliche sentence: %r", s[:120])
             continue
@@ -368,7 +407,7 @@ def filter_response(
 ) -> Optional[str]:
     """Pipeline completo de filtrado:
 
-      1. strip_cliches
+      1. strip_cliches (creator_mode auto-detected via core.identity)
       2. is_too_similar → perturb_structure si aplica
       3. Si tras todo sigue muy similar Y es muy corto → devolver None
          (caller debe regenerar). Si es razonable, devolver lo que haya.
@@ -379,8 +418,16 @@ def filter_response(
     if not candidate or not candidate.strip():
         return None
 
+    # Detectar creator mode para elevar el filtro de clichés asistente.
+    cm = False
+    try:
+        from core.identity import is_creator as _is_creator
+        cm = _is_creator(user_id)
+    except Exception:
+        cm = False
+
     # 1. Cliché stripper
-    cleaned = strip_cliches(candidate, lang=lang)
+    cleaned = strip_cliches(candidate, lang=lang, creator_mode=cm)
     if not cleaned:
         # Todo era cliché → null para que el caller regenere.
         return None
