@@ -58,6 +58,22 @@ _dedup_lock = threading.Lock()
 _chat_locks: Dict[int, threading.Lock] = {}
 _chat_locks_lock = threading.Lock()
 
+# Chats con VOICE_MESSAGES_FORBIDDEN en privacy: para ellos saltamos
+# directo a sendAudio (legacy MP3) sin malgastar un round-trip a
+# sendVoice. Set se llena en runtime cuando Telegram devuelve 400.
+_voice_forbidden_chats: set = set()
+_voice_forbidden_lock = threading.Lock()
+
+
+def _mark_voice_forbidden(chat_id: int) -> None:
+    with _voice_forbidden_lock:
+        _voice_forbidden_chats.add(int(chat_id))
+
+
+def _is_voice_forbidden(chat_id: int) -> bool:
+    with _voice_forbidden_lock:
+        return int(chat_id) in _voice_forbidden_chats
+
 
 def _get_chat_lock(chat_id: int) -> threading.Lock:
     with _chat_locks_lock:
@@ -255,10 +271,22 @@ def _synth_and_send(
         mode = audio_mode()
         if mode == "off":
             return
+
+        # Si este chat ya devolvió VOICE_MESSAGES_FORBIDDEN antes,
+        # saltamos directo a sendAudio (MP3) sin gastar un round-trip
+        # a sendVoice que sabemos que va a fallar.
+        effective_mode = mode
+        if mode == "voice" and _is_voice_forbidden(chat_id):
+            effective_mode = "audio"
+            logger.debug(
+                "dispatch: chat %s tiene voice_forbidden, usando sendAudio",
+                chat_id,
+            )
+
         # Acoplar formato de síntesis al endpoint:
         #   voice → opus (OGG/Opus, sendVoice, sin autoplay)
         #   audio → mp3  (MP3, sendAudio, legacy)
-        fmt = "opus" if mode == "voice" else "mp3"
+        fmt = "opus" if effective_mode == "voice" else "mp3"
         try:
             from core.voice.synthesizer import synthesize
             audio = synthesize(text, fmt=fmt)
@@ -268,11 +296,36 @@ def _synth_and_send(
         if not audio:
             return
         try:
-            if mode == "voice":
-                ok = send_voice_bytes(
+            if effective_mode == "voice":
+                ok, forbidden = _send_voice_with_forbidden_flag(
                     chat_id, audio, http_client, reply_to_message_id,
                 )
                 endpoint = "sendVoice"
+                # Fallback automatico: si voice está forbidden para este
+                # chat, recordar y reintentar AHORA con sendAudio.
+                if forbidden:
+                    _mark_voice_forbidden(chat_id)
+                    logger.info(
+                        "dispatch: chat %s VOICE_MESSAGES_FORBIDDEN, "
+                        "fallback a sendAudio (legacy MP3)",
+                        chat_id,
+                    )
+                    # Re-sintetizar como MP3 y mandar como sendAudio.
+                    try:
+                        from core.voice.synthesizer import synthesize as _re
+                        mp3_audio = _re(text, fmt="mp3")
+                    except Exception:
+                        mp3_audio = None
+                    if mp3_audio:
+                        ok = send_audio_bytes(
+                            chat_id, mp3_audio, http_client,
+                            reply_to_message_id,
+                        )
+                        endpoint = "sendAudio (fallback)"
+                        try:
+                            del mp3_audio
+                        except Exception:
+                            pass
             else:
                 ok = send_audio_bytes(
                     chat_id, audio, http_client, reply_to_message_id,
@@ -334,6 +387,47 @@ def send_audio_bytes(
     except Exception as exc:
         logger.warning("sendAudio crashed: %s", exc)
         return False
+
+
+def _send_voice_with_forbidden_flag(
+    chat_id: int,
+    audio: bytes,
+    http_client: Any,
+    reply_to_message_id: Optional[int] = None,
+) -> tuple:
+    """Wrapper sobre send_voice_bytes que además detecta el error
+    VOICE_MESSAGES_FORBIDDEN y lo expone al caller via flag.
+
+    Devuelve: (ok: bool, voice_forbidden: bool).
+    """
+    if not audio:
+        return False, False
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        logger.warning("sendVoice: TELEGRAM_BOT_TOKEN missing")
+        return False, False
+
+    url = f"https://api.telegram.org/bot{token}/sendVoice"
+    files = {"voice": ("vectrax.ogg", audio, "audio/ogg")}
+    data = {"chat_id": str(chat_id)}
+    if reply_to_message_id:
+        data["reply_to_message_id"] = str(reply_to_message_id)
+        data["allow_sending_without_reply"] = "true"
+    try:
+        r = http_client.post(url, data=data, files=files)
+        if r.status_code == 200:
+            return True, False
+        body = (r.text or "")[:300]
+        forbidden = (
+            r.status_code == 400
+            and "VOICE_MESSAGES_FORBIDDEN" in body
+        )
+        if not forbidden:
+            logger.warning("sendVoice HTTP %d: %s", r.status_code, body)
+        return False, forbidden
+    except Exception as exc:
+        logger.warning("sendVoice crashed: %s", exc)
+        return False, False
 
 
 def send_voice_bytes(
