@@ -596,6 +596,37 @@ class TelegramGateway:
 
                 for u in updates:
                     uid = u.get("update_id", 0)
+                    # === Continuity Engine: idempotencia de update_id =====
+                    # Si el supervisor reinició el gateway en medio del
+                    # procesamiento de un update, Telegram redelivera ese
+                    # update_id al levantarse el bot. Sin idempotencia,
+                    # se procesa otra vez y la respuesta (texto+audio)
+                    # se manda DOS veces — percibido como "el audio
+                    # anterior se reproduce". Cierra el bug a nivel
+                    # gateway, antes de despachar el handler.
+                    if uid:
+                        try:
+                            from core.continuity import (
+                                is_processed, mark_processed,
+                            )
+                            if is_processed(uid):
+                                logger.warning(
+                                    "IDEMPOTENT skip update_id=%d "
+                                    "(redelivery después de restart)", uid,
+                                )
+                                self._offset = uid + 1
+                                continue
+                            _cid = str(
+                                u.get("message", {})
+                                 .get("chat", {})
+                                 .get("id", "") or ""
+                            )
+                            mark_processed(uid, chat_id=_cid)
+                        except Exception as _ie:
+                            logger.debug(
+                                "continuity ledger skip (passthrough): %s",
+                                _ie,
+                            )
                     self._offset = uid + 1
                     self._pool.submit(self._handle, u)
 
