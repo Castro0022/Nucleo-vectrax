@@ -125,18 +125,35 @@ def _get_default_pool() -> ThreadPoolExecutor:
     return _default_pool
 
 
+def audio_mode() -> str:
+    """Devuelve el modo activo: 'voice' | 'audio' | 'off'.
+
+    - 'voice' (default): sendVoice con OGG/Opus — NO dispara autoplay
+      del siguiente en cliente Telegram. Fix estructural definitivo.
+    - 'audio'          : sendAudio con MP3 — legacy, autoplay-prone.
+    - 'off'            : no dispatch.
+
+    Compat: VECTRAX_AUDIO_DISABLED=1 → 'off' (kill switch legacy).
+    """
+    if os.environ.get("VECTRAX_AUDIO_DISABLED") == "1":
+        return "off"
+    m = (os.environ.get("VECTRAX_AUDIO_MODE") or "voice").lower().strip()
+    if m not in ("voice", "audio", "off"):
+        return "voice"
+    return m
+
+
 def should_speak(text: str) -> bool:
     """Gate para decidir si vale la pena sintetizar este texto.
 
     Reglas:
-      - Kill switch global (VECTRAX_AUDIO_DISABLED=1) prohibe TODO
-        dispatch de audio. Útil para emergencia desde producción.
+      - audio_mode() == 'off' → False (kill switch).
       - TTS habilitado por env (OPENAI_API_KEY presente,
         VECTRAX_TTS_DISABLED != "1").
       - Texto no vacío.
       - Texto <= MAX_TTS_CHARS (no malgastar TTS en muros largos).
     """
-    if os.environ.get("VECTRAX_AUDIO_DISABLED") == "1":
+    if audio_mode() == "off":
         return False
     try:
         from core.voice.synthesizer import is_tts_enabled, MAX_TTS_CHARS
@@ -235,24 +252,38 @@ def _synth_and_send(
     """
     chat_lock = _get_chat_lock(chat_id)
     with chat_lock:
+        mode = audio_mode()
+        if mode == "off":
+            return
+        # Acoplar formato de síntesis al endpoint:
+        #   voice → opus (OGG/Opus, sendVoice, sin autoplay)
+        #   audio → mp3  (MP3, sendAudio, legacy)
+        fmt = "opus" if mode == "voice" else "mp3"
         try:
             from core.voice.synthesizer import synthesize
-            audio = synthesize(text)
+            audio = synthesize(text, fmt=fmt)
         except Exception as exc:
             logger.debug("TTS synth failed in dispatch: %s", exc)
             return
         if not audio:
             return
         try:
-            ok = send_audio_bytes(
-                chat_id, audio, http_client, reply_to_message_id,
-            )
+            if mode == "voice":
+                ok = send_voice_bytes(
+                    chat_id, audio, http_client, reply_to_message_id,
+                )
+                endpoint = "sendVoice"
+            else:
+                ok = send_audio_bytes(
+                    chat_id, audio, http_client, reply_to_message_id,
+                )
+                endpoint = "sendAudio"
             logger.info(
-                "DISPATCH SENT chat=%s ok=%s bytes=%d text=%r",
-                chat_id, ok, len(audio), (text or "")[:60],
+                "DISPATCH SENT chat=%s ok=%s bytes=%d endpoint=%s text=%r",
+                chat_id, ok, len(audio), endpoint, (text or "")[:60],
             )
         except Exception as exc:
-            logger.debug("sendAudio failed in dispatch: %s", exc)
+            logger.debug("audio send failed in dispatch: %s", exc)
         finally:
             # Liberar referencias al buffer de audio inmediatamente
             # para evitar cualquier ilusión de "audio arrastrado".
@@ -268,16 +299,11 @@ def send_audio_bytes(
     http_client: Any,
     reply_to_message_id: Optional[int] = None,
 ) -> bool:
-    """POST sendAudio a Telegram con multipart/form-data.
+    """POST sendAudio a Telegram (MP3, formato legacy de música).
 
-    Devuelve True si HTTP 200, False en cualquier otro caso. Logs en
-    warning si falla.
-
-    Si `reply_to_message_id` se provee, el audio queda anclado a ese
-    mensaje en la UI de Telegram (audio aparece como reply al texto
-    correspondiente, evitando confusión de orden).
-
-    Requiere TELEGRAM_BOT_TOKEN en env.
+    NOTA: sendAudio dispara autoplay del siguiente en el cliente
+    Telegram. Para chat conversacional usar `send_voice_bytes`
+    (sendVoice/Opus). Este endpoint queda como compat para 'audio' mode.
     """
     if not audio:
         return False
@@ -297,7 +323,6 @@ def send_audio_bytes(
     }
     if reply_to_message_id:
         data["reply_to_message_id"] = str(reply_to_message_id)
-        # Si el mensaje al que respondemos no existe, no fallar el send
         data["allow_sending_without_reply"] = "true"
     try:
         r = http_client.post(url, data=data, files=files)
@@ -308,4 +333,52 @@ def send_audio_bytes(
         return True
     except Exception as exc:
         logger.warning("sendAudio crashed: %s", exc)
+        return False
+
+
+def send_voice_bytes(
+    chat_id: int,
+    audio: bytes,
+    http_client: Any,
+    reply_to_message_id: Optional[int] = None,
+) -> bool:
+    """POST sendVoice a Telegram (OGG/Opus, voice memo, SIN autoplay).
+
+    Fix estructural del bug 'el audio anterior se reproduce'. Telegram
+    no encadena voice memos en autoplay; el usuario los reproduce de a
+    uno con play explícito.
+
+    Si el destinatario tiene VOICE_MESSAGES_FORBIDDEN en privacy, el
+    endpoint devuelve 403; el caller queda con texto-solo (degradación
+    natural, no error fatal).
+
+    Requiere bytes en formato OGG/Opus (Telegram rechaza MP3 aquí o
+    lo trata mal). El synthesizer debe llamarse con fmt='opus'.
+    """
+    if not audio:
+        return False
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        logger.warning("sendVoice: TELEGRAM_BOT_TOKEN missing")
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/sendVoice"
+    files = {
+        "voice": ("vectrax.ogg", audio, "audio/ogg"),
+    }
+    data = {
+        "chat_id": str(chat_id),
+    }
+    if reply_to_message_id:
+        data["reply_to_message_id"] = str(reply_to_message_id)
+        data["allow_sending_without_reply"] = "true"
+    try:
+        r = http_client.post(url, data=data, files=files)
+        if r.status_code != 200:
+            logger.warning("sendVoice HTTP %d: %s",
+                           r.status_code, r.text[:200])
+            return False
+        return True
+    except Exception as exc:
+        logger.warning("sendVoice crashed: %s", exc)
         return False

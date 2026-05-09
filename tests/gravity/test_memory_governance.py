@@ -356,9 +356,15 @@ class TestStrictIsolation(unittest.TestCase):
                 store.list_all_for_user(uid_a),
             )
             for p in ps_a:
-                # ev_ids tienen que pertenecer a uid_a
+                # ev_ids tienen que pertenecer a uid_a (los principios
+                # SOVEREIGN-* son sintéticos, no estan en la DB — se
+                # excluyen del check de aislamiento porque no son
+                # cross-user.)
                 for eid in p["evidence_ids"]:
+                    if isinstance(eid, str) and eid.startswith("SOVEREIGN-"):
+                        continue
                     rec = store.get_record(eid)
+                    self.assertIsNotNone(rec, f"missing rec for {eid}")
                     self.assertEqual(rec["user_id"], uid_a)
         finally:
             store.close()

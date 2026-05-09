@@ -56,6 +56,15 @@ _AUDIO_CACHE_DIR = os.environ.get("VECTRAX_AUDIO_CACHE_DIR", "cache/audio")
 DEFAULT_VOICE = os.environ.get("VECTRAX_TTS_VOICE", "nova")
 DEFAULT_MODEL = os.environ.get("VECTRAX_TTS_MODEL", "tts-1")
 
+# Formato de salida: 'opus' (default, OGG/Opus para Telegram sendVoice)
+# o 'mp3' (legacy, para sendAudio). Voice memos no disparan autoplay
+# del siguiente en el cliente Telegram — fix estructural del bug
+# 'el audio anterior se reproduce al final'.
+DEFAULT_FORMAT = os.environ.get("VECTRAX_TTS_FORMAT", "opus").lower().strip()
+_VALID_FORMATS = {"opus", "mp3"}
+if DEFAULT_FORMAT not in _VALID_FORMATS:
+    DEFAULT_FORMAT = "opus"
+
 # Caracter limit antes de cortar (ahorro de costo en respuestas largas)
 MAX_TTS_CHARS = 1000
 
@@ -73,15 +82,16 @@ def synthesize(
     text: str,
     voice: Optional[str] = None,
     lang: str = "es",
+    fmt: Optional[str] = None,
 ) -> Optional[bytes]:
-    """Sintetiza `text` y devuelve audio en bytes (OGG/Opus mono).
+    """Sintetiza `text` y devuelve audio en bytes.
 
     Args:
       text: el texto a convertir. Se trunca a MAX_TTS_CHARS si excede.
-      voice: nombre de voz OpenAI (default: nova). Ignorado si lang
-             implica fallback a otro modelo.
-      lang: idioma del texto (`es`, `en`, etc.). Usado solo como hint;
-            OpenAI TTS detecta idioma del input.
+      voice: nombre de voz OpenAI (default: nova).
+      lang: idioma del texto (`es`, `en`, etc.). Hint para el modelo.
+      fmt: 'opus' (OGG/Opus para sendVoice) | 'mp3' (para sendAudio).
+           Default DEFAULT_FORMAT (opus).
 
     Returns:
       Bytes del audio, o None si TTS está desactivado, falla, o el
@@ -99,10 +109,13 @@ def synthesize(
         raw = _smart_truncate(raw, MAX_TTS_CHARS)
 
     voice = voice or DEFAULT_VOICE
+    fmt = (fmt or DEFAULT_FORMAT).lower().strip()
+    if fmt not in _VALID_FORMATS:
+        fmt = DEFAULT_FORMAT
 
     # Sin cache: cada synth produce audio nuevo. Ver docstring del modulo.
     try:
-        audio = _call_openai_tts(raw, voice, DEFAULT_MODEL)
+        audio = _call_openai_tts(raw, voice, DEFAULT_MODEL, fmt)
     except Exception as exc:
         logger.warning("TTS synthesis failed: %s", exc)
         return None
@@ -110,16 +123,22 @@ def synthesize(
     if audio is None:
         return None
 
-    logger.debug("TTS synth ok (%d bytes, %d chars)", len(audio), len(raw))
+    logger.debug(
+        "TTS synth ok (%d bytes, %d chars, fmt=%s)",
+        len(audio), len(raw), fmt,
+    )
     return audio
 
 
-def _call_openai_tts(text: str, voice: str, model: str) -> Optional[bytes]:
+def _call_openai_tts(
+    text: str, voice: str, model: str, fmt: str = "opus",
+) -> Optional[bytes]:
     """Llamada concreta al endpoint de OpenAI TTS.
 
-    Usa httpx directamente (no la lib oficial) para evitar dependencias.
-    Pide formato `opus`, que OpenAI devuelve en contenedor OGG/Opus —
-    listo para Telegram sendVoice.
+    `fmt` controla el contenedor de audio:
+      - 'opus' → OGG/Opus, ideal para Telegram sendVoice (sin autoplay
+        del siguiente en el cliente).
+      - 'mp3'  → MP3, ideal para Telegram sendAudio (legacy).
     """
     import httpx
 
@@ -132,15 +151,12 @@ def _call_openai_tts(text: str, voice: str, model: str) -> Optional[bytes]:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    response_format = "opus" if fmt == "opus" else "mp3"
     payload = {
         "model": model,
         "input": text,
         "voice": voice,
-        # MP3 chosen over Opus because Telegram sendAudio renders MP3
-        # natively as a playable audio file. Opus only works in sendVoice,
-        # which is blocked when the recipient has VOICE_MESSAGES_FORBIDDEN
-        # in their privacy settings.
-        "response_format": "mp3",
+        "response_format": response_format,
     }
     try:
         with httpx.Client(timeout=30.0) as client:

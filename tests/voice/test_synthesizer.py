@@ -113,7 +113,7 @@ class TestSynthesizeBehavior(unittest.TestCase):
         long = "Hola. " * 500  # > MAX_TTS_CHARS
         captured = {}
 
-        def fake(text, voice, model):
+        def fake(text, voice, model, fmt="opus"):
             captured["text"] = text
             return b"\x00ok"
 
