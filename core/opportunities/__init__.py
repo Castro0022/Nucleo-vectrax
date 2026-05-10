@@ -29,6 +29,21 @@ from .detector import (
     OPEN_SIGNALS,
     OpportunityDetector,
 )
+from .embeddings import (
+    CLOSED_EXEMPLARS,
+    Encoder,
+    EmbeddingScore,
+    EmbeddingSignalScorer,
+    OPEN_EXEMPLARS,
+    SentenceTransformerEncoder,
+)
+from .llm_scorer import (
+    LLMClient,
+    LLMScore,
+    LLMSignalScorer,
+    OpenAILLMClient,
+    is_llm_scoring_enabled,
+)
 from .events import (
     OpportunityEventBus,
     get_event_bus,
@@ -79,6 +94,19 @@ __all__ = [
     "DetectionResult",
     "OPEN_SIGNALS",
     "OpportunityDetector",
+    # embeddings (Fase 2)
+    "CLOSED_EXEMPLARS",
+    "Encoder",
+    "EmbeddingScore",
+    "EmbeddingSignalScorer",
+    "OPEN_EXEMPLARS",
+    "SentenceTransformerEncoder",
+    # llm scorer (Fase 3)
+    "LLMClient",
+    "LLMScore",
+    "LLMSignalScorer",
+    "OpenAILLMClient",
+    "is_llm_scoring_enabled",
     # events
     "OpportunityEventBus",
     "get_event_bus",
