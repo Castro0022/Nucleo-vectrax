@@ -416,6 +416,31 @@ class ExternalGateway:
             },
         )
 
+        # 1.5 OPPORTUNITY OBSERVER — capa económica
+        # Detecta señales de oportunidad abierta/cerrada, persiste
+        # estado por tenant (owner_id = user_id del operador), y
+        # programa reactivaciones. Fire-and-forget para no bloquear
+        # la latencia del mensaje principal.
+        _opp_suggestions: list = []
+        try:
+            from core.opportunities import get_default_service_sync
+            _opp_svc = get_default_service_sync()
+            _opp_svc.observe_message_fire_and_forget(
+                owner_id=str(user_id),
+                content=content,
+                channel=channel,
+            )
+            # Surfacing de reactivaciones due (Fase 2): inyectar como
+            # pre-context al LLM para que el copiloto las mencione
+            # naturalmente. Timeout corto — si la DB tarda, no bloquea.
+            _opp_suggestions = _opp_svc.pending_suggestions_for_owner_sync(
+                owner_id=str(user_id), max_items=3, timeout_s=1.5,
+            )
+        except Exception as exc:
+            logger.debug(
+                "opportunity observer failed (passthrough): %s", exc,
+            )
+
         # 2. Emitir evento external.message_received al bus
         self._bus.emit(
             channel=Channels.EXTERNAL,
@@ -508,6 +533,25 @@ class ExternalGateway:
                 )
         except Exception as _le:
             logger.debug("Lead natural update failed: %s", _le)
+
+        # 4.1c OPORTUNIDADES PENDIENTES — surfacing al LLM
+        # Si la capa económica detectó reactivaciones due, las
+        # inyectamos como bloque etiquetado antes del LLM. El copiloto
+        # las menciona naturalmente sin reglas hardcoded.
+        if _opp_suggestions:
+            try:
+                _block = "[OPORTUNIDADES PENDIENTES — sugiere recontactar]\n"
+                _block += "\n\n".join(_opp_suggestions)
+                memory_context = (
+                    _block + "\n\n" + memory_context
+                    if memory_context else _block
+                )
+                logger.info(
+                    "Pipeline: opportunity suggestions injected | n=%d | user=%s",
+                    len(_opp_suggestions), user_id[:20],
+                )
+            except Exception as exc:
+                logger.debug("opp suggestions injection failed: %s", exc)
 
         # 4.2 FAST-PATH (moved here — before self-context and nucleus)
         # Greetings, Vectrax identity questions, confirmations — instant, no LLM.
