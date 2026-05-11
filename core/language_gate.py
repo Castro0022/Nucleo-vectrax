@@ -113,6 +113,31 @@ _PT_EXCLUSIVE = re.compile(
     re.IGNORECASE,
 )
 
+# ES vs FR: comparten 'que', 'de', 'la', 'tu' — sin exclusive markers,
+# textos españoles con 'que' repetidas (Necesito que..., lo que...)
+# se confunden con francés. Estos sets se usan SOLO como tie-breaker
+# y NO afectan otros pares de idiomas.
+_ES_FR_EXCLUSIVE_ES = re.compile(
+    r"[ñ¡¿]"
+    r"|\b(?:hola|gracias|qu[ée]|c[óo]mo|d[óo]nde|cu[áa]ndo|cu[áa]l"
+    r"|tiene|tienes|tienen|puede|puedes|hacer|hace|haces|desde|hasta"
+    r"|entre|sobre|pero|tambi[ée]n|hay|soy|eres|somos|est[áa]s?|est[áa]n"
+    r"|fue|fui|fueron|nosotros|ustedes|vosotros|porque|mientras"
+    r"|necesito|necesita|quiero|quieres|piensa|piensas|piensan|pienso"
+    r"|hablamos|hablar|habla|hablas|dice|dices|dijo|dije|dime|déjame"
+    r"|recuerda|recuerdas|recuerdo|conversaci[óo]n|persona|personalidad"
+    r"|continuidad|hilo|memoria|mu[ye]|m[áa]s|todo|siempre|nunca|nada|algo)\b",
+    re.IGNORECASE,
+)
+_ES_FR_EXCLUSIVE_FR = re.compile(
+    r"[ç]"
+    r"|\b(?:c'est|j'ai|qu'est|n'est|l'on|d'accord|s'il|parce|aussi|alors"
+    r"|pourquoi|comment|tr[èe]s|pour|moi|toi|nous|vous|elle|elles"
+    r"|monsieur|madame|fran[cç]ais|anglais|bonjour|merci|oui|maintenant"
+    r"|peut|peux|veut|veux|faire|fais|chez|sans|sous)\b",
+    re.IGNORECASE,
+)
+
 
 def detect_language(text: str) -> str:
     """
@@ -134,7 +159,7 @@ def detect_language(text: str) -> str:
     top = max(scores, key=scores.get)
     top_ratio = scores[top] / word_count
 
-    # ── ES/PT disambiguation ─────────────────────────────────────
+    # ── ES/PT disambiguation ──────────────────────────────
     # These languages share too many words. When both score high,
     # use exclusive markers to break the tie.
     es_score = scores.get("es", 0)
@@ -153,6 +178,36 @@ def detect_language(text: str) -> str:
             return "es"
         if pt_excl > es_excl:
             return "pt"
+
+    # ── ES/FR disambiguation ──────────────────────────────
+    # 'que', 'de', 'la', 'tu' inflan el score francés en textos
+    # españoles cotidianos. Tres escenarios:
+    #   a) ambos scores > 0: comparar marcadores exclusivos.
+    #   b) FR gana pero el ES_EXCLUSIVE set encuentra señales
+    #      específicamente españolas (dime/dijo/piensa/etc.) que el
+    #      regex base de ES no captura → fuerzo ES.
+    # ES gana ante igualdad porque el sistema atiende principalmente
+    # español; cambiar a FR requiere señales propias de FR.
+    fr_score = scores.get("fr", 0)
+    if es_score > 0 and fr_score > 0:
+        es_x = len(_ES_FR_EXCLUSIVE_ES.findall(text))
+        fr_x = len(_ES_FR_EXCLUSIVE_FR.findall(text))
+        if es_x > 0 and fr_x == 0:
+            return "es"
+        if fr_x > 0 and es_x == 0:
+            return "fr"
+        if es_x >= fr_x:
+            return "es"
+        # fr_x > es_x — dejar caer al ranking normal
+    elif fr_score > 0 and es_score == 0:
+        # FR puede haber matcheado por palabras compartidas ('tu', 'la',
+        # 'de', 'que'). Si encontramos marcadores ES_EXCLUSIVE y
+        # NINGUNO FR_EXCLUSIVE, el texto es español que el regex base
+        # no atrapó.
+        es_x = len(_ES_FR_EXCLUSIVE_ES.findall(text))
+        fr_x = len(_ES_FR_EXCLUSIVE_FR.findall(text))
+        if es_x > 0 and fr_x == 0:
+            return "es"
 
     # Require minimum signal
     if top_ratio < _LANG_DOMINANCE_RATIO and word_count > 3:
@@ -176,17 +231,41 @@ def detect_language(text: str) -> str:
 def is_mixed_language(text: str) -> bool:
     """
     Detect if a text contains significant mixing of two or more languages.
+
+    Disambiguación contra falsos positivos:
+      * ES vs FR: comparten 'de', 'un', 'que'. Solo cuentan AMBOS si
+        ambos textos tienen marcadores exclusivos del set respectivo.
+      * ES vs PT: comparten 'que', 'de', 'la'. Misma regla.
     """
     if not text or len(text.split()) < 5:
         return False
 
     word_count = max(len(text.split()), 1)
-    significant = 0
+    significant: set = set()
     for lang, pattern in _LANG_MARKERS.items():
         ratio = len(pattern.findall(text)) / word_count
         if ratio > 0.15:
-            significant += 1
-    return significant >= 2
+            significant.add(lang)
+
+    # ES/FR: si ambos flag, drop el que NO tenga marcadores exclusivos.
+    if "es" in significant and "fr" in significant:
+        es_x = bool(_ES_FR_EXCLUSIVE_ES.search(text))
+        fr_x = bool(_ES_FR_EXCLUSIVE_FR.search(text))
+        if not fr_x:
+            significant.discard("fr")
+        elif not es_x:
+            significant.discard("es")
+
+    # ES/PT: misma lógica con el set exclusivo existente.
+    if "es" in significant and "pt" in significant:
+        es_x = bool(_ES_EXCLUSIVE.search(text))
+        pt_x = bool(_PT_EXCLUSIVE.search(text))
+        if not pt_x:
+            significant.discard("pt")
+        elif not es_x:
+            significant.discard("es")
+
+    return len(significant) >= 2
 
 
 # ---------------------------------------------------------------------------
