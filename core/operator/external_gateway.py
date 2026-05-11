@@ -188,6 +188,22 @@ class ExternalGateway:
 
         self._total_received += 1
 
+        # === ROUTER ACTIVATION LOG — abrir snapshot por mensaje ===
+        # No cambia la lógica del router. Solo observa.
+        _act_log = None
+        try:
+            from core.observability.router_activation import (
+                open_message_log,
+            )
+            _act_log = open_message_log(
+                message_id=correlation_id,
+                user_id=user_id,
+                channel=channel,
+                content=content,
+            )
+        except Exception as _exc:
+            logger.debug("router_activation open failed: %s", _exc)
+
         # ══════════════════════════════════════════════════════════════
         # CICLO OPERATIVO — observador que sigue cada paso del ciclo
         # percibir → interpretar → decidir → actuar → verificar → responder → registrar
@@ -235,6 +251,7 @@ class ExternalGateway:
         # ══════════════════════════════════════════════════════════════
         # STEP 0.5: INTAKE FILTER — triage antes de todo
         # ══════════════════════════════════════════════════════════════
+        _intake_t0 = time.perf_counter()
         try:
             from core.intake_filter import evaluate_intake, Action
             intake = evaluate_intake(
@@ -242,6 +259,18 @@ class ExternalGateway:
                 user_tier="free",
                 has_memory=bool(anchor and anchor.has_name),
             )
+            try:
+                from core.observability.router_activation import (
+                    record_activate as _rec_act,
+                )
+                if _act_log is not None:
+                    _rec_act(
+                        _act_log, "intake_filter",
+                        reason=f"action={intake.action.value}|reason={intake.reason}",
+                        latency_ms=(time.perf_counter() - _intake_t0) * 1000.0,
+                    )
+            except Exception:
+                pass
             logger.info(
                 "Pipeline: intake | importance=%s | action=%s | reason=%s",
                 intake.importance.value, intake.action.value, intake.reason,
@@ -422,6 +451,8 @@ class ExternalGateway:
         # programa reactivaciones. Fire-and-forget para no bloquear
         # la latencia del mensaje principal.
         _opp_suggestions: list = []
+        _opp_t0 = time.perf_counter()
+        _opp_error: Optional[str] = None
         try:
             from core.opportunities import get_default_service_sync
             _opp_svc = get_default_service_sync()
@@ -437,9 +468,24 @@ class ExternalGateway:
                 owner_id=str(user_id), max_items=3, timeout_s=1.5,
             )
         except Exception as exc:
+            _opp_error = f"{type(exc).__name__}: {exc}"
             logger.debug(
                 "opportunity observer failed (passthrough): %s", exc,
             )
+        try:
+            from core.observability.router_activation import (
+                record_activate as _rec_act_o,
+            )
+            if _act_log is not None:
+                _rec_act_o(
+                    _act_log, "opportunity_observer",
+                    reason=("error" if _opp_error else "observed"),
+                    latency_ms=(time.perf_counter() - _opp_t0) * 1000.0,
+                    error=_opp_error,
+                    suggestions=len(_opp_suggestions),
+                )
+        except Exception:
+            pass
 
         # 2. Emitir evento external.message_received al bus
         self._bus.emit(
@@ -638,6 +684,7 @@ class ExternalGateway:
         # STEP 5: RESOLVE FROM MEMORY — prioridad absoluta
         # ══════════════════════════════════════════════════════════════
         memory_resolved = False
+        _mem_t0 = time.perf_counter()
         if not response_text:
             try:
                 from vectrax.user_memory import resolve_with_memory
@@ -653,6 +700,23 @@ class ExternalGateway:
                     )
             except Exception as exc:
                 logger.debug("Memory resolve failed: %s", exc)
+        try:
+            from core.observability.router_activation import (
+                record_activate as _rec_m, record_skip as _skip_m,
+            )
+            if _act_log is not None:
+                if memory_resolved:
+                    _rec_m(
+                        _act_log, "memory_user", reason="resolved",
+                        latency_ms=(time.perf_counter() - _mem_t0) * 1000.0,
+                    )
+                else:
+                    _skip_m(
+                        _act_log, "memory_user",
+                        reason="no memory match",
+                    )
+        except Exception:
+            pass
 
         # DECIDIR — registrar ruta elegida
         _resolve_start = time.time()
@@ -683,10 +747,28 @@ class ExternalGateway:
             # ══════════════════════════════════════════════════════════════
             source_path = ""  # rastrear de dónde viene la respuesta
 
+            _fp_t0 = time.perf_counter()
             fast = self._try_fast_response(content, anchor)
             if fast:
                 response_text = fast
                 source_path = "fast"
+            try:
+                from core.observability.router_activation import (
+                    record_activate as _rec_fp, record_skip as _skip_fp,
+                )
+                if _act_log is not None:
+                    if fast:
+                        _rec_fp(
+                            _act_log, "fast_path", reason="matched",
+                            latency_ms=(time.perf_counter() - _fp_t0) * 1000.0,
+                        )
+                    else:
+                        _skip_fp(
+                            _act_log, "fast_path",
+                            reason="no fast pattern matched",
+                        )
+            except Exception:
+                pass
 
             # 5.5 Pipeline cognitivo unificado (SmartRouter decide places/web/LLM)
             if not response_text:
@@ -699,10 +781,24 @@ class ExternalGateway:
                     len(memory_context or ""),
                     _is_creator_uid(user_id),
                 )
+                _v2_t0 = time.perf_counter()
                 response_text, source_path = self._resolve_via_pipeline_v2(
                     user_id, content, channel,
                     extra_context=memory_context,
                 )
+                try:
+                    from core.observability.router_activation import (
+                        record_activate as _rec_v2,
+                    )
+                    if _act_log is not None:
+                        _rec_v2(
+                            _act_log, "smart_router",
+                            reason=f"strategy={source_path}",
+                            latency_ms=(time.perf_counter() - _v2_t0) * 1000.0,
+                            response_len=len(response_text or ""),
+                        )
+                except Exception:
+                    pass
 
             # 6. Consolidar respuesta (dedup, limpieza interna)
             if response_text:
@@ -964,6 +1060,29 @@ class ExternalGateway:
                 _cycle_obs.commit()
             except Exception:
                 pass
+
+        # === ROUTER ACTIVATION LOG — cerrar snapshot ===
+        try:
+            from core.observability.router_activation import (
+                close_message_log as _close_act,
+            )
+            if _act_log is not None:
+                _final = (
+                    "memory" if memory_resolved
+                    else "self_aware" if _self_resolved
+                    else locals().get("source_path", "") or "none"
+                )
+                _close_act(
+                    _act_log,
+                    final_source=_final,
+                    final_decision_reason=(
+                        f"audit_rewritten={_audit_rewritten}"
+                        if _audit_ran else "no audit"
+                    ),
+                    intent=locals().get("_lc_intent", "") or "",
+                )
+        except Exception as _exc:
+            logger.debug("router_activation close failed: %s", _exc)
 
         return GatewayResult(
             event_id=correlation_id,
