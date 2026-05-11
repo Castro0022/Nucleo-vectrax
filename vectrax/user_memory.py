@@ -36,7 +36,8 @@ logger = logging.getLogger("vectrax.user_memory")
 
 MAX_HISTORY_PER_USER = 50      # interacciones almacenadas por usuario
 MAX_CONTEXT_ENTRIES = 8        # interacciones incluidas en el contexto
-MAX_CONTEXT_CHARS = 800        # caracteres máx. del contexto generado
+MAX_CONTEXT_CHARS = 1500       # caracteres máx. del contexto generado (Capa 2: era 800)
+MAX_TURN_CHARS = 280           # caracteres máx. POR TURNO (Capa 2: era 80, frases cortadas)
 PROFILE_FIELDS = ("name", "language", "preferences", "interests")
 
 
@@ -427,12 +428,15 @@ class _MemoryStore:
                 parts.append("[Perfil del usuario]\n" + "\n".join(profile_parts))
 
         # Historia reciente
+        # Capa 2 (memoria activa relevante): cada turno se trunca a
+        # MAX_TURN_CHARS (antes 80 — cortaba frases a la mitad). El cap
+        # total de contexto se aplica en MAX_CONTEXT_CHARS más abajo.
         if history:
             recent = history[-MAX_CONTEXT_ENTRIES:]
             lines = []
             for ix in recent:
-                inp = ix.user_input[:80] if ix.user_input else ""
-                out = ix.bot_output[:80] if ix.bot_output else ""
+                inp = ix.user_input[:MAX_TURN_CHARS] if ix.user_input else ""
+                out = ix.bot_output[:MAX_TURN_CHARS] if ix.bot_output else ""
                 lines.append(f"- Usuario: {inp}")
                 if out:
                     lines.append(f"  Vectrax: {out}")
