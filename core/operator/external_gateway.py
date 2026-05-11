@@ -785,6 +785,7 @@ class ExternalGateway:
                 response_text, source_path = self._resolve_via_pipeline_v2(
                     user_id, content, channel,
                     extra_context=memory_context,
+                    act_log=_act_log,
                 )
                 try:
                     from core.observability.router_activation import (
@@ -1295,6 +1296,7 @@ class ExternalGateway:
         content: str,
         channel: str,
         extra_context: str = "",
+        act_log=None,
     ) -> Tuple[str, str]:
         """
         Pipeline cognitivo unificado con clasificación semántica.
@@ -1306,6 +1308,8 @@ class ExternalGateway:
             extra_context: additional context (temporal, identity, language)
                            to inject into LLM prompts. PASSED EXPLICITLY —
                            NO singleton mutable state (race-free).
+            act_log: opcional, router_activation.RouterActivationLog para
+                     registrar el guard de follow-up si se dispara.
 
         Returns:
             (response_text, source_path) donde source_path es "places",
@@ -1316,11 +1320,73 @@ class ExternalGateway:
         # self._current_extra_context. Ahora flow explícito por la
         # cadena de llamadas.
         answer, source_path = self._resolve_via_pipeline(
-            user_id, content, channel, extra_context=extra_context,
+            user_id, content, channel,
+            extra_context=extra_context, act_log=act_log,
         )
         if answer:
             return answer, source_path
         return "", "llm"
+
+    # ----- CAPA 1: continuidad inmediata (follow-up guard) -----------------
+
+    @staticmethod
+    def _has_recent_active_turn(
+        user_id: str, window_seconds: int = 300,
+    ) -> bool:
+        """
+        True si existe algún turno del usuario en los últimos `window_seconds`.
+
+        Usa la tabla `interactions` de `vault/user_memory.db`. NO carga
+        memoria profunda, NO toca Gravity, NO modifica nada.
+        """
+        if not user_id:
+            return False
+        try:
+            import sqlite3
+            from vectrax.user_memory import _MEMORY_DB_PATH
+            conn = sqlite3.connect(_MEMORY_DB_PATH)
+            try:
+                row = conn.execute(
+                    "SELECT MAX(timestamp) FROM interactions "
+                    "WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+            if not row or row[0] is None:
+                return False
+            return (time.time() - float(row[0])) <= float(window_seconds)
+        except Exception as exc:
+            logger.debug("_has_recent_active_turn failed: %s", exc)
+            return False
+
+    @classmethod
+    def _is_short_followup(
+        cls,
+        user_id: str,
+        content: str,
+        max_words: int = 4,
+        window_seconds: int = 300,
+    ) -> Tuple[bool, str]:
+        """
+        Decide si el mensaje actual es probablemente un follow-up
+        conversacional corto dentro de un hilo activo.
+
+        Condiciones (TODAS deben cumplirse):
+          * mensaje con `<= max_words` palabras
+          * existe turno previo dentro de `window_seconds`
+
+        Returns:
+            (True, reason) si se considera follow-up. False en otro caso.
+        """
+        words = (content or "").strip().split()
+        if len(words) > max_words:
+            return False, f"too_long({len(words)}w > {max_words})"
+        if not cls._has_recent_active_turn(user_id, window_seconds):
+            return False, f"no_recent_turn_in_{window_seconds}s"
+        return True, (
+            f"short_msg({len(words)}w)+recent_turn(<={window_seconds}s)"
+        )
 
     def _resolve_via_pipeline(
         self,
@@ -1328,6 +1394,7 @@ class ExternalGateway:
         content: str,
         channel: str,
         extra_context: str = "",
+        act_log=None,
     ) -> Tuple[str, str]:
         """
         Pipeline cognitivo completo para mensajes externos.
@@ -1475,6 +1542,52 @@ class ExternalGateway:
                 logger.info("Pipeline: MARKET resolve empty, falling through")
 
             if smart_route.strategy == Strategy.RESOLVE_ONLINE:
+                # CAPA 1 — CONTEXTUAL FOLLOW-UP GUARD
+                # Si el mensaje es corto Y hay turno reciente activo,
+                # NO ir a web: el usuario casi seguro está continuando el
+                # hilo. Redirigir al LLM con el historial inyectado en
+                # extra_context. Mantiene la lógica del SmartRouter intacta:
+                # solo intercepta ANTES de tocar el resolver web.
+                is_fu, fu_reason = self._is_short_followup(
+                    user_id, content,
+                )
+                if is_fu:
+                    logger.info(
+                        "Pipeline: contextual_followup_guard FIRED | "
+                        "reason=%s | user=%s",
+                        fu_reason, user_id[:20],
+                    )
+                    try:
+                        from core.observability.router_activation import (
+                            record_activate as _rec_g,
+                        )
+                        if act_log is not None:
+                            _rec_g(
+                                act_log, "contextual_followup_guard",
+                                reason=fu_reason,
+                                latency_ms=0.0,
+                                strategy_before="resolve_online",
+                                strategy_after="llm",
+                            )
+                    except Exception:
+                        pass
+                    # Generar via LLM con el contexto disponible
+                    answer = self._generate_cognitive_response(
+                        content, user_id, internal_channel, "",
+                        extra_context=extra_context,
+                    )
+                    resolve_mode = "llm"
+                    if answer:
+                        sr.record_feedback(
+                            smart_route, success=True,
+                            used_fallback=True,
+                            fallback_strategy="contextual_followup_guard",
+                            word_count=word_count,
+                        )
+                        return answer, resolve_mode
+                    # Si el LLM no respondió, dejar caer al ONLINE original
+                    # como última opción (no perder respuesta).
+
                 from vectrax.resolver import resolve_online
                 resolution = resolve_online(content, internal_channel, user_id)
                 answer = resolution.sovereign_answer or resolution.answer or ""
