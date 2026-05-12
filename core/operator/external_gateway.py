@@ -1331,7 +1331,7 @@ class ExternalGateway:
 
     @staticmethod
     def _has_recent_active_turn(
-        user_id: str, window_seconds: int = 300,
+        user_id: str, window_seconds: int = 600,
     ) -> bool:
         """
         True si existe algún turno del usuario en los últimos `window_seconds`.
@@ -1365,16 +1365,16 @@ class ExternalGateway:
         cls,
         user_id: str,
         content: str,
-        max_words: int = 4,
-        window_seconds: int = 300,
+        max_words: int = 7,
+        window_seconds: int = 600,
     ) -> Tuple[bool, str]:
         """
         Decide si el mensaje actual es probablemente un follow-up
         conversacional corto dentro de un hilo activo.
 
         Condiciones (TODAS deben cumplirse):
-          * mensaje con `<= max_words` palabras
-          * existe turno previo dentro de `window_seconds`
+          * mensaje con `<= max_words` palabras  (era 4, causaba miss en ES)
+          * existe turno previo dentro de `window_seconds`  (era 300s, muy corto)
 
         Returns:
             (True, reason) si se considera follow-up. False en otro caso.
