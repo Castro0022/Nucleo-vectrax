@@ -249,6 +249,17 @@ class ExternalGateway:
             logger.debug("Identity anchor unavailable: %s", exc)
 
         # ══════════════════════════════════════════════════════════════
+        # STEP 0.1: ACTIVE CONVERSATION STATE — cargar estado del hilo
+        # In-memory, TTL 30min. Sin DB, sin Gravity.
+        # ══════════════════════════════════════════════════════════════
+        _conv_state = None
+        try:
+            from core.conversation.active_state import get_state
+            _conv_state = get_state(user_id)
+        except Exception as _exc:
+            logger.debug("active_state load failed: %s", _exc)
+
+        # ══════════════════════════════════════════════════════════════
         # STEP 0.5: INTAKE FILTER — triage antes de todo
         # ══════════════════════════════════════════════════════════════
         _intake_t0 = time.perf_counter()
@@ -775,14 +786,35 @@ class ExternalGateway:
                 # Diagnóstico: log el tamaño del bloque que viaja al LLM.
                 # Este context incluye identity_ctx (con [CREADOR] +
                 # [CREATOR MODE] + [PERCEPCIÓN] cuando aplica).
-                logger.info(
-                    "Pipeline: pipeline_v2 with extra_context=%d chars "
-                    "(creator=%s)",
-                    len(memory_context or ""),
-                    _is_creator_uid(user_id),
-                )
-                _v2_t0 = time.perf_counter()
-                response_text, source_path = self._resolve_via_pipeline_v2(
+            # ── POINT B: Inyectar referencia implícita en extra_context ──────
+            # Detecta "eso", "él", "aquello", preguntas cortas de continuación,
+            # y añade el tópico/entidad activa al contexto del LLM.
+            # NO modifica content. Solo enriquece memory_context.
+            if _conv_state and _conv_state.is_alive():
+                try:
+                    from core.conversation.reference_resolver import resolve_references
+                    _ref_ctx = resolve_references(content, _conv_state)
+                    if _ref_ctx:
+                        memory_context = (
+                            _ref_ctx + "\n\n" + memory_context
+                            if memory_context else _ref_ctx
+                        )
+                        logger.info(
+                            "Pipeline: reference_resolver injected | user=%s | topic=%r",
+                            user_id[:20],
+                            _conv_state.active_topic[:40] if _conv_state.active_topic else "",
+                        )
+                except Exception as _exc:
+                    logger.debug("reference_resolver failed: %s", _exc)
+
+            logger.info(
+                "Pipeline: pipeline_v2 with extra_context=%d chars "
+                "(creator=%s)",
+                len(memory_context or ""),
+                _is_creator_uid(user_id),
+            )
+            _v2_t0 = time.perf_counter()
+            response_text, source_path = self._resolve_via_pipeline_v2(
                     user_id, content, channel,
                     extra_context=memory_context,
                     act_log=_act_log,
@@ -1025,6 +1057,21 @@ class ExternalGateway:
             except Exception as exc:
                 logger.debug("Response auditor failed (passthrough): %s", exc)
 
+        # ── POINT C: Presence Policy — filtrar genérico, comprimir abstracto ─
+        if response_text and _conv_state:
+            try:
+                from core.conversation.presence_policy import apply_presence_policy
+                response_text, _presence_modified = apply_presence_policy(
+                    response_text, _conv_state, query=content,
+                )
+                if _presence_modified:
+                    logger.info(
+                        "Pipeline: presence_policy modified response | user=%s",
+                        user_id[:20],
+                    )
+            except Exception as _exc:
+                logger.debug("presence_policy failed: %s", _exc)
+
         # VERIFICAR — registrar resultado del auditor
         if _cycle_obs:
             _cycle_obs.set_verify(
@@ -1045,6 +1092,14 @@ class ExternalGateway:
                 response_text = enforce_language(response_text, _user_lang, user_id)
             except Exception as exc:
                 logger.debug("Final language gate failed (passthrough): %s", exc)
+
+        # ── POINT D: Actualizar estado conversacional tras el turno ───────────
+        if response_text and _conv_state is not None:
+            try:
+                from core.conversation.active_state import update_state
+                update_state(user_id, content, response_text)
+            except Exception as _exc:
+                logger.debug("active_state update failed: %s", _exc)
 
         # RESPONDER + REGISTRAR — última huella del ciclo
         if _cycle_obs:

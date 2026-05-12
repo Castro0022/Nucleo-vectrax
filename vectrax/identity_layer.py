@@ -162,6 +162,27 @@ def build_prompt(
     except Exception:
         pass
 
+    # 5b. Modo presencia — si hay hilo activo, instruir al LLM
+    if user_id:
+        try:
+            from core.conversation.active_state import get_state as _get_cs
+            _cs = _get_cs(user_id)
+            if _cs and _cs.is_alive() and _cs.active_topic:
+                _mode_hint = (
+                    "[MODO PRESENCIA — hilo activo]\n"
+                    f"Contexto vivo: {_cs.active_topic}\n"
+                    "Reglas: Responde desde este contexto. "
+                    "No des teoría universal. No expliques psicología humana. "
+                    "No hagas preguntas de cierre. "
+                    "Prioriza: continuidad > explicación. "
+                    "Habla DESDE Vectrax, no SOBRE conceptos generales."
+                )
+                if _cs.active_entity:
+                    _mode_hint += f"\nEntidad en el hilo: {_cs.active_entity}"
+                parts.append(_mode_hint)
+        except Exception:
+            pass
+
     # 5. Mensaje actual
     parts.append(f"[Mensaje]\n{content}")
 
