@@ -783,38 +783,34 @@ class ExternalGateway:
 
             # 5.5 Pipeline cognitivo unificado (SmartRouter decide places/web/LLM)
             if not response_text:
-                # Diagnóstico: log el tamaño del bloque que viaja al LLM.
-                # Este context incluye identity_ctx (con [CREADOR] +
-                # [CREATOR MODE] + [PERCEPCIÓN] cuando aplica).
-            # ── POINT B: Inyectar referencia implícita en extra_context ──────
-            # Detecta "eso", "él", "aquello", preguntas cortas de continuación,
-            # y añade el tópico/entidad activa al contexto del LLM.
-            # NO modifica content. Solo enriquece memory_context.
-            if _conv_state and _conv_state.is_alive():
-                try:
-                    from core.conversation.reference_resolver import resolve_references
-                    _ref_ctx = resolve_references(content, _conv_state)
-                    if _ref_ctx:
-                        memory_context = (
-                            _ref_ctx + "\n\n" + memory_context
-                            if memory_context else _ref_ctx
-                        )
-                        logger.info(
-                            "Pipeline: reference_resolver injected | user=%s | topic=%r",
-                            user_id[:20],
-                            _conv_state.active_topic[:40] if _conv_state.active_topic else "",
-                        )
-                except Exception as _exc:
-                    logger.debug("reference_resolver failed: %s", _exc)
+                # POINT B: Inyectar referencia implícita antes del LLM
+                # Detecta "eso", "él", "aquello", preguntas cortas de continuación
+                # y añade tópico/entidad activa al contexto. NO modifica content.
+                if _conv_state and _conv_state.is_alive():
+                    try:
+                        from core.conversation.reference_resolver import resolve_references
+                        _ref_ctx = resolve_references(content, _conv_state)
+                        if _ref_ctx:
+                            memory_context = (
+                                _ref_ctx + "\n\n" + memory_context
+                                if memory_context else _ref_ctx
+                            )
+                            logger.info(
+                                "Pipeline: reference_resolver injected | user=%s | topic=%r",
+                                user_id[:20],
+                                _conv_state.active_topic[:40] if _conv_state.active_topic else "",
+                            )
+                    except Exception as _exc:
+                        logger.debug("reference_resolver failed: %s", _exc)
 
-            logger.info(
-                "Pipeline: pipeline_v2 with extra_context=%d chars "
-                "(creator=%s)",
-                len(memory_context or ""),
-                _is_creator_uid(user_id),
-            )
-            _v2_t0 = time.perf_counter()
-            response_text, source_path = self._resolve_via_pipeline_v2(
+                logger.info(
+                    "Pipeline: pipeline_v2 with extra_context=%d chars "
+                    "(creator=%s)",
+                    len(memory_context or ""),
+                    _is_creator_uid(user_id),
+                )
+                _v2_t0 = time.perf_counter()
+                response_text, source_path = self._resolve_via_pipeline_v2(
                     user_id, content, channel,
                     extra_context=memory_context,
                     act_log=_act_log,
