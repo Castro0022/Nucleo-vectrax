@@ -284,7 +284,7 @@ def _build_limit_message(user_id: str, msgs_today: int, daily_limit: int) -> str
 
     Includes Stripe checkout URL so the user can upgrade directly.
     """
-    base = f"Límite diario alcanzado ({msgs_today}/{daily_limit})."
+    base = "Por hoy llegamos al límite de mensajes."
 
     # Try to generate Stripe checkout link
     try:

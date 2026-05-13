@@ -60,12 +60,15 @@ _SUPPRESS_PATTERNS: list[re.Pattern] = [
 ]
 
 # Señales concretas que indican que la respuesta SÍ es alineada
+# Las URLs (Stripe, etc.) se protegen explícitamente para no ser comprimidas.
 _CONCRETE_SIGNALS: list[re.Pattern] = [
     re.compile(r"\bvectrax\b", re.I),
     re.compile(r"\b(telegram|vultr|docker|openai|sqlite|stripe)\b", re.I),
     re.compile(r"\b(ahora|hoy|esta\s+semana|este\s+turno|en\s+este\s+hilo)\b", re.I),
     re.compile(r"\b(yo\s+(soy|estoy|noto|detecto|proceso|registro))\b", re.I),
     re.compile(r"\b(mi\s+(núcleo|memoria|arquitectura|estado|diseño))\b", re.I),
+    re.compile(r"https?://[^\s]+", re.I),   # URLs (Stripe checkout, etc.) — no comprimir
+    re.compile(r"/upgrade|/pro|/lead|/team", re.I),   # comandos de acción
 ]
 
 # Preguntas automáticas de cierre que el LLM añade sin que nadie se las pida

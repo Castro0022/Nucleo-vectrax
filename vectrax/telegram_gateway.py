@@ -188,13 +188,56 @@ class TelegramGateway:
             logger.warning("TG %s: %s", method, e)
             return None
 
+    # == Filtro de salida — bloquea fuga de datos internos ====================
+
+    # Patrones que indican datos técnicos internos filtrando hacia el usuario.
+    # Ninguno de estos debe aparecer en una respuesta conversacional normal.
+    _INTERNAL_LEAK_PATTERNS = [
+        (re.compile(r"\bid=[a-f0-9]{6,}\b", re.I),           "id_hash"),
+        (re.compile(r"\bnucleo=[a-z]+\s*·", re.I),           "nucleo_metric"),
+        (re.compile(r"\bnúcleo=[a-z]+\s*·", re.I),           "nucleo_metric_acent"),
+        (re.compile(r"\bpeso=[\d.]+", re.I),                  "peso_metric"),
+        (re.compile(r"\bweight=[\d.]+", re.I),                "weight_metric"),
+        (re.compile(r"\blayer=[a-z]+", re.I),                 "layer_field"),
+        (re.compile(r"\(reversible\)", re.I),                 "reversible_field"),
+        (re.compile(r"cuarentena,\s*peso", re.I),             "cuarentena_weight"),
+        (re.compile(r"✓\s+Anotado"),                          "anotado_receipt"),
+        (re.compile(r"✓\s+Grabado\s+—"),                     "grabado_receipt"),
+        (re.compile(r"\bcore_memory\b", re.I),                "core_memory_field"),
+        (re.compile(r"\bgravity_score\b", re.I),              "gravity_field"),
+        (re.compile(r"\bembedding\b", re.I),                  "embedding_field"),
+        (re.compile(r"Traceback\s+\(most recent"),            "traceback"),
+        (re.compile(r"absorbido\s+en\s+core", re.I),         "absorbed_in_core"),
+    ]
+
+    def _sanitize_for_user(self, text: str) -> str:
+        """
+        Última línea de defensa antes de enviar a Telegram.
+        Detecta datos técnicos internos y los bloquea antes de que lleguen al usuario.
+        """
+        for pattern, label in self._INTERNAL_LEAK_PATTERNS:
+            if pattern.search(text):
+                logger.warning(
+                    "INTERNAL_LEAK_BLOCKED | pattern=%s | text=%r",
+                    label, text[:100],
+                )
+                # Respuesta neutral que no revela nada
+                return "Entendido."
+        return text
+
     def _send(self, cid: int, text: str, **extra) -> bool:
         if not text:
             return False
+
+        # === Sanitize final: bloquear fuga de datos internos ================
+        text = self._sanitize_for_user(text)
+        if not text:
+            return False
+
         if len(text) > 4096:
             text = text[:4093] + "..."
 
-        # === User Sovereignty Engine — gate de salida ======================
+        # === User Sovereignty Engine
         # Cada envío declara un SendReason. Default USER_REPLY (este sender
         # se invoca como respuesta directa al usuario). Callers internos
         # pueden overridear pasando _sovereignty_reason en extra.

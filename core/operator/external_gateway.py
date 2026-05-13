@@ -110,6 +110,49 @@ class GatewayResult:
 
 
 # ---------------------------------------------------------------------------
+# Helpers STORE path — confirmación natural sin datos técnicos
+# ---------------------------------------------------------------------------
+import re as _re_store  # evitar colisión con re importado localmente
+
+_EXPLICIT_SAVE_RE = _re_store.compile(
+    # Patrones con palabra completa (requieren \b)
+    r"(?:\b(?:guardar?|guarda|recuerdame|recuérdame|recuerda\s+que|recuerda\s+esto|"
+    r"remember(?:\s+that)?|save(?:\s+this)?|anota[r]?|apunta[r]?|"
+    r"keep\s+in\s+mind|don'?t\s+forget|guarda\s+esto|toma\s+nota)\b"
+    # Patrones que terminan en ':' (no requieren \b al final)
+    r"|nota[r]?\s*:\s*\w)",
+    _re_store.I,
+)
+
+
+def _is_explicit_save_request(content: str) -> bool:
+    """True si el usuario pidió explicitamente guardar/recordar algo."""
+    return bool(_EXPLICIT_SAVE_RE.search(content))
+
+
+def _natural_store_confirmation(content: str, lang: str = "es") -> str:
+    """
+    Genera una confirmación natural para solicitudes explícitas de guardar.
+    Nunca incluye IDs, pesos, capas ni información técnica interna.
+    """
+    # Intentar extraer qué se guardó
+    _extract = _re_store.search(
+        r"(?:recuerda\s+que|recuérdame\s+que|recuerda[r]?:\s*|nota:\s*|"
+        r"anota[r]?:\s*|guardar?:\s*)(.{5,120})",
+        content, _re_store.I | _re_store.DOTALL,
+    )
+    if _extract:
+        fact = _extract.group(1).strip().rstrip(".!,")[:100]
+        if lang == "en":
+            return f"Got it: {fact}."
+        return f"Lo tengo presente: {fact}."
+    # Sin extracción específica
+    if lang == "en":
+        return "Got it."
+    return "Lo tengo."
+
+
+# ---------------------------------------------------------------------------
 # External Gateway
 # ---------------------------------------------------------------------------
 
@@ -316,10 +359,10 @@ class ExternalGateway:
                     processed=True,
                 )
 
-            # Guardar con recibo estructurado (ritual de escritura).
-            # Antes devolvía response="" — ahora emite confirmación explícita
-            # cuando la ingesta es ACEPTADA. CUARENTENA y DESCARTE se registran
-            # sin ruido para el usuario.
+            # === STORE path: guardar en memoria y confirmar naturalmente ===
+            # Si el usuario pidió EXPLICITAMENTE guardar → confirmar natural.
+            # Si fue clasificado implícitamente → guardar en silencio y caer
+            # al pipeline conversacional (el LLM responde, la memoria ya fue guardada).
             if intake.action == Action.STORE and not intake.context_hint == "identity":
                 # 1) Política de ingesta ARGOS — decide si entra
                 _ingest_result = None
@@ -332,7 +375,7 @@ class ExternalGateway:
                 except Exception as exc:
                     logger.debug("argos_ingesta unavailable: %s", exc)
 
-                # 2) Si la política descarta, no escribimos ni confirmamos.
+                # 2) Si la política descarta, no escribimos ni respondemos.
                 if _ingest_result and _ingest_result.veredicto.value == "descartar":
                     return GatewayResult(
                         event_id=correlation_id,
@@ -368,46 +411,29 @@ class ExternalGateway:
                 except Exception:
                     pass
 
-                # 4) Ritual de escritura — recibo estructurado al usuario
-                _confirmation = ""
-                try:
-                    from core.ritual_escritura import (
-                        emit_receipt, format_user_confirmation,
+                # 4) Confirmar solo si el usuario pidió guardar EXPLICITAMENTE.
+                #    Mensaje implícito (ej: "Me siento raro hoy") → NO retornar.
+                #    El pipeline LLM responderá conversacionalmente con la memoria ya guardada.
+                _lang = (anchor.language if anchor and anchor.language else "es")
+                if _is_explicit_save_request(content):
+                    _confirmation = _natural_store_confirmation(content, lang=_lang)
+                    logger.info(
+                        "STORE explicit | user=%s | confirmed=%r",
+                        user_id[:20], _confirmation[:40],
                     )
-                    _layer = "core" if _absorbed else (
-                        "facts" if _facts else "interactions"
-                    )
-                    _sources = []
-                    if _ingest_result:
-                        _sources.append(f"argos:{_ingest_result.intencion.value}")
-                    _receipt = emit_receipt(
+                    return GatewayResult(
+                        event_id=correlation_id,
                         user_id=user_id,
-                        user_input=content,
-                        layer=_layer,
-                        facts_extracted=_facts,
-                        absorbed_in_core=_absorbed,
-                        sources=_sources,
+                        channel=channel,
+                        response=_confirmation,
+                        source="intake_store",
+                        timestamp=ts,
+                        processed=True,
                     )
-                    _lang = (anchor.language if anchor and anchor.language else "es")
-                    # En CUARENTENA, reducir el recibo para no generar ruido.
-                    if _ingest_result and _ingest_result.veredicto.value == "cuarentena":
-                        _confirmation = (
-                            "✓ Anotado (cuarentena, peso bajo). id="
-                            + _receipt.receipt_id
-                        )
-                    else:
-                        _confirmation = format_user_confirmation(_receipt, lang=_lang)
-                except Exception as exc:
-                    logger.debug("ritual_escritura unavailable: %s", exc)
-
-                return GatewayResult(
-                    event_id=correlation_id,
-                    user_id=user_id,
-                    channel=channel,
-                    response=_confirmation,
-                    source="intake_store",
-                    timestamp=ts,
-                    processed=True,
+                # Implicit store: caer al pipeline conversacional
+                logger.debug(
+                    "STORE implicit — falling through to LLM | user=%s",
+                    user_id[:20],
                 )
         except Exception as exc:
             logger.debug("Intake filter failed (passthrough): %s", exc)
