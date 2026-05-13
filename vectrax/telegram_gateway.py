@@ -740,15 +740,27 @@ class TelegramGateway:
             if not text:
                 return
 
-            # === BIENVENIDA — primer mensaje de usuario nuevo ===
+            # === ONBOARDING — dos pasos: presencia → nombre → comandos ===
             _t = text.strip()
-            if self._is_new_user(tg_uid):
-                self._send_welcome(cid, tg_uid)
-                # Continuar procesando el mensaje normalmente
+            _ob = self._get_onboarding_state(tg_uid)
 
-            # === /start — siempre muestra bienvenida ===
+            # Paso 1: usuario nuevo → presencia pura, sin comandos, esperar nombre
+            if _ob["state"] == "none":
+                self._send_presence(cid, tg_uid)
+                return
+
+            # Paso 2: esperando nombre → cualquier mensaje no-comando es el nombre
+            if _ob["state"] == "awaiting_name" and not _t.startswith("/"):
+                self._complete_onboarding(cid, tg_uid, _t)
+                return
+
+            # /start → comportamiento según estado
             if _t.lower() in ("/start", "start"):
-                self._send_welcome(cid, tg_uid)
+                if _ob["state"] == "completed":
+                    _name = _ob.get("name", "")
+                    self._send(cid, f"Ya estoy aqu\u00ed, {_name}." if _name else "Ya estoy aqu\u00ed.")
+                else:
+                    self._send_presence(cid, tg_uid)
                 return
 
             # === LEAD COMMANDS: /lead — accesibles a todos los usuarios ===
@@ -1572,56 +1584,77 @@ class TelegramGateway:
             self._send(cid, f"Error: {e}")
             logger.error("lead cmd error: %s", e)
 
-    # == Bienvenida — primer mensaje ==========================================
+    # == Onboarding — dos pasos idempotentes ===================================
 
-    _welcomed: set = set()  # cache en sesión (se resetea al reiniciar)
+    _welcomed: set = set()  # mantener por compatibilidad con código existente
 
-    def _is_new_user(self, tg_uid: str) -> bool:
-        """
-        True si es la primera vez que este usuario escribe.
-        Verifica contra SQLite para sobrevivir reinicios.
-        """
-        if tg_uid in self._welcomed:
-            return False
+    def _get_onboarding_state(self, tg_uid: str) -> dict:
+        """Lee el estado de onboarding desde vault. Fail-safe: retorna none."""
         try:
-            import sqlite3 as _sq
-            _db = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                "vault", "user_memory.db",
-            )
-            conn = _sq.connect(_db, timeout=2)
-            count = conn.execute(
-                "SELECT COUNT(*) FROM interactions WHERE user_id=?", (tg_uid,)
-            ).fetchone()[0]
-            conn.close()
-            if count == 0:
-                return True
-        except Exception:
-            pass
+            from vectrax.onboarding import get_state
+            return get_state(tg_uid)
+        except Exception as exc:
+            logger.debug("onboarding get_state failed: %s", exc)
+            return {"state": "none", "name": "", "welcome_sent": False}
+
+    def _send_presence(self, cid: int, tg_uid: str) -> None:
+        """
+        Paso 1: mensaje de presencia puro.
+        Sin comandos. Esperar nombre del usuario.
+        """
+        self._send(cid,
+            "Hola. Soy Vectrax.\n\n"
+            "Estoy aqu\u00ed para cualquier cosa que necesites.\n\n"
+            "Dime tu nombre y ser\u00e9 tuyo infinitamente."
+        )
+        try:
+            from vectrax.onboarding import set_welcome_sent
+            set_welcome_sent(tg_uid)
+        except Exception as exc:
+            logger.debug("onboarding set_welcome_sent failed: %s", exc)
         self._welcomed.add(tg_uid)
-        return False
+        logger.info("Presence sent | user=%s", tg_uid[:20])
+
+    def _complete_onboarding(self, cid: int, tg_uid: str, name_raw: str) -> None:
+        """
+        Paso 2: guardar nombre y enviar comandos disponibles.
+        Responde con reconocimiento + lista de comandos.
+        """
+        # Limpiar: title-case, máximo 60 chars
+        name = name_raw.strip()
+        # Si el usuario escribió varias palabras tipo "soy Mario", extraer nombre
+        import re as _re
+        _name_match = _re.search(
+            r"(?:soy|me\s+llamo|my\s+name\s+is|i'?m|je\s+m'?appelle|ich\s+bin|sono)\s+([A-Za-z\u00c0-\u024f]{2,})",
+            name, _re.I
+        )
+        if _name_match:
+            name = _name_match.group(1)
+        # Title-case y recortar
+        name = name.title()[:60]
+
+        try:
+            from vectrax.onboarding import set_completed
+            set_completed(tg_uid, name)
+        except Exception as exc:
+            logger.debug("onboarding set_completed failed: %s", exc)
+
+        self._send(cid, (
+            f"Ya te reconozco, {name}.\n\n"
+            "Ahora puedes hablarme normal o usar estos comandos cuando los necesites:\n\n"
+            "/lead add nombre \u2014 guardar seguimiento\n"
+            "/lead view nombre \u2014 ver seguimiento\n"
+            "/lead summary \u2014 resumen de leads\n"
+            "/team new nombre \u2014 crear equipo\n"
+            "/team join c\u00f3digo \u2014 unirte a equipo\n"
+            "/vx stats \u2014 estado del sistema\n"
+            "/help \u2014 ver todos los comandos"
+        ))
+        logger.info("Onboarding completed | user=%s | name=%s", tg_uid[:20], name)
 
     def _send_welcome(self, cid: int, tg_uid: str) -> None:
-        """Envía el mensaje de bienvenida y registra al usuario."""
-        # Detectar idioma del sistema o usar español por defecto
-        try:
-            from core.language_gate import get_user_language
-            lang = get_user_language(tg_uid, "")
-        except Exception:
-            lang = "es"
-
-        messages = {
-            "es": "Hola. Soy Vectrax.\nGuarda un seguimiento con:\n/lead add nombre\n\n👉 /help para ver todos los comandos",
-            "en": "Hey. I'm Vectrax.\nSave a follow-up with:\n/lead add name\n\n👉 /help to see all commands",
-            "fr": "Salut. Je suis Vectrax.\nEnregistre un suivi avec:\n/lead add prénom",
-            "it": "Ciao. Sono Vectrax.\nSalva un follow-up con:\n/lead add nome",
-            "de": "Hallo. Ich bin Vectrax.\nSpeichere einen Kontakt mit:\n/lead add Name",
-            "pt": "Olá. Sou Vectrax.\nGuarda um seguimento com:\n/lead add nome",
-        }
-        msg = messages.get(lang, messages["es"])
-        self._send(cid, msg)
-        self._welcomed.add(tg_uid)
-        logger.info("Welcome sent | user=%s | lang=%s", tg_uid[:20], lang)
+        """Alias de compatibilidad — delega a _send_presence."""
+        self._send_presence(cid, tg_uid)
 
     # == Team commands (público) =============================================
 
