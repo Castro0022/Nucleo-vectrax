@@ -806,7 +806,11 @@ class TelegramGateway:
                     self._send_presence(cid, tg_uid)
                 return
 
-            # === LEAD COMMANDS: /lead — accesibles a todos los usuarios ===
+            # === IDIOMA — preguntar si ambiguo, resolver si respuesta pendiente ===
+            if not _t.startswith("/") and self._check_language_ambiguity(cid, tg_uid, _t):
+                return
+
+            # === LEAD COMMANDS
             if re.match(r"^/?lead\b", _t, re.IGNORECASE):
                 self._handle_lead(cid, tg_uid, _t)
                 return
@@ -1630,6 +1634,7 @@ class TelegramGateway:
     # == Onboarding — dos pasos idempotentes ===================================
 
     _welcomed: set = set()  # mantener por compatibilidad con código existente
+    _lang_pending: set = set()  # usuarios esperando confirmar su idioma
 
     def _get_onboarding_state(self, tg_uid: str) -> dict:
         """Lee el estado de onboarding desde vault. Fail-safe: retorna none."""
@@ -1698,6 +1703,66 @@ class TelegramGateway:
     def _send_welcome(self, cid: int, tg_uid: str) -> None:
         """Alias de compatibilidad — delega a _send_presence."""
         self._send_presence(cid, tg_uid)
+
+    # == Idioma — detectar ambigüedad y resolver =================================
+
+    def _check_language_ambiguity(self, cid: int, tg_uid: str, text: str) -> bool:
+        """
+        Gestiona la claridad del idioma en tres pasos:
+
+        1. Si el idioma del mensaje es claro → continuar (return False).
+        2. Si es ambiguo y no hay idioma guardado → preguntar (return True).
+        3. Si estaba pendiente la respuesta → guardar idioma y continuar (return False).
+
+        Returns:
+            True  — se hizo la pregunta; no procesar el mensaje.
+            False — continuar el flujo normal.
+        """
+        # === Paso 3: este mensaje ES la respuesta a la pregunta de idioma ===
+        if tg_uid in self._lang_pending:
+            self._lang_pending.discard(tg_uid)
+            # Guardar idioma detectado del mensaje-respuesta.
+            # apply_language_policy también se llamará más adelante en el pipeline;
+            # esta llamada garantiza que quede guardado aunque el mensaje sea corto.
+            try:
+                from core.operator.conversational_policy import apply_language_policy
+                apply_language_policy(tg_uid, text)
+            except Exception as _exc:
+                logger.debug("lang apply failed after pending: %s", _exc)
+            logger.info("Language resolved | user=%s | answer=%r", tg_uid[:20], text[:40])
+            return False  # continuar: el pipeline responderá en el idioma guardado
+
+        # === Saltar para mensajes cortos o comandos ===
+        # is_mixed_language requiere ≥5 palabras; mensajes cortos no son ambiguüables.
+        if text.startswith("/") or len(text.split()) < 5:
+            return False
+
+        # === Saltar si ya hay idioma guardado ===
+        try:
+            from core.operator.conversational_policy import _get_user_language
+            if _get_user_language(tg_uid):
+                return False
+        except Exception:
+            pass
+
+        # === Paso 2: detectar ambigüedad ===
+        try:
+            from core.language_gate import detect_language, is_mixed_language
+            lang_detected = detect_language(text)
+            mixed = is_mixed_language(text)
+
+            if mixed or lang_detected == "unknown":
+                self._lang_pending.add(tg_uid)
+                self._send(cid, "\u00bfEn qu\u00e9 idioma quieres que te responda?")
+                logger.info(
+                    "Language ambiguous — asked user | user=%s | mixed=%s | detected=%s",
+                    tg_uid[:20], mixed, lang_detected,
+                )
+                return True  # detener; esperar respuesta
+        except Exception as _exc:
+            logger.debug("language ambiguity check failed: %s", _exc)
+
+        return False
 
     # == Team commands (público) =============================================
 
