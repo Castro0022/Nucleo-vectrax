@@ -44,6 +44,22 @@ async def chat(
 
         db.init_db()
 
+        # ── CICLO DE CONVERGENCIA TOTAL (7 fases obligatorias) ────────────────
+        # Fases garantizadas ANTES de generar respuesta:
+        #   [3] Memoria Estructural → conecta con patrones previos
+        #   [6] Gravitación         → almacena en núcleo según peso
+        try:
+            from core.convergence_hook import run_convergence_cycle
+            run_convergence_cycle(
+                body.text,
+                source="api",
+                channel=ctx.channel,
+                owner=ctx.owner,
+            )
+        except Exception as _ce:
+            logger.warning("convergence_hook non-fatal (api): %s", _ce)
+        # ─────────────────────────────────────────────────────────────────────
+
         # ---- Resolve --------------------------------------------------------
         resolution = resolve(body.text, ctx.channel, ctx.owner)
         mode = resolution.mode  # "memory" | "local" | "online"

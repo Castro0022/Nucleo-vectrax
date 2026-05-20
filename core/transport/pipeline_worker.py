@@ -339,6 +339,28 @@ def _process_one(msg):
             msg.id, msg.user_id, (msg.content or "")[:120],
         )
 
+        # ── CICLO DE CONVERGENCIA TOTAL (7 fases obligatorias) ────────────────
+        # Fases garantizadas ANTES de generar respuesta:
+        #   [3] Memoria Estructural → conecta con patrones previos
+        #   [6] Gravitación         → almacena en núcleo según peso
+        # Non-fatal: si el motor falla, el pipeline continúa normalmente.
+        from core.convergence_hook import run_convergence_cycle, should_block
+        _conv_record = run_convergence_cycle(
+            msg.content,
+            source="telegram",
+            channel=msg.channel or "telegram",
+            owner=msg.user_id,
+            metadata={"msg_id": msg.id},
+        )
+        if should_block(_conv_record):
+            logger.warning(
+                "CONV_BLOCK msg_id=%s user=%s — governor bloqueó el mensaje",
+                msg.id, msg.user_id,
+            )
+            mark_done(msg.id, "blocked_by_convergence")
+            return True
+        # ─────────────────────────────────────────────────────────────────────
+
         result = gw.receive_message(
             user_id=msg.user_id,
             content=msg.content,
