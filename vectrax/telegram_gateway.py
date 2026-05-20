@@ -1206,7 +1206,8 @@ class TelegramGateway:
                     "/vx fallbacks — intenciones fallidas (7 días)\n"
                     "/vx users — usuarios activos\n"
                     "/vx flush — limpiar cache de sesión\n"
-                    "/vx sql <query> — consulta SQL directa (solo lectura)"
+                    "/vx sql <query> — consulta SQL directa (solo lectura)\n"
+                    "/vx presencia [on|off] — modo Presencia Pura (zero tokens)"
                 ))
 
             elif cmd == "lang":
@@ -1398,6 +1399,41 @@ class TelegramGateway:
                 for uid, name, lang in rows:
                     lines.append(f"  {uid} | {name or '(sin nombre)'} | {lang or '?'}")
                 self._send(cid, "\n".join(lines))
+
+            elif cmd == "presencia":
+                from core.nucleus.presencia_pura import activate, deactivate, status
+                if not arg or arg.lower() == "status":
+                    s = status()
+                    icon = "\u26ab" if s["active"] else "\u2705"
+                    self._send(cid, (
+                        f"{icon} Modo: {s['mode']}\n"
+                        f"LLM bloqueado: {'Sí' if s['llm_blocked'] else 'No'}\n"
+                        f"Búsqueda externa: {'Bloqueada' if s['online_blocked'] else 'Activa'}\n"
+                        f"Convergencia: Activa (siempre)\n"
+                        f"Memoria: Activa (siempre)\n"
+                        + (f"Activado por: {s['activated_by']}\n" if s['activated_by'] else "")
+                        + (f"Desde: {s['activated_at'][:19]}" if s['activated_at'] else "")
+                    ))
+                elif arg.lower() in ("on", "activar", "1"):
+                    result = activate(activated_by=tg_uid)
+                    self._send(cid, (
+                        "\u26ab Presencia Pura activada.\n"
+                        "Núcleo activo. Tokens externos bloqueados.\n"
+                        "Solo rutas internas: memoria, identidad, convergencia."
+                    ))
+                elif arg.lower() in ("off", "desactivar", "0"):
+                    result = deactivate(deactivated_by=tg_uid)
+                    self._send(cid, (
+                        "\u2705 Modo STANDARD restaurado.\n"
+                        "Todos los motores disponibles."
+                    ))
+                else:
+                    self._send(cid, (
+                        "Uso:\n"
+                        "/vx presencia       — ver estado\n"
+                        "/vx presencia on    — activar\n"
+                        "/vx presencia off   — desactivar"
+                    ))
 
             elif cmd == "flush":
                 from vectrax.identity_anchor import _session

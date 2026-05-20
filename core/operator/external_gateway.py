@@ -1619,6 +1619,14 @@ class ExternalGateway:
                 logger.info("Pipeline: MARKET resolve empty, falling through")
 
             if smart_route.strategy == Strategy.RESOLVE_ONLINE:
+                # ── PRESENCIA PURA — bloquear búsqueda online externa ────────
+                try:
+                    from core.nucleus.presencia_pura import check_and_block_online
+                    if check_and_block_online():
+                        return "", "presencia_pura"
+                except Exception:
+                    pass
+                # ────────────────────────────────────────────────
                 # CAPA 1 — CONTEXTUAL FOLLOW-UP GUARD
                 # Si el mensaje es corto Y hay turno reciente activo,
                 # NO ir a web: el usuario casi seguro está continuando el
@@ -1683,7 +1691,13 @@ class ExternalGateway:
                     sr.record_feedback(smart_route, success=True, word_count=word_count)
                     logger.info("Pipeline: LOCAL resolved | stars=%d | len=%d", resolution.context_stars, len(answer))
                     return answer, resolve_mode
-                # Si local insuficiente → fallback a online
+                # Si local insuficiente → fallback a online (bloqueado en Presencia Pura)
+                try:
+                    from core.nucleus.presencia_pura import check_and_block_online
+                    if check_and_block_online():
+                        return "", "presencia_pura"
+                except Exception:
+                    pass
                 from vectrax.resolver import resolve_online
                 resolution = resolve_online(content, internal_channel, user_id)
                 answer = resolution.sovereign_answer or resolution.answer or ""
@@ -1742,6 +1756,13 @@ class ExternalGateway:
         # FALLBACK — resolver cognitivo clásico (si SmartRouter falló)
         # ══════════════════════════════════════════════════════════════
         if not answer:
+            # ── PRESENCIA PURA — bloquear fallback externo ────────────────
+            try:
+                from core.nucleus.presencia_pura import check_and_block_online
+                if check_and_block_online():
+                    return "", "presencia_pura"
+            except Exception:
+                pass
             try:
                 from vectrax.resolver import resolve, resolve_local, _detect_lang
                 resolution = resolve(content, internal_channel, user_id)
@@ -1878,6 +1899,16 @@ class ExternalGateway:
             CREATOR MODE + PERCEPCIÓN OPERACIONAL). Es race-safe —
             ya no se lee de self.
         """
+        # ── PRESENCIA PURA — bloqueo de tokens externos ────────────────────
+        # Si el modo está activo, retornar inmediatamente sin llamar
+        # al Intelligence Router ni al fallback de OpenAI.
+        try:
+            from core.nucleus.presencia_pura import check_and_block_llm
+            if check_and_block_llm():
+                return ""
+        except Exception:
+            pass
+        # ─────────────────────────────────────────────────────
         from vectrax.identity_layer import build_prompt
 
         # Merge contexts: extra (pipeline-level) primero, luego memory

@@ -47,6 +47,10 @@ DEFAULT_STATE = {
     # Total Convergence
     "convergence_mode": "INACTIVE",
     "convergence_activated_at": None,
+    # Presencia Pura
+    "nucleus_mode": "STANDARD",
+    "nucleus_mode_activated_at": None,
+    "nucleus_mode_activated_by": None,
 }
 
 
