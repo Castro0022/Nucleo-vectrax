@@ -2,7 +2,67 @@
 
 All notable changes to Vectrax are documented in this file.
 
-## [2026-04-11] — Gateway Debug Logging + Bottleneck Analysis
+## [2026-05-20] — Ciclo de Convergencia Total vinculado al pipeline de mensajes
+
+### Problema
+Todo mensaje entrante (Telegram y API REST) pasaba directamente al motor de
+respuesta sin ejecutar el ciclo cognitivo de 7 fases definido en
+`core/nucleus/total_convergence.py`. Las fases [3] Memoria Estructural y
+[6] Gravitación — esenciales para conectar con patrones previos y almacenar
+el conocimiento con peso gravitacional — eran ignoradas en producción.
+
+### Solución
+
+**`core/convergence_hook.py`** — nuevo módulo wrapper (singleton, non-fatal)
+- Encapsula `TotalConvergenceEngine.process()` en una función inyectable
+- Non-fatal: si el motor falla, el pipeline continúa sin interrupciones
+- Loggea evidencia de fases [3] y [6] por cada mensaje procesado
+- Expone `should_block()` para cortar el pipeline si `action=block`
+
+**`core/transport/pipeline_worker.py`** — inyección en `_process_one()`
+- `run_convergence_cycle()` ejecuta ANTES de `ExternalGateway.receive_message()`
+- Cada mensaje Telegram pasa por las 7 fases antes de generar respuesta
+- Si `action_recommended=block`, el pipeline se corta sin enviar al usuario
+
+**`services/core/routes/chat.py`** — inyección en `POST /v1/chat`
+- `run_convergence_cycle()` ejecuta ANTES de `resolver.resolve()`
+- Mensajes vía API REST también pasan por el ciclo completo
+
+### Flujo garantizado post-deploy
+```
+Mensaje → [3] Memoria Estructural → [6] Gravitación → receive_message() → Respuesta
+```
+
+### Verificación en producción (2026-05-20 11:10 UTC)
+```
+OK  ciclo=CONV-0149BBD5
+    fases_completadas=7/7
+    [3] memoria=True
+    [6] gravitacion=True
+    action=proceed
+    tier=HOT
+    connections=10
+    tiempo=174.1ms
+```
+
+### Tests
+- `tests/integration/test_convergence_integration.py`: 32 tests, 100% PASSED (0.28s)
+- Cobertura: 7 fases ejecutadas, orden [3]→[6], non-fatal, bloqueo, singleton,
+  activación automática, fuentes múltiples (telegram/api/webhook/web)
+
+### Archivos modificados
+- `core/convergence_hook.py` (nuevo)
+- `core/transport/pipeline_worker.py`
+- `services/core/routes/chat.py`
+- `tests/integration/test_convergence_integration.py` (nuevo)
+
+### Commit / Deploy
+- Commit: `910681d`
+- Deploy: Vultr `140.82.28.181` — `vectrax-core` Up (healthy) — 2026-05-20 11:09 UTC
+
+---
+
+## [2026-04-11]
 
 ### Changes
 - Added `RotatingFileHandler` to gateway (`~/.vectrax/gateway.log`, 5MB x3)
