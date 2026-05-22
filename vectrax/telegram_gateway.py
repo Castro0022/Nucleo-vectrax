@@ -70,8 +70,11 @@ WORKERS = 6
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeat writes
 STATUS_LOG_INTERVAL = 300  # log status summary every 5 min
 POLL_CLIENT_REFRESH = 1800  # recreate HTTP client every 30 min to avoid stale TCP
-POLL_STUCK_THRESHOLD = 35  # PALLIATIVE (was 60): tighter while Bug #3 under investigation
-POLL_ALARM_TIMEOUT = POLL_TIMEOUT + 2   # PALLIATIVE (was +15, now 32s): tight margin vs long-poll
+# POLL_STUCK_THRESHOLD: watchdog kills process if poll hasn't completed in N seconds.
+# Must be > POLL_ALARM_TIMEOUT (32s) to give SIGALRM time to fire first,
+# but low enough to catch cases where SIGALRM can't interrupt C-level code.
+POLL_STUCK_THRESHOLD = 35
+POLL_ALARM_TIMEOUT = POLL_TIMEOUT + 2   # 32s: SIGALRM fires before 35s watchdog
 _OFFSET_FILE = os.path.join(os.path.expanduser("~"), ".vectrax", "gateway_offset")
 
 
@@ -678,14 +681,26 @@ class TelegramGateway:
                     _save_offset(self._offset)
 
             except _PollTimeout:
-                # SIGALRM fired — the poll was stuck at the C/OS level
+                # SIGALRM fired — the poll was stuck at the C/OS level.
                 signal.alarm(0)  # cancel any pending alarm
                 logger.warning(
-                    "SIGALRM | Poll exceeded %ds hard timeout — refreshing client",
+                    "SIGALRM | Poll exceeded %ds hard timeout — abandoning dead socket",
                     POLL_ALARM_TIMEOUT,
                 )
-                # close_old=True: SIGALRM already aborted the post; no active request on old client.
-                self._refresh_poll_client(close_old=True)
+                # ROOT CAUSE FIX (REPEAT FAILURE #324, every ~10800s):
+                # close_old=False — do NOT call old_client.close() here.
+                #
+                # When Telegram's load balancer silently drops the TCP connection
+                # at ~3h (10800s), the next poll blocks on a dead SSL socket.
+                # SIGALRM interrupts the Python frame, but old_client.close() then
+                # attempts an SSL shutdown handshake on the broken socket, which
+                # blocks at the C level, holds the GIL, and prevents the heartbeat
+                # daemon thread from running → os._exit() never fires → supervisor
+                # detects stale heartbeat (40s threshold) and kills the process.
+                #
+                # Abandoning the socket (close_old=False) leaks one fd every ~3h —
+                # acceptable. The garbage collector will eventually reclaim it.
+                self._refresh_poll_client(close_old=False)
                 self._last_poll_ok = time.time()
                 # Fresh client just created; any pending refresh signal is obsolete.
                 self._needs_poll_refresh = False
