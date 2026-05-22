@@ -2,6 +2,90 @@
 
 All notable changes to Vectrax are documented in this file.
 
+## [2026-05-22b] — ConvergenceLearner: cierra el ciclo de conciencia operacional
+
+### Contexto
+PresenciaObserver observaba y deciía. No aprendia. ConvergenceLearner cierra
+el ciclo: observa las decisiones, detecta patrones de degradación por motor,
+y propone ajustes de umbrales con evidencia — nunca aplica nada sin autorización.
+PresenciaObserver observa. ConvergenceLearner la entrena.
+
+### Cambios
+
+**`core/nucleus/convergence_learner.py`** — nuevo módulo (667 líneas)
+- `LearnerPhase`: `OBSERVE` / `LEARN` / `RECOMMEND` / `APPLY`
+- `OutcomeQuality`: `IMPROVED` / `NEUTRAL` / `DEGRADED` / `UNKNOWN`
+- `DecisionOutcome`: registro de una decisión con validación de scores (0.0–1.0)
+- `MotorPattern`: patrón detectado con `degradation_rate`, `confidence`, `sample_size`
+- `ThresholdRecommendation`: propuesta de ajuste con `reasoning`, `direction`, `status`
+- `ConvergenceLearner`: clase principal con 4 fases controladas:
+  - `record_decision()` — registra al momento de decidir
+  - `record_outcome()` — registra resultado posterior
+  - `analyze()` — detecta patrones (mín. 5 muestras, 40% degradación)
+  - `generate_recommendations()` — propone ajustes sin modificar nada
+  - `approve_recommendation()` / `reject_recommendation()` — autorización del creador
+  - `advance_phase()` — progresa solo si hay datos suficientes
+- Singleton `get_learner()` / `reset_learner()`
+
+**`core/nucleus/presencia_pura.py`** — integración bidireccional
+- `InhibitionRecord.learner_outcome_id`: conecta cada decisión al learner
+- `PresenciaObserver.evaluate()`: auto-registra en `get_learner()` (non-fatal)
+
+**`core/operator/activation.py`** — step 4d
+- Inicializa `ConvergenceLearner` singleton en fase OBSERVE al arrancar
+
+**`tests/integration/test_convergence_learner.py`** — nuevo (49 tests)
+
+### Principio cableado en el código
+```
+Si hay convergencia clara, soberanía suficiente y bajo ruido: EJECUTA.
+Intervén solo cuando hay riesgo real.
+ConvergenceLearner optimiza los umbrales para que esto siempre se cumpla.
+```
+
+### Flujo OBSERVE → APPLY
+```
+PresenciaObserver.evaluate(signal)
+    │ decision=PERMIT/PAUSE/SILENCE/BLOCK
+    └─ record.learner_outcome_id  ───┐
+                                      │
+ConvergenceLearner.record_decision()  ┘  [auto, non-fatal]
+ConvergenceLearner.record_outcome(id, IMPROVED|DEGRADED|NEUTRAL)
+ConvergenceLearner.analyze()          [detecta patrones]
+ConvergenceLearner.generate_recommendations(thresholds)
+ConvergenceLearner.approve_recommendation(rec_id, "creator")  [requiere autorizacion]
+→ El creador aplica el nuevo umbral a PresenciaObserver
+```
+
+### Verificación en producción (2026-05-22 01:34 UTC)
+```
+OK: learner.phase=observe
+OK: evaluadas=13 decisiones
+OK: known_outcomes=13
+OK: nucleo PERMIT=7/7     (nucleo limpio siempre ejecuta)
+OK: externo BLOCK=6/6     (LLM externos siempre evaluados)
+OK: step_4d=True          (inicializado en activation.py)
+```
+
+### Tests
+- `tests/integration/test_convergence_learner.py`:  49 tests, 100% PASSED (0.23s)
+- `tests/integration/test_presencia_inhibitor.py`: 55 tests, 100% PASSED
+- `tests/integration/test_presencia_pura.py`:      31 tests, 100% PASSED
+- Total: **135 tests, 0 fallos**
+
+### Archivos modificados
+- `core/nucleus/convergence_learner.py` (nuevo: +667 líneas)
+- `core/nucleus/presencia_pura.py` (+25 líneas: learner_outcome_id + auto-registro)
+- `core/operator/activation.py` (step 4d: +10 líneas)
+- `tests/integration/test_convergence_learner.py` (nuevo: +697 líneas)
+- `README.md` (sección ConvergenceLearner añadida)
+
+### Commits / Deploy
+- Commit: `de49443`
+- Deploy: Vultr `140.82.28.181` — `vectrax-core` Up (healthy) — 2026-05-22 01:34 UTC
+
+---
+
 ## [2026-05-22] — PresenciaObserver: capa inhibidora de motores
 
 ### Contexto

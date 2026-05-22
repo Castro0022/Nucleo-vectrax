@@ -116,6 +116,7 @@ Vectrax is a universal AI infrastructure layer that:
 - **Total Convergence** - Every message runs a mandatory 7-phase cycle (perception → classification → memory → analysis → synthesis → gravitation → learning) before any response is generated
 - **Presencia Pura** - Nucleus mode that blocks all external LLMs and web searches while keeping the full internal cognitive cycle active
 - **PresenciaObserver** - Inhibitor layer that observes all system motors, scores each emission by origin sovereignty and convergence, and decides: `PERMIT` / `PAUSE` / `SILENCE` / `BLOCK` — without replacing any motor
+- **ConvergenceLearner** - Closes the operational awareness cycle: observes PresenciaObserver decisions, detects degradation patterns per motor, and proposes threshold adjustments with evidence — never applies changes without creator authorization
 
 ## 🚀 Quick Start
 
@@ -319,8 +320,9 @@ Cross-cutting Concerns:
 |------|--------|---------|
 | 1 | `core/nucleus/total_convergence.py` | Ciclo de 7 fases — ejecuta en cada mensaje |
 | 1 | `core/nucleus/presencia_pura.py` | Modo Presencia Pura + **PresenciaObserver** |
+| 1 | `core/nucleus/convergence_learner.py` | **ConvergenceLearner** — observar → aprender → recomendar |
 | 9 | `core/operator/universal_bus.py` | Bus centralizado de eventos entre capas |
-| 9 | `core/operator/activation.py` | Activación del runtime + wiring del observer |
+| 9 | `core/operator/activation.py` | Activación del runtime + wiring de observer + learner |
 
 ### PresenciaObserver — reglas de inhibición
 
@@ -345,13 +347,44 @@ from core.nucleus.presencia_pura import get_observer
 get_observer().set_mode("ACTIVE")
 ```
 
+### ConvergenceLearner — ciclo de aprendizaje
+
+No reemplaza PresenciaPura. La **entrena** con datos reales.
+
+```
+OBSERVE    ─ registra cada decisión + resultado posterior (IMPROVED/NEUTRAL/DEGRADED)
+    ↓
+LEARN      ─ detecta patrones por motor cuando hay ≥5 muestras y ≥40% degradación
+    ↓
+RECOMMEND  ─ propone ajustes de umbral con evidencia (nunca modifica sin autorización)
+    ↓
+APPLY      ─ el creador aprueba o rechaza — el learner no toca PresenciaPura directamente
+```
+
+**Principio central:**
+Si hay convergencia clara, soberanía suficiente y bajo ruido — **Vectrax ejecuta**.
+ConvergenceLearner optimiza los umbrales para que este principio siempre se cumpla.
+
+```python
+# Consultar estado del learner:
+from core.nucleus.convergence_learner import get_learner
+print(get_learner().report())
+
+# Registrar resultado de una decisión:
+from core.nucleus.convergence_learner import OutcomeQuality
+get_learner().record_outcome(record.learner_outcome_id, OutcomeQuality.IMPROVED)
+
+# Aprobar una recomendación (requiere autorización del creador):
+get_learner().approve_recommendation(rec_id, approved_by="creator")
+```
+
 ## 📊 Project Stats
 
-- **Total Code**: ~4,800 lines production + ~1,100 lines tests
-- **Test Coverage**: 41/43 tests passing (95.3%)
-- **Modules**: 6 major components
-- **Documentation**: 2,000+ lines
-- **Development Time**: ~3 hours (6 phases × 30 min)
+- **Total Code**: ~6,200 lines production + ~1,800 lines tests
+- **Test Coverage**: 135/135 tests passing (100%)
+- **Modules**: 6 major components + Nucleus cognitive layer
+- **Documentation**: 2,500+ lines
+- **Nucleus Tests**: 135 passing (31 PresenciaPura + 55 PresenciaObserver + 49 ConvergenceLearner)
 
 ## 🧪 Testing
 
