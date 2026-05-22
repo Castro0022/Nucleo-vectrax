@@ -1,73 +1,73 @@
 {
-  "head": "f7c14e7",
+  "head": "b45b89b",
   "branch": "main",
   "recent_commits": [
     {
-      "sha": "f7c14e74",
-      "subject": "fix(intelligence_bridge): silence 'never awaited' warning when called from async context",
+      "sha": "b45b89b9",
+      "subject": "feat(nucleus): LawSignal — los 7 principios ahora pesan en PresenciaObserver",
       "author": "Mario Bravo Castro",
-      "ts": 1778354866,
-      "files_changed": 8
+      "ts": 1779416934,
+      "files_changed": 4
     },
     {
-      "sha": "3c37604f",
-      "subject": "feat: items 4-10 de auditoría — caches, persistencia, race-fix, working_memory, pending_actions, logrotate",
+      "sha": "b0ac2fe9",
+      "subject": "docs: documentar ConvergenceLearner en README y cerrar ticket",
       "author": "Mario Bravo Castro",
-      "ts": 1778354193,
-      "files_changed": 12
-    },
-    {
-      "sha": "c38248ed",
-      "subject": "fix(core): P1+P2+P3 reparación estructural de runtime, wiring y CREATOR cleanup",
-      "author": "Mario Bravo Castro",
-      "ts": 1778307342,
+      "ts": 1779413948,
       "files_changed": 3
     },
     {
-      "sha": "8a01e507",
-      "subject": "feat(creator-mode): Self Perception Layer + Creator Cognitive Mode",
+      "sha": "de494434",
+      "subject": "feat(nucleus): ConvergenceLearner — cierra el ciclo observar→aprender→recomendar",
       "author": "Mario Bravo Castro",
-      "ts": 1778305655,
-      "files_changed": 14
+      "ts": 1779413414,
+      "files_changed": 4
     },
     {
-      "sha": "caacbb7c",
-      "subject": "feat(identity): bloque CREADOR para Mario — no es 'un usuario más'",
+      "sha": "6c3b3971",
+      "subject": "docs: archivar ticket PresenciaObserver como CERRADO",
       "author": "Mario Bravo Castro",
-      "ts": 1778304165,
+      "ts": 1779412408,
       "files_changed": 1
     },
     {
-      "sha": "286c2496",
-      "subject": "feat(continuity): idempotencia de update_id Telegram para cerrar redelivery bug",
+      "sha": "59ffaa52",
+      "subject": "docs: documentar PresenciaObserver en README y CHANGELOG",
       "author": "Mario Bravo Castro",
-      "ts": 1778303599,
+      "ts": 1779412290,
+      "files_changed": 2
+    },
+    {
+      "sha": "6dbbdf18",
+      "subject": "feat(presencia_pura): implementar capa inhibidora PresenciaObserver",
+      "author": "Mario Bravo Castro",
+      "ts": 1779410507,
+      "files_changed": 3
+    },
+    {
+      "sha": "446ddb52",
+      "subject": "feat(nucleus): implementar modo Presencia Pura — zero tokens, núcleo activo",
+      "author": "Mario Bravo Castro",
+      "ts": 1779297541,
       "files_changed": 5
     },
     {
-      "sha": "eaed5e4a",
-      "subject": "fix(voice): voice_forbidden → texto-solo (NO fallback a sendAudio)",
+      "sha": "b382aae4",
+      "subject": "docs(changelog): registrar despliegue del ciclo de convergencia total [2026-05-20]",
       "author": "Mario Bravo Castro",
-      "ts": 1778300879,
-      "files_changed": 1
-    },
-    {
-      "sha": "0409fdcb",
-      "subject": "fix(voice): fallback automático sendVoice→sendAudio si VOICE_MESSAGES_FORBIDDEN",
-      "author": "Mario Bravo Castro",
-      "ts": 1778300485,
+      "ts": 1779275559,
       "files_changed": 1
     }
   ],
   "modified_modules": [
-    "core/voice/telegram_dispatch.py",
-    "vectrax/telegram_gateway.py",
-    "core/transport/pipeline_worker.py",
-    "core/voice/synthesizer.py",
-    "tests/voice/test_synthesizer.py",
+    "core/nucleus/presencia_pura.py",
+    "CHANGELOG.md",
     "core/operator/external_gateway.py",
-    "vectrax/identity_layer.py",
-    "core/voice/visual_humanizer.py"
+    "README.md",
+    "core/operator/activation.py",
+    "core/nucleus/law_signal.py",
+    "tests/integration/test_law_signal.py",
+    "docs/CONVERGENCE_LEARNER_COMPLETE.md"
   ],
-  "generated_at": 1778357564
+  "generated_at": 1779416958
 }
