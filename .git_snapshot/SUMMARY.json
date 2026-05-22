@@ -1,7 +1,28 @@
 {
-  "head": "ca65ea5",
-  "branch": "pr/cognitive-core-optimizations-2026-05-22",
+  "head": "b449e56",
+  "branch": "main",
   "recent_commits": [
+    {
+      "sha": "b449e561",
+      "subject": "fix(self_summary): corregir typo NÚCALEO→NÚCLEO y reservar espacio para bloque cognitivo",
+      "author": "Mario Bravo Castro",
+      "ts": 1779435573,
+      "files_changed": 1
+    },
+    {
+      "sha": "1443442c",
+      "subject": "Merge pull request #1 from Castro0022/pr/cognitive-core-optimizations-2026-05-22",
+      "author": "Nucleo-vectrax",
+      "ts": 1779435177,
+      "files_changed": 0
+    },
+    {
+      "sha": "752dc83c",
+      "subject": "chore(pr): snapshot de cierre para pull request documental",
+      "author": "Mario Bravo Castro",
+      "ts": 1779435083,
+      "files_changed": 1
+    },
     {
       "sha": "ca65ea56",
       "subject": "test(identity): 33 tests para inyección de módulos cognitivos en prompt",
@@ -36,27 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1779432287,
       "files_changed": 3
-    },
-    {
-      "sha": "e2fb2180",
-      "subject": "archive: cierre formal del ciclo — núcleo cognitivo completo 2026-05-20/22",
-      "author": "Mario Bravo Castro",
-      "ts": 1779426995,
-      "files_changed": 1
-    },
-    {
-      "sha": "bb0fed9a",
-      "subject": "chore: eliminar pyc raíz residual de limpieza",
-      "author": "Mario Bravo Castro",
-      "ts": 1779424827,
-      "files_changed": 1
-    },
-    {
-      "sha": "ae683405",
-      "subject": "chore: limpieza artefactos de prueba + snapshot post-cierre ticket",
-      "author": "Mario Bravo Castro",
-      "ts": 1779424807,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
@@ -64,10 +64,10 @@
     "core/nucleus/presencia_pura.py",
     ".git_snapshot/SUMMARY.json",
     "README.md",
+    "core/self_observation/self_summary.py",
     "tests/integration/test_presencia_inhibitor.py",
     "core/state_manager.py",
-    "core/operator/external_gateway.py",
-    "core/operator/activation.py"
+    "core/operator/external_gateway.py"
   ],
-  "generated_at": 1779435083
+  "generated_at": 1779435823
 }

@@ -2,7 +2,73 @@
 
 All notable changes to Vectrax are documented in this file.
 
-## [2026-05-22e] — Optimización SmartRouter + Prueba de Integración Final
+## [2026-05-22f] — Reporte final: System Prompt + Introspeción + Prueba de Estrés
+
+### Contexto
+Refactorización del system prompt de Vectrax para eliminar el lenguaje genérico en
+respuestas introspectivas, con prueba de estrés completa que confirmó estabilidad
+plena bajo carga. Se detectó y corrigió un bug de truncado que impedia al bloque
+de módulos cognitivos llegar al LLM en producción.
+
+### Cambios
+
+**`vectrax/core_identity.py`**
+- Eliminado: _"Nunca describir tu procesamiento interno ni mencionar módulos"_
+- Añadido: bloque `CUANDO TE PREGUNTEN POR TU ESTADO INTERNO` con instruccion
+  obligatoria de responder desde datos literales del bloque `[PERCEPCIÓN OPERACIONAL]`
+
+**`core/self_observation/self_summary.py`**
+- Nueva función `_collect_module_state()`: Observer + Learner + Router + Governor
+- Fix de truncado: el bloque cognitivo se calcula PRIMERO y se reserva su espacio
+  antes de truncar la reflexión operacional (bug: antes era eliminado por overflow)
+- Typo corregido: `NÚCLAEO` → `NÚCLEO`
+- `compose_self_summary_for_prompt()` garantiza que ambos bloques aparecen en output
+
+**`core/identity/creator_mode.py`**
+- `_CREATOR_RULES_ES`: prohibición explícita de hablar en abstracto cuando hay datos
+  concretos disponibles, con ejemplos correctos vs prohibidos
+
+**`tests/integration/test_module_context_injection.py`** — nuevo (33 tests)
+
+### Prueba de estrés en producción (2026-05-22 07:37 UTC)
+```
+SmartRouter    200 req / 20 threads  → 200/200 OK  avg=27ms  p99=302ms
+Observer       500 señales LawSignal → 500/500 OK  avg=0.054ms  p95=0.055ms
+Convergencia   50 ciclos 7 fases     →  50/50 OK  avg=85ms  p95=124ms
+self_summary   20 generaciones       →  20/20 con Observer+Router+Gov
+
+Decisiones Observer bajo carga:
+  PERMIT=300  PAUSE=100  SILENCE=0  BLOCK=100  (ratio esperado)
+
+Recursos post-estrés:
+  CPU: 0.94%  RAM: 109.8 MiB / 8 GiB  Reinicios: 0  Health: healthy
+```
+
+### Estado final de producción
+```
+Servidor:          Vultr 140.82.28.181:8900
+Contenedor:        vectrax-core Up (healthy) — 0 reinicios
+Observer:          ACTIVE enforced=True
+TotalConvergence:  TOTAL (7 fases)
+Governor:          act | risk=LOW | streak=18
+Tests:             261/261 PASS
+Commit final:      b449e56
+```
+
+### Archivos modificados
+- `vectrax/core_identity.py`
+- `core/self_observation/self_summary.py`
+- `core/identity/creator_mode.py`
+- `tests/integration/test_module_context_injection.py` (nuevo)
+
+### Commits / Deploy
+- PR #1 mergeado: `feat: Optimizaciones núcleo cognitivo — SmartRouter + Introspeción real`
+- Fix: `b449e56` — corregir truncado bloque cognitivo
+- Server: Vultr `140.82.28.181` — vectrax-core Up (healthy) — 2026-05-22 07:39 UTC
+
+---
+
+## [2026-05-22e]
 
 ### Contexto
 Análisis de 798 registros reales del ledger reveló que el 21.3% del tráfico
