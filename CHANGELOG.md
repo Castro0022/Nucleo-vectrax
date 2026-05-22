@@ -2,7 +2,63 @@
 
 All notable changes to Vectrax are documented in this file.
 
-## [2026-05-22c] — Diagnóstico: sistema 100% operativo post-integración
+## [2026-05-22d] — Deploy + Verificación: Observer ACTIVE detectando violaciones en producción
+
+### Contexto
+Tras la integración de LawSignal y la activación de PresenciaObserver en modo ACTIVE,
+se ejecutó un ciclo completo de verificación en producción: deploy limpio a Vultr,
+activación y persistencia del modo ACTIVE, y prueba controlada de detección de
+violaciones de las 7 Leyes Fundamentales con 6 casos distintos.
+
+### Resultado del deploy
+```
+Tests locales:       228/228 pasando (0.77s)
+Deploy:              rsync + docker build/up — sin errores
+Contenedor:          vectrax-core Up (healthy) | restart=unless-stopped
+IP:                  140.82.28.181:8900
+Servicios arrancados: telegram_gateway (PID 8) | pipeline_worker (PID 9)
+                      core_api (PID 10) | meta_loop (PID 11)
+```
+
+### Verificación del Observer — detección de violaciones
+```
+Caso                   LawSignal                          Decisión   enforced
+──────────────────────────────────────────────────────────────────────────────
+baseline_clean         none                               PERMIT     True
+law_3_noise            noise+0.20  → noise 0.12→0.32     PERMIT     True
+law_6_sovereignty      conv-0.20 sov-0.15                PERMIT     True
+law_2_convergence      conv-0.15  → conv 0.82→0.67       PERMIT     True
+law_4_polaridad        force_pause → contradicción        PAUSE      True     ← forzado
+laws_2_3_6_severe      conv-0.35 sov-0.15 noise+0.30     PERMIT     True
+                       → conv=0.47 noise=0.42 (umbral de alerta próximo)
+```
+
+### Conclusión del ciclo
+- LawSignal ajusta scores correctamente antes de que PresenciaObserver decida
+- Ley 4 (Polaridad) es la única que fuerza cambio de decisión → PAUSE por diseño
+- Violaciones múltiples acumulan penalizaciones — el sistema aproxima umbrales
+  de SILENCE/BLOCK ante comportamiento caótico sostenido
+- Observer en ACTIVE con `enforced=True` persistido en `~/.vectrax/cognition_state.json`
+- ConvergenceLearner recibió las 6 decisiones (`total_evaluated: 6`) para aprendizaje
+
+### Estado final de modos activos
+```
+PresenciaObserver:  ACTIVE  (enforced=True, activated_by=creator)
+ConvergenceLearner: OBSERVE (acumulando decisiones)
+LawSignal:          activo  (pesa en cada evaluate())
+Governor:           act     (risk=0.015 LOW, clean_streak=11920)
+TotalConvergence:   TOTAL   (7 fases por mensaje)
+```
+
+### Archivo de referencia
+- `docs/DEPLOY_VERIFICATION_2026_05_22.md`
+
+### Commit / Deploy
+- Server: Vultr `140.82.28.181` — vectrax-core Up (healthy) — 2026-05-22 04:31 UTC
+
+---
+
+## [2026-05-22c]
 
 ### Resultado
 Diagnóstico completo ejecutado tras integrar LawSignal. Sistema operativo sin fallos.
