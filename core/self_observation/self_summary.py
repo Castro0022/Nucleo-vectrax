@@ -32,6 +32,86 @@ from typing import Any, Dict, List, Optional
 
 from core.self_observation.operational_reflection import reflect_now
 
+
+def _collect_module_state() -> str:
+    """
+    Recoge el estado real de los módulos cognitivos en tiempo de ejecución.
+
+    Incluye: PresenciaObserver, ConvergenceLearner, SmartRouter (ledger),
+    Governor. Devuelve bloque formateado para inyectar al prompt.
+    Fall-safe: cualquier módulo que falle es ignorado sin detener el resto.
+    """
+    lines = ["[NÚCALEO COGNITIVO — estado de módulos en tiempo real]"]
+
+    # PresenciaObserver
+    try:
+        from core.nucleus.presencia_pura import observer_status
+        s = observer_status()
+        lines.append(
+            f"Observer:   mode={s.get('observer_mode','?')} "
+            f"enforced={s.get('enforced','?')} "
+            f"evaluadas={s.get('total_evaluated','?')}"
+        )
+    except Exception:
+        pass
+
+    # ConvergenceLearner
+    try:
+        from core.nucleus.convergence_learner import get_learner
+        l = get_learner()
+        lines.append(
+            f"Learner:    phase={l.phase.value} "
+            f"outcomes={len(l.outcomes)} "
+            f"recomendaciones={len(l.recommendations)}"
+        )
+    except Exception:
+        pass
+
+    # SmartRouter — stats del ledger
+    try:
+        from core.router_learning import RouterDecisionLedger
+        from collections import Counter
+        records = RouterDecisionLedger().read_last(200)
+        if records:
+            total = len(records)
+            methods = Counter(r.get('classification_method','?') for r in records)
+            intents = Counter(r.get('intent','?') for r in records)
+            fb = methods.get('regex_fallback', 0)
+            top_intent = intents.most_common(1)[0][0] if intents else '?'
+            lines.append(
+                f"Router:     últimos={total} "
+                f"regex_fallback={fb}({100*fb//total if total else 0}%) "
+                f"intent_top={top_intent}"
+            )
+            # Top conflictos si hay semantic_would_have_been
+            conflicts = Counter(
+                f"{r.get('semantic_would_have_been')}→{r.get('intent')}"
+                for r in records
+                if r.get('classification_method') == 'regex_fallback'
+                and r.get('semantic_would_have_been')
+            )
+            if conflicts:
+                top = conflicts.most_common(1)[0]
+                lines.append(f"  conflicto: {top[0]} x{top[1]}")
+    except Exception:
+        pass
+
+    # Governor
+    try:
+        from core import state_manager
+        st = state_manager.load()
+        lines.append(
+            f"Governor:   mode={st.get('governor_mode','?')} "
+            f"risk={st.get('governor_risk_level','?')} "
+            f"streak={st.get('clean_streak','?')}"
+        )
+    except Exception:
+        pass
+
+    if len(lines) == 1:  # solo el encabezado, nada más
+        return ""
+    return "\n".join(lines)
+
 logger = logging.getLogger("vectrax.self_observation.summary")
 
 # === TTL cache para evitar 5+ subprocess git por mensaje ====================
@@ -112,16 +192,37 @@ def compose_self_summary(
 def compose_self_summary_for_prompt(max_chars: int = 1200) -> str:
     """Versión truncada para inyectar al prompt sin inflar el context.
 
+    Combina dos fuentes:
+      1. compose_self_summary() — reflectión operacional (git, estabilidad)
+      2. _collect_module_state() — estado en tiempo real de módulos cognitivos
+         (Observer, Learner, Router, Governor)
+
     Si la salida supera max_chars, recorta al último \\n natural antes
-    del límite. Devuelve cadena vacía si la composición falla.
+    del límite. Devuelve cadena vacía si ambas composiciones fallan.
     """
+    parts = []
+
     s = compose_self_summary()
-    if not s:
+    if s:
+        parts.append(s)
+
+    # Bloque de módulos cognitivos en tiempo real (observer, router, learner)
+    # Se reservan hasta 400 chars para no desplazar la reflexión operacional.
+    try:
+        module_state = _collect_module_state()
+        if module_state:
+            parts.append(module_state)
+    except Exception:
+        pass
+
+    if not parts:
         return ""
-    if len(s) <= max_chars:
-        return s
-    cut = s[: max_chars]
+
+    out = "\n\n".join(parts)
+    if len(out) <= max_chars:
+        return out
+    cut = out[:max_chars]
     last_nl = cut.rfind("\n")
     if last_nl > max_chars // 2:
-        return cut[: last_nl].rstrip()
+        return cut[:last_nl].rstrip()
     return cut.rstrip()
