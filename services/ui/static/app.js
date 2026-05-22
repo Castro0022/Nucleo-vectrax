@@ -111,7 +111,12 @@ function showPanel(name) {
   if (name === 'chat')      loadChatHistory();
 }
 
+let _sistemaTimer = null;
+
 function showDashSection(sec) {
+  // Detener auto-refresh del sistema si cambiamos de tab
+  if (sec !== 'sistema') { clearInterval(_sistemaTimer); _sistemaTimer = null; }
+
   document.querySelectorAll('.dash-section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.dash-tab').forEach(b   => b.classList.remove('active'));
   $('sec-' + sec).classList.add('active');
@@ -120,7 +125,8 @@ function showDashSection(sec) {
   // Load section data on switch
   const loaders = { stars: loadStars, constellations: loadConstellations,
     history: loadHistory, sessions: loadSessions, proposals: loadProposals,
-    operator: loadOperator, audit: loadAudit };
+    operator: loadOperator, audit: loadAudit,
+    sistema: loadSistema, ideas: loadIdeas };
   if (loaders[sec]) loaders[sec]();
 }
 
@@ -474,6 +480,136 @@ async function loadAudit() {
   } catch {
     el.innerHTML = '<p class="dim">Audit not available (requires audit.read permission)</p>';
   }
+}
+
+/* ---- Sistema (monitor operacional) ---- */
+async function loadSistema() {
+  const el = $('sec-sistema');
+  el.innerHTML = '<p class="dim">Cargando estado del sistema…</p>';
+  clearInterval(_sistemaTimer);
+  _sistemaTimer = setInterval(() => {
+    if (document.querySelector('#sec-sistema.active')) _renderSistema();
+  }, 15000);
+  await _renderSistema();
+}
+
+async function _renderSistema() {
+  const el = $('sec-sistema');
+  try {
+    const d  = await api('GET', '/system/monitor');
+    const r  = d.runtime   || {};
+    const g  = d.governor  || {};
+    const ml = d.meta_loop || {};
+    const id = d.ideas     || {};
+    const ts = d.sampled_at ? new Date(d.sampled_at * 1000).toLocaleTimeString() : '—';
+    const stIcon = r.status === 'healthy' ? '🟢' : r.status === 'degraded' ? '🟡' : '🔴';
+    const wIcon  = r.worker_alive ? '✅' : '❌';
+    const govCls = g.mode === 'act' ? 'tag-ok' : g.mode === 'recover' ? 'tag-err' : 'tag-warn';
+    el.innerHTML = `
+      <div class="sys-header dim">Actualizado: ${ts} — auto-refresh 15s</div>
+      <div class="sys-grid">
+        <div class="card">
+          <div class="card-head">${stIcon} Runtime</div>
+          <div class="kv"><span class="dim">Estado</span><span>${r.status || '—'}</span></div>
+          <div class="kv"><span class="dim">Worker</span><span>${wIcon} ${r.worker_alive ? 'vivo' : 'MUERTO'} (${r.worker_heartbeat_age_s ?? '—'}s)</span></div>
+          <div class="kv"><span class="dim">Cola</span><span>${r.queue_pending ?? 0} pend / ${r.queue_processing ?? 0} proc</span></div>
+          <div class="kv"><span class="dim">RAM</span><span>${r.memory_mb ?? '—'} MB</span></div>
+          <div class="kv"><span class="dim">Usuarios activos</span><span>${r.active_users ?? 0}</span></div>
+        </div>
+        <div class="card">
+          <div class="card-head">⚖️ Governor</div>
+          <div class="kv"><span class="dim">Modo</span><span class="tag ${govCls}">${g.mode || '—'}</span></div>
+          <div class="kv"><span class="dim">Razón</span><span>${esc(g.reason || '—')}</span></div>
+          <div class="kv"><span class="dim">Autopatch</span><span>${g.autopatch_allowed ? 'Sí' : 'No'}</span></div>
+          <div class="kv"><span class="dim">Racha limpia</span><span>${g.clean_streak ?? 0}</span></div>
+        </div>
+        <div class="card">
+          <div class="card-head">🔄 Meta-Loop</div>
+          <div class="kv"><span class="dim">Actividad</span><span>${esc(ml.activity || '—')}</span></div>
+          <div class="kv"><span class="dim">Salud</span><span>${esc(ml.health || '—')}</span></div>
+          <div class="kv"><span class="dim">Ciclos</span><span>${ml.cycles ?? '—'}</span></div>
+          <div class="kv"><span class="dim">Uptime</span><span>${esc(ml.uptime || '—')}</span></div>
+          ${ml.idea_alerts_sent != null ? `<div class="kv"><span class="dim">Alertas ideas</span><span>${ml.idea_alerts_sent}</span></div>` : ''}
+          <div class="kv"><span class="dim">Última reflexión</span><span class="dim">${esc((ml.timestamp || '').substring(0,19))}</span></div>
+        </div>
+        <div class="card">
+          <div class="card-head">🧬 Ideas</div>
+          <div class="kv"><span class="dim">Total</span><span>${id.total ?? 0}</span></div>
+          <div class="kv"><span class="dim">Pendientes</span><span>${(id.by_status || {}).pending ?? 0}</span></div>
+          <div class="kv"><span class="dim">Aprobadas</span><span>${(id.by_status || {}).approved ?? 0}</span></div>
+          <div class="kv"><span class="dim">Convergencia</span><span>${id.convergence != null ? (id.convergence * 100).toFixed(1)+'%' : '—'}</span></div>
+          ${(id.top3 || []).map(i => {
+            const pc = i.priority==='critical'?'tag-err':i.priority==='high'?'tag-warn':'tag-ok';
+            return `<div class="kv"><span class="tag ${pc}">${i.priority}</span><span class="dim">${esc(i.title.substring(0,35))}</span></div>`;
+          }).join('')}
+        </div>
+      </div>`;
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+/* ---- Ideas (IdeaStore) ---- */
+async function loadIdeas() {
+  const el = $('sec-ideas');
+  el.innerHTML = '<p class="dim">Cargando ideas…</p>';
+  try {
+    const d     = await api('GET', '/ideas?limit=50');
+    const ideas = d.ideas || [];
+    const stats = d.stats  || {};
+    const conv  = stats.convergence_level != null ? (stats.convergence_level*100).toFixed(1)+'%' : '—';
+    const canWrite = USER && (USER.role === 'owner' || USER.role === 'operator' || USER.role === 'creator');
+    const header = `
+      <div class="ideas-header">
+        <div class="ideas-stats">
+          <span>Total: <strong>${stats.total??0}</strong></span>
+          <span>Pendientes: <strong>${(stats.by_status||{}).pending??0}</strong></span>
+          <span>Aprobadas: <strong>${(stats.by_status||{}).approved??0}</strong></span>
+          <span>Convergencia: <strong>${conv}</strong></span>
+        </div>
+        ${canWrite ? '<button class="btn btn-sm btn-accent" onclick="refreshIdeas()">↻ Actualizar</button>' : ''}
+      </div>`;
+    if (ideas.length === 0) { el.innerHTML = header + '<p class="dim">Sin ideas. El núcleo está estable.</p>'; return; }
+    const pIcons = {critical:'🔴', high:'🟠', medium:'🟡', low:'⚪'};
+    const sCls   = {pending:'tag-warn', approved:'tag-ok', rejected:'tag-err', applied:'tag-dim'};
+    el.innerHTML = header + ideas.map(i => {
+      const actions = (i.status==='pending' && canWrite) ? `
+        <div class="prop-actions">
+          <button class="btn btn-ok btn-sm" onclick="doApproveIdea('${i.idea_id}')">&#10003; Aprobar</button>
+          <button class="btn btn-err btn-sm" onclick="doRejectIdea('${i.idea_id}')">&#10005; Rechazar</button>
+        </div>` : '';
+      return `<div class="card">
+        <div class="card-head">
+          <span>${pIcons[i.priority]||'⚫'} <span class="mono">${i.idea_id}</span></span>
+          <span class="tag ${sCls[i.status]||'tag-warn'}">${i.status}</span>
+        </div>
+        <p class="card-body">${esc(i.title)}</p>
+        <p class="card-body dim" style="font-size:12px">${esc((i.description||'').substring(0,200))}</p>
+        <div class="card-meta">
+          <span>${i.priority.toUpperCase()}</span>
+          <span>score ${i.priority_score}</span>
+          <span>${esc(i.affected_component)}</span>
+          <span>${esc(i.source)}</span>
+          <span class="dim">${(i.created_at||'').substring(0,16)}</span>
+        </div>
+        ${actions}
+      </div>`;
+    }).join('');
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+async function refreshIdeas() {
+  try {
+    const d = await api('POST', '/ideas/refresh');
+    if (d.total_new > 0) alert(`+${d.total_new} ideas importadas.`);
+    loadIdeas();
+  } catch (e) { alert('Error: ' + e.message); }
+}
+async function doApproveIdea(id) {
+  try { await api('POST', `/ideas/${id}/approve`, {}); loadIdeas(); }
+  catch (e) { alert('Error: ' + e.message); }
+}
+async function doRejectIdea(id) {
+  try { await api('POST', `/ideas/${id}/reject`, {}); loadIdeas(); }
+  catch (e) { alert('Error: ' + e.message); }
 }
 
 /* ==================================================================

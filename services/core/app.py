@@ -26,6 +26,7 @@ from services.core.routes import (
     health, auth, connectors, events, actions,
     chat, memory, proposals, status, gravitational,
     comm, gateway, billing, universe, webhook, recovery,
+    monitor, ideas,
 )
 
 logger = logging.getLogger("vectrax.core.app")
@@ -80,6 +81,8 @@ def create_app() -> FastAPI:
     app.include_router(universe.router, prefix="/v1")
     app.include_router(webhook.router, prefix="/v1")
     app.include_router(recovery.router, prefix="/v1")
+    app.include_router(monitor.router, prefix="/v1")
+    app.include_router(ideas.router,   prefix="/v1")
 
     # --- Lifecycle events ---
 
