@@ -271,11 +271,15 @@ _FRAME_PATTERNS: List[Tuple[re.Pattern, _Frame, float]] = [
 
     # === BÚSQUEDA DE INFORMACIÓN GENERAL ===
     # Estructura: verbo_pregunta + qué/quién/cómo/cuándo/cuánto/por qué
+    # Peso 0.75: 0.75 * 1.40 (WEB_SEARCH map) = 1.05 → conf 0.525 (> threshold 0.5).
+    # Subido desde 0.70 (0.70*1.40=0.98 → conf 0.49, bajo threshold) para que
+    # preguntas con palabra-interrogativa decidan semánticamente y no caigan a
+    # regex_fallback (responsable de los 78 conflictos general_chat→online).
     (re.compile(
         r"^(?:qu[eé]|qui[eé]n|c[oó]mo|cu[aá]ndo|cu[aá]ntos?|d[oó]nde|por\s+qu[eé]|cu[aá]l)\b"
         r".*(?:\?|$)",
         re.I,
-    ), _Frame.SEARCH_INFO, 0.7),
+    ), _Frame.SEARCH_INFO, 0.75),
 
     # Estructura: explica/dime/define + tema
     (re.compile(
@@ -285,11 +289,13 @@ _FRAME_PATTERNS: List[Tuple[re.Pattern, _Frame, float]] = [
     ), _Frame.SEARCH_INFO, 0.75),
 
     # English question patterns
+    # Peso 0.73: 0.73 * 1.40 = 1.022 → conf 0.511 (> threshold 0.5).
+    # Subido desde 0.65 (0.65*1.40=0.91 → conf 0.455, bajo threshold).
     (re.compile(
         r"^(?:what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|should|would|will)\b"
         r".*\??\s*$",
         re.I,
-    ), _Frame.SEARCH_INFO, 0.65),
+    ), _Frame.SEARCH_INFO, 0.73),
 
     # === ACCIÓN SOBRE EL SISTEMA ===
     (re.compile(
@@ -511,7 +517,12 @@ def _extract_entities(text: str, frames: List[Tuple[_Frame, float]]) -> List[Ent
 #   - ASK_MEMORY: 100% success con conf=0.50 → reforzar para margen de seguridad
 #   - STATEMENT: 100% success con conf=0.51 → estable (ya ajustado)
 _FRAME_INTENT_MAP: Dict[_Frame, List[Tuple[SemanticIntent, float]]] = {
-    _Frame.SEARCH_PLACE:   [(SemanticIntent.PLACE_SEARCH, 1.0)],
+    # SEARCH_PLACE weight subido de 1.0 → 1.25:
+    # Con frame_conf 0.85: 0.85*1.25 = 1.0625 → conf 0.531 (> threshold 0.5).
+    # Antes era 0.85*1.0 = 0.85 → conf 0.425, bajo threshold → regex_fallback
+    # → routing incorrecto a MEMORY (10 conflictos place_search→memory).
+    # Ahora SEARCH_PLACE gana semánticamente incluso sin entidad de categoría.
+    _Frame.SEARCH_PLACE:   [(SemanticIntent.PLACE_SEARCH, 1.25)],
     _Frame.SEARCH_INFO:    [(SemanticIntent.WEB_SEARCH, 1.4), (SemanticIntent.GENERAL_CHAT, 0.2)],
     _Frame.SEARCH_NEWS:    [(SemanticIntent.WEB_SEARCH, 1.2)],
     _Frame.ASK_IDENTITY:   [(SemanticIntent.IDENTITY_QUERY, 1.0)],

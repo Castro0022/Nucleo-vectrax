@@ -157,7 +157,7 @@ def test_capa1_stale_history_does_not_fire(tmp_path, monkeypatch):
 
 
 def test_capa1_max_words_boundary(tmp_path, monkeypatch):
-    """Justo en max_words (4) → fire. 5 palabras → no fire."""
+    """Justo en max_words=7 (default actual) → fire. 8 palabras → no fire."""
     db_path = tmp_path / "user_memory_capa1_boundary.db"
     monkeypatch.setattr(
         "vectrax.user_memory._MEMORY_DB_PATH", str(db_path),
@@ -169,15 +169,32 @@ def test_capa1_max_words_boundary(tmp_path, monkeypatch):
 
     from core.operator.external_gateway import ExternalGateway
 
+    # 7 palabras = exactamente max_words → fire
+    is_fu_7, _ = ExternalGateway._is_short_followup(
+        "boundary_user", "qué piensas sobre eso que te dije",  # 7 palabras
+    )
+    assert is_fu_7 is True
+
+    # 8 palabras > max_words → too_long, no fire
+    is_fu_8, reason_8 = ExternalGateway._is_short_followup(
+        "boundary_user", "qué piensas sobre eso que te dije hoy",  # 8 palabras
+    )
+    assert is_fu_8 is False
+    assert "too_long" in reason_8
+
+    # Compatibilidad: llamada con max_words=4 explícito mantiene semántica
+    # anterior (límite de 4 palabras) — el parámetro sigue funcionando
     is_fu_4, _ = ExternalGateway._is_short_followup(
-        "boundary_user", "qué piensas sobre eso",  # 4 palabras
+        "boundary_user", "qué piensas sobre eso",  # 4 palabras ≤ 4 → fire
+        max_words=4,
     )
     assert is_fu_4 is True
 
-    is_fu_5, reason_5 = ExternalGateway._is_short_followup(
-        "boundary_user", "qué piensas sobre eso ahora",  # 5 palabras
+    is_fu_5_limited, reason_5 = ExternalGateway._is_short_followup(
+        "boundary_user", "qué piensas sobre eso ahora",  # 5 palabras > max_words=4 → no fire
+        max_words=4,
     )
-    assert is_fu_5 is False
+    assert is_fu_5_limited is False
     assert "too_long" in reason_5
 
 
