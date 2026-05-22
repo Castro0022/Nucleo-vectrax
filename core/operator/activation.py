@@ -345,6 +345,17 @@ class OperatorRuntime:
                 activation_log.append(f"PresenciaObserver: unavailable ({_pp_exc})")
                 logger.debug("PresenciaObserver bus connection failed: %s", _pp_exc)
 
+            # 4d. Inicializar ConvergenceLearner (fase OBSERVE — solo registra)
+            # Entrena a PresenciaPura con patrones reales a lo largo del tiempo.
+            try:
+                from core.nucleus.convergence_learner import get_learner
+                get_learner()  # inicializa el singleton en fase OBSERVE
+                activation_log.append("ConvergenceLearner: initialized (OBSERVE phase)")
+                logger.info("ConvergenceLearner initialized in OBSERVE phase")
+            except Exception as _cl_exc:
+                activation_log.append(f"ConvergenceLearner: unavailable ({_cl_exc})")
+                logger.debug("ConvergenceLearner init failed: %s", _cl_exc)
+
             # 5. Configurar modo y dominios
             self._mode = mode
             self._nucleus.set_mode(mode, reason="Operator activation")

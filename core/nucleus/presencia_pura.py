@@ -226,6 +226,7 @@ class InhibitionRecord:
     noise:       float
     reason:      str
     enforced:    bool               # True en modo ACTIVE, False en modo OBSERVER
+    learner_outcome_id: Optional[str] = None  # ID para ConvergenceLearner.record_outcome()
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +431,21 @@ class PresenciaObserver:
             signal.engine_name, origin.value, decision.value,
             sovereignty, signal.convergence, signal.noise, enforced, reason,
         )
+
+        # Registrar en ConvergenceLearner para aprendizaje continuo (non-fatal)
+        try:
+            from core.nucleus.convergence_learner import get_learner
+            record.learner_outcome_id = get_learner().record_decision(
+                motor_name=signal.engine_name or "unknown",
+                origin=origin.value,
+                convergence_score=signal.convergence,
+                sovereignty_score=sovereignty,
+                noise_level=signal.noise,
+                decision=decision.value,
+            )
+        except Exception as _cl_exc:
+            logger.debug("ConvergenceLearner register error (non-fatal): %s", _cl_exc)
+
         return record
 
     def _decide(
