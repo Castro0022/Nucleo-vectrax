@@ -1,7 +1,42 @@
 {
-  "head": "b45b89b",
+  "head": "a1944fd",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "a1944fd9",
+      "subject": "docs: verificación deploy Observer ACTIVE + LawSignal — ticket cerrado",
+      "author": "Mario Bravo Castro",
+      "ts": 1779424666,
+      "files_changed": 2
+    },
+    {
+      "sha": "f5b572fe",
+      "subject": "feat(observer): activar PresenciaObserver en modo ACTIVE con persistencia",
+      "author": "Mario Bravo Castro",
+      "ts": 1779423468,
+      "files_changed": 2
+    },
+    {
+      "sha": "e6e9cd8f",
+      "subject": "chore: actualizar git snapshot post-diagnostico",
+      "author": "Mario Bravo Castro",
+      "ts": 1779422539,
+      "files_changed": 1
+    },
+    {
+      "sha": "7f27a780",
+      "subject": "docs: reporte de estado del sistema — 100% operativo post-LawSignal",
+      "author": "Mario Bravo Castro",
+      "ts": 1779417829,
+      "files_changed": 2
+    },
+    {
+      "sha": "0c009ee5",
+      "subject": "docs: documentar LawSignal en README — los 7 principios pesan",
+      "author": "Mario Bravo Castro",
+      "ts": 1779417084,
+      "files_changed": 1
+    },
     {
       "sha": "b45b89b9",
       "subject": "feat(nucleus): LawSignal — los 7 principios ahora pesan en PresenciaObserver",
@@ -22,52 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1779413414,
       "files_changed": 4
-    },
-    {
-      "sha": "6c3b3971",
-      "subject": "docs: archivar ticket PresenciaObserver como CERRADO",
-      "author": "Mario Bravo Castro",
-      "ts": 1779412408,
-      "files_changed": 1
-    },
-    {
-      "sha": "59ffaa52",
-      "subject": "docs: documentar PresenciaObserver en README y CHANGELOG",
-      "author": "Mario Bravo Castro",
-      "ts": 1779412290,
-      "files_changed": 2
-    },
-    {
-      "sha": "6dbbdf18",
-      "subject": "feat(presencia_pura): implementar capa inhibidora PresenciaObserver",
-      "author": "Mario Bravo Castro",
-      "ts": 1779410507,
-      "files_changed": 3
-    },
-    {
-      "sha": "446ddb52",
-      "subject": "feat(nucleus): implementar modo Presencia Pura — zero tokens, núcleo activo",
-      "author": "Mario Bravo Castro",
-      "ts": 1779297541,
-      "files_changed": 5
-    },
-    {
-      "sha": "b382aae4",
-      "subject": "docs(changelog): registrar despliegue del ciclo de convergencia total [2026-05-20]",
-      "author": "Mario Bravo Castro",
-      "ts": 1779275559,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
-    "core/nucleus/presencia_pura.py",
     "CHANGELOG.md",
-    "core/operator/external_gateway.py",
+    "core/nucleus/presencia_pura.py",
     "README.md",
+    "core/state_manager.py",
+    "core/operator/external_gateway.py",
     "core/operator/activation.py",
-    "core/nucleus/law_signal.py",
-    "tests/integration/test_law_signal.py",
-    "docs/CONVERGENCE_LEARNER_COMPLETE.md"
+    "docs/DEPLOY_VERIFICATION_2026_05_22.md",
+    ".git_snapshot/SUMMARY.json"
   ],
-  "generated_at": 1779416958
+  "generated_at": 1779424807
 }
