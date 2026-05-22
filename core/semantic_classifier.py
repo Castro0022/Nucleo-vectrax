@@ -228,6 +228,32 @@ _FRAME_PATTERNS: List[Tuple[re.Pattern, _Frame, float]] = [
         re.I,
     ), _Frame.ASK_MEMORY, 0.9),
 
+    # === MEMORIA — preguntas personales contextuales ===
+    # Cubre los 78 casos de conflicto sem=memory→regex=online donde el
+    # clasificador detecta MEMORY con baja confianza (0.30-0.50) porque
+    # la pregunta usa pronombres personales pero no el patrón exacto de
+    # ASK_MEMORY. Peso 0.88 garantiza que supere SEARCH_INFO (0.70).
+    #
+    # Patrones:
+    #   «¿tienes/hay/guardaste algo sobre mí/de mí?»
+    #   «¿sabes/recuerdas algo sobre/de mí?»
+    #   «¿lo tienes/guardaste/apuntaste/registraste?»
+    #   «¿cuándo fue/pasó/ocurrió eso?»  (contexto personal — pronombres)
+    #   «¿y mi X?» / «¿mi X está...?» (referencia a dato personal)
+    #   «do you have/remember anything about me?"
+    (re.compile(
+        r"(?:"
+        r"\b(?:tienes?|hay|guardaste?)\b.{0,30}\b(?:algo|info|datos?|registro|nota)\b.{0,15}\b(?:(?:de|sobre)\s+m[ií]|m[ií]o?)\b"
+        r"|\b(?:sabes?|recuerdas?|conoces?)\b.{0,25}\b(?:algo\b.{0,15})?\b(?:(?:de|sobre)\s+m[ií]|m[ií]o?)\b"
+        r"|\b(?:lo|la)\s+(?:tienes?|guardaste?|apuntaste?|registraste?|recordaste?)\b"
+        r"|\b(?:a[uú]n\s+)?(?:recuerdas?|tienes?)\s+(?:eso|esto|aquello|lo\s+que|lo\s+del?|lo\s+de\s+)\b"
+        r"|\b(?:y\s+)?mi[sS]?\s+(?:\w+\s+){0,3}(?:está|estaba|sigue|quedó|cambió)\b"
+        r"|\b(?:cu[aá]ndo|c[oó]mo|d[oó]nde)\s+(?:fue|pas[oó]|ocurri[oó]|qued[oó])\s+(?:eso|esto|lo)\b"
+        r"|\bdo\s+you\s+(?:have|remember|know)\b.{0,20}\b(?:about\s+me|from\s+me|i\s+(?:said|told|wrote))\b"
+        r")",
+        re.I,
+    ), _Frame.ASK_MEMORY, 0.88),
+
     # Estructura: recuérdame / guarda / anota
     (re.compile(
         r"\b(?:recu[eé]rdame|anota|guarda|apunta|registra|remember\s+(?:this|that)|"
@@ -489,11 +515,16 @@ _FRAME_INTENT_MAP: Dict[_Frame, List[Tuple[SemanticIntent, float]]] = {
     _Frame.SEARCH_INFO:    [(SemanticIntent.WEB_SEARCH, 1.4), (SemanticIntent.GENERAL_CHAT, 0.2)],
     _Frame.SEARCH_NEWS:    [(SemanticIntent.WEB_SEARCH, 1.2)],
     _Frame.ASK_IDENTITY:   [(SemanticIntent.IDENTITY_QUERY, 1.0)],
-    _Frame.ASK_MEMORY:     [(SemanticIntent.MEMORY_LOOKUP, 1.2), (SemanticIntent.IDENTITY_QUERY, 0.3)],
+    # ASK_MEMORY weight subido de 1.2 → 1.35 para garantizar que gane sobre
+    # SEARCH_INFO (0.70*1.40=0.98) cuando ambos frames se detectan simultáneamente
+    # (ej: pregunta personal con interrogativo + referencia a memoria).
+    _Frame.ASK_MEMORY:     [(SemanticIntent.MEMORY_LOOKUP, 1.35), (SemanticIntent.IDENTITY_QUERY, 0.3)],
     _Frame.STORE_DATA:     [(SemanticIntent.MEMORY_LOOKUP, 0.7), (SemanticIntent.GENERAL_CHAT, 0.3)],
     _Frame.COMMAND:        [(SemanticIntent.SYSTEM_ACTION, 1.0)],
     _Frame.GREETING:       [(SemanticIntent.GENERAL_CHAT, 1.0)],
-    _Frame.STATEMENT:      [(SemanticIntent.GENERAL_CHAT, 1.2), (SemanticIntent.MEMORY_LOOKUP, 0.4)],
+    # STATEMENT → MEMORY_LOOKUP subido de 0.4 → 0.55 para que enunciados
+    # personales compitan mejor contra SEARCH_INFO cuando hay ambigüedad.
+    _Frame.STATEMENT:      [(SemanticIntent.GENERAL_CHAT, 1.2), (SemanticIntent.MEMORY_LOOKUP, 0.55)],
     _Frame.REQUEST_ACTION: [(SemanticIntent.SYSTEM_ACTION, 0.8), (SemanticIntent.WEB_SEARCH, 0.2)],
 }
 
