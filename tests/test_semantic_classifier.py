@@ -315,7 +315,99 @@ class TestFallback:
 
 
 # ---------------------------------------------------------------------------
-# 6. Training examples — validación automática
+# 6. Confidence threshold regression — nuevos pesos de ciclo 3
+# ---------------------------------------------------------------------------
+
+class TestConfidenceThresholdCycle3:
+    """
+    Valida que los ajustes de peso del ciclo 3 cruzaron correctamente el
+    threshold de 0.5 para los tipos de pregunta relevantes.
+
+    Cada test ancla el comportamiento esperado ANTES de que futuros cambios
+    de peso puedan romperlo silenciosamente.
+    """
+
+    # --- SEARCH_INFO: preguntas con palabra-interrogativa española (0.75 → conf 0.525) ---
+
+    def test_spanish_question_word_above_threshold(self, sc):
+        """Preguntas que empiezan con palabra interrogativa → WEB_SEARCH >= 0.5."""
+        for text in [
+            "qué piensas sobre eso",
+            "cómo funciona la energía solar",
+            "cuándo fue la revolución francesa",
+            "por qué llueve tanto",
+            "cuántos países hay en Europa",
+        ]:
+            r = sc.classify(text)
+            assert r.intent == SemanticIntent.WEB_SEARCH, (
+                f"{text!r} → expected WEB_SEARCH, got {r.intent.value}"
+            )
+            assert r.confidence >= 0.5, (
+                f"{text!r} → conf {r.confidence:.3f} < 0.5 (below semantic threshold)"
+            )
+
+    # --- SEARCH_INFO: preguntas en inglés (0.73 → conf 0.511) ---
+
+    def test_english_question_above_threshold(self, sc):
+        """Preguntas en inglés que empiezan con wh-word → WEB_SEARCH >= 0.5."""
+        for text in [
+            "how does photosynthesis work",
+            "what is the meaning of life",
+            "who invented the internet",
+            "where is the Eiffel Tower",
+        ]:
+            r = sc.classify(text)
+            assert r.intent == SemanticIntent.WEB_SEARCH, (
+                f"{text!r} → expected WEB_SEARCH, got {r.intent.value}"
+            )
+            assert r.confidence >= 0.5, (
+                f"{text!r} → conf {r.confidence:.3f} < 0.5"
+            )
+
+    # --- SEARCH_PLACE: sin entidad de categoría (map 1.25 → conf 0.531) ---
+
+    def test_place_search_no_entity_above_threshold(self, sc):
+        """Búsquedas de lugar sin keyword específico de categoría → PLACE_SEARCH >= 0.5."""
+        for text in [
+            "busco un mecánico",
+            "necesito un dentista cerca",
+            "quiero un hotel en el centro",
+        ]:
+            r = sc.classify(text)
+            assert r.intent == SemanticIntent.PLACE_SEARCH, (
+                f"{text!r} → expected PLACE_SEARCH, got {r.intent.value}"
+            )
+            assert r.confidence >= 0.5, (
+                f"{text!r} → conf {r.confidence:.3f} < 0.5 (would fall to regex_fallback→memory)"
+            )
+
+    # --- Protección: ASK_MEMORY sigue ganando a SEARCH_INFO para preguntas personales ---
+
+    def test_memory_beats_search_info_for_personal_questions(self, sc):
+        """Preguntas personales de memoria deben ganar sobre SEARCH_INFO."""
+        memory_cases = [
+            ("qué sabes de mí", SemanticIntent.MEMORY_LOOKUP),
+            ("cuáles son mis preferencias", SemanticIntent.MEMORY_LOOKUP),
+            ("qué recuerdas de nuestra conversación", SemanticIntent.MEMORY_LOOKUP),
+        ]
+        for text, exp in memory_cases:
+            r = sc.classify(text)
+            assert r.intent == exp, (
+                f"{text!r} → expected {exp.value}, got {r.intent.value} (conf={r.confidence:.3f})"
+            )
+
+    # --- Protección: identidad sigue ganando a SEARCH_INFO para preguntas de identidad ---
+
+    def test_identity_beats_search_info(self, sc):
+        """Preguntas de identidad deben ganar sobre SEARCH_INFO."""
+        r = sc.classify("quién soy")
+        assert r.intent == SemanticIntent.IDENTITY_QUERY, (
+            f"'quién soy' → expected IDENTITY_QUERY, got {r.intent.value}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7. Training examples — validación automática
 # ---------------------------------------------------------------------------
 
 class TestTrainingExamples:
