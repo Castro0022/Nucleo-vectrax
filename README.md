@@ -117,6 +117,7 @@ Vectrax is a universal AI infrastructure layer that:
 - **Presencia Pura** - Nucleus mode that blocks all external LLMs and web searches while keeping the full internal cognitive cycle active
 - **PresenciaObserver** - Inhibitor layer that observes all system motors, scores each emission by origin sovereignty and convergence, and decides: `PERMIT` / `PAUSE` / `SILENCE` / `BLOCK` — without replacing any motor
 - **ConvergenceLearner** - Closes the operational awareness cycle: observes PresenciaObserver decisions, detects degradation patterns per motor, and proposes threshold adjustments with evidence — never applies changes without creator authorization
+- **LawSignal** - Connects the 7 Fundamental Laws (Kybalion-inspired) as active score weights: violations reduce sovereignty/convergence or raise noise before PresenciaObserver decides. The principles don’t respond. They weigh.
 
 ## 🚀 Quick Start
 
@@ -321,6 +322,7 @@ Cross-cutting Concerns:
 | 1 | `core/nucleus/total_convergence.py` | Ciclo de 7 fases — ejecuta en cada mensaje |
 | 1 | `core/nucleus/presencia_pura.py` | Modo Presencia Pura + **PresenciaObserver** |
 | 1 | `core/nucleus/convergence_learner.py` | **ConvergenceLearner** — observar → aprender → recomendar |
+| 1 | `core/nucleus/law_signal.py` | **LawSignal** — los 7 principios pesan en cada emisión |
 | 9 | `core/operator/universal_bus.py` | Bus centralizado de eventos entre capas |
 | 9 | `core/operator/activation.py` | Activación del runtime + wiring de observer + learner |
 
@@ -345,6 +347,53 @@ Señal entrante
 # Activar inhibición real cuando sea autorizado:
 from core.nucleus.presencia_pura import get_observer
 get_observer().set_mode("ACTIVE")
+```
+
+### LawSignal — los principios pesan
+
+Conecta las 7 Leyes Fundamentales como fuente activa de señales para PresenciaObserver.
+Cada violación modifica los scores **antes** de que PresenciaObserver tome su decisión.
+
+```
+enforce_all_laws()
+    ↓ violations
+build_law_signal(violations)
+    ↓ LawSignal
+EmissionSignal.law_signal
+    ↓
+PresenciaObserver._apply_law_signal()   ← ajusta scores ANTES de _decide()
+    ↓ scores pesados
+_decide() → InhibitionRecord
+    ↓
+ConvergenceLearner                      ← registra la decisión resultante
+```
+
+**Impacto por ley violada:**
+
+| Ley | Efecto sobre scores |
+|-----|---------------------|
+| 2 Correspondencia | `convergence −0.15` |
+| 3 Vibración | `noise +0.20` |
+| 4 Polaridad | `force_pause` — PERMIT → PAUSE si hay contradicción sin resolver |
+| 6 Causa/Efecto | `convergence −0.20`, `sovereignty −0.15` |
+| 3+ violaciones simultáneas | `noise +0.10` adicional (sistema caótico) |
+
+**Regla central:** *Los principios no responden. Los principios pesan.*
+
+```python
+# Las violaciones ya fluyen automáticamente desde external_gateway.py.
+# Para evaluar una señal con peso de leyes manualmente:
+from core.nucleus.law_signal import build_law_signal
+from core.nucleus.presencia_pura import get_observer, EmissionSignal, EmissionOrigin
+
+ls = build_law_signal(law_result.violations)
+signal = EmissionSignal(
+    origin=EmissionOrigin.LLM_EXTERNAL,
+    convergence=0.5,
+    law_signal=ls,
+)
+record = get_observer().evaluate(signal)
+# record.decision refleja el peso de las leyes
 ```
 
 ### ConvergenceLearner — ciclo de aprendizaje
@@ -380,11 +429,11 @@ get_learner().approve_recommendation(rec_id, approved_by="creator")
 
 ## 📊 Project Stats
 
-- **Total Code**: ~6,200 lines production + ~1,800 lines tests
-- **Test Coverage**: 135/135 tests passing (100%)
+- **Total Code**: ~7,000 lines production + ~2,000 lines tests
+- **Test Coverage**: 116/116 nucleus tests passing (100%) + 135/135 previous
 - **Modules**: 6 major components + Nucleus cognitive layer
-- **Documentation**: 2,500+ lines
-- **Nucleus Tests**: 135 passing (31 PresenciaPura + 55 PresenciaObserver + 49 ConvergenceLearner)
+- **Documentation**: 2,700+ lines
+- **Nucleus Tests**: 116 passing (25 LawSignal + 55 PresenciaObserver + 31 PresenciaPura + 5 ConvergenceLearner integration)
 
 ## 🧪 Testing
 
