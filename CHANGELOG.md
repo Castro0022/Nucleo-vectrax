@@ -2,6 +2,37 @@
 
 All notable changes to Vectrax are documented in this file.
 
+## [2026-05-22c] — Diagnóstico: sistema 100% operativo post-integración
+
+### Resultado
+Diagnóstico completo ejecutado tras integrar LawSignal. Sistema operativo sin fallos.
+
+### Evidencia
+```
+Tests locales:  197/197 pasando (0.46s)
+Motores prod:   15/15 OK
+Logs 24h:       0 errores, 0 warnings, 0 tracebacks
+Pipeline e2e:   TotalConvergence 7/7 | LawEnforcement 7/7 | LawSignal OK | Gateway 2.5s
+Heartbeats:     telegram_gateway=9.4s  pipeline_worker=2.0s
+API health:     {"status":"ok", "governor_mode":"act", uptime=662s}
+```
+
+### Estado de modos activos
+- PresenciaPura: `STANDARD` (LLM externo habilitado)
+- PresenciaObserver: `OBSERVER` (registra, enforced=False)
+- ConvergenceLearner: fase `OBSERVE` (acumulando datos)
+- LawSignal: activo, pesa en cada emisión automáticamente
+- Governor: `act` — todos los sistemas nominales
+
+### Archivo de referencia
+- `docs/SYSTEM_STATUS_2026_05_22.md`
+
+### Commit / Deploy
+- Commit: `0c009ee`
+- Server: Vultr `140.82.28.181` — vectrax-core Up (healthy) — 2026-05-22 02:41 UTC
+
+---
+
 ## [2026-05-22b] — ConvergenceLearner: cierra el ciclo de conciencia operacional
 
 ### Contexto
