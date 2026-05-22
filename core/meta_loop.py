@@ -8,15 +8,33 @@ Reflection layers:
   1. Activity  — was something ingested this cycle?
   2. Health    — any errors accumulated?
   3. Rhythm    — cycle cadence and uptime awareness.
+  4. Ideas     — auto-refresh IdeaStore every 15 min + creator alerts.
+
+Privacidad:
+  - No almacena contenido de mensajes ni datos personales.
+  - Las alertas solo incluyen metadata abstracta de ideas (ID, título, score).
 """
 
+import logging
 import os
+import time
 from datetime import datetime
+from typing import Optional
 
 from core import state_manager
 
+logger = logging.getLogger("vectrax.meta_loop")
+
 RUNTIME_DIR = os.path.expanduser("~/.vectrax")
 LOG_FILE = os.path.join(RUNTIME_DIR, "vectrax.log")
+
+# IdeaStore refresh cadence
+_IDEA_REFRESH_INTERVAL = 900   # 15 minutes
+_MAX_ALERTS_PER_CYCLE  = 3     # máx. alertas por refresh
+
+# Módulo-level state
+_last_idea_refresh: float = 0.0
+_alerted_idea_ids: set = set()  # evitar reenviar la misma idea
 
 
 def _now_iso():
@@ -39,6 +57,104 @@ def _compute_uptime(boot_time_str):
         return "unknown"
 
 
+# ---------------------------------------------------------------------------
+# Telegram helper (fire-and-forget, no gateway dependency)
+# ---------------------------------------------------------------------------
+
+def _send_telegram(chat_id: str, text: str) -> bool:
+    """
+    Envía un mensaje Telegram directamente al creador via Bot API.
+    Usa TELEGRAM_BOT_TOKEN del entorno. Retorna True si tuvo éxito.
+    Solo se usa para alertas proactivas de meta_loop.
+    """
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    if not token or not chat_id:
+        logger.debug("_send_telegram: sin token o chat_id, skip.")
+        return False
+    try:
+        import httpx
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        resp = httpx.post(
+            url,
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+            timeout=10,
+        )
+        return resp.status_code == 200
+    except Exception as exc:
+        logger.debug("_send_telegram failed: %s", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# IdeaStore refresh + alertas proactivas
+# ---------------------------------------------------------------------------
+
+def _run_idea_refresh() -> int:
+    """
+    Refresca el IdeaStore desde todas las fuentes y envía alertas al creador
+    para ideas nuevas de prioridad HIGH o CRITICAL.
+    Retorna número de alertas enviadas.
+    """
+    global _last_idea_refresh, _alerted_idea_ids
+    try:
+        from core.idea_store import get_idea_store, IdeaPriority, IdeaStatus
+
+        store = get_idea_store()
+        added = store.refresh()
+        new_total = sum(added.values())
+
+        if new_total:
+            logger.info(
+                "meta_loop: IdeaStore refreshed — +%d ideas (%s)",
+                new_total, added,
+            )
+
+        # Identificar ideas HIGH/CRITICAL pendientes no alertadas
+        creator_chat_id = os.getenv("TELEGRAM_CREATOR_CHAT_ID", "")
+        if not creator_chat_id:
+            return 0
+
+        urgent = [
+            idea for idea in store.pending()
+            if idea.priority in (IdeaPriority.CRITICAL, IdeaPriority.HIGH)
+            and idea.idea_id not in _alerted_idea_ids
+        ]
+
+        # Ordenar por priority_score desc, limitar a _MAX_ALERTS_PER_CYCLE
+        urgent.sort(key=lambda i: -i.priority_score)
+        to_alert = urgent[:_MAX_ALERTS_PER_CYCLE]
+
+        alerts_sent = 0
+        for idea in to_alert:
+            priority_icons = {"critical": "🔴", "high": "🟠"}
+            icon = priority_icons.get(idea.priority.value, "🟠")
+            msg = (
+                f"{icon} <b>Nueva idea {idea.priority.value.upper()}</b>\n"
+                f"<code>{idea.idea_id}</code>\n"
+                f"{idea.title}\n"
+                f"Componente: {idea.affected_component}\n"
+                f"Score: {idea.priority_score:.2f}\n\n"
+                f"Para aprobar: <code>aprobar {idea.idea_id}</code>"
+            )
+            if _send_telegram(creator_chat_id, msg):
+                _alerted_idea_ids.add(idea.idea_id)
+                alerts_sent += 1
+                logger.info(
+                    "meta_loop: alerta enviada al creador — %s [%s]",
+                    idea.idea_id, idea.priority.value,
+                )
+
+        return alerts_sent
+
+    except Exception as exc:
+        logger.debug("meta_loop._run_idea_refresh error: %s", exc)
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Main reflect function
+# ---------------------------------------------------------------------------
+
 def reflect(ingested_count=0):
     """
     Run one reflection cycle. Called after each daemon poll.
@@ -49,6 +165,8 @@ def reflect(ingested_count=0):
     Returns:
         dict with reflection summary.
     """
+    global _last_idea_refresh
+
     state = state_manager.load()
 
     # --- Layer 1: Activity ---
@@ -76,6 +194,14 @@ def reflect(ingested_count=0):
         "cycles": cycles,
         "uptime": uptime,
     }
+
+    # --- Layer 4: Ideas (auto-refresh cada 15 min) ---
+    now = time.time()
+    idea_alerts = 0
+    if now - _last_idea_refresh >= _IDEA_REFRESH_INTERVAL:
+        _last_idea_refresh = now
+        idea_alerts = _run_idea_refresh()
+        reflection["idea_alerts_sent"] = idea_alerts
 
     # Persist reflection into state
     state["last_reflection"] = reflection
