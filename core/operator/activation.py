@@ -334,6 +334,17 @@ class OperatorRuntime:
                 activation_log.append(f"Layer 8 — Builder: unavailable ({_bb_exc})")
                 logger.debug("BuilderBridge init failed: %s", _bb_exc)
 
+            # 4c. Conectar PresenciaObserver al bus (solo lectura — modo OBSERVER)
+            # Observa todos los motores desde el primer ciclo sin bloquear nada.
+            try:
+                from core.nucleus.presencia_pura import get_observer
+                get_observer().observe()
+                activation_log.append("PresenciaObserver: bus-connected (OBSERVER mode)")
+                logger.info("PresenciaObserver wired to bus in OBSERVER mode")
+            except Exception as _pp_exc:
+                activation_log.append(f"PresenciaObserver: unavailable ({_pp_exc})")
+                logger.debug("PresenciaObserver bus connection failed: %s", _pp_exc)
+
             # 5. Configurar modo y dominios
             self._mode = mode
             self._nucleus.set_mode(mode, reason="Operator activation")
