@@ -1004,11 +1004,20 @@ class TelegramGateway:
                         self._send_photo(cid, _img_url, caption=_gen_prompt[:200])
                         logger.info("DALLE %s | %s", uid, _gen_prompt[:40])
                     else:
-                        self._send(cid, "No pude generar la imagen.")
+                        lang_img = "es"
+                        try:
+                            from core.language_gate import get_user_language
+                            lang_img = get_user_language(tg_uid, text)
+                        except Exception:
+                            pass
+                        if lang_img == "en":
+                            self._send(cid, "Couldn't generate the image. Check that OPENAI_API_KEY is active and DALL-E 3 has access.")
+                        else:
+                            self._send(cid, "No pude generar la imagen. Verifica que OPENAI_API_KEY esté activa y DALL-E 3 tenga acceso.")
                     self._processed += 1
                     return
-            except Exception:
-                pass
+            except Exception as _img_exc:
+                logger.warning("IMAGE GENERATION block failed: %s", _img_exc)
 
             # === WEATHER: respuesta directa de clima ===
             try:
