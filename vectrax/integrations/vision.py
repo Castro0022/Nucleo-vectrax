@@ -179,10 +179,34 @@ def analyze_image(
 
 _GENERATE_PATTERN = re.compile(
     r'^(?:hazme|crea|cre[aá]me|genera|gener[aá]me|dise[ñn]a|dise[ñn]ame'
-    r'|dibuja|dib[uú]jame|pinta|p[ií]ntame'
+    r'|dibuja|dib[uú]jame|pinta|p[íi]ntame'
     r'|create|generate|design|draw|make me)'
     r'\s+(?:un[ao]?\s+|the\s+|a\s+|an\s+)?'
     r'(.+)',
+    re.IGNORECASE,
+)
+
+# Patrones de lenguaje natural adicionales (no empiezan con verbo imperativo)
+_GENERATE_NATURAL = re.compile(
+    r'(?:'
+    # "quiero (que me hagas|una imagen|un logo)"
+    r'(?:quiero|quisiera|necesito|me gustar[íi]a)\s+'
+    r'(?:que\s+me\s+(?:hagas?|crees?|generes?|dise[ñn]es?|dibujes?)\s+)?'
+    r'(?:un[ao]?\s+)?(?:logo|imagen|foto|photo|banner|poster|icono|icon|avatar'
+    r'|dise[ñn]o|dibujo|ilustraci[oó]n|retrato|portada|wallpaper|arte|meme|sticker)\b'
+    # "puedes/podrías (crear|generar|hacer) una imagen"
+    r'|(?:puedes?|podr[íi]as?|me\s+puedes?|me\s+podr[íi]as?)\s+'
+    r'(?:crear|crear|generar|hacer|dise[ñn]ar|dibujar)\s+'
+    r'(?:un[ao]?\s+)?(?:logo|imagen|foto|photo|banner|poster|icono|icon|avatar'
+    r'|dise[ñn]o|dibujo|ilustraci[oó]n|retrato|portada|wallpaper|arte|meme|sticker)\b'
+    # "haz una imagen", "hazme una imagen"
+    r'|(?:haz(?:me)?|genera|crea)\s+(?:un[ao]?\s+)?'
+    r'(?:logo|imagen|foto|photo|banner|poster|icono|icon|avatar'
+    r'|dise[ñn]o|dibujo|ilustraci[oó]n|retrato|portada|wallpaper|arte|meme|sticker)\b'
+    # "una imagen de", "un logo de" al comienzo
+    r'|^(?:un[ao]?\s+)(?:logo|imagen|foto|photo|banner|poster|icono|avatar'
+    r'|dise[ñn]o|dibujo|ilustraci[oó]n|retrato|portada|wallpaper|arte|meme|sticker)\s+de\b'
+    r')',
     re.IGNORECASE,
 )
 
@@ -201,12 +225,19 @@ def detect_generation_intent(text: str) -> Optional[str]:
     Detect if the user wants to generate an image.
     Returns the prompt for DALL-E, or None.
     """
-    m = _GENERATE_PATTERN.match(text.strip())
+    stripped = text.strip()
+
+    # 1. Patrón imperativo original: "hazme un logo", "genera una imagen de..."
+    m = _GENERATE_PATTERN.match(stripped)
     if m:
         prompt = m.group(1).strip()
-        # Require a generation keyword or decent description length
         if _GENERATE_KEYWORDS.search(prompt) or len(prompt) >= 10:
             return prompt
+
+    # 2. Lenguaje natural: "quiero una imagen de", "puedes crear un logo"
+    if _GENERATE_NATURAL.search(stripped) and len(stripped) >= 8:
+        return stripped
+
     return None
 
 
