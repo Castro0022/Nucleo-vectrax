@@ -2,7 +2,99 @@
 
 All notable changes to Vectrax are documented in this file.
 
-## [2026-05-20] — Ciclo de Convergencia Total vinculado al pipeline de mensajes
+## [2026-05-22] — PresenciaObserver: capa inhibidora de motores
+
+### Contexto
+Presencia Pura existía como modo binario que bloqueaba LLMs externos. Se rediseñó
+como una **capa inhibidora activa**: un observador que evalua todas las emisiones
+del sistema, califica su origen y soberanía, y decide en tiempo real si permitir,
+pausar, silenciar o bloquear — sin reemplazar ningún motor.
+
+### Cambios
+
+**`core/nucleus/presencia_pura.py`** — extensión total
+- `EmissionOrigin` (11 valores): clasifica el origen de cada emisión del sistema,
+  desde `NUCLEUS_CORE` (sovereignty=1.00) hasta `UNKNOWN` (sovereignty=0.00)
+- `InhibitionDecision`: `PERMIT` / `PAUSE` / `SILENCE` / `BLOCK`
+- `EmissionSignal`: modelo de señal con `engine_name`, `source_channel`,
+  `origin`, `convergence`, `noise`
+- `InhibitionRecord`: registro inmutable de cada decisión con `enforced` flag
+- Catálogo de 50+ motores internos reconocidos con scores de soberanía fijos
+- `PresenciaObserver`: clase inhibidora con:
+  - Modo `OBSERVER` (default): registra, `enforced=False` — nunca bloquea producción
+  - Modo `ACTIVE`: `enforced=True` — listo para inhibición efectiva
+  - `observe()` / `disconnect()`: suscripción idempotente al canal `BROADCAST`
+  - `get_records()` / `get_stats()`: introspeción completa
+- Singleton `get_observer()` / `reset_observer()`
+- Todo el código previo (`activate()`, `check_and_block_llm()`, etc.) intacto
+
+**`core/operator/activation.py`** — step 4c en `OperatorRuntime.activate()`
+- Conecta `PresenciaObserver` al bus en el arranque del runtime (non-fatal)
+- Boot log registra: `"PresenciaObserver: bus-connected (OBSERVER mode)"`
+
+**`tests/integration/test_presencia_inhibitor.py`** — nuevo (55 tests)
+
+### Reglas de inhibición (prioridad descendente)
+```
+1. origin == UNKNOWN         → BLOCK   (sin autoridad registrada)
+2. sovereignty < 0.30        → BLOCK   (LLM externo = 0.20, búsqueda = 0.10)
+3. convergence < 0.30        → SILENCE (señal incoherente)
+4. noise > 0.90 + conv < 0.5 → BLOCK   (ruido crítico combinado)
+5. noise > 0.80              → PAUSE   (ruido elevado)
+6. default                  → PERMIT  (emisión soberana y convergente)
+```
+
+### Verificación en producción (2026-05-22 01:05 UTC)
+```
+TEST 1  importar modulo              OK
+TEST 2  singleton OBSERVER mode      OK: mode=OBSERVER, is_connected=False
+TEST 3  suscripcion al BROADCAST     OK: ['presencia_pura.observer']
+TEST 4  reglas inhibicion:
+        UNKNOWN->BLOCK               decision=BLOCK sovereignty=0.00 enforced=False
+        SILENCE                      decision=SILENCE sovereignty=1.00 enforced=False
+        BLOCK soberania              decision=BLOCK sovereignty=0.20 enforced=False
+        PAUSE                        decision=PAUSE sovereignty=0.65 enforced=False
+        PERMIT                       decision=PERMIT sovereignty=0.85 enforced=False
+TEST 5  convergencia 7 fases         OK: ['perception','classification','memory',
+                                          'analysis','synthesis','gravitation','learning']
+TEST 6  step_4c_present              OK: True
+TEST 7  observer conectado al activar:
+        runtime_state                OK: active
+        observer_connected           OK: True
+        observer_mode                OK: OBSERVER
+        boot_log                     OK: ['PresenciaObserver: bus-connected (OBSERVER mode)']
+TEST 8  observer observa eventos:
+        eventos 1->2                 OK (broadcast registrado)
+        ultimo_registro              origin=internal_response decision=PERMIT enforced=False
+```
+
+### Tests
+- `tests/integration/test_presencia_inhibitor.py`: 55 tests, 100% PASSED (0.15s)
+- `tests/integration/test_presencia_pura.py`:     31 tests, 100% PASSED (0.15s)
+- Total: **86 tests, 0 fallos**
+
+### Archivos modificados
+- `core/nucleus/presencia_pura.py` (extendido: +507 líneas)
+- `core/operator/activation.py` (step 4c: +10 líneas)
+- `tests/integration/test_presencia_inhibitor.py` (nuevo: +692 líneas)
+- `README.md` (sección Núcleo Cognitivo añadida)
+
+### Commits / Deploy
+- Commit: `6dbbdf1`
+- Deploy: Vultr `140.82.28.181` — `vectrax-core` Up (healthy) — 2026-05-22 01:05 UTC
+- Branch PR: `feat/presencia-observer` → `main`
+  https://github.com/Castro0022/Nucleo-vectrax/pull/new/feat/presencia-observer
+
+### Próximo paso
+Para activar inhibición real en producción (requiere autorización del creador):
+```python
+from core.nucleus.presencia_pura import get_observer
+get_observer().set_mode("ACTIVE")
+```
+
+---
+
+## [2026-05-20]
 
 ### Problema
 Todo mensaje entrante (Telegram y API REST) pasaba directamente al motor de

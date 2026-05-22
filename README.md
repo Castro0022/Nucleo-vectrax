@@ -112,6 +112,11 @@ Vectrax is a universal AI infrastructure layer that:
 - **Diff Preview** - Review all changes before applying
 - **Controlled Application** - Manual confirmation required
 
+### 🧠 Núcleo Cognitivo
+- **Total Convergence** - Every message runs a mandatory 7-phase cycle (perception → classification → memory → analysis → synthesis → gravitation → learning) before any response is generated
+- **Presencia Pura** - Nucleus mode that blocks all external LLMs and web searches while keeping the full internal cognitive cycle active
+- **PresenciaObserver** - Inhibitor layer that observes all system motors, scores each emission by origin sovereignty and convergence, and decides: `PERMIT` / `PAUSE` / `SILENCE` / `BLOCK` — without replacing any motor
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -269,12 +274,17 @@ cat docs/PROPOSE_MODE.md
 ```
 ┌─────────────────────────────────────────┐
 │         Application Layer               │
-│  (Your Code, CLI, API Server)          │
+│  (Telegram Gateway, API REST)          │
 └─────────────────┬───────────────────────┘
                   │
 ┌─────────────────▼───────────────────────┐
-│      Workflow Orchestrator              │
-│  (Multi-step pipelines, Templates)     │
+│   Total Convergence Cycle (7 fases)     │  ← obligatorio en CADA mensaje
+│  perception→memory→gravitation→learning │
+└─────────────────┬───────────────────────┘
+                  │
+┌─────────────────▼───────────────────────┐
+│   PresenciaObserver (Capa Inhibidora)   │  ← observa todos los motores
+│  PERMIT / PAUSE / SILENCE / BLOCK       │    enforced=False (OBSERVER mode)
 └─────────────────┬───────────────────────┘
                   │
 ┌─────────────────▼───────────────────────┐
@@ -299,7 +309,40 @@ cat docs/PROPOSE_MODE.md
 Cross-cutting Concerns:
 ├── Observability: Metrics, Traces, Logs
 ├── Resilience: Retry, Rate Limit, Validation
+├── Nucleus Modes: STANDARD | PRESENCIA_PURA
 └── Configuration: YAML-based declarative config
+```
+
+## 🧠 Núcleo Cognitivo — Capas activas
+
+| Capa | Módulo | Función |
+|------|--------|---------|
+| 1 | `core/nucleus/total_convergence.py` | Ciclo de 7 fases — ejecuta en cada mensaje |
+| 1 | `core/nucleus/presencia_pura.py` | Modo Presencia Pura + **PresenciaObserver** |
+| 9 | `core/operator/universal_bus.py` | Bus centralizado de eventos entre capas |
+| 9 | `core/operator/activation.py` | Activación del runtime + wiring del observer |
+
+### PresenciaObserver — reglas de inhibición
+
+```
+Señal entrante
+    │
+    ├─ origin == UNKNOWN         → BLOCK   (motor no registrado)
+    ├─ sovereignty < 0.30        → BLOCK   (demasiado externo; LLM=0.20)
+    ├─ convergence < 0.30        → SILENCE (señal incoherente)
+    ├─ noise > 0.90 + conv < 0.5 → BLOCK   (ruido crítico combinado)
+    ├─ noise > 0.80              → PAUSE   (ruido elevado)
+    └─ default                  → PERMIT  (emisión soberana y convergente)
+```
+
+**Modos del observer:**
+- `OBSERVER` (default): registra decisiones, `enforced=False` — nunca bloquea producción
+- `ACTIVE`: `enforced=True` — activa inhibición efectiva (requiere autorización del creador)
+
+```python
+# Activar inhibición real cuando sea autorizado:
+from core.nucleus.presencia_pura import get_observer
+get_observer().set_mode("ACTIVE")
 ```
 
 ## 📊 Project Stats
