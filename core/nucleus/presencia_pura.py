@@ -54,6 +54,10 @@ _ACTIVATED_BY    = "nucleus_mode_activated_by"
 MODE_STANDARD      = "STANDARD"
 MODE_PRESENCIA_PURA = "PRESENCIA_PURA"
 
+_OBS_MODE_KEY    = "observer_mode"
+_OBS_AT_KEY      = "observer_mode_activated_at"
+_OBS_BY_KEY      = "observer_mode_activated_by"
+
 
 # ---------------------------------------------------------------------------
 # API pública
@@ -713,12 +717,79 @@ _observer: Optional[PresenciaObserver] = None
 def get_observer() -> PresenciaObserver:
     """
     Singleton del PresenciaObserver.
-    Inicia siempre en modo OBSERVER (seguro — solo registra, nunca bloquea).
+    Lee el modo persistido en state_manager (observer_mode).
+    Por defecto OBSERVER — solo cambia si activate_observer() fue llamado.
     """
     global _observer
     if _observer is None:
-        _observer = PresenciaObserver(mode=PresenciaObserver.OBSERVER_MODE)
+        persisted_mode = state_manager.get(_OBS_MODE_KEY, PresenciaObserver.OBSERVER_MODE)
+        # Validar que el valor persistido sea válido
+        if persisted_mode not in (PresenciaObserver.OBSERVER_MODE, PresenciaObserver.ACTIVE_MODE):
+            persisted_mode = PresenciaObserver.OBSERVER_MODE
+        _observer = PresenciaObserver(mode=persisted_mode)
+        logger.info("PresenciaObserver singleton | mode=%s (from state)", persisted_mode)
     return _observer
+
+
+def activate_observer(activated_by: str = "creator") -> Dict[str, Any]:
+    """
+    Activa PresenciaObserver en modo ACTIVE — persiste en state_manager.
+
+    En modo ACTIVE: enforced=True en cada InhibitionRecord.
+    La decisión (BLOCK/SILENCE/PAUSE/PERMIT) queda marcada como aplicada,
+    lo que el ConvergenceLearner registra como evidencia real.
+    Sobrevive reinicios del sistema.
+    Solo el creador puede activar.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    state_manager.update({
+        _OBS_MODE_KEY: PresenciaObserver.ACTIVE_MODE,
+        _OBS_AT_KEY:   now,
+        _OBS_BY_KEY:   activated_by,
+    })
+    obs = get_observer()
+    obs.set_mode(PresenciaObserver.ACTIVE_MODE)
+    logger.warning("PresenciaObserver ACTIVO | by=%s | enforced=True", activated_by)
+    return {
+        "observer_mode": PresenciaObserver.ACTIVE_MODE,
+        "activated_at":  now,
+        "activated_by":  activated_by,
+        "enforced":      True,
+        "message":       "PresenciaObserver en modo ACTIVE. Decisiones marcadas como aplicadas.",
+    }
+
+
+def deactivate_observer(deactivated_by: str = "creator") -> Dict[str, Any]:
+    """
+    Vuelve PresenciaObserver a modo OBSERVER (solo registra, nunca bloquea).
+    Persiste en state_manager. Solo el creador puede desactivar.
+    """
+    state_manager.update({
+        _OBS_MODE_KEY: PresenciaObserver.OBSERVER_MODE,
+        _OBS_AT_KEY:   None,
+        _OBS_BY_KEY:   None,
+    })
+    obs = get_observer()
+    obs.set_mode(PresenciaObserver.OBSERVER_MODE)
+    logger.warning("PresenciaObserver OBSERVER | by=%s | enforced=False", deactivated_by)
+    return {
+        "observer_mode": PresenciaObserver.OBSERVER_MODE,
+        "message":       "PresenciaObserver en modo OBSERVER. Solo registra.",
+    }
+
+
+def observer_status() -> Dict[str, Any]:
+    """Estado completo del PresenciaObserver."""
+    obs = get_observer()
+    return {
+        "observer_mode":     obs.mode,
+        "active":            obs.mode == PresenciaObserver.ACTIVE_MODE,
+        "enforced":          obs.mode == PresenciaObserver.ACTIVE_MODE,
+        "connected_to_bus":  obs.is_connected,
+        "total_evaluated":   obs.get_stats()["total_evaluated"],
+        "activated_at":      state_manager.get(_OBS_AT_KEY),
+        "activated_by":      state_manager.get(_OBS_BY_KEY),
+    }
 
 
 def reset_observer() -> None:

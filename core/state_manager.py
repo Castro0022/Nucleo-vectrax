@@ -51,6 +51,10 @@ DEFAULT_STATE = {
     "nucleus_mode": "STANDARD",
     "nucleus_mode_activated_at": None,
     "nucleus_mode_activated_by": None,
+    # PresenciaObserver
+    "observer_mode": "OBSERVER",
+    "observer_mode_activated_at": None,
+    "observer_mode_activated_by": None,
 }
 
 
