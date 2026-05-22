@@ -41,7 +41,7 @@ def _collect_module_state() -> str:
     Governor. Devuelve bloque formateado para inyectar al prompt.
     Fall-safe: cualquier módulo que falle es ignorado sin detener el resto.
     """
-    lines = ["[NÚCALEO COGNITIVO — estado de módulos en tiempo real]"]
+    lines = ["[NÚCLEO COGNITIVO — estado de módulos en tiempo real]"]
 
     # PresenciaObserver
     try:
@@ -200,29 +200,34 @@ def compose_self_summary_for_prompt(max_chars: int = 1200) -> str:
     Si la salida supera max_chars, recorta al último \\n natural antes
     del límite. Devuelve cadena vacía si ambas composiciones fallan.
     """
-    parts = []
-
-    s = compose_self_summary()
-    if s:
-        parts.append(s)
-
-    # Bloque de módulos cognitivos en tiempo real (observer, router, learner)
-    # Se reservan hasta 400 chars para no desplazar la reflexión operacional.
+    # Bloque de módulos cognitivos en tiempo real (Observer/Learner/Router/Governor).
+    # Se calcula PRIMERO para reservar el espacio que necesita antes de truncar
+    # la reflexión operacional. Así los datos en tiempo real nunca son eliminados.
+    module_state = ""
     try:
         module_state = _collect_module_state()
-        if module_state:
-            parts.append(module_state)
     except Exception:
         pass
 
+    # Si hay estado de módulos, reservamos su espacio más separador (2 chars)
+    # del presupuesto total antes de pedir la reflexión operacional.
+    module_budget = len(module_state) + 2 if module_state else 0
+    reflection_budget = max(200, max_chars - module_budget)
+
+    s = compose_self_summary()
+    if s and len(s) > reflection_budget:
+        cut = s[:reflection_budget]
+        last_nl = cut.rfind("\n")
+        s = cut[:last_nl].rstrip() if last_nl > reflection_budget // 2 else cut.rstrip()
+
+    parts = [p for p in [s, module_state] if p]
     if not parts:
         return ""
 
     out = "\n\n".join(parts)
+    # Truncado final de seguridad
     if len(out) <= max_chars:
         return out
     cut = out[:max_chars]
     last_nl = cut.rfind("\n")
-    if last_nl > max_chars // 2:
-        return cut[:last_nl].rstrip()
-    return cut.rstrip()
+    return cut[:last_nl].rstrip() if last_nl > max_chars // 2 else cut.rstrip()
