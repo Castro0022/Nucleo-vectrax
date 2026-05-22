@@ -208,6 +208,7 @@ class EmissionSignal:
     noise:          float          = 0.0   # 0.0=señal limpia, 1.0=puro ruido
     payload_size:   int            = 0
     metadata:       Dict[str, Any] = field(default_factory=dict)
+    law_signal:     Optional[Any]  = None  # Optional[LawSignal] — core.nucleus.law_signal
 
 
 # ---------------------------------------------------------------------------
@@ -401,13 +402,28 @@ class PresenciaObserver:
         )
         sovereignty = _SOVEREIGNTY_SCORES.get(origin, 0.0)
 
+        # Aplicar ajustes de LawSignal antes de decidir (los principios pesan)
+        convergence, sovereignty, noise = self._apply_law_signal(
+            signal.convergence, sovereignty, signal.noise,
+            signal.law_signal,
+        )
+
         decision, reason = self._decide(
             signal.engine_name,
             origin,
             sovereignty,
-            signal.convergence,
-            signal.noise,
+            convergence,
+            noise,
         )
+
+        # Ley 4 Polaridad: contradicción sin resolver → PAUSE (solo si PERMIT)
+        if (
+            signal.law_signal is not None
+            and getattr(signal.law_signal, "force_pause", False)
+            and decision == InhibitionDecision.PERMIT
+        ):
+            decision = InhibitionDecision.PAUSE
+            reason = f"Ley 4 Polaridad (contradicción sin resolver) → PAUSE | {reason}"
 
         enforced = self._mode == self.ACTIVE_MODE
 
@@ -416,9 +432,9 @@ class PresenciaObserver:
             engine_name=signal.engine_name,
             origin=origin,
             decision=decision,
-            convergence=signal.convergence,
+            convergence=convergence,   # scores ajustados por LawSignal
             sovereignty=sovereignty,
-            noise=signal.noise,
+            noise=noise,
             reason=reason,
             enforced=enforced,
         )
@@ -552,6 +568,42 @@ class PresenciaObserver:
             return EmissionOrigin.INTERNAL_RESPONSE
 
         return EmissionOrigin.UNKNOWN
+
+    # ── LawSignal — ajuste de scores por principios ─────────────────────────
+
+    def _apply_law_signal(
+        self,
+        convergence: float,
+        sovereignty: float,
+        noise: float,
+        law_signal: Any,
+    ) -> tuple:
+        """
+        Aplica los ajustes de un LawSignal a los scores del observer.
+        Retorna (convergence, sovereignty, noise) ajustados y acotados a [0.0, 1.0].
+        Si law_signal es None, retorna los valores sin cambio.
+
+        Los principios no responden. Los principios pesan.
+        """
+        if law_signal is None:
+            return convergence, sovereignty, noise
+
+        c_delta = getattr(law_signal, "convergence_delta", 0.0)
+        s_delta = getattr(law_signal, "sovereignty_delta", 0.0)
+        n_delta = getattr(law_signal, "noise_delta",       0.0)
+
+        adj_c = max(0.0, min(1.0, convergence + c_delta))
+        adj_s = max(0.0, min(1.0, sovereignty + s_delta))
+        adj_n = max(0.0, min(1.0, noise       + n_delta))
+
+        violated = getattr(law_signal, "violated_laws", [])
+        if violated:
+            logger.info(
+                "PRESENCIA_LAW_ADJ | laws=%s Δconv=%+.2f Δsov=%+.2f Δnoise=%+.2f",
+                violated, c_delta, s_delta, n_delta,
+            )
+
+        return adj_c, adj_s, adj_n
 
     # ── Bus — observación pasiva ────────────────────────────────────────────
 

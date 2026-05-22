@@ -986,6 +986,32 @@ class ExternalGateway:
                     "Pipeline: %d law violations detected",
                     len(law_result.violations),
                 )
+                # Inyectar LawSignal → PresenciaObserver (non-fatal, OBSERVER mode)
+                # Las violaciones pesan en la siguiente evaluación del motor.
+                try:
+                    from core.nucleus.law_signal import build_law_signal
+                    from core.nucleus.presencia_pura import (
+                        get_observer,
+                        EmissionSignal as _ES,
+                        EmissionOrigin as _EO,
+                    )
+                    _ls = build_law_signal(law_result.violations)
+                    if _ls:
+                        _law_em = _ES(
+                            engine_name="external_gateway.law_enforcement",
+                            source_channel="external",
+                            origin=_EO.LLM_EXTERNAL,
+                            convergence=0.5,
+                            noise=0.1,
+                            law_signal=_ls,
+                        )
+                        get_observer().evaluate(_law_em)
+                        logger.info(
+                            "Pipeline: law_signal → PresenciaObserver | %s",
+                            _ls.summary(),
+                        )
+                except Exception as _lse:
+                    logger.debug("Law signal injection failed: %s", _lse)
         except Exception as exc:
             logger.debug("Law enforcement check failed: %s", exc)
 
