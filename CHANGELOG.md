@@ -2,7 +2,81 @@
 
 All notable changes to Vectrax are documented in this file.
 
-## [2026-05-22d] — Deploy + Verificación: Observer ACTIVE detectando violaciones en producción
+## [2026-05-22e] — Optimización SmartRouter + Prueba de Integración Final
+
+### Contexto
+Análisis de 798 registros reales del ledger reveló que el 21.3% del tráfico
+cae a `regex_fallback`. La causa principal: 78 conflictos donde el semántico
+detectaba MEMORY con confianza baja (0.30–0.50) y perdía contra regex (ONLINE).
+Las propuestas de `threshold_adjust` almacenadas en `router_proposals.jsonl` no
+fueron aplicadas: estaban basadas en `route.confidence` en lugar de
+`semantic_confidence` — los datos correctos para ese threshold.
+
+### Cambios en `core/semantic_classifier.py`
+
+**Nuevo frame `ASK_MEMORY_CONTEXTUAL`** (weight=0.88):
+- Cubre preguntas personales contextuales que antes tenían sem_conf 0.30–0.50
+- Patrones: `¿tienes algo sobre mí?`, `¿lo guardaste?`, `¿lo tienes registrado?`,
+  `¿aún recuerdas eso?`, `¿cuándo fue eso?`, `do you have anything about me?`, etc.
+- Con conf=0.88 supera a SEARCH_INFO (0.70) cuando ambos frames compiten
+
+**Ajuste de pesos en `_FRAME_INTENT_MAP`:**
+- `ASK_MEMORY → MEMORY_LOOKUP`: 1.2 → 1.35
+- `STATEMENT → MEMORY_LOOKUP`: 0.4 → 0.55
+
+**Gestión de propuestas:**
+- 7 propuestas antiguas (`pending`) marcadas como `superseded`
+- Ciclo de aprendizaje #2 ejecutado con 800 registros actuales
+
+### Prueba de integración final en producción (2026-05-22 07:02 UTC)
+
+```
+[1] CONVERGENCIA 7 FASES
+    fases=7/7  action=proceed  latencia=175.4ms              ✔ PASS
+
+[2] LAWSIGNAL → PRESENCIAOBSERVER (6 casos)
+    clean        → PERMIT  enforced=True
+    ley3_noise   → PERMIT  enforced=True  (noise+0.20)
+    ley6_sov     → PERMIT  enforced=True  (conv-0.20 sov-0.15)
+    ley2_conv    → PERMIT  enforced=True  (conv-0.15)
+    ley4_pause   → PAUSE   enforced=True  (force_pause)
+    leyes_2_3_6  → PERMIT  enforced=True  (acumulado)
+    6/6 correctos                                             ✔ PASS
+
+[3] SMART ROUTER (7 casos)
+    ¿tienes algo guardado sobre mí?  → local       (nuevo frame)  ✔
+    ¿lo guardaste?                   → local       (nuevo frame)  ✔
+    ¿qué es la fotosíntesis?          → online      (búsqueda)     ✔
+    hoy terminé el módulo de memoria → memory      (ingest)       ✔
+    quién soy                        → identity    (identidad)    ✔
+    búscame un restaurante cerca     → place_search (lugar)       ✔
+    ¿recuerdas lo del otro día?      → local       (nuevo frame)  ✔
+    7/7 correctos                                             ✔ PASS
+
+[4] CONVERGENCELEARNER FEEDBACK LOOP
+    outcomes antes=6  después=9  delta=3                     ✔ PASS
+
+[5] MODOS DEL SISTEMA
+    observer_mode  = ACTIVE
+    convergence    = TOTAL
+    governor_mode  = act
+    governor_risk  = LOW
+    clean_streak   = 102
+    learning_mode  = ACTIVE_LEARNING                          ✔ PASS
+
+RESULTADO: 5/5 componentes OK
+```
+
+### Tests locales
+- 296/296 pasando (0.62s)
+
+### Commit / Deploy
+- Commit: `b7d95a8`
+- Server: Vultr `140.82.28.181` — vectrax-core Up (healthy) — 2026-05-22 06:59 UTC
+
+---
+
+## [2026-05-22d]
 
 ### Contexto
 Tras la integración de LawSignal y la activación de PresenciaObserver en modo ACTIVE,

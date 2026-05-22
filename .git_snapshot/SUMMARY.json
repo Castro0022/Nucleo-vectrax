@@ -1,7 +1,35 @@
 {
-  "head": "a1944fd",
+  "head": "b7d95a8",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "b7d95a84",
+      "subject": "feat(router): optimizar clasificador semántico — reducir regex_fallback",
+      "author": "Mario Bravo Castro",
+      "ts": 1779432287,
+      "files_changed": 3
+    },
+    {
+      "sha": "e2fb2180",
+      "subject": "archive: cierre formal del ciclo — núcleo cognitivo completo 2026-05-20/22",
+      "author": "Mario Bravo Castro",
+      "ts": 1779426995,
+      "files_changed": 1
+    },
+    {
+      "sha": "bb0fed9a",
+      "subject": "chore: eliminar pyc raíz residual de limpieza",
+      "author": "Mario Bravo Castro",
+      "ts": 1779424827,
+      "files_changed": 1
+    },
+    {
+      "sha": "ae683405",
+      "subject": "chore: limpieza artefactos de prueba + snapshot post-cierre ticket",
+      "author": "Mario Bravo Castro",
+      "ts": 1779424807,
+      "files_changed": 1
+    },
     {
       "sha": "a1944fd9",
       "subject": "docs: verificación deploy Observer ACTIVE + LawSignal — ticket cerrado",
@@ -29,45 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1779417829,
       "files_changed": 2
-    },
-    {
-      "sha": "0c009ee5",
-      "subject": "docs: documentar LawSignal en README — los 7 principios pesan",
-      "author": "Mario Bravo Castro",
-      "ts": 1779417084,
-      "files_changed": 1
-    },
-    {
-      "sha": "b45b89b9",
-      "subject": "feat(nucleus): LawSignal — los 7 principios ahora pesan en PresenciaObserver",
-      "author": "Mario Bravo Castro",
-      "ts": 1779416934,
-      "files_changed": 4
-    },
-    {
-      "sha": "b0ac2fe9",
-      "subject": "docs: documentar ConvergenceLearner en README y cerrar ticket",
-      "author": "Mario Bravo Castro",
-      "ts": 1779413948,
-      "files_changed": 3
-    },
-    {
-      "sha": "de494434",
-      "subject": "feat(nucleus): ConvergenceLearner — cierra el ciclo observar→aprender→recomendar",
-      "author": "Mario Bravo Castro",
-      "ts": 1779413414,
-      "files_changed": 4
     }
   ],
   "modified_modules": [
     "CHANGELOG.md",
     "core/nucleus/presencia_pura.py",
     "README.md",
+    "tests/integration/test_presencia_inhibitor.py",
+    ".git_snapshot/SUMMARY.json",
     "core/state_manager.py",
     "core/operator/external_gateway.py",
-    "core/operator/activation.py",
-    "docs/DEPLOY_VERIFICATION_2026_05_22.md",
-    ".git_snapshot/SUMMARY.json"
+    "core/operator/activation.py"
   ],
-  "generated_at": 1779424807
+  "generated_at": 1779433423
 }
