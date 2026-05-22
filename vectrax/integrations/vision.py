@@ -241,20 +241,23 @@ def detect_generation_intent(text: str) -> Optional[str]:
     return None
 
 
-def generate_image(prompt: str, size: str = "1024x1024") -> Optional[str]:
+def generate_image(prompt: str, size: str = "1024x1024") -> Optional[bytes]:
     """
-    Generate an image using DALL-E 3.
+    Generate an image using gpt-image-1 (project-key compatible).
 
     Args:
         prompt: Description of the image to generate
-        size: Image size (1024x1024, 1024x1792, 1792x1024)
+        size: 1024x1024 | 1536x1024 | 1024x1536
 
     Returns:
-        URL of the generated image, or None if failed.
+        Image bytes (PNG), or None if failed.
+        Callers must upload to Telegram as binary file, not as URL.
     """
+    import base64
+
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
-        logger.warning("DALL-E: OPENAI_API_KEY not set")
+        logger.warning("Image generation: OPENAI_API_KEY not set")
         return None
 
     try:
@@ -266,22 +269,34 @@ def generate_image(prompt: str, size: str = "1024x1024") -> Optional[str]:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "dall-e-3",
+                "model": "gpt-image-1",
                 "prompt": prompt,
                 "n": 1,
                 "size": size,
-                "quality": "standard",
             },
-            timeout=60,
+            timeout=90,
         )
         resp.raise_for_status()
         data = resp.json()
-        url = data["data"][0]["url"]
-        logger.info("DALL-E: generated image for: %s", prompt[:50])
-        return url
+        item = data["data"][0]
+
+        # gpt-image-1 returns b64_json; older models may return url
+        if "b64_json" in item:
+            img_bytes = base64.b64decode(item["b64_json"])
+            logger.info("Image generated (b64): %d bytes for: %s", len(img_bytes), prompt[:50])
+            return img_bytes
+        elif "url" in item:
+            # Fallback: download URL and return bytes
+            img_resp = requests.get(item["url"], timeout=30)
+            img_resp.raise_for_status()
+            logger.info("Image generated (url): %d bytes for: %s", len(img_resp.content), prompt[:50])
+            return img_resp.content
+
+        logger.error("Image generation: unexpected response format: %s", list(item.keys()))
+        return None
 
     except Exception as exc:
-        logger.error("DALL-E generation failed: %s", exc)
+        logger.error("Image generation failed: %s", exc)
         return None
 
 

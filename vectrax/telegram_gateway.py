@@ -302,6 +302,25 @@ class TelegramGateway:
             params["caption"] = caption[:1024]
         return self._tg("sendPhoto", **params) is not None
 
+    def _send_photo_bytes(self, cid: int, img_bytes: bytes, caption: str = "") -> bool:
+        """Upload a photo to Telegram as binary file (for b64-based generation)."""
+        try:
+            import io
+            data = {"chat_id": str(cid)}
+            if caption:
+                data["caption"] = caption[:1024]
+            files = {"photo": ("image.png", io.BytesIO(img_bytes), "image/png")}
+            r = self._send_http.post(
+                f"{self._base}/sendPhoto",
+                data=data,
+                files=files,
+            )
+            r.raise_for_status()
+            return r.json().get("ok", False)
+        except Exception as e:
+            logger.warning("sendPhoto bytes failed: %s", e)
+            return False
+
     def _venue(self, cid: int, p: Dict) -> bool:
         lat, lng = p.get("lat", 0), p.get("lng", 0)
         if not lat or not lng:
@@ -1008,16 +1027,17 @@ class TelegramGateway:
             except Exception:
                 pass
 
-            # === IMAGE GENERATION: crear imágenes con DALL-E 3 ===
+            # === IMAGE GENERATION: crear imágenes con gpt-image-1 ===
             try:
                 from vectrax.integrations.vision import detect_generation_intent, generate_image
                 _gen_prompt = detect_generation_intent(text)
                 if _gen_prompt:
                     self._send(cid, "⏳ Generando imagen...")
-                    _img_url = generate_image(_gen_prompt)
-                    if _img_url:
-                        self._send_photo(cid, _img_url, caption=_gen_prompt[:200])
-                        logger.info("DALLE %s | %s", uid, _gen_prompt[:40])
+                    _img_data = generate_image(_gen_prompt)
+                    if _img_data:
+                        # generate_image returns bytes (gpt-image-1 b64 response)
+                        self._send_photo_bytes(cid, _img_data, caption=_gen_prompt[:200])
+                        logger.info("IMG %s | %s", uid, _gen_prompt[:40])
                     else:
                         lang_img = "es"
                         try:
@@ -1026,9 +1046,9 @@ class TelegramGateway:
                         except Exception:
                             pass
                         if lang_img == "en":
-                            self._send(cid, "Couldn't generate the image. Check that OPENAI_API_KEY is active and DALL-E 3 has access.")
+                            self._send(cid, "Couldn't generate the image. Check OPENAI_API_KEY and project permissions.")
                         else:
-                            self._send(cid, "No pude generar la imagen. Verifica que OPENAI_API_KEY esté activa y DALL-E 3 tenga acceso.")
+                            self._send(cid, "No pude generar la imagen. Revisa OPENAI_API_KEY y permisos del proyecto.")
                     self._processed += 1
                     return
             except Exception as _img_exc:
