@@ -1,7 +1,28 @@
 {
-  "head": "b449e56",
+  "head": "46f178e",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "46f178ef",
+      "subject": "archive: cierre final sesión 2026-05-22 — ticket archivado",
+      "author": "Mario Bravo Castro",
+      "ts": 1779436037,
+      "files_changed": 1
+    },
+    {
+      "sha": "c36d9e23",
+      "subject": "docs: bug report BUG-SUMMARY-001 — truncado silencioso bloque cognitivo",
+      "author": "Mario Bravo Castro",
+      "ts": 1779435931,
+      "files_changed": 1
+    },
+    {
+      "sha": "d86de389",
+      "subject": "docs: reporte final de producción — estrés + fix truncado bloque cognitivo [2026-05-22f]",
+      "author": "Mario Bravo Castro",
+      "ts": 1779435823,
+      "files_changed": 2
+    },
     {
       "sha": "b449e561",
       "subject": "fix(self_summary): corregir typo NÚCALEO→NÚCLEO y reservar espacio para bloque cognitivo",
@@ -36,38 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1779434698,
       "files_changed": 3
-    },
-    {
-      "sha": "0f5a8cf1",
-      "subject": "docs: cierre formal del ticket de despliegue — sistema en producción",
-      "author": "Mario Bravo Castro",
-      "ts": 1779433841,
-      "files_changed": 1
-    },
-    {
-      "sha": "04a71ad3",
-      "subject": "docs: prueba de integración final + estado del despliegue 2026-05-22e",
-      "author": "Mario Bravo Castro",
-      "ts": 1779433423,
-      "files_changed": 2
-    },
-    {
-      "sha": "b7d95a84",
-      "subject": "feat(router): optimizar clasificador semántico — reducir regex_fallback",
-      "author": "Mario Bravo Castro",
-      "ts": 1779432287,
-      "files_changed": 3
     }
   ],
   "modified_modules": [
     "CHANGELOG.md",
-    "core/nucleus/presencia_pura.py",
     ".git_snapshot/SUMMARY.json",
+    "core/nucleus/presencia_pura.py",
     "README.md",
     "core/self_observation/self_summary.py",
     "tests/integration/test_presencia_inhibitor.py",
     "core/state_manager.py",
     "core/operator/external_gateway.py"
   ],
-  "generated_at": 1779435823
+  "generated_at": 1779436120
 }
