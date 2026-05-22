@@ -999,6 +999,43 @@ class TelegramGateway:
                     self._send(cid, f"Error: {e}")
                 return
 
+            # Idea approval / rejection
+            m_idea = re.match(
+                r"^(?:aprobar|approve)\s+(IDEA-[A-F0-9]{8})(?:\s+(.+))?",
+                text.strip(), re.I
+            )
+            if m_idea:
+                try:
+                    from core.idea_store import get_idea_store
+                    idea_id = m_idea.group(1).upper()
+                    note    = (m_idea.group(2) or "").strip()
+                    ok = get_idea_store().approve(idea_id, by=tg_uid, note=note)
+                    if ok:
+                        self._send(cid, f"✅ {idea_id} aprobada. Lista para implementar.")
+                    else:
+                        self._send(cid, f"No encontré {idea_id} o ya fue revisada.")
+                except Exception as e:
+                    self._send(cid, f"Error: {e}")
+                return
+
+            m_idea_r = re.match(
+                r"^(?:rechazar|reject)\s+(IDEA-[A-F0-9]{8})(?:\s+(.+))?",
+                text.strip(), re.I
+            )
+            if m_idea_r:
+                try:
+                    from core.idea_store import get_idea_store
+                    idea_id = m_idea_r.group(1).upper()
+                    note    = (m_idea_r.group(2) or "").strip()
+                    ok = get_idea_store().reject(idea_id, by=tg_uid, note=note)
+                    if ok:
+                        self._send(cid, f"❌ {idea_id} rechazada.")
+                    else:
+                        self._send(cid, f"No encontré {idea_id} o ya fue revisada.")
+                except Exception as e:
+                    self._send(cid, f"Error: {e}")
+                return
+
             # === TIER CHECK: verificar acceso del usuario ===
             try:
                 from core.operator.user_tiers import check_access, can_use_feature
@@ -1408,6 +1445,21 @@ class TelegramGateway:
                     self._send(cid, f"Scan proactivo completado. Mensajes enviados: {n}")
                 except Exception as e:
                     self._send(cid, f"Error: {e}")
+
+            elif cmd == "ideas":
+                try:
+                    from core.idea_store import get_idea_store, IdeaStatus
+                    store = get_idea_store()
+                    # Refrescar ideas desde todos los módulos
+                    added = store.refresh()
+                    show_all = arg.lower() in ("all", "todas", "todo")
+                    panel = store.build_panel(n=5, show_all_statuses=show_all)
+                    if sum(added.values()):
+                        panel += f"\n\n+{sum(added.values())} ideas nuevas importadas."
+                    self._send(cid, panel)
+                except Exception as e:
+                    self._send(cid, f"Error al cargar ideas: {e}")
+                    logger.error("/vx ideas error: %s", e)
 
             elif cmd == "fallbacks":
                 try:
