@@ -2,7 +2,104 @@
 
 All notable changes to Vectrax are documented in this file.
 
-## [2026-05-22f] — Reporte final: System Prompt + Introspeción + Prueba de Estrés
+## [2026-05-22g] — Router Cycle 3 + Fix Generación de Imágenes
+
+### Contexto
+Sesión enfocada en dos ciclos independientes: (1) reducción de `regex_fallback`
+mediante ajuste de umbrales de confianza semántica, y (2) corrección de tres causas
+raíz que impedían a Vectrax generar imágenes pese a tener DALL-E 3 integrado.
+Ambos cambios desplegados en producción con verificación completa.
+
+---
+
+### PR #2 — feat(router/cycle3): Reducción de regex_fallback
+
+**Diagnóstico** (802 registros reales del ledger — datos sanitizados):
+- `SEARCH_INFO` ES: conf `0.49` (< threshold `0.5`) → regex_fallback → 78 conflictos
+- `SEARCH_INFO` EN: conf `0.455` → regex_fallback → preguntas en inglés sin cobertura semántica
+- `SEARCH_PLACE` sin entidad: conf `0.425` → routing incorrecto a MEMORY → 10 conflictos
+
+**`core/semantic_classifier.py`**
+- `SEARCH_INFO` frame ES: weight `0.70 → 0.75` → conf `0.49 → 0.525` ✓ cruza threshold
+- `SEARCH_INFO` frame EN: weight `0.65 → 0.73` → conf `0.455 → 0.511` ✓ cruza threshold
+- `SEARCH_PLACE` intent map: weight `1.0 → 1.25` → conf `0.425 → 0.531` ✓ cruza threshold
+- Protecciones verificadas: `ASK_MEMORY` (score 1.215) sigue ganando sobre `SEARCH_INFO`
+  (1.05) para preguntas personales; identidad y desambiguación sin cambios
+
+**`tests/router/test_followup_guard.py`**
+- Corregido `test_capa1_max_words_boundary`: test escrito para `max_words=4` legacy,
+  implementación ya usa `max_words=7`; ahora cubre el boundary actual + compatibilidad
+
+**`tests/test_semantic_classifier.py`** — `TestConfidenceThresholdCycle3` (5 métodos)
+- Anclan los nuevos umbrales para prevenir regresiones silenciosas en futuros ajustes
+
+---
+
+### PR #3 — fix(vision): Generación de imágenes con lenguaje natural
+
+**Problema:** Vectrax decía que no podía generar imágenes a pesar de tener DALL-E 3
+integrado. Tres causas raíz identificadas y corregidas:
+
+**`vectrax/integrations/vision.py`** — `detect_generation_intent`
+- Antes: solo detectaba imperativo exacto al inicio (`hazme`, `genera`, `crea`…)
+- Ahora: nuevo `_GENERATE_NATURAL` cubre lenguaje natural:
+  `quiero una imagen de...`, `puedes crear un logo...`, `haz una imagen...`,
+  `necesito un diseño...`, `un logo de...` al inicio del mensaje
+
+**`vectrax/telegram_gateway.py`** — bloque IMAGE GENERATION (línea ~1000)
+- Bug: `except Exception: pass` silencioso tragaba todos los errores sin traza
+- Fix: `except Exception as _img_exc: logger.warning("IMAGE GENERATION block failed: %s", exc)`
+- Cuando `generate_image()` retorna None: mensaje diagnóstico claro al usuario
+  indicando verificar `OPENAI_API_KEY` y acceso DALL-E 3
+
+**`vectrax/identity_layer.py`** — `_VAGUE_META`
+- El filtro bloqueaba `no puedo generar` pero el LLM usaba variantes que escapaban:
+  `no tengo la capacidad de generar/crear`, `no es posible generar`,
+  `no soy capaz de generar`, `como modelo de lenguaje`, `as an AI/LLM/language model`
+- Todas añadidas al filtro → ahora rechazadas y reemplazadas antes de llegar al usuario
+
+**`tests/test_image_generation_fix.py`** — nuevo (43 tests)
+```
+TestDetectGenerationIntent   26 tests  (16 SHOULD + 10 SHOULD_NOT)
+TestVagueMeta                11 tests  (2 originales + 9 nuevas variantes + 2 positivos)
+TestGenerateImageNoKey        2 tests  (sin key → None, key inválida → None)
+TestGatewayExceptionLogging   1 test   (excepción → WARNING logueado, no silenciado)
+```
+
+---
+
+### Verificación de deploy — 2026-05-22 08:47 UTC
+
+```
+Deploy:     rsync + docker build/up — sin errores
+Commit:     4afeef9 (test(vision): 43 tests verifying image generation fix)
+
+Container:  vectrax-core  Up (healthy)  0.0.0.0:8900->8900/tcp
+Servicios:  telegram_gateway PID 8  restart #0
+            pipeline_worker  PID 9  restart #0
+            core_api         PID 10 restart #0
+            meta_loop        PID 11 restart #0
+
+/health:    {"status":"ok", "api":"ok", "database":"ok", "governor":"act"}
+            uptime=26.68s  governor_reason="Nominal — all systems healthy"
+
+Recursos:   CPU 0.86%   RAM 612 MiB / 8 GiB (7.5%)   Net 86 MB IN
+Reinicios:  0
+```
+
+### Tests
+- Local antes del deploy: 200/200 routing+classifier (sin regresiones)
+- Tests de imagen: 43/43 PASS
+- Tests globales: pre-existían 77 failures (no relacionados a esta sesión)
+
+### PRs y commits
+- PR #2 mergeado: `feat(router/cycle3): raise SEARCH_INFO and SEARCH_PLACE semantic weights`
+- PR #3 mergeado: `fix(vision): habilitar generación de imágenes con lenguaje natural`
+- Server: Vultr `140.82.28.181` — vectrax-core Up (healthy) — 2026-05-22 08:47 UTC
+
+---
+
+## [2026-05-22f]
 
 ### Contexto
 Refactorización del system prompt de Vectrax para eliminar el lenguaje genérico en
