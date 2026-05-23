@@ -503,6 +503,132 @@ Vectrax is complete and production-ready. Future enhancements could include:
 - Docker deployment
 - Kubernetes operator
 
+## 🚀 Deployment (Vultr)
+
+```bash
+# One-command deploy: uploads, builds, starts
+bash deploy_vultr.sh
+```
+
+Requires:
+- SSH key at `~/.ssh/vectrax_server`
+- Docker on the server (`root@140.82.28.181`)
+- `.env` on the server with API keys (never synced from local)
+
+### HTTPS (Caddy)
+
+Caddy provides automatic TLS via Let's Encrypt for `api.vectrax.app`.
+
+```bash
+# On the server:
+apt install caddy
+# Caddyfile at /etc/caddy/Caddyfile:
+#   api.vectrax.app { reverse_proxy localhost:8900 }
+systemctl enable caddy && systemctl start caddy
+```
+
+Requires DNS A record: `api.vectrax.app → 140.82.28.181`
+
+## 💳 Stripe Billing
+
+### Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `STRIPE_SECRET_KEY` | Stripe API secret key (`sk_live_...`) | Yes |
+| `STRIPE_PRICE_ID` | Price ID for PRO plan | Yes |
+| `STRIPE_TEAM_PRICE_ID` | Price ID for Team plan (falls back to PRO) | No |
+| `STRIPE_WEBHOOK_SECRET` | Webhook signing secret (`whsec_...`) | Yes |
+
+### Payment Flow
+
+```
+User sends /upgrade in Telegram
+    │
+    ├─ telegram_gateway creates Stripe Checkout Session
+    ├─ User receives payment link
+    ├─ User pays on Stripe
+    │
+    ├─ Stripe sends checkout.session.completed to:
+    │   https://api.vectrax.app/v1/webhook/stripe
+    │
+    ├─ webhook.py verifies signature with STRIPE_WEBHOOK_SECRET
+    ├─ handle_webhook() extracts vectrax_user_id from metadata
+    ├─ _activate_pro() sets tier to PRO + stores billing record
+    └─ Telegram notification: "Vectrax PRO activado."
+```
+
+### Webhook Setup
+
+1. **Create endpoint in Stripe Dashboard** or via API:
+   - URL: `https://api.vectrax.app/v1/webhook/stripe`
+   - Events: `checkout.session.completed`, `customer.subscription.deleted`, `invoice.payment_failed`
+
+2. **Copy the signing secret** (`whsec_...`) from the endpoint
+
+3. **Configure on server:**
+   ```bash
+   ssh root@140.82.28.181
+   # Add to .env (or replace existing)
+   sed -i '/STRIPE_WEBHOOK_SECRET/d' /opt/vectrax/.env
+   echo 'STRIPE_WEBHOOK_SECRET=whsec_YOUR_SECRET' >> /opt/vectrax/.env
+   # IMPORTANT: restart recreates container (restart alone doesn't reload .env)
+   cd /opt/vectrax && docker compose down && docker compose up -d
+   ```
+
+4. **Verify:**
+   ```bash
+   # Endpoint should reject missing signature (400, not 404)
+   curl -s -X POST https://api.vectrax.app/v1/webhook/stripe -d '{}'
+   # Expected: {"detail":"Missing stripe-signature header"}
+   ```
+
+### Troubleshooting
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `/upgrade` doesn't send link | User stuck in onboarding | Fixed: `/upgrade` now bypasses onboarding gate |
+| Webhook returns 404 | Route not registered | Ensure `webhook.py` has `@router.post("/stripe")` |
+| Webhook returns 400 | Signature mismatch | Check `STRIPE_WEBHOOK_SECRET` matches the endpoint's signing secret |
+| Tier doesn't activate after payment | Webhook not delivered | Check Stripe Dashboard → Webhooks → Attempts. Verify HTTPS + DNS |
+| `docker compose restart` doesn't load new .env | Expected behavior | Use `docker compose down && docker compose up -d` instead |
+| Stripe requires HTTPS | Live mode restriction | Set up Caddy with `api.vectrax.app` (automatic TLS) |
+| Webhook endpoint in Stripe points to wrong URL | Old config | Verify in Stripe Dashboard → Developers → Webhooks |
+
+### Monitored Events
+
+| Event | Action |
+|-------|--------|
+| `checkout.session.completed` | Activate PRO tier + store billing record + notify user |
+| `customer.subscription.deleted` | Downgrade to FREE tier |
+| `invoice.payment_failed` | Log warning (no tier change) |
+
+## 🌐 Universe Observer
+
+Real-time unified view of the Vectrax cognitive universe.
+
+- **Visual**: `https://api.vectrax.app/universe` — Canvas with stars, HUD, operational panel
+- **API**: `GET /v1/universe` — JSON snapshot (gravitational + operational)
+- **WebSocket**: `WS /v1/universe/ws` — Pushes snapshot every 2s
+- **LLM-aware**: Universe data is injected into `self_context.py` so Vectrax can describe its own state
+
+## 📊 Router Performance
+
+```bash
+# Default report (last 200 interactions)
+python3 scripts/router_report.py
+
+# Compare pre/post deploy
+python3 scripts/router_report.py --since 2026-05-23T00:55 --compare
+
+# JSON output for automation
+python3 scripts/router_report.py --json
+
+# On production server
+ssh root@140.82.28.181 'cd /opt/vectrax && docker compose exec -T vectrax \
+  python3 /app/scripts/router_report.py --last 200'
+```
+
 ## 📄 License
 
 MIT License - See LICENSE file for details
