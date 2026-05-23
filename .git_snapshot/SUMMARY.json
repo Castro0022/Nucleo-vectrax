@@ -1,73 +1,73 @@
 {
-  "head": "46f178e",
+  "head": "35ed670",
   "branch": "main",
   "recent_commits": [
     {
-      "sha": "46f178ef",
-      "subject": "archive: cierre final sesión 2026-05-22 — ticket archivado",
+      "sha": "35ed670d",
+      "subject": "feat(dashboard): panel de control — tabs Sistema e Ideas con auto-refresh",
       "author": "Mario Bravo Castro",
-      "ts": 1779436037,
-      "files_changed": 1
+      "ts": 1779488046,
+      "files_changed": 5
     },
     {
-      "sha": "c36d9e23",
-      "subject": "docs: bug report BUG-SUMMARY-001 — truncado silencioso bloque cognitivo",
+      "sha": "d3424a08",
+      "subject": "feat(meta_loop): auto-refresh IdeaStore cada 15min + alertas proactivas HIGH/CRITICAL al creador",
       "author": "Mario Bravo Castro",
-      "ts": 1779435931,
-      "files_changed": 1
-    },
-    {
-      "sha": "d86de389",
-      "subject": "docs: reporte final de producción — estrés + fix truncado bloque cognitivo [2026-05-22f]",
-      "author": "Mario Bravo Castro",
-      "ts": 1779435823,
+      "ts": 1779480508,
       "files_changed": 2
     },
     {
-      "sha": "b449e561",
-      "subject": "fix(self_summary): corregir typo NÚCALEO→NÚCLEO y reservar espacio para bloque cognitivo",
+      "sha": "938c5c27",
+      "subject": "feat(idea-engine): IdeaStore unificado + /vx ideas + aprobar/rechazar IDEA-xxx",
       "author": "Mario Bravo Castro",
-      "ts": 1779435573,
+      "ts": 1779479655,
+      "files_changed": 3
+    },
+    {
+      "sha": "476fe95b",
+      "subject": "fix(vision): usar gpt-image-1 + subir imagen como archivo binario",
+      "author": "Mario Bravo Castro",
+      "ts": 1779473143,
+      "files_changed": 2
+    },
+    {
+      "sha": "28529bd3",
+      "subject": "fix(gateway): resolver gateway_stale cada 3h — abandonar socket SSL muerto",
+      "author": "Mario Bravo Castro",
+      "ts": 1779472643,
       "files_changed": 1
     },
     {
-      "sha": "1443442c",
-      "subject": "Merge pull request #1 from Castro0022/pr/cognitive-core-optimizations-2026-05-22",
+      "sha": "e5757015",
+      "subject": "docs(changelog): sesión 2026-05-22g — Router Cycle 3 + Fix Generación Imágenes",
+      "author": "Mario Bravo Castro",
+      "ts": 1779440501,
+      "files_changed": 1
+    },
+    {
+      "sha": "6c73f03c",
+      "subject": "fix(vision): habilitar generación de imágenes con lenguaje natural (#3)",
       "author": "Nucleo-vectrax",
-      "ts": 1779435177,
+      "ts": 1779439465,
       "files_changed": 0
     },
     {
-      "sha": "752dc83c",
-      "subject": "chore(pr): snapshot de cierre para pull request documental",
+      "sha": "4afeef9f",
+      "subject": "test(vision): 43 tests verifying image generation fix",
       "author": "Mario Bravo Castro",
-      "ts": 1779435083,
+      "ts": 1779439325,
       "files_changed": 1
-    },
-    {
-      "sha": "ca65ea56",
-      "subject": "test(identity): 33 tests para inyección de módulos cognitivos en prompt",
-      "author": "Mario Bravo Castro",
-      "ts": 1779434929,
-      "files_changed": 1
-    },
-    {
-      "sha": "91cd2f75",
-      "subject": "feat(identity): refactorizar system prompt — introspección real desde módulos",
-      "author": "Mario Bravo Castro",
-      "ts": 1779434698,
-      "files_changed": 3
     }
   ],
   "modified_modules": [
     "CHANGELOG.md",
+    "vectrax/telegram_gateway.py",
     ".git_snapshot/SUMMARY.json",
     "core/nucleus/presencia_pura.py",
+    "vectrax/integrations/vision.py",
+    "core/semantic_classifier.py",
     "README.md",
-    "core/self_observation/self_summary.py",
-    "tests/integration/test_presencia_inhibitor.py",
-    "core/state_manager.py",
-    "core/operator/external_gateway.py"
+    "tests/test_image_generation_fix.py"
   ],
-  "generated_at": 1779436120
+  "generated_at": 1779497204
 }

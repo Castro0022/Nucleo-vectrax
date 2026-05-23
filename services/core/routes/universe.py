@@ -4,21 +4,27 @@
 Returns the nucleus state, all active stars, convergences, and
 constellations. This is the "pulse" of the system.
 
+/v1/universe/ws — WebSocket stream of the universe state in real time.
+
 No auth required for basic status (read-only, no PII).
 """
 
 from __future__ import annotations
 
-import time
+import asyncio
+import logging
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 router = APIRouter(tags=["universe"])
+logger = logging.getLogger("vectrax.routes.universe")
 
 _UNIVERSE_HTML = Path(__file__).resolve().parent.parent.parent / "ui" / "static" / "universe.html"
+
+_WS_INTERVAL_S = 2.0  # Push interval for WebSocket stream
 
 
 @router.get("/universe/view", response_class=HTMLResponse)
@@ -29,65 +35,38 @@ async def universe_view():
     return HTMLResponse("<h1>universe.html not found</h1>", status_code=404)
 
 
+def _build_snapshot() -> Dict[str, Any]:
+    """Build the unified universe snapshot via universe_observer."""
+    from core.self_observation.universe_observer import observe_universe
+    return observe_universe().to_api_dict()
+
+
 @router.get("/universe")
 async def get_universe() -> Dict[str, Any]:
     """
     Live state of the Vectrax universe.
 
-    Returns:
-      - nucleus: centroid info, total mass, star count
-      - stars: all user-stars with mass, distance, layer, patterns
-      - convergences: active links between stars
-      - heartbeat: current timestamp (the nucleus is alive)
+    Returns the unified snapshot: gravitational state (nucleus, stars,
+    convergences) + operational state (worker, queue, memory, modes,
+    health signals).
     """
-    from vectrax.db import get_universe_status, get_all_user_stars
-    from vectrax.core_nucleus import get_core_info
+    return _build_snapshot()
 
-    universe = get_universe_status()
-    nucleus = get_core_info()
 
-    # Build star list with details
-    stars = []
-    for s in get_all_user_stars():
-        stars.append({
-            "user_id": s.user_id,
-            "role": s.role,
-            "mass": round(s.mass, 4),
-            "distance_to_core": round(s.distance_to_core, 4),
-            "layer": s.layer,
-            "pattern_count": s.pattern_count,
-            "activation_count": s.activation_count,
-            "last_active": s.last_active,
-        })
-
-    # Convergences from graph
-    convergences = []
+@router.websocket("/universe/ws")
+async def universe_ws(ws: WebSocket):
+    """WebSocket stream: pushes the universe snapshot every 2s."""
+    await ws.accept()
+    logger.info("Universe WS connected")
     try:
-        from vectrax.graph import get_graph
-        g = get_graph()
-        for u, v, data in g.edges(data=True):
-            convergences.append({
-                "star_a": u,
-                "star_b": v,
-                "similarity": round(data.get("weight", 0), 4),
-            })
-    except Exception:
-        pass
-
-    return {
-        "heartbeat": time.time(),
-        "nucleus": {
-            "alive": True,
-            "star_count": nucleus.get("core_star_count", 0),
-            "has_centroid": nucleus.get("has_centroid", False),
-            "total_mass": universe.get("total_mass", 0),
-        },
-        "stars": stars,
-        "star_count": universe.get("stars", 0),
-        "pattern_count": universe.get("patterns", 0),
-        "layers": universe.get("layers", {}),
-        "convergences": convergences,
-    }
+        while True:
+            snapshot = _build_snapshot()
+            await ws.send_json(snapshot)
+            await asyncio.sleep(_WS_INTERVAL_S)
+    except WebSocketDisconnect:
+        logger.info("Universe WS disconnected")
+    except Exception as exc:
+        logger.debug("Universe WS error: %s", exc)
 
 
 @router.get("/universe/star/{user_id}")

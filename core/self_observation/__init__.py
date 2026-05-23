@@ -40,6 +40,10 @@ from core.self_observation.self_summary import (  # noqa: F401
     compose_self_summary,
     compose_self_summary_for_prompt,
 )
+from core.self_observation.universe_observer import (  # noqa: F401
+    UniverseSnapshot,
+    observe_universe,
+)
 
 __all__ = [
     "SystemSnapshot",
@@ -56,4 +60,6 @@ __all__ = [
     "reflect_now",
     "compose_self_summary",
     "compose_self_summary_for_prompt",
+    "UniverseSnapshot",
+    "observe_universe",
 ]

@@ -30,11 +30,23 @@ async def index():
 
 @router.get("/universe", response_class=HTMLResponse, include_in_schema=False)
 async def universe():
-    """Serve the interactive cognitive universe visualizer."""
-    universe_path = _TEMPLATE_DIR / "universe.html"
-    if universe_path.exists():
-        return HTMLResponse(content=universe_path.read_text(encoding="utf-8"))
+    """Serve the interactive cognitive universe visualizer (unified view)."""
+    unified_path = Path(__file__).resolve().parent / "static" / "universe.html"
+    if unified_path.exists():
+        return HTMLResponse(
+            content=unified_path.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store"},
+        )
     return HTMLResponse(content="<h1>Universe not found</h1>", status_code=404)
+
+
+@router.get("/universe/legacy", response_class=HTMLResponse, include_in_schema=False)
+async def universe_legacy():
+    """Legacy gravitational universe (knowledge stars, constellations)."""
+    legacy_path = _TEMPLATE_DIR / "universe_legacy.html"
+    if legacy_path.exists():
+        return HTMLResponse(content=legacy_path.read_text(encoding="utf-8"))
+    return HTMLResponse(content="<h1>Legacy universe not found</h1>", status_code=404)
 
 
 @router.get("/portals", response_class=HTMLResponse, include_in_schema=False)

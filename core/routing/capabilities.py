@@ -244,14 +244,36 @@ def models_with_capability(cap: Capability, local_only: bool = False) -> Dict[st
 
 
 def refresh_availability() -> None:
-    """Re-check env vars and update availability flags for cloud models."""
+    """Re-check env vars and connector registry to update availability.
+
+    Cloud models: available if their API key env var is set.
+    Local models (e.g. Ollama): available only if the provider passed
+    the health check and is registered in the connector registry.
+    This prevents the ModelRouter from selecting Ollama on servers
+    where it isn't installed.
+    """
     env_map = {
         "openai": "OPENAI_API_KEY",
         "gemini": "GEMINI_API_KEY",
         "anthropic": "ANTHROPIC_API_KEY",
     }
+
+    # Check which local providers are actually registered (passed health check)
+    _registered_local: set = set()
+    try:
+        from core.intelligence.connector_registry import get_connector_registry
+        reg = get_connector_registry()
+        for desc in reg.list_descriptors():
+            if desc.is_local and desc.healthy:
+                _registered_local.add(desc.name)
+    except Exception:
+        pass
+
     for profile in CAPABILITY_REGISTRY.values():
-        if not profile.is_local:
+        if profile.is_local:
+            # Local models: only available if provider passed health check
+            profile.available = profile.provider in _registered_local
+        else:
             env_var = env_map.get(profile.provider)
             if env_var:
                 profile.available = bool(os.environ.get(env_var))

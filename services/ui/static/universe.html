@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <title>Vectrax — Universe</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -18,6 +19,30 @@
   #hud .creator { color: #f0c040; }
   #hud .core { color: #ff4040; }
   #hud .title { font-size: 16px; color: #fff; margin-bottom: 8px; letter-spacing: 2px; }
+  #hud .section { margin-top: 6px; border-top: 1px solid rgba(0,255,255,0.1); padding-top: 4px; }
+  #hud .section-title { color: #0ff; font-size: 10px; letter-spacing: 1px; opacity: 0.7; }
+  #hud .ok { color: #0f0; }
+  #hud .warn { color: #ff0; }
+  #hud .crit { color: #f44; }
+  #hud .signal-tag { display: inline-block; background: rgba(0,255,255,0.1); border: 1px solid rgba(0,255,255,0.2); border-radius: 3px; padding: 0 4px; margin: 1px 2px; font-size: 9px; }
+  #ops {
+    position: fixed; top: 16px; right: 16px; color: #0ff; font-size: 11px;
+    line-height: 1.6; pointer-events: none; z-index: 10;
+    text-shadow: 0 0 8px rgba(0,255,255,0.4);
+    text-align: right;
+  }
+  #ops .label { color: #888; }
+  #ops .val { color: #0ff; }
+  #ops .ok { color: #0f0; }
+  #ops .warn { color: #ff0; }
+  #ops .crit { color: #f44; }
+  #ops .section-title { color: #0ff; font-size: 10px; letter-spacing: 1px; opacity: 0.7; }
+  #ops .section { margin-top: 6px; border-top: 1px solid rgba(0,255,255,0.1); padding-top: 4px; }
+  #conn-status {
+    position: fixed; bottom: 12px; right: 16px; font-size: 10px;
+    z-index: 10; pointer-events: none;
+    text-shadow: 0 0 6px rgba(0,255,255,0.3);
+  }
   #tooltip {
     position: fixed; display: none; background: rgba(0,20,40,0.92);
     border: 1px solid #0ff; border-radius: 6px; padding: 10px 14px;
@@ -28,18 +53,42 @@
   #tooltip .tt-name { font-size: 13px; font-weight: bold; color: #0ff; }
   #tooltip .tt-creator { color: #f0c040; }
   #tooltip .tt-core { color: #ff6060; }
+  #error-overlay {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #f44; font-size: 14px; text-align: center; z-index: 100;
+    background: rgba(0,0,0,0.9); padding: 20px 30px; border: 1px solid #f44;
+    border-radius: 8px; display: none; max-width: 80%; word-break: break-all;
+  }
+  #loading {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #0ff; font-size: 16px; text-align: center; z-index: 90;
+    letter-spacing: 2px;
+  }
 </style>
 </head>
 <body>
+<div id="loading">VECTRAX UNIVERSE — cargando...</div>
+<div id="error-overlay"></div>
 <div id="hud"></div>
+<div id="ops"></div>
+<div id="conn-status"></div>
 <div id="tooltip"></div>
 <canvas id="c"></canvas>
 <script>
+window.onerror = function(msg, src, line, col, err) {
+  var el = document.getElementById('error-overlay');
+  el.style.display = 'block';
+  el.textContent = 'JS Error: ' + msg + ' (line ' + line + ')';
+  return false;
+};
 const API = '/v1/universe';
+const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/v1/universe/ws`;
 const POLL_MS = 3000;
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 const hud = document.getElementById('hud');
+const ops = document.getElementById('ops');
+const connStatus = document.getElementById('conn-status');
 const tooltip = document.getElementById('tooltip');
 
 let W, H, cx, cy;
@@ -47,6 +96,8 @@ let data = null;
 let hoveredStar = null;
 let mouseX = 0, mouseY = 0;
 let pulse = 0;
+let wsConnected = false;
+let pollTimer = null;
 
 function resize() {
   W = canvas.width = window.innerWidth;
@@ -57,15 +108,58 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// Fetch data
+// ── Data fetching: WebSocket primary, HTTP polling fallback ──
+
 async function fetchUniverse() {
   try {
     const r = await fetch(API);
-    if (r.ok) data = await r.json();
-  } catch(e) {}
+    if (r.ok) {
+      data = await r.json();
+      document.getElementById('loading').style.display = 'none';
+    }
+  } catch(e) {
+    console.error('fetchUniverse error:', e);
+  }
 }
-fetchUniverse();
-setInterval(fetchUniverse, POLL_MS);
+
+function startPolling() {
+  if (pollTimer) return;
+  fetchUniverse();
+  pollTimer = setInterval(fetchUniverse, POLL_MS);
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+function connectWS() {
+  try {
+    const ws = new WebSocket(WS_URL);
+    ws.onopen = () => {
+      wsConnected = true;
+      stopPolling();
+    };
+    ws.onmessage = (e) => {
+      try { data = JSON.parse(e.data); } catch(_) {}
+    };
+    ws.onclose = () => {
+      wsConnected = false;
+      startPolling();
+      setTimeout(connectWS, 5000);
+    };
+    ws.onerror = () => {
+      ws.close();
+    };
+  } catch(e) {
+    wsConnected = false;
+    startPolling();
+    setTimeout(connectWS, 5000);
+  }
+}
+
+// Start: try WS, fall back to polling
+startPolling();
+connectWS();
 
 // Mouse tracking for tooltip
 canvas.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
@@ -260,9 +354,12 @@ function draw() {
     tooltip.style.display = 'none';
   }
 
-  // HUD
+  // ── HUD: Gravitational ──
   const totalMass = data.nucleus?.total_mass || 0;
   const heartbeat = data.heartbeat ? new Date(data.heartbeat * 1000).toLocaleTimeString() : '—';
+  const signals = data.signals || [];
+  const signalTags = signals.map(s => `<span class="signal-tag">${s}</span>`).join('');
+
   hud.innerHTML = `
     <div class="title">VECTRAX UNIVERSE</div>
     <span class="label">nucleus:</span> <span class="val">${data.nucleus?.alive ? 'ALIVE' : 'DEAD'}</span><br>
@@ -275,7 +372,62 @@ function draw() {
     <span class="val"> mid:${data.layers?.mid || 0}</span>
     <span class="label"> outer:${data.layers?.outer || 0}</span><br>
     <span class="label">convergences:</span> <span class="val">${data.convergences?.length || 0}</span>
+    ${signals.length ? `<div class="section"><span class="section-title">SIGNALS</span><br>${signalTags}</div>` : ''}
   `;
+
+  // ── OPS: Operational state (right panel) ──
+  const op = data.operational;
+  if (op) {
+    const wCls = op.worker_alive ? 'ok' : 'crit';
+    const wTxt = op.worker_alive ? 'ALIVE' : 'DOWN';
+    const gwAge = op.gateway_heartbeat_age_s != null ? op.gateway_heartbeat_age_s.toFixed(0) + 's' : '—';
+    const wkAge = op.worker_heartbeat_age_s != null ? op.worker_heartbeat_age_s.toFixed(0) + 's' : '—';
+    const q = op.queue || {};
+    const qPendCls = q.pending > 10 ? 'crit' : q.pending > 3 ? 'warn' : 'ok';
+    const mem = op.memory || {};
+    const modes = op.modes || {};
+    const health = op.health || {};
+    const errCls = health.errors_24h > 50 ? 'crit' : health.errors_24h > 10 ? 'warn' : 'ok';
+
+    ops.innerHTML = `
+      <span class="section-title">OPERATIONAL</span><br>
+      <span class="label">worker:</span> <span class="${wCls}">${wTxt}</span>
+      <span class="label"> hb:</span> <span class="val">${wkAge}</span><br>
+      <span class="label">gateway hb:</span> <span class="val">${gwAge}</span>
+      <div class="section">
+        <span class="section-title">QUEUE</span><br>
+        <span class="label">pending:</span> <span class="${qPendCls}">${q.pending || 0}</span>
+        <span class="label"> processing:</span> <span class="val">${q.processing || 0}</span><br>
+        <span class="label">done:</span> <span class="val">${q.done || 0}</span>
+        <span class="label"> error:</span> <span class="val">${q.error || 0}</span>
+      </div>
+      <div class="section">
+        <span class="section-title">MEMORY</span><br>
+        <span class="label">deep:</span> <span class="val">${mem.deep_total || 0}</span>
+        <span class="label"> active:</span> <span class="val">${mem.active || 0}</span>
+        <span class="label"> fused:</span> <span class="val">${mem.fused || 0}</span><br>
+        <span class="label">identities:</span> <span class="val">${mem.identities || 0}</span>
+        <span class="label"> essentials:</span> <span class="val">${mem.essentials || 0}</span>
+      </div>
+      <div class="section">
+        <span class="section-title">MODES</span><br>
+        <span class="label">audio:</span> <span class="val">${modes.audio || '?'}</span>
+        <span class="label"> sovereignty:</span> <span class="val">${modes.sovereignty || '?'}</span><br>
+        <span class="label">proactive:</span> <span class="val">${modes.proactive ? 'ON' : 'OFF'}</span>
+      </div>
+      <div class="section">
+        <span class="section-title">HEALTH</span><br>
+        <span class="label">errors 24h:</span> <span class="${errCls}">${health.errors_24h || 0}</span>
+      </div>
+    `;
+  } else {
+    ops.innerHTML = '';
+  }
+
+  // ── Connection status ──
+  connStatus.innerHTML = wsConnected
+    ? '<span style="color:#0f0">⬤ WS LIVE</span>'
+    : '<span style="color:#ff0">⬤ HTTP POLL</span>';
 
   requestAnimationFrame(draw);
 }

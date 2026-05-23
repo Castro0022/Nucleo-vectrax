@@ -43,6 +43,18 @@ _SELF_REFERENCE = re.compile(
     r"|\b(?:c[oó]mo\s+(?:va|est[aá]|funciona|crece))\b"
     r"|\b(?:siguiente\s+paso|pr[oó]ximo\s+paso)\b"
     r"|\b(?:modelo\s+de\s+negocio|plan\s+comercial|estrategia)\b"
+    # Universo gravitacional y estado operacional
+    r"|\b(?:tu|mi|el)\s+universo\b"
+    r"|\bestrellas?\b"
+    r"|\bconvergencias?\b"
+    r"|\bconstelacion(?:es)?\b"
+    r"|\bn[uú]cleo\b"
+    r"|\bgravitacional\b"
+    r"|\bestado\s+(?:operacional|actual|del\s+sistema)\b"
+    r"|\bworker\b"
+    r"|\bse[nñ]ales?\b"
+    r"|\bmasa\s+total\b"
+    r"|\bpatrones\b"
     r")",
     re.IGNORECASE,
 )
@@ -189,17 +201,97 @@ def _read_live_stats() -> dict:
     return stats
 
 
+def _read_universe_state() -> str:
+    """Lee el estado completo del universo gravitacional + operacional.
+
+    Usa el universe_observer para obtener el snapshot unificado.
+    Defensive: si falla, devuelve cadena vacía.
+    """
+    try:
+        from core.self_observation.universe_observer import observe_universe
+        snap = observe_universe()
+
+        # Estrellas por capa
+        layers = snap.layers
+        core_n = layers.get("core", 0)
+        mid_n = layers.get("mid", 0)
+        outer_n = layers.get("outer", 0)
+
+        # Estrellas más activas (top 5 por activation_count)
+        top_stars = sorted(
+            snap.stars, key=lambda s: s.get("activation_count", 0), reverse=True
+        )[:5]
+        top_lines = []
+        for s in top_stars:
+            top_lines.append(
+                f"  {s['user_id']} (role={s['role']}, mass={s['mass']}, "
+                f"patterns={s['pattern_count']}, layer={s['layer']})"
+            )
+
+        lines = [
+            "[UNIVERSO GRAVITACIONAL — estado en tiempo real]",
+            f"Estrellas: {snap.star_count} totales "
+            f"(core:{core_n}, mid:{mid_n}, outer:{outer_n})",
+            f"Masa total: {round(snap.total_mass, 4)}",
+            f"Patrones acumulados: {snap.pattern_count}",
+            f"Convergencias activas: {len(snap.convergences)}",
+            f"Núcleo: {'centroide activo' if snap.nucleus_has_centroid else 'sin centroide'}, "
+            f"{snap.core_star_count} estrellas core",
+        ]
+        if top_lines:
+            lines.append("Estrellas más activas:")
+            lines.extend(top_lines)
+
+        # Estado operacional
+        worker = "activo" if snap.worker_alive else "inactivo"
+        lines.append(f"\n[ESTADO OPERACIONAL]")
+        lines.append(f"Worker: {worker}")
+        lines.append(
+            f"Cola: {snap.queue_pending} pendientes, "
+            f"{snap.queue_processing} procesando"
+        )
+        lines.append(
+            f"Memoria gravitacional: {snap.deep_memory_count} registros "
+            f"({snap.deep_memory_active} activos, "
+            f"{snap.deep_memory_fused} fusionados, "
+            f"{snap.deep_memory_archived} archivados)"
+        )
+        lines.append(
+            f"Identidades: {snap.context_identities_count}, "
+            f"Principios esenciales: {snap.essential_memories_count}"
+        )
+        lines.append(
+            f"Modos: audio={snap.audio_mode}, "
+            f"soberanía={snap.sovereignty_mode}, "
+            f"proactivo={'sí' if snap.proactive_engine_enabled else 'no'}"
+        )
+        lines.append(f"Errores 24h: {snap.recent_error_count_24h}")
+
+        if snap.signals:
+            lines.append(f"Señales: {', '.join(snap.signals)}")
+
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.debug("universe_state failed: %s", exc)
+        return ""
+
+
 def build_self_context(lang: str = "es") -> str:
     """
     Construye el contexto de auto-observación de Vectrax.
 
     Este contexto se inyecta en el prompt cuando el usuario
     pregunta sobre el sistema, su comercialización o su estado.
+
+    Combina:
+      1. Stats básicos de usuarios/interacciones (SQLite)
+      2. Estado del universo gravitacional + operacional (universe_observer)
     """
     stats = _read_live_stats()
+    universe = _read_universe_state()
 
     if lang == "es":
-        return (
+        base = (
             "[VECTRAX SE OBSERVA A SÍ MISMO]\n"
             "Soy Vectrax. Estoy corriendo en producción en un servidor Vultr.\n"
             f"Tengo {stats['users']} usuarios registrados y "
@@ -214,6 +306,8 @@ def build_self_context(lang: str = "es") -> str:
             "• Acceso por Telegram, sin fricción\n"
             "• Gateway escalable con cola SQLite y workers independientes\n"
             "• Detección de intenciones fallback para aprendizaje continuo\n"
+            "• Universo gravitacional con estrellas, convergencias y constelaciones\n"
+            "• Observación del universo en tiempo real (WebSocket + HTTP)\n"
             "Cuando Mario me pregunta sobre comercialización, estrategia o próximos pasos,\n"
             "respondo desde lo que soy y lo que ya existe — no desde teoría genérica.\n"
             "Nunca sugiero 'redes sociales e influencers' como primera respuesta.\n"
@@ -221,7 +315,7 @@ def build_self_context(lang: str = "es") -> str:
             "decisiones concretas basadas en lo que ya funciona."
         )
     else:
-        return (
+        base = (
             "[VECTRAX OBSERVES ITSELF]\n"
             "I am Vectrax. I'm running in production on a Vultr server.\n"
             f"I have {stats['users']} registered users and "
@@ -236,6 +330,12 @@ def build_self_context(lang: str = "es") -> str:
             "• Telegram access, zero friction\n"
             "• Scalable gateway with SQLite queue and independent workers\n"
             "• Fallback intent tracking for continuous learning\n"
+            "• Gravitational universe with stars, convergences and constellations\n"
+            "• Real-time universe observation (WebSocket + HTTP)\n"
             "When Mario asks about commercialization, strategy or next steps,\n"
             "I respond from what I am and what already exists — not from generic theory."
         )
+
+    if universe:
+        return base + "\n\n" + universe
+    return base
