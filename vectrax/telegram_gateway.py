@@ -817,8 +817,30 @@ class TelegramGateway:
             if not text:
                 return
 
-            # === ONBOARDING — dos pasos: presencia → nombre → comandos ===
+            # === PRE-ONBOARDING: comandos que deben funcionar SIEMPRE ===
+            # /upgrade, /pro, /help, /privacy pasan sin importar el estado
+            # de onboarding. Un usuario nuevo debe poder pagar sin dar nombre.
             _t = text.strip()
+            _t_lower = _t.lower().rstrip("!?.")
+
+            if _t_lower in ("upgrade", "/upgrade", "pro", "/pro"):
+                try:
+                    from services.billing.stripe_billing import create_checkout_session
+                    url = create_checkout_session(tg_uid)
+                    if url:
+                        self._send(cid, (
+                            "Vectrax PRO: memoria completa, voz, mapas, "
+                            "mercado, sin l\u00edmites.\n\n"
+                            f"Activar aqu\u00ed: {url}"
+                        ))
+                    else:
+                        self._send(cid, "Sistema de pago en configuraci\u00f3n.")
+                except Exception:
+                    self._send(cid, "Sistema de pago en configuraci\u00f3n.")
+                self._processed += 1
+                return
+
+            # === ONBOARDING — dos pasos: presencia → nombre ===
             _ob = self._get_onboarding_state(tg_uid)
 
             # Paso 1: usuario nuevo → presencia pura, sin comandos, esperar nombre
