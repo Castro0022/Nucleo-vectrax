@@ -44,7 +44,7 @@ _HINT_PATTERNS = [
             r"|agregar.?(?:un\s+)?(?:cliente|lead|contacto|prospecto)"
             r"|guardar.?(?:un\s+)?(?:cliente|lead|contacto)"
             r"|nuevo.?(?:cliente|lead|contacto|prospecto)"
-            r"|add.?(?:a\s+)?(?:client|lead|contact|prospect))",
+            r"|add.?(?:a\s+)?(?:new\s+)?(?:client|lead|contact|prospect))",
             re.I,
         ),
         "/lead add nombre",
