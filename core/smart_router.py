@@ -159,11 +159,18 @@ _LOCAL_KEYWORDS = re.compile(
     r"(\bwhat did i\b|\bwhat i said\b|\bwhat have i\b"
     r"|\bmy (messages|history|notes|data|stars|memory|conversations?)\b"
     r"|\bqu[eé] dije\b|\bqu[eé] te dije\b|\bqu[eé] hablamos\b|\bqu[eé] recuerdas\b"
-    r"|\bmi (historial|memoria|mensajes|notas|conversaci[oó]n|datos)\b"
+    r"|\bqu[eé] te (cont[eé]|ped[ií]|pregunt[eé]|dije|mencion[eé])\b"
+    r"|\bqu[eé] (sab[eé]s|sabes|tienes|guardaste) (de|sobre) m[ií]\b"
+    r"|\b(sabes|recuerdas|tienes) (algo|info|datos?) (de|sobre)\b"
+    r"|\bmi (historial|memoria|mensajes|notas|conversaci[oó]n|datos|nombre|perfil)\b"
     r"|\besta conversaci[oó]n\b|\bthis conversation\b"
-    r"|\bdo you remember\b|\brecuerdas\b"
-    r"|\blo que te cont[eé]\b|\blo que escrib[ií]\b"
-    r"|\bmy previous\b|\bmy last\b)",
+    r"|\bdo you remember\b|\brecuerdas\b|\bacuerdate\b|\bno olvides\b"
+    r"|\blo que te cont[eé]\b|\blo que escrib[ií]\b|\blo que te dije\b"
+    r"|\bmy previous\b|\bmy last\b"
+    r"|\b(te|le) (dije|cont[eé]|mencion[eé]|ped[ií])\b"
+    r"|\bcu[aá]ndo (hablamos|te dije|te cont[eé])\b"
+    r"|\b(qui[eé]n|quien) soy\b|\bc[oó]mo me llamo\b"
+    r"|\bcu[aá]l es mi nombre\b|\bmi identidad\b)",
     re.IGNORECASE,
 )
 
@@ -574,6 +581,32 @@ class SmartRouter:
             return semantic_intent, signals
 
         # Conflicto o semántico ausente → regex decide solo
+        #
+        # Excepción: cuando el semántico dice MEMORY y el regex dice ONLINE,
+        # el semántico tiene prioridad incluso con confianza baja. Motivo:
+        # preguntas sobre memoria personal ("qué te dije?", "recuerdas X?")
+        # contienen question marks/starts que el regex interpreta como
+        # búsqueda online, pero la intención real es acceder a memoria local.
+        # Datos: 80 conflictos memory→online, 16% eran fallback_better.
+        if (
+            semantic_intent is not None
+            and semantic_intent.value == "memory"
+            and regex_intent == Intent.ONLINE
+            and sem_conf > 0
+        ):
+            signals["classification_method"] = "semantic_memory_rescue"
+            signals["regex_agrees"] = False
+            signals["decision_note"] = (
+                f"memory rescue: semantic=memory(conf={sem_conf:.2f}) "
+                f"overrides regex=online (question-as-memory pattern)"
+            )
+            logger.info(
+                "classify_intent: memory via semantic_memory_rescue "
+                "(sem_conf=%.2f, regex was online)",
+                sem_conf,
+            )
+            return semantic_intent, signals
+
         signals["classification_method"] = "regex_fallback"
 
         if semantic_intent is not None and sem_conf > 0:
