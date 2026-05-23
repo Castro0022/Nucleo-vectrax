@@ -165,6 +165,33 @@ async def telegram_webhook(
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# Stripe Webhook
+# ---------------------------------------------------------------------------
+
+@router.post("/stripe")
+async def stripe_webhook(request: Request):
+    """Receive Stripe webhook events (checkout.session.completed, etc.).
+
+    Verifies signature using STRIPE_WEBHOOK_SECRET, then delegates to
+    the billing module for tier activation/deactivation.
+    """
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    if not sig_header:
+        raise HTTPException(status_code=400, detail="Missing stripe-signature header")
+
+    try:
+        from services.billing.stripe_billing import handle_webhook
+        result = handle_webhook(payload, sig_header)
+        logger.info("Stripe webhook processed: %s", result)
+        return result
+    except Exception as exc:
+        logger.error("Stripe webhook failed: %s", exc)
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/telegram/status")
 async def webhook_status():
     """Lightweight status endpoint for monitoring.
