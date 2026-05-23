@@ -1149,6 +1149,26 @@ class ExternalGateway:
             except Exception as _exc:
                 logger.debug("active_state update failed: %s", _exc)
 
+        # ════════════════════════════════════════════════════════════
+        # COMMAND HINTS — sugerir comandos por contexto, no por dump
+        # Solo se activa si el usuario NO usó un comando y la
+        # respuesta no viene de memoria directa.
+        # ════════════════════════════════════════════════════════════
+        if response_text and not memory_resolved and not content.strip().startswith("/"):
+            try:
+                from vectrax.command_hints import detect_command_hint, append_hint_to_response
+                from core.language_gate import get_user_language
+                _hint_lang = get_user_language(user_id, content)
+                _hint = detect_command_hint(content, lang=_hint_lang)
+                if _hint:
+                    response_text = append_hint_to_response(response_text, _hint)
+                    logger.info(
+                        "Pipeline: command_hint appended | hint=%s | user=%s",
+                        _hint, user_id[:20],
+                    )
+            except Exception as exc:
+                logger.debug("command_hints failed (passthrough): %s", exc)
+
         # RESPONDER + REGISTRAR — última huella del ciclo
         if _cycle_obs:
             _final_source_path = (
