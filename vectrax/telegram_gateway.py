@@ -1779,13 +1779,15 @@ class TelegramGateway:
 
     def _send_presence(self, cid: int, tg_uid: str) -> None:
         """
-        Paso 1: mensaje de presencia puro.
-        Sin comandos. Esperar nombre del usuario.
+        Paso 1: presencia — Vectrax se presenta con identidad,
+        sin comandos, sin instrucciones. Solo presencia.
         """
         self._send(cid,
-            "Hola. Soy Vectrax.\n\n"
-            "Estoy aqu\u00ed para cualquier cosa que necesites.\n\n"
-            "Dime tu nombre y ser\u00e9 tuyo infinitamente."
+            "Vectrax activo.\n\n"
+            "Arquitectura de inteligencia persistente.\n"
+            "Memoria contextual, aprendizaje continuo "
+            "y coherencia operacional como n\u00facleo.\n\n"
+            "\u00bfCu\u00e1l es el desaf\u00edo que vamos a resolver hoy?"
         )
         try:
             from vectrax.onboarding import set_welcome_sent
@@ -1797,12 +1799,12 @@ class TelegramGateway:
 
     def _complete_onboarding(self, cid: int, tg_uid: str, name_raw: str) -> None:
         """
-        Paso 2: guardar nombre y enviar comandos disponibles.
-        Responde con reconocimiento + lista de comandos.
+        Paso 2: guardar nombre. Respuesta m\u00ednima, sin lista de comandos.
+        Los comandos se revelan por contexto, no por dump.
         """
-        # Limpiar: title-case, máximo 60 chars
+        # Limpiar: title-case, m\u00e1ximo 60 chars
         name = name_raw.strip()
-        # Si el usuario escribió varias palabras tipo "soy Mario", extraer nombre
+        # Si el usuario escribi\u00f3 varias palabras tipo "soy Mario", extraer nombre
         import re as _re
         _name_match = _re.search(
             r"(?:soy|me\s+llamo|my\s+name\s+is|i'?m|je\s+m'?appelle|ich\s+bin|sono)\s+([A-Za-z\u00c0-\u024f]{2,})",
@@ -1819,17 +1821,7 @@ class TelegramGateway:
         except Exception as exc:
             logger.debug("onboarding set_completed failed: %s", exc)
 
-        self._send(cid, (
-            f"Ya te reconozco, {name}.\n\n"
-            "Ahora puedes hablarme normal o usar estos comandos cuando los necesites:\n\n"
-            "/lead add nombre \u2014 guardar seguimiento\n"
-            "/lead view nombre \u2014 ver seguimiento\n"
-            "/lead summary \u2014 resumen de leads\n"
-            "/team new nombre \u2014 crear equipo\n"
-            "/team join c\u00f3digo \u2014 unirte a equipo\n"
-            "/vx stats \u2014 estado del sistema\n"
-            "/help \u2014 ver todos los comandos"
-        ))
+        self._send(cid, f"Registrado, {name}. Hablemos.")
         logger.info("Onboarding completed | user=%s | name=%s", tg_uid[:20], name)
 
     def _send_welcome(self, cid: int, tg_uid: str) -> None:
