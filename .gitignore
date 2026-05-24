@@ -51,3 +51,4 @@ vault/.fuse_hidden*
 
 # Archived backups
 archive/
+data/
