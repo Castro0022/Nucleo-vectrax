@@ -792,6 +792,22 @@ def _reject_response(raw: str, user_input: str) -> str:
         if abstract_count >= 4:
             return "abstract_philosophical_filler"
 
+    # 7b. Alucinación off-topic: respuesta sobre un tema completamente
+    # diferente al que el usuario preguntó. Detecta dominios técnicos
+    # específicos que aparecen en la respuesta pero no en el input.
+    if ui and len(ui.split()) >= 3:
+        _offtopic_domains = [
+            (re.compile(r"\b(?:fotovoltaic|solar\s+panel|panel\s+solar|energ[ií]a\s+solar|inversor|watt)\b", re.I), "solar_energy"),
+            (re.compile(r"\b(?:receta|ingredientes?|cocinar?|horno|sart[eé]n|cucharada)\b", re.I), "cooking"),
+            (re.compile(r"\b(?:embaraz|trimestre|feto|ecograf|parto|obstetr)\b", re.I), "pregnancy"),
+            (re.compile(r"\b(?:horoscopo|hor[oó]scopo|signo\s+zodiac|ascendente|astrol[oó]g)\b", re.I), "astrology"),
+            (re.compile(r"\b(?:futbol|gol|liga|champions|premier|balon|penalty)\b", re.I), "football"),
+        ]
+        for pattern, domain in _offtopic_domains:
+            if pattern.search(text) and not pattern.search(ui):
+                logger.info("Off-topic hallucination: %s detected in response but not in input", domain)
+                return f"offtopic_hallucination:{domain}"
+
     # 8. Identidad servil: Vectrax se autodenomina asistente/herramienta
     _servile_re = re.compile(
         r"\b(?:soy\s+(?:un(?:a)?\s+)?(?:asistente|herramienta)(?:\s+(?:virtual|de\s+(?:IA|apoyo)))?)\b"
@@ -871,8 +887,10 @@ def enforce_final_answer(
     if reject_reason:
         # Si el rechazo es por calidad pero hay contenido sustancial (>80 chars),
         # dejar pasar con limpieza en vez de bloquear. Regla de no-bloqueo.
+        # Excepciones: off-topic hallucinations SIEMPRE se reemplazan.
         soft_rejections = {"generic_content", "low_quality", "abstract_philosophical_filler"}
-        if reject_reason in soft_rejections and len(raw.strip()) > 80:
+        is_hallucination = reject_reason.startswith("offtopic_hallucination")
+        if reject_reason in soft_rejections and len(raw.strip()) > 80 and not is_hallucination:
             logger.info(
                 "FINAL | source=raw_passthrough | soft_reject=%s | "
                 "raw_len=%d | input=%r",
