@@ -158,7 +158,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   let W = 0, H = 0;
   let stars = [], edges = [], constellations = [];
   let starMap = {};       // id → star object with computed x,y
-  let cam = { x: 0, y: 0, zoom: 1 };
+  let cam = { x: 0, y: 0, zoom: 1, tx: 0, ty: 0, tz: 1 }; // t* = targets for easing
   let drag = { active: false, sx: 0, sy: 0, cx: 0, cy: 0 };
   let hovered = null;
   let animFrame = 0;
@@ -289,10 +289,14 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   // --- DRAW ---
   function draw() {
     animFrame++;
-    const t = animFrame * 0.016; // time in seconds
-    ctx.clearRect(0, 0, W, H);
+    const t = animFrame * 0.016;
 
-    // Background (subtle breathing)
+    // Smooth camera easing (fluid pan + zoom)
+    cam.x += (cam.tx - cam.x) * 0.08;
+    cam.y += (cam.ty - cam.y) * 0.08;
+    cam.zoom += (cam.tz - cam.zoom) * 0.07;
+
+    ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = '#060a10';
     ctx.fillRect(0, 0, W, H);
 
@@ -512,6 +516,15 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         ctx.stroke();
       }
 
+      // Semantic zoom: show owner + gravity_score when zoomed in
+      if (cam.zoom > 2.0 && s._visible) {
+        const detailY = sy + r + (cam.zoom > 3 ? 26 : 16) * cam.zoom;
+        ctx.fillStyle = 'rgba(90,99,116,0.5)';
+        ctx.font = `${Math.max(8, 9 * cam.zoom)}px ${getComputedStyle(document.body).fontFamily}`;
+        ctx.textAlign = 'center';
+        ctx.fillText(`g:${s.gravity_score.toFixed(2)} · ${s.owner || '–'}`, sx, detailY);
+      }
+
     }
 
     // --- Adaptive Label System ---
@@ -625,13 +638,13 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   canvas.addEventListener('mousedown', e => {
     drag.active = true;
     drag.sx = e.clientX; drag.sy = e.clientY;
-    drag.cx = cam.x; drag.cy = cam.y;
+    drag.cx = cam.tx; drag.cy = cam.ty;
     canvas.classList.add('dragging');
   });
   window.addEventListener('mousemove', e => {
     if (drag.active) {
-      cam.x = drag.cx - (e.clientX - drag.sx) / cam.zoom;
-      cam.y = drag.cy - (e.clientY - drag.sy) / cam.zoom;
+      cam.tx = drag.cx - (e.clientX - drag.sx) / cam.zoom;
+      cam.ty = drag.cy - (e.clientY - drag.sy) / cam.zoom;
     }
     // Hover detection
     const [wx, wy] = toWorld(e.clientX, e.clientY);
@@ -672,16 +685,16 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   });
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-    cam.zoom = Math.max(0.15, Math.min(cam.zoom * factor, 8));
+    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+    cam.tz = Math.max(0.15, Math.min(cam.tz * factor, 8));
   }, { passive: false });
 
   // Double-click to center on star
   canvas.addEventListener('dblclick', e => {
     if (hovered) {
-      cam.x = hovered._x;
-      cam.y = hovered._y;
-      cam.zoom = Math.max(cam.zoom, 1.5);
+      cam.tx = hovered._x;
+      cam.ty = hovered._y;
+      cam.tz = Math.max(cam.tz, 1.5);
     }
   });
 
