@@ -127,11 +127,19 @@ def _queue_counts() -> Dict[str, int]:
     return out
 
 
-# Path to the actual gravitational DB (stars, user_stars, patterns)
-_VECTRAX_DB = os.environ.get(
-    "VECTRAX_DB",
-    os.path.join(_HOME_VECTRAX, "vectrax.db"),
-)
+# Path to the actual gravitational DB (stars, user_stars, patterns).
+# The env var VECTRAX_DB may be a relative path (e.g. "vectrax.db") which
+# would resolve to /app/vectrax.db (the old empty copy). Always prefer
+# the runtime copy at ~/.vectrax/vectrax.db which has the real data.
+_VECTRAX_DB_ENV = os.environ.get("VECTRAX_DB", "")
+_VECTRAX_DB_RUNTIME = os.path.join(_HOME_VECTRAX, "vectrax.db")
+# Use runtime path if it exists; fall back to env var; fall back to runtime default
+if os.path.exists(_VECTRAX_DB_RUNTIME):
+    _VECTRAX_DB = _VECTRAX_DB_RUNTIME
+elif _VECTRAX_DB_ENV and os.path.isabs(_VECTRAX_DB_ENV):
+    _VECTRAX_DB = _VECTRAX_DB_ENV
+else:
+    _VECTRAX_DB = _VECTRAX_DB_RUNTIME
 
 
 def _gravity_counts() -> Dict[str, int]:
