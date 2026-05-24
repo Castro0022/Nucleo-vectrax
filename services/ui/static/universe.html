@@ -123,14 +123,42 @@ X.fillStyle=`rgba(255,255,255,${0.55+Math.sin(t*3)*0.2})`;X.beginPath();X.arc(cx
 // Convergences
 if(data.convergences){for(const c of data.convergences){const a=stars.find(s=>s.user_id===c.star_a),b=stars.find(s=>s.user_id===c.star_b);if(a&&b&&a._x!=null&&b._x!=null){const pr=(Math.sin(t*2+c.similarity*5)+1)/2,al=0.04+c.similarity*0.25+pr*0.08;X.strokeStyle=`rgba(167,139,250,${al})`;X.lineWidth=0.4+c.similarity*1.2;X.beginPath();X.moveTo(a._x,a._y);X.lineTo(b._x,b._y);X.stroke();const px=a._x+(b._x-a._x)*pr,py=a._y+(b._y-a._y)*pr;X.fillStyle=`rgba(167,139,250,${0.3+pr*0.4})`;X.beginPath();X.arc(px,py,1.5,0,6.28);X.fill()}}}
 
-// Gravity threads (star → nucleus)
-for(const s of stars){if(s._x==null)continue;const al=0.015+(1-s.distance_to_core)*0.035;X.strokeStyle=`rgba(251,191,36,${al})`;X.lineWidth=0.3;X.beginPath();X.moveTo(cx,cy);X.lineTo(s._x,s._y);X.stroke()}
+// Gravity threads (star → nucleus) with traveling energy particles
+for(const s of stars){if(s._x==null)continue;
+const al=0.015+(1-s.distance_to_core)*0.04;
+X.strokeStyle=`rgba(251,191,36,${al})`;X.lineWidth=0.3;
+X.beginPath();X.moveTo(cx,cy);X.lineTo(s._x,s._y);X.stroke();
+// Energy particle flowing toward nucleus (stronger for heavier stars)
+if(s.mass>0.15){
+const flow=(t*0.8+s.mass*10)%1; // 0→1 repeating
+const px=s._x+(cx-s._x)*flow;
+const py=s._y+(cy-s._y)*flow;
+const pAlpha=0.15+s.mass*0.4;
+const pSize=0.8+s.mass*2;
+X.fillStyle=`rgba(251,191,36,${pAlpha*(1-flow*0.5)})`;
+X.beginPath();X.arc(px,py,pSize,0,6.28);X.fill();
+// Second particle offset
+const flow2=(t*0.6+s.mass*7+0.5)%1;
+const px2=s._x+(cx-s._x)*flow2;
+const py2=s._y+(cy-s._y)*flow2;
+X.fillStyle=`rgba(251,191,36,${pAlpha*0.5*(1-flow2*0.5)})`;
+X.beginPath();X.arc(px2,py2,pSize*0.6,0,6.28);X.fill();
+}}
 
 // STARS
 hover=null;
 for(let i=0;i<stars.length;i++){
-const s=stars[i],r=dr(s.distance_to_core),spd=0.018*(1.15-s.mass),ang=(i/Math.max(stars.length,1))*6.28+t*spd;
-const sx=cx+Math.cos(ang)*r,sy=cy+Math.sin(ang)*r;s._x=sx;s._y=sy;
+const s=stars[i];
+// Dynamic distance: high-mass stars drift inward over time
+const gravPull=s.mass*0.03*Math.sin(t*0.5+i*0.7); // breathe toward nucleus
+const dynDist=Math.max(0.05, s.distance_to_core - gravPull);
+const r=dr(dynDist);
+// Orbit speed: heavier = slower + slight wobble
+const spd=0.012*(1.3-s.mass)+0.004*Math.sin(t*0.3+i);
+const ang=(i/Math.max(stars.length,1))*6.28+t*spd;
+// Slight radial wobble for organic feel
+const wobbleR=r+Math.sin(t*1.2+i*2.3)*3;
+const sx=cx+Math.cos(ang)*wobbleR,sy=cy+Math.sin(ang)*wobbleR;s._x=sx;s._y=sy;
 const sz2=ms(s.mass),col=sc(s.layer,s.role),tw=0.7+0.3*Math.sin(t*3+i*1.7);
 
 // Glow
