@@ -198,18 +198,29 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     return h;
   }
 
-  // --- Position stars radially ---
+  // --- Position stars with organic noise ---
   function layoutStars() {
     const cx = 0, cy = 0;
     const maxR = Math.min(W, H) * 0.42;
     starMap = {};
     for (const s of stars) {
-      const angle = (hashStr(s.id) % 36000) / 36000 * Math.PI * 2;
-      const r = s.distance_to_core * maxR;
-      s._x = cx + Math.cos(angle) * r;
-      s._y = cy + Math.sin(angle) * r;
-      s._r = 3 + s.mass * 17;       // radius: 3–20px
+      const h = hashStr(s.id);
+      const h2 = hashStr(s.id + 'x');
+      const angle = (h % 36000) / 36000 * Math.PI * 2;
+      const noise = ((h2 % 1000) / 1000 - 0.5) * 0.12;
+      const r = Math.max(8, (s.distance_to_core + noise) * maxR);
+      s._baseX = cx + Math.cos(angle) * r;
+      s._baseY = cy + Math.sin(angle) * r;
+      s._x = s._baseX;
+      s._y = s._baseY;
+      s._r = 3 + s.mass * 17;
       s._visible = true;
+      // Per-star drift params
+      s._driftAmp = 3 + (Math.abs(h2) % 100) / 100 * 12;
+      s._driftSpeed = 0.0004 + (Math.abs(h) % 500) / 500 * 0.0015;
+      s._driftPhase = (Math.abs(h) % 628) / 100;
+      s._twinkleSpeed = 0.01 + (Math.abs(h2) % 200) / 200 * 0.03;
+      s._twinklePhase = (Math.abs(h) % 314) / 100;
       starMap[s.id] = s;
     }
   }
@@ -279,17 +290,28 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   // --- DRAW ---
   function draw() {
     animFrame++;
+    const t = animFrame * 0.016; // time in seconds
     ctx.clearRect(0, 0, W, H);
 
-    // Background
+    // Background (subtle breathing)
     ctx.fillStyle = '#060a10';
     ctx.fillRect(0, 0, W, H);
 
-    // Background stars (parallax)
+    // Update star positions with organic drift + gravitational breathing
+    for (const s of stars) {
+      if (!s._baseX) continue;
+      const drift = Math.sin(t * s._driftSpeed * 60 + s._driftPhase) * s._driftAmp;
+      const driftY = Math.cos(t * s._driftSpeed * 45 + s._driftPhase + 1) * s._driftAmp * 0.8;
+      const breath = s.mass * 8 * Math.sin(t * 0.3 + s._driftPhase);
+      s._x = s._baseX + drift - Math.sign(s._baseX) * breath;
+      s._y = s._baseY + driftY - Math.sign(s._baseY) * breath;
+    }
+
+    // Background stars (parallax + twinkling)
     for (const bs of bgStars) {
       const [sx, sy] = toScreen(bs.x * 0.3, bs.y * 0.3);
       if (sx < -10 || sx > W+10 || sy < -10 || sy > H+10) continue;
-      const flicker = bs.a + Math.sin(animFrame * 0.02 + bs.x) * 0.08;
+      const flicker = bs.a + Math.sin(t * 0.8 + bs.x * 0.01) * 0.12;
       ctx.fillStyle = `rgba(200,210,230,${flicker})`;
       ctx.beginPath();
       ctx.arc(sx, sy, bs.r, 0, Math.PI * 2);
@@ -316,19 +338,50 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       }
     }
 
-    // Nucleus glow
+    // Nucleus — golden, pulsing, dominant
     const [ncx, ncy] = toScreen(0, 0);
-    const nucleusR = 12 * cam.zoom;
-    const pulse = 1 + Math.sin(animFrame * 0.03) * 0.15;
-    const grad = ctx.createRadialGradient(ncx, ncy, 0, ncx, ncy, nucleusR * 4 * pulse);
-    grad.addColorStop(0, 'rgba(251,191,36,0.25)');
-    grad.addColorStop(0.5, 'rgba(251,191,36,0.06)');
-    grad.addColorStop(1, 'rgba(251,191,36,0)');
-    ctx.fillStyle = grad;
+    const nucleusR = 14 * cam.zoom;
+    const pulse = 1 + Math.sin(t * 1.2) * 0.15;
+    // Deep aura
+    const aura = ctx.createRadialGradient(ncx, ncy, 0, ncx, ncy, nucleusR * 8 * pulse);
+    aura.addColorStop(0, 'rgba(212,175,55,0.15)');
+    aura.addColorStop(0.3, 'rgba(180,140,30,0.05)');
+    aura.addColorStop(0.6, 'rgba(120,80,10,0.01)');
+    aura.addColorStop(1, 'transparent');
+    ctx.fillStyle = aura;
     ctx.beginPath();
-    ctx.arc(ncx, ncy, nucleusR * 4 * pulse, 0, Math.PI * 2);
+    ctx.arc(ncx, ncy, nucleusR * 8 * pulse, 0, Math.PI * 2);
     ctx.fill();
-    // Nucleus dot
+    // Breathing ring
+    ctx.strokeStyle = `rgba(212,175,55,${0.08 + Math.sin(t * 2) * 0.04})`;
+    ctx.lineWidth = 0.8 * cam.zoom;
+    ctx.beginPath();
+    ctx.arc(ncx, ncy, nucleusR * 3 * (1 + Math.sin(t * 2.5) * 0.06), 0, Math.PI * 2);
+    ctx.stroke();
+    // Gravitational wave
+    const wave = (t * 0.12) % 1;
+    ctx.strokeStyle = `rgba(212,175,55,${0.06 * (1 - wave)})`;
+    ctx.lineWidth = 0.4 * cam.zoom;
+    ctx.beginPath();
+    ctx.arc(ncx, ncy, nucleusR * (2 + wave * 14), 0, Math.PI * 2);
+    ctx.stroke();
+    // Nucleus body
+    const coreG = ctx.createRadialGradient(ncx - nucleusR * 0.1, ncy - nucleusR * 0.12, 0, ncx, ncy, nucleusR * pulse);
+    coreG.addColorStop(0, '#fef3c7');
+    coreG.addColorStop(0.2, '#fbbf24');
+    coreG.addColorStop(0.5, '#d4a017');
+    coreG.addColorStop(0.8, '#92400e');
+    coreG.addColorStop(1, '#451a03');
+    ctx.fillStyle = coreG;
+    ctx.beginPath();
+    ctx.arc(ncx, ncy, nucleusR * pulse, 0, Math.PI * 2);
+    ctx.fill();
+    // Specular
+    ctx.fillStyle = `rgba(255,250,230,${0.3 + Math.sin(t * 1.8) * 0.1})`;
+    ctx.beginPath();
+    ctx.arc(ncx - nucleusR * 0.15, ncy - nucleusR * 0.18, nucleusR * 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    // Nucleus dot (legacy compat)
     ctx.fillStyle = '#fbbf24';
     ctx.beginPath();
     ctx.arc(ncx, ncy, 4 * cam.zoom, 0, Math.PI * 2);
@@ -659,8 +712,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   loadUniverse();
   draw();
 
-  // Auto-refresh every 15s
-  setInterval(loadUniverse, 15000);
+  // Refresh data every 5s (faster than 15s for real-time feel)
+  setInterval(loadUniverse, 5000);
 
 })();
 </script>
