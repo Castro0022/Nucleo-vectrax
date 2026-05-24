@@ -557,8 +557,14 @@ async def api_universe(
             "gravity_score": round(s.gravity_score, 4),
         })
 
-    # Edges from graph
+    # Edges from graph (auto-load from DB if empty)
     graph = _g.get_graph()
+    if graph.number_of_edges() == 0 and len(star_ids) > 0:
+        try:
+            _g.load_from_db()
+            graph = _g.get_graph()
+        except Exception:
+            pass
     edges = []
     seen = set()
     for sid in star_ids:
