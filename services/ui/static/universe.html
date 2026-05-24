@@ -28,6 +28,19 @@ canvas{display:block}
 #ops .st{color:#0ff;font-size:8px;letter-spacing:1.5px;opacity:.5;text-transform:uppercase}
 #ops .sec{margin-top:4px;border-top:1px solid rgba(0,255,255,0.06);padding-top:3px}
 #cs{position:fixed;bottom:10px;right:14px;font-size:9px;z-index:10;pointer-events:none}
+#panel{position:fixed;bottom:14px;right:14px;width:220px;max-height:45vh;overflow-y:auto;background:rgba(0,6,12,0.92);border:1px solid rgba(0,255,255,0.1);border-radius:8px;padding:10px 12px;font-size:9px;color:#94a3b8;line-height:1.5;z-index:15;pointer-events:auto;scrollbar-width:thin;scrollbar-color:#1e293b transparent}
+#panel::-webkit-scrollbar{width:4px}
+#panel::-webkit-scrollbar-thumb{background:#1e293b;border-radius:2px}
+#panel .pt{color:#0ff;font-size:8px;letter-spacing:1.5px;opacity:.6;text-transform:uppercase;margin-top:6px;margin-bottom:2px}
+#panel .pt:first-child{margin-top:0}
+#panel .leg{display:flex;align-items:center;gap:6px;margin:2px 0}
+#panel .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+#panel .ring{width:8px;height:8px;border-radius:50%;flex-shrink:0;border:2px solid;background:transparent}
+#panel .bar{height:3px;border-radius:1px;margin-top:1px}
+#panel .sr{display:flex;align-items:center;gap:4px;margin:1px 0;font-size:8px}
+#panel .sr .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#panel .sr .ms{color:#fbbf24;width:35px;text-align:right}
+#panel .sr .act{color:#4a5568;width:25px;text-align:right}
 #feed{position:fixed;bottom:14px;left:14px;color:#4a5568;font-size:8px;line-height:1.4;pointer-events:none;z-index:10;max-height:100px;overflow:hidden}
 .fn{opacity:.6}.fn.nw{color:#fbbf24;opacity:1}
 #tt{position:fixed;display:none;background:rgba(0,6,12,0.96);border:1px solid rgba(251,191,36,0.35);border-radius:8px;padding:10px 14px;color:#cbd5e1;font-size:10px;line-height:1.5;z-index:20;pointer-events:none;max-width:260px;box-shadow:0 0 30px rgba(251,191,36,0.08)}
@@ -42,6 +55,7 @@ canvas{display:block}
 <div id="ld">VECTRAX UNIVERSE</div>
 <div id="hud"></div>
 <div id="ops"></div>
+<div id="panel"></div>
 <div id="cs"></div>
 <div id="feed"></div>
 <div id="tt"></div>
@@ -148,6 +162,64 @@ const op=data.operational;if(op){const q=op.queue||{},mem=op.memory||{},md=op.mo
 
 // Conn
 document.getElementById('cs').innerHTML=wsOn?'<span style="color:#34d399">● WS</span>':'<span style="color:#fbbf24">● POLL</span>';
+
+// PANEL — system development
+const pnl=document.getElementById('panel');
+if(data&&stars.length){
+const sorted=[...stars].sort((a,b)=>b.mass-a.mass);
+const coreN=data.layers?.core||0,midN=data.layers?.mid||0,outN=data.layers?.outer||0,total=stars.length||1;
+const convN=(data.convergences||[]).length;
+const maxMass=sorted[0]?sorted[0].mass:1;
+
+// Legend
+let ph='<div class="pt">legend</div>';
+ph+='<div class="leg"><div class="dot" style="background:#fbbf24"></div>Creator (nucleus)</div>';
+ph+='<div class="leg"><div class="dot" style="background:#f87171"></div>Core — high gravity</div>';
+ph+='<div class="leg"><div class="dot" style="background:#60a5fa"></div>Mid — emerging</div>';
+ph+='<div class="leg"><div class="dot" style="background:#475569"></div>Outer — periphery</div>';
+ph+='<div class="leg"><div class="ring" style="border-color:#a78bfa"></div>Convergence link</div>';
+ph+='<div class="leg"><div class="ring" style="border-color:#fbbf24"></div>Gravity thread</div>';
+
+// Layer distribution
+ph+='<div class="pt">layer distribution</div>';
+ph+=`<div style="display:flex;gap:2px;height:6px;border-radius:3px;overflow:hidden">`;
+if(coreN)ph+=`<div style="flex:${coreN};background:#f87171;border-radius:2px"></div>`;
+if(midN)ph+=`<div style="flex:${midN};background:#60a5fa;border-radius:2px"></div>`;
+if(outN)ph+=`<div style="flex:${outN};background:#475569;border-radius:2px"></div>`;
+ph+=`</div>`;
+ph+=`<div style="display:flex;justify-content:space-between;font-size:7px;color:#4a5568;margin-top:2px"><span style="color:#f87171">${coreN} core</span><span style="color:#60a5fa">${midN} mid</span><span style="color:#475569">${outN} outer</span></div>`;
+
+// Star ranking
+ph+='<div class="pt">star ranking (by mass)</div>';
+for(let i=0;i<Math.min(sorted.length,12);i++){
+const s=sorted[i];
+const col=s.role==='creator'?'#fbbf24':s.layer==='core'?'#f87171':s.layer==='mid'?'#60a5fa':'#475569';
+const pct=Math.round(s.mass/maxMass*100);
+const uid=s.user_id.replace('tg:','').substring(0,10);
+ph+=`<div class="sr"><div class="dot" style="background:${col};width:6px;height:6px"></div><span class="nm">${uid}</span><span class="ms">${s.mass.toFixed(3)}</span><span class="act">${s.activation_count}</span></div>`;
+ph+=`<div class="bar" style="width:${pct}%;background:${col};opacity:0.3"></div>`;
+}
+
+// Convergences
+if(convN>0){
+ph+='<div class="pt">convergences ('+convN+')</div>';
+for(const c of data.convergences.slice(0,8)){
+ph+=`<div class="sr" style="color:#a78bfa"><span class="nm">${c.star_a.replace('tg:','').substring(0,8)} ↔ ${c.star_b.replace('tg:','').substring(0,8)}</span><span class="ms">${(c.similarity*100).toFixed(0)}%</span></div>`;
+}
+}else{
+ph+='<div class="pt">convergences</div><div style="color:#4a5568;font-size:8px">none yet — stars will converge as knowledge paths intersect</div>';
+}
+
+// System pulse
+ph+='<div class="pt">system pulse</div>';
+const errN=data.operational?.health?.errors_24h||0;
+const wk=data.operational?.worker_alive;
+ph+=`<div class="leg"><div class="dot" style="background:${wk?'#34d399':'#f87171'};width:6px;height:6px"></div>Worker ${wk?'operational':'down'}</div>`;
+ph+=`<div class="leg"><div class="dot" style="background:${errN>50?'#f87171':errN>10?'#fbbf24':'#34d399'};width:6px;height:6px"></div>${errN} errors / 24h</div>`;
+ph+=`<div class="leg"><div class="dot" style="background:#fbbf24;width:6px;height:6px"></div>Total mass: ${(data.nucleus?.total_mass||0).toFixed(4)}</div>`;
+
+pnl.innerHTML=ph;
+}
 
 // Feed
 const now=Date.now(),fh=feeds.map(f=>{const age=Math.floor((now-f.t)/1000),nw=age<15;return`<div class="fn${nw?' nw':''}">${f.r==='creator'?'★':'☆'} ${f.u.replace('tg:','').substring(0,10)} · mass ${f.m.toFixed(2)} · ${age}s</div>`}).join('');
