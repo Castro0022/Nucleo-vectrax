@@ -21,8 +21,21 @@ _model = None
 def _get_model():
     global _model
     if _model is None:
-        from sentence_transformers import SentenceTransformer  # lazy import
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
+        import logging as _logging
+        import warnings
+        # Suppress "unauthenticated requests to HF Hub" warning.
+        # The model is already cached locally in the Docker image; no auth needed.
+        # HF Hub emits via both warnings.warn() and logging.warning().
+        _hf_logger = _logging.getLogger("huggingface_hub.utils._http")
+        _prev_level = _hf_logger.level
+        _hf_logger.setLevel(_logging.ERROR)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message=".*unauthenticated.*HF Hub.*"
+            )
+            from sentence_transformers import SentenceTransformer  # lazy import
+            _model = SentenceTransformer("all-MiniLM-L6-v2")
+        _hf_logger.setLevel(_prev_level)
     return _model
 
 
