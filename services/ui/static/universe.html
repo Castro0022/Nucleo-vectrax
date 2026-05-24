@@ -4,38 +4,32 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<title>Vectrax — Universe</title>
+<title>Vectrax</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;overflow:hidden;font-family:'SF Mono','Fira Code',monospace;cursor:crosshair}
+body{background:#000;overflow:hidden;font-family:'SF Mono','Fira Code',monospace;cursor:default}
 canvas{display:block}
-#hud{position:fixed;top:14px;left:14px;color:#94a3b8;font-size:10px;line-height:1.5;pointer-events:none;z-index:10}
-#hud .t{font-size:12px;color:#fbbf24;letter-spacing:4px;margin-bottom:5px;text-shadow:0 0 20px rgba(251,191,36,0.3);opacity:0.8}
-#hud .l{color:#334155}
-#hud .v{color:#64748b}
-#hud .g{color:#fbbf24}
-#hud .sec{margin-top:3px;border-top:1px solid rgba(100,116,139,0.08);padding-top:3px}
-#hud .st{color:#475569;font-size:7px;letter-spacing:2px;text-transform:uppercase}
-#hud .tag{display:inline-block;background:rgba(251,191,36,0.06);border:1px solid rgba(251,191,36,0.12);border-radius:3px;padding:0 4px;margin:1px;font-size:7px;color:#92400e}
-#panel{position:fixed;bottom:14px;right:14px;width:200px;max-height:50vh;overflow-y:auto;background:rgba(0,0,0,0.7);backdrop-filter:blur(8px);border:1px solid rgba(100,116,139,0.08);border-radius:10px;padding:10px 11px;font-size:8px;color:#64748b;line-height:1.4;z-index:15;pointer-events:auto;scrollbar-width:thin;scrollbar-color:#1e293b transparent}
-#panel::-webkit-scrollbar{width:3px}#panel::-webkit-scrollbar-thumb{background:#1e293b;border-radius:2px}
-#panel .pt{color:#475569;font-size:7px;letter-spacing:2px;text-transform:uppercase;margin-top:6px;margin-bottom:2px}
+#hud{position:fixed;top:16px;left:16px;color:rgba(180,160,120,0.5);font-size:9px;line-height:1.5;pointer-events:none;z-index:10}
+#hud .t{font-size:10px;color:rgba(212,175,55,0.6);letter-spacing:5px;margin-bottom:6px}
+#hud .v{color:rgba(180,160,120,0.4)}
+#hud .g{color:rgba(212,175,55,0.7)}
+#panel{position:fixed;bottom:16px;right:16px;width:180px;max-height:48vh;overflow-y:auto;background:rgba(0,0,0,0.5);backdrop-filter:blur(10px);border:1px solid rgba(212,175,55,0.06);border-radius:12px;padding:11px;font-size:7px;color:rgba(180,160,120,0.45);line-height:1.4;z-index:15;pointer-events:auto;scrollbar-width:none}
+#panel::-webkit-scrollbar{display:none}
+#panel .pt{color:rgba(180,160,120,0.3);font-size:6px;letter-spacing:2.5px;text-transform:uppercase;margin-top:8px;margin-bottom:3px}
 #panel .pt:first-child{margin-top:0}
 #panel .lg{display:flex;align-items:center;gap:5px;margin:2px 0}
-#panel .d{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-#panel .rn{width:6px;height:6px;border-radius:50%;flex-shrink:0;border:1.5px solid;background:transparent}
-#panel .br{height:2px;border-radius:1px;margin-top:1px;opacity:0.25}
-#panel .sr{display:flex;align-items:center;gap:3px;margin:1px 0;font-size:7px}
-#panel .sr .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#94a3b8}
-#panel .sr .ms{color:#fbbf24;width:30px;text-align:right;font-size:7px}
-#panel .sr .ac{color:#334155;width:20px;text-align:right}
-#feed{position:fixed;bottom:14px;left:14px;color:#334155;font-size:8px;line-height:1.3;pointer-events:none;z-index:10;max-height:80px;overflow:hidden}
-.fn{opacity:.5;transition:all 0.8s}.fn.nw{color:#fbbf24;opacity:.8}
-#tt{position:fixed;display:none;background:rgba(0,0,0,0.85);backdrop-filter:blur(12px);border:1px solid rgba(251,191,36,0.15);border-radius:10px;padding:12px 15px;color:#94a3b8;font-size:10px;line-height:1.5;z-index:20;pointer-events:none;max-width:240px;box-shadow:0 8px 40px rgba(0,0,0,0.6)}
-#tt .tn{font-size:11px;font-weight:600;color:#fbbf24;letter-spacing:0.5px}
-#tt .tc{color:#fca5a5}#tt .tm{color:#93c5fd}#tt .tl{color:#334155}
-#ld{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#fbbf24;font-size:11px;z-index:90;letter-spacing:5px;opacity:0.6;text-shadow:0 0 30px rgba(251,191,36,0.2)}
-#cs{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);font-size:8px;z-index:10;pointer-events:none;color:#334155}
+#panel .d{width:5px;height:5px;border-radius:50%;flex-shrink:0}
+#panel .br{height:1.5px;border-radius:1px;margin-top:1px;opacity:0.2}
+#panel .sr{display:flex;align-items:center;gap:3px;margin:1px 0}
+#panel .sr .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#panel .sr .ms{color:rgba(212,175,55,0.5);width:28px;text-align:right}
+#feed{position:fixed;bottom:16px;left:16px;color:rgba(180,160,120,0.25);font-size:7px;line-height:1.3;pointer-events:none;z-index:10;max-height:70px;overflow:hidden}
+.fn{opacity:.4;transition:all 1s}.fn.nw{color:rgba(212,175,55,0.6);opacity:.7}
+#tt{position:fixed;display:none;background:rgba(0,0,0,0.8);backdrop-filter:blur(16px);border:1px solid rgba(212,175,55,0.1);border-radius:10px;padding:11px 14px;color:rgba(200,185,150,0.7);font-size:9px;line-height:1.5;z-index:20;pointer-events:none;max-width:220px}
+#tt .tn{font-size:10px;font-weight:500;color:rgba(212,175,55,0.8);letter-spacing:0.5px}
+#tt .tl{color:rgba(120,110,90,0.5)}
+#ld{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:rgba(212,175,55,0.4);font-size:10px;z-index:90;letter-spacing:6px}
+#cs{position:fixed;bottom:8px;left:50%;transform:translateX(-50%);font-size:7px;z-index:10;pointer-events:none;color:rgba(100,90,70,0.25)}
 </style>
 </head>
 <body>
@@ -50,225 +44,217 @@ canvas{display:block}
 const C=document.getElementById('c'),X=C.getContext('2d');
 const WS=`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/v1/universe/ws`;
 let W,H,cx,cy,data=null,prev=new Set,feeds=[],hov=null,mx=0,my=0,t=0,wsOn=0,poll=0;
-let cam={z:1,tz:1,x:0,y:0}; // camera zoom + target zoom
+let cam={z:1,tz:1};
 
 function sz(){W=C.width=innerWidth;H=C.height=innerHeight;cx=W/2;cy=H/2}
 addEventListener('resize',sz);sz();
 
-// Data
-function got(d){document.getElementById('ld').style.display='none';if(data){const n=new Set((d.stars||[]).map(s=>s.user_id));for(const s of d.stars||[])if(!prev.has(s.user_id))feeds.unshift({u:s.user_id,r:s.role,m:s.mass,t:Date.now()});if(feeds.length>6)feeds.length=6;prev=n}else prev=new Set((d.stars||[]).map(s=>s.user_id));data=d}
+function got(d){document.getElementById('ld').style.display='none';if(data){const n=new Set((d.stars||[]).map(s=>s.user_id));for(const s of d.stars||[])if(!prev.has(s.user_id))feeds.unshift({u:s.user_id,m:s.mass,t:Date.now()});if(feeds.length>5)feeds.length=5;prev=n}else prev=new Set((d.stars||[]).map(s=>s.user_id));data=d}
 async function fd(){try{const r=await fetch('/v1/universe');if(r.ok)got(await r.json())}catch(e){}}
 function sp(){if(!poll){fd();poll=setInterval(fd,2500)}}
 function xp(){if(poll){clearInterval(poll);poll=0}}
 function cw(){try{const w=new WebSocket(WS);w.onopen=()=>{wsOn=1;xp()};w.onmessage=e=>{try{got(JSON.parse(e.data))}catch(x){}};w.onclose=()=>{wsOn=0;sp();setTimeout(cw,4000)};w.onerror=()=>w.close()}catch(e){wsOn=0;sp();setTimeout(cw,4000)}}
 sp();cw();
 C.addEventListener('mousemove',e=>{mx=e.clientX;my=e.clientY});
-// Zoom
-C.addEventListener('wheel',e=>{e.preventDefault();cam.tz=Math.max(0.4,Math.min(3,cam.tz*(e.deltaY>0?0.92:1.08)))},{passive:false});
+C.addEventListener('wheel',e=>{e.preventDefault();cam.tz=Math.max(0.4,Math.min(3,cam.tz*(e.deltaY>0?0.93:1.07)))},{passive:false});
 
-// Deep field: 3 layers of stars at different depths
-const L1=[],L2=[],L3=[];
-for(let i=0;i<300;i++)L1.push({x:Math.random()*8000-4000,y:Math.random()*8000-4000,r:Math.random()*0.6+0.1,p:Math.random()*6.28,s:0.002+Math.random()*0.008});
-for(let i=0;i<200;i++)L2.push({x:Math.random()*6000-3000,y:Math.random()*6000-3000,r:Math.random()*0.9+0.3,p:Math.random()*6.28,s:0.005+Math.random()*0.012});
-for(let i=0;i<80;i++)L3.push({x:Math.random()*4000-2000,y:Math.random()*4000-2000,r:Math.random()*1.3+0.4,p:Math.random()*6.28,s:0.008+Math.random()*0.02});
-// Nebula clouds
-const NB=[];for(let i=0;i<40;i++){const a=Math.random()*6.28,d=60+Math.random()*350;NB.push({x:Math.cos(a)*d,y:Math.sin(a)*d,r:40+Math.random()*100,h:200+Math.random()*60,a:0.008+Math.random()*0.015,dr:0.0001+Math.random()*0.0006})}
+// Deep field — 3 parallax layers
+const S1=[],S2=[],S3=[];
+for(let i=0;i<350;i++)S1.push({x:Math.random()*9000-4500,y:Math.random()*9000-4500,r:Math.random()*0.5+0.1,p:Math.random()*6.28,s:0.002+Math.random()*0.006});
+for(let i=0;i<180;i++)S2.push({x:Math.random()*6000-3000,y:Math.random()*6000-3000,r:Math.random()*0.8+0.2,p:Math.random()*6.28,s:0.004+Math.random()*0.01});
+for(let i=0;i<60;i++)S3.push({x:Math.random()*4000-2000,y:Math.random()*4000-2000,r:Math.random()*1.1+0.4,p:Math.random()*6.28,s:0.007+Math.random()*0.015});
+// Cosmic fog
+const FOG=[];for(let i=0;i<30;i++){const a=Math.random()*6.28,d=50+Math.random()*400;FOG.push({x:Math.cos(a)*d,y:Math.sin(a)*d,r:60+Math.random()*140,h:30+Math.random()*20,a:0.006+Math.random()*0.01,dr:0.00008+Math.random()*0.0004})}
 
-// Helpers
-function D(d){return d*Math.min(W,H)*0.38*cam.z}
-function M(m){return(2.5+Math.pow(m,0.4)*16)*cam.z}
-function SC(l,r){if(r==='creator')return[251,191,36];if(l==='core')return[252,165,165];if(l==='mid')return[147,197,253];return[71,85,105]}
+// Color palette — NO red for normal elements
+// Gold: creator/nucleus. Warm white: core. Silver-blue: mid. Slate: outer.
+function SC(l,ro){if(ro==='creator')return[212,175,55];if(l==='core')return[220,210,180];if(l==='mid')return[140,160,190];return[80,90,105]}
 function R(c,a){return`rgba(${c[0]},${c[1]},${c[2]},${a})`}
+function D(d){return d*Math.min(W,H)*0.38*cam.z}
+function M(m){return(2+Math.pow(m,0.42)*14)*cam.z}
 
 function draw(){
-t+=0.014;
-// Smooth zoom
-cam.z+=(cam.tz-cam.z)*0.06;
-X.fillStyle='#000';X.fillRect(0,0,W,H);
+t+=0.012;
+cam.z+=(cam.tz-cam.z)*0.05;
 
-// Deep field parallax (3 layers)
-const layers=[[L1,0.03,0.08],[L2,0.06,0.15],[L3,0.1,0.25]];
-for(const[stars,parallax,baseA]of layers){
-for(const s of stars){
-const b=baseA+baseA*0.6*Math.sin(t*s.s*50+s.p);
-const px=cx+(s.x-cam.x*parallax*100)*parallax*cam.z;
-const py=cy+(s.y-cam.y*parallax*100)*parallax*cam.z;
-if(px<-10||px>W+10||py<-10||py>H+10)continue;
-X.fillStyle=`rgba(200,210,230,${b})`;
-X.beginPath();X.arc(px,py,s.r*cam.z,0,6.28);X.fill()}}
+// Background — breathing dark
+const bg=0.003+Math.sin(t*0.3)*0.001;
+X.fillStyle=`rgb(${Math.round(bg*255)},${Math.round(bg*200)},${Math.round(bg*150)})`;
+X.fillRect(0,0,W,H);
 
-// Nebula
-for(const n of NB){
-const nx=cx+n.x*cam.z+Math.sin(t*n.dr*80)*20*cam.z;
-const ny=cy+n.y*cam.z+Math.cos(t*n.dr*60)*15*cam.z;
-const g=X.createRadialGradient(nx,ny,0,nx,ny,n.r*cam.z);
-g.addColorStop(0,`hsla(${n.h},50%,30%,${n.a})`);g.addColorStop(1,'transparent');
-X.fillStyle=g;X.beginPath();X.arc(nx,ny,n.r*cam.z,0,6.28);X.fill()}
+// Cosmic fog (warm golden haze, not blue)
+for(const f of FOG){
+const fx=cx+f.x*cam.z+Math.sin(t*f.dr*60)*25*cam.z;
+const fy=cy+f.y*cam.z+Math.cos(t*f.dr*45)*20*cam.z;
+const g=X.createRadialGradient(fx,fy,0,fx,fy,f.r*cam.z);
+g.addColorStop(0,`hsla(${f.h},30%,20%,${f.a})`);g.addColorStop(1,'transparent');
+X.fillStyle=g;X.beginPath();X.arc(fx,fy,f.r*cam.z,0,6.28);X.fill()}
+
+// Deep field parallax
+const layers=[[S1,0.025,0.05],[S2,0.05,0.1],[S3,0.09,0.18]];
+for(const[arr,px,ba]of layers){for(const s of arr){
+const b=ba+ba*0.7*Math.sin(t*s.s*40+s.p);
+const sx=cx+s.x*px*cam.z,sy=cy+s.y*px*cam.z;
+if(sx<-5||sx>W+5||sy<-5||sy>H+5)continue;
+X.fillStyle=`rgba(200,190,170,${b})`;
+X.beginPath();X.arc(sx,sy,s.r*cam.z,0,6.28);X.fill()}}
 
 if(!data||!data.stars){requestAnimationFrame(draw);return}
-const stars=data.stars;
-const nStars=data.star_count||0;
-const activity=Math.min(1,nStars/30); // 0→1 based on star count
+const stars=data.stars,nS=data.star_count||0;
+const act=Math.min(1,nS/25);
 
-// Orbital rings (barely visible, organic)
-for(const d of[0.2,0.45,0.7,0.95]){
-const r=D(d);
-X.strokeStyle=`rgba(251,191,36,${0.015+Math.sin(t*0.3+d*4)*0.008})`;
-X.lineWidth=0.4*cam.z;X.setLineDash([1.5*cam.z,12*cam.z]);
+// Orbital whispers (almost invisible)
+for(const d of[0.2,0.45,0.7]){const r=D(d);
+X.strokeStyle=`rgba(212,175,55,${0.008+Math.sin(t*0.2+d*5)*0.004})`;
+X.lineWidth=0.3*cam.z;X.setLineDash([1*cam.z,16*cam.z]);
 X.beginPath();X.arc(cx,cy,r,0,6.28);X.stroke();X.setLineDash([])}
 
-// GOLDEN NUCLEUS — reacts to system activity
-const pulse=1+Math.sin(t*1.5)*0.15+activity*0.1;
-const pulse2=1+Math.sin(t*2.8)*0.08;
-const nR=(14+activity*4)*pulse*cam.z;
+// ═══ NUCLEUS — deep gold, breathing, alive ═══
+const p1=1+Math.sin(t*1.2)*0.12+act*0.08;
+const p2=1+Math.sin(t*2.4)*0.06;
+const nR=(12+act*5)*p1*cam.z;
 
-// Deep aura (activity-reactive)
-let a1=X.createRadialGradient(cx,cy,0,cx,cy,nR*8);
-a1.addColorStop(0,`rgba(251,191,36,${0.06+activity*0.06})`);
-a1.addColorStop(0.2,`rgba(251,160,0,${0.025+activity*0.02})`);
-a1.addColorStop(0.5,'rgba(180,80,0,0.01)');a1.addColorStop(1,'transparent');
-X.fillStyle=a1;X.beginPath();X.arc(cx,cy,nR*8,0,6.28);X.fill();
+// Gravitational waves (expanding rings)
+for(let i=0;i<3;i++){
+const wave=((t*0.15+i*0.33)%1);
+const wr=nR*(3+wave*12);
+const wa=0.02*(1-wave)*(0.5+act*0.5);
+X.strokeStyle=`rgba(212,175,55,${wa})`;X.lineWidth=0.4*cam.z;
+X.beginPath();X.arc(cx,cy,wr,0,6.28);X.stroke()}
 
-// Breathing rings
-for(let i=1;i<=3;i++){
-const rr=nR*(1.8+i*1.2)*pulse2;
-X.strokeStyle=`rgba(251,191,36,${0.04/i+Math.sin(t*1.8+i)*0.02})`;
-X.lineWidth=(0.8/i)*cam.z;
-X.beginPath();X.arc(cx,cy,rr,0,6.28);X.stroke()}
+// Deep aura
+let a1=X.createRadialGradient(cx,cy,0,cx,cy,nR*10);
+a1.addColorStop(0,`rgba(180,140,30,${0.04+act*0.04})`);
+a1.addColorStop(0.15,`rgba(160,120,20,${0.02+act*0.02})`);
+a1.addColorStop(0.4,'rgba(100,70,10,0.005)');a1.addColorStop(1,'transparent');
+X.fillStyle=a1;X.beginPath();X.arc(cx,cy,nR*10,0,6.28);X.fill();
 
-// Core sphere
-let cg=X.createRadialGradient(cx-nR*0.15,cy-nR*0.15,0,cx,cy,nR);
-cg.addColorStop(0,'#fffef5');cg.addColorStop(0.2,'#fde68a');
-cg.addColorStop(0.5,'#f59e0b');cg.addColorStop(0.85,'#b45309');cg.addColorStop(1,'#451a03');
+// Breathing corona
+for(let i=1;i<=2;i++){
+const cr=nR*(2+i*1.5)*p2;
+X.strokeStyle=`rgba(212,175,55,${0.025/i+Math.sin(t*1.5+i*1.2)*0.012})`;
+X.lineWidth=(0.6/i)*cam.z;
+X.beginPath();X.arc(cx,cy,cr,0,6.28);X.stroke()}
+
+// Core body — deep gold gradient
+let cg=X.createRadialGradient(cx-nR*0.12,cy-nR*0.15,0,cx,cy,nR);
+cg.addColorStop(0,'#fef3c7');cg.addColorStop(0.15,'#fbbf24');
+cg.addColorStop(0.4,'#d4a017');cg.addColorStop(0.7,'#92400e');cg.addColorStop(1,'#3b1a00');
 X.fillStyle=cg;X.beginPath();X.arc(cx,cy,nR,0,6.28);X.fill();
-// Specular
-X.fillStyle=`rgba(255,255,255,${0.4+Math.sin(t*2.5)*0.15})`;
-X.beginPath();X.arc(cx-nR*0.2,cy-nR*0.25,nR*0.22,0,6.28);X.fill();
+// Specular breath
+X.fillStyle=`rgba(255,250,230,${0.3+Math.sin(t*2)*0.12})`;
+X.beginPath();X.arc(cx-nR*0.18,cy-nR*0.2,nR*0.2,0,6.28);X.fill();
 
-// Convergences as emergent phenomena
+// ═══ CONVERGENCES — emergent phenomena, curved, glowing ═══
 if(data.convergences){for(const c of data.convergences){
 const a=stars.find(s=>s.user_id===c.star_a),b=stars.find(s=>s.user_id===c.star_b);
 if(!a||!b||a._x==null||b._x==null)continue;
 const sim=c.similarity;
-// Curved convergence line (bezier through midpoint offset)
-const mx2=(a._x+b._x)/2+Math.sin(t+sim*10)*20*cam.z;
-const my2=(a._y+b._y)/2+Math.cos(t+sim*10)*20*cam.z;
-const al=0.03+sim*0.2+Math.sin(t*1.5+sim*8)*0.05;
-X.strokeStyle=`rgba(167,139,250,${al})`;X.lineWidth=(0.3+sim)*cam.z;
+const mx2=(a._x+b._x)/2+Math.sin(t*0.8+sim*12)*30*cam.z;
+const my2=(a._y+b._y)/2+Math.cos(t*0.8+sim*12)*30*cam.z;
+// Glow halo along curve
+X.strokeStyle=`rgba(180,160,220,${0.015+sim*0.06})`;X.lineWidth=(2+sim*4)*cam.z;
 X.beginPath();X.moveTo(a._x,a._y);X.quadraticCurveTo(mx2,my2,b._x,b._y);X.stroke();
-// Energy pulse along curve
-for(let p=0;p<3;p++){
-const pr=((t*0.5+p*0.33+sim*3)%1);
-const tt2=pr,it=1-tt2;
-const px=it*it*a._x+2*it*tt2*mx2+tt2*tt2*b._x;
-const py=it*it*a._y+2*it*tt2*my2+tt2*tt2*b._y;
-X.fillStyle=`rgba(167,139,250,${(0.2+sim*0.3)*(1-pr*0.6)})`;
-X.beginPath();X.arc(px,py,(0.8+sim)*cam.z,0,6.28);X.fill()}}}
+// Sharp line
+X.strokeStyle=`rgba(180,160,220,${0.04+sim*0.15+Math.sin(t*1.2+sim*8)*0.03})`;X.lineWidth=(0.3+sim*0.5)*cam.z;
+X.beginPath();X.moveTo(a._x,a._y);X.quadraticCurveTo(mx2,my2,b._x,b._y);X.stroke();
+// Traveling sparks
+for(let p=0;p<3;p++){const pr=((t*0.4+p*0.33+sim*4)%1),it=1-pr;
+const px=it*it*a._x+2*it*pr*mx2+pr*pr*b._x;
+const py=it*it*a._y+2*it*pr*my2+pr*pr*b._y;
+X.fillStyle=`rgba(200,180,240,${(0.15+sim*0.25)*(1-pr*0.7)})`;
+X.beginPath();X.arc(px,py,(0.6+sim*0.8)*cam.z,0,6.28);X.fill()}}}
 
-// Gravity energy flows
-for(const s of stars){if(s._x==null)continue;
-const strength=1-s.distance_to_core;
-if(s.mass<0.08)continue;
-// Thread
-X.strokeStyle=`rgba(251,191,36,${0.008+strength*0.025})`;X.lineWidth=0.25*cam.z;
+// ═══ GRAVITY FLOWS — energy toward nucleus ═══
+for(const s of stars){if(s._x==null||s.mass<0.08)continue;
+const st=1-s.distance_to_core;
+X.strokeStyle=`rgba(212,175,55,${0.005+st*0.015})`;X.lineWidth=0.2*cam.z;
 X.beginPath();X.moveTo(cx,cy);X.lineTo(s._x,s._y);X.stroke();
-// Energy particles (count based on mass)
-const nP=s.mass>0.3?3:s.mass>0.15?2:1;
-for(let p=0;p<nP;p++){
-const fl=((t*(0.4+s.mass*0.5)+p/nP+s.mass*8)%1);
+const nP=s.mass>0.3?3:s.mass>0.12?2:1;
+for(let p=0;p<nP;p++){const fl=((t*(0.3+s.mass*0.4)+p/nP+s.mass*6)%1);
 const px=s._x+(cx-s._x)*fl,py=s._y+(cy-s._y)*fl;
-const pa=(0.08+s.mass*0.3)*(1-fl*0.5);
-X.fillStyle=`rgba(251,191,36,${pa})`;
-X.beginPath();X.arc(px,py,(0.6+s.mass*1.5)*cam.z,0,6.28);X.fill()}}
+X.fillStyle=`rgba(212,175,55,${(0.05+s.mass*0.2)*(1-fl*0.6)})`;
+X.beginPath();X.arc(px,py,(0.4+s.mass*1.2)*cam.z,0,6.28);X.fill()}}
 
-// STARS
+// ═══ STARS — living entities ═══
 hov=null;
-for(let i=0;i<stars.length;i++){
-const s=stars[i];
-// Gravitational breathing: heavy stars pulse closer
-const breath=s.mass*0.035*Math.sin(t*0.4+i*0.8);
-const dist=Math.max(0.04,s.distance_to_core-breath);
+for(let i=0;i<stars.length;i++){const s=stars[i];
+const breath=s.mass*0.04*Math.sin(t*0.35+i*0.9);
+const dist=Math.max(0.03,s.distance_to_core-breath);
 const r=D(dist);
-// Organic orbit
-const spd=0.01*(1.4-s.mass)+0.003*Math.sin(t*0.25+i);
+const spd=0.008*(1.5-s.mass)+0.003*Math.sin(t*0.2+i);
 const ang=(i/Math.max(stars.length,1))*6.28+t*spd;
-const wobble=r+Math.sin(t*0.9+i*2.5)*2.5*cam.z;
-const sx=cx+Math.cos(ang)*wobble,sy=cy+Math.sin(ang)*wobble;
+const wb=r+Math.sin(t*0.7+i*2.7)*3*cam.z;
+const sx=cx+Math.cos(ang)*wb,sy=cy+Math.sin(ang)*wb;
 s._x=sx;s._y=sy;
 const sz=M(s.mass),col=SC(s.layer,s.role);
-const tw=0.65+0.35*Math.sin(t*2.5+i*1.9);
+const tw=0.6+0.4*Math.sin(t*2+i*2.1);
 
-// Soft outer glow
-const g1=X.createRadialGradient(sx,sy,0,sx,sy,sz*4);
-g1.addColorStop(0,R(col,0.1*tw));g1.addColorStop(1,'transparent');
-X.fillStyle=g1;X.beginPath();X.arc(sx,sy,sz*4,0,6.28);X.fill();
-// Inner glow
-const g2=X.createRadialGradient(sx,sy,0,sx,sy,sz*2);
-g2.addColorStop(0,R(col,0.2*tw));g2.addColorStop(1,'transparent');
-X.fillStyle=g2;X.beginPath();X.arc(sx,sy,sz*2,0,6.28);X.fill();
+// Bloom (very soft outer)
+const b1=X.createRadialGradient(sx,sy,0,sx,sy,sz*5);
+b1.addColorStop(0,R(col,0.04*tw));b1.addColorStop(1,'transparent');
+X.fillStyle=b1;X.beginPath();X.arc(sx,sy,sz*5,0,6.28);X.fill();
+// Glow
+const b2=X.createRadialGradient(sx,sy,0,sx,sy,sz*2.2);
+b2.addColorStop(0,R(col,0.15*tw));b2.addColorStop(1,'transparent');
+X.fillStyle=b2;X.beginPath();X.arc(sx,sy,sz*2.2,0,6.28);X.fill();
 // Body
-X.fillStyle=R(col,0.75*tw);X.beginPath();X.arc(sx,sy,sz,0,6.28);X.fill();
+X.fillStyle=R(col,0.7*tw);X.beginPath();X.arc(sx,sy,sz,0,6.28);X.fill();
 // Hot center
-X.fillStyle=`rgba(255,255,255,${0.35*tw})`;X.beginPath();X.arc(sx-sz*0.1,sy-sz*0.1,sz*0.28,0,6.28);X.fill();
-// Creator halo
+X.fillStyle=`rgba(255,252,240,${0.3*tw})`;X.beginPath();X.arc(sx-sz*0.08,sy-sz*0.08,sz*0.25,0,6.28);X.fill();
+// Creator: golden corona
 if(s.role==='creator'){
-X.strokeStyle=`rgba(251,191,36,${0.15+Math.sin(t*1.8)*0.1})`;X.lineWidth=1.2*cam.z;
-X.beginPath();X.arc(sx,sy,sz+4*cam.z,0,6.28);X.stroke();
-X.strokeStyle=`rgba(251,191,36,${0.06+Math.sin(t*1.2+1)*0.04})`;X.lineWidth=0.6*cam.z;
-X.beginPath();X.arc(sx,sy,sz+8*cam.z,0,6.28);X.stroke()}
-// Label (subtle)
-if(cam.z>0.6){
-const lb=s.user_id.replace('tg:','').substring(0,8);
-X.fillStyle=R(col,0.2+tw*0.1);X.font=`${Math.max(6,7*cam.z)}px monospace`;X.textAlign='center';
-X.fillText(lb,sx,sy-sz-4*cam.z);
-if(s.pattern_count>3){X.fillStyle='rgba(255,255,255,0.15)';X.fillText(s.pattern_count,sx,sy+sz+8*cam.z)}}
+for(let h=0;h<2;h++){X.strokeStyle=`rgba(212,175,55,${(0.1-h*0.04)+Math.sin(t*1.5+h)*0.05})`;X.lineWidth=(1-h*0.4)*cam.z;
+X.beginPath();X.arc(sx,sy,sz+(4+h*5)*cam.z,0,6.28);X.stroke()}}
+// Subtle label
+if(cam.z>0.55){const lb=s.user_id.replace('tg:','').substring(0,7);
+X.fillStyle=R(col,0.12+tw*0.05);X.font=`${Math.max(5,6.5*cam.z)}px monospace`;X.textAlign='center';
+X.fillText(lb,sx,sy-sz-3.5*cam.z)}
 // Hover
-const dx=mx-sx,dy=my-sy;if(Math.sqrt(dx*dx+dy*dy)<sz+12*cam.z)hov=s}
+const dx=mx-sx,dy=my-sy;if(Math.sqrt(dx*dx+dy*dy)<sz+10*cam.z)hov=s}
 
 // Tooltip
 const tt=document.getElementById('tt');
-if(hov){const s=hov,cl=s.role==='creator'?'tn':s.layer==='core'?'tc':s.layer==='mid'?'tm':'';
-tt.innerHTML=`<div class="${cl}">${s.role==='creator'?'✦ ':'◌ '}${s.user_id}</div><div><span class="tl">mass</span> ${s.mass.toFixed(4)} · <span class="tl">dist</span> ${s.distance_to_core.toFixed(4)}</div><div><span class="tl">layer</span> ${s.layer} · <span class="tl">patterns</span> ${s.pattern_count} · <span class="tl">act</span> ${s.activation_count}</div>`;
-tt.style.display='block';tt.style.left=(mx+16)+'px';tt.style.top=(my-14)+'px'}else tt.style.display='none';
+if(hov){const s=hov;
+tt.innerHTML=`<div class="tn">${s.role==='creator'?'✦ ':'◌ '}${s.user_id}</div><div><span class="tl">mass</span> ${s.mass.toFixed(4)} · <span class="tl">layer</span> ${s.layer}</div><div><span class="tl">patterns</span> ${s.pattern_count} · <span class="tl">activations</span> ${s.activation_count}</div>`;
+tt.style.display='block';tt.style.left=(mx+14)+'px';tt.style.top=(my-12)+'px'}else tt.style.display='none';
 
-// HUD (minimal)
-const tm=data.nucleus?.total_mass||0,hb=data.heartbeat?new Date(data.heartbeat*1000).toLocaleTimeString():'',sg=data.signals||[];
-document.getElementById('hud').innerHTML=`<div class="t">✦ VECTRAX</div><span class="l">mass</span> <span class="g">${tm.toFixed(4)}</span> · <span class="l">stars</span> <span class="v">${nStars}</span> · <span class="l">patterns</span> <span class="v">${data.pattern_count||0}</span><br><span style="color:#fca5a5">●</span>${data.layers?.core||0} <span style="color:#93c5fd">●</span>${data.layers?.mid||0} <span style="color:#475569">●</span>${data.layers?.outer||0} · <span class="l">conv</span> <span class="v">${(data.convergences||[]).length}</span>${sg.length?'<div class="sec"><span class="st">signals</span><br>'+sg.map(s=>`<span class="tag">${s}</span>`).join('')+'</div>':''}`;
+// HUD — whisper, not shout
+const tm=data.nucleus?.total_mass||0;
+document.getElementById('hud').innerHTML=`<div class="t">✦ VECTRAX</div><span class="v">mass</span> <span class="g">${tm.toFixed(3)}</span> · <span class="v">${nS} stars</span> · <span class="v">${data.pattern_count||0} patterns</span><br><span style="color:rgba(220,210,180,0.3)">●</span>${data.layers?.core||0} <span style="color:rgba(140,160,190,0.3)">●</span>${data.layers?.mid||0} <span style="color:rgba(80,90,105,0.3)">●</span>${data.layers?.outer||0}`;
 
 // Panel
 const pn=document.getElementById('panel'),op=data.operational;
 if(stars.length){
 const so=[...stars].sort((a,b)=>b.mass-a.mass),mxM=so[0]?so[0].mass:1;
-const cn=data.layers?.core||0,mn=data.layers?.mid||0,on=data.layers?.outer||0,cv=(data.convergences||[]).length;
+const cn=data.layers?.core||0,mn=data.layers?.mid||0,on=data.layers?.outer||0;
+const cv=(data.convergences||[]).length;
 let h='<div class="pt">gravity map</div>';
-h+='<div class="lg"><div class="d" style="background:#fbbf24"></div><span style="color:#92400e">creator</span></div>';
-h+='<div class="lg"><div class="d" style="background:#fca5a5"></div><span>core</span></div>';
-h+='<div class="lg"><div class="d" style="background:#93c5fd"></div><span>mid</span></div>';
-h+='<div class="lg"><div class="d" style="background:#475569"></div><span>outer</span></div>';
-if(cv)h+='<div class="lg"><div class="rn" style="border-color:#a78bfa"></div><span style="color:#a78bfa">convergence</span></div>';
+h+='<div class="lg"><div class="d" style="background:#d4a017"></div><span>creator</span></div>';
+h+='<div class="lg"><div class="d" style="background:rgba(220,210,180,0.6)"></div><span>core — high mass</span></div>';
+h+='<div class="lg"><div class="d" style="background:rgba(140,160,190,0.5)"></div><span>mid — active</span></div>';
+h+='<div class="lg"><div class="d" style="background:rgba(80,90,105,0.4)"></div><span>outer — cold</span></div>';
 h+='<div class="pt">layers</div>';
-h+=`<div style="display:flex;gap:1px;height:4px;border-radius:2px;overflow:hidden">`;
-if(cn)h+=`<div style="flex:${cn};background:#fca5a5"></div>`;
-if(mn)h+=`<div style="flex:${mn};background:#93c5fd"></div>`;
-if(on)h+=`<div style="flex:${on};background:#475569"></div>`;
+h+='<div style="display:flex;gap:1px;height:3px;border-radius:1.5px;overflow:hidden">';
+if(cn)h+=`<div style="flex:${cn};background:rgba(220,210,180,0.5)"></div>`;
+if(mn)h+=`<div style="flex:${mn};background:rgba(140,160,190,0.4)"></div>`;
+if(on)h+=`<div style="flex:${on};background:rgba(80,90,105,0.3)"></div>`;
 h+='</div>';
-h+=`<div style="display:flex;justify-content:space-between;font-size:6px;color:#334155;margin-top:1px"><span style="color:#fca5a5">${cn}</span><span style="color:#93c5fd">${mn}</span><span style="color:#475569">${on}</span></div>`;
 h+='<div class="pt">ranking</div>';
-for(let i=0;i<Math.min(so.length,10);i++){const s=so[i],cl=s.role==='creator'?'#fbbf24':s.layer==='core'?'#fca5a5':s.layer==='mid'?'#93c5fd':'#475569',pc=Math.round(s.mass/mxM*100);
-h+=`<div class="sr"><div class="d" style="background:${cl};width:5px;height:5px"></div><span class="nm">${s.user_id.replace('tg:','').substring(0,10)}</span><span class="ms">${s.mass.toFixed(3)}</span></div><div class="br" style="width:${pc}%;background:${cl}"></div>`}
-if(cv>0){h+='<div class="pt">convergences</div>';for(const c of data.convergences.slice(0,6))h+=`<div class="sr" style="color:#a78bfa"><span class="nm">${c.star_a.replace('tg:','').substring(0,7)} ↔ ${c.star_b.replace('tg:','').substring(0,7)}</span><span class="ms">${(c.similarity*100).toFixed(0)}%</span></div>`}
-else h+='<div class="pt">convergences</div><div style="color:#1e293b;font-size:7px">awaiting emergence</div>';
+for(let i=0;i<Math.min(so.length,8);i++){const s=so[i];
+const cl=s.role==='creator'?'rgba(212,175,55,0.7)':s.layer==='core'?'rgba(220,210,180,0.5)':s.layer==='mid'?'rgba(140,160,190,0.4)':'rgba(80,90,105,0.3)';
+const pc=Math.round(s.mass/mxM*100);
+h+=`<div class="sr"><div class="d" style="background:${cl}"></div><span class="nm">${s.user_id.replace('tg:','').substring(0,9)}</span><span class="ms">${s.mass.toFixed(3)}</span></div><div class="br" style="width:${pc}%;background:${cl}"></div>`}
+if(cv>0){h+='<div class="pt">convergences</div>';for(const c of data.convergences.slice(0,5))h+=`<div class="sr" style="color:rgba(180,160,220,0.5)"><span class="nm">${c.star_a.replace('tg:','').substring(0,6)} ↔ ${c.star_b.replace('tg:','').substring(0,6)}</span><span class="ms">${(c.similarity*100).toFixed(0)}%</span></div>`}
 if(op){h+='<div class="pt">pulse</div>';
-h+=`<div class="lg"><div class="d" style="background:${op.worker_alive?'#34d399':'#f87171'};width:5px;height:5px"></div><span>${op.worker_alive?'alive':'down'}</span></div>`;
-const en=op.health?.errors_24h||0;h+=`<div class="lg"><div class="d" style="background:${en>50?'#f87171':en>10?'#fbbf24':'#34d399'};width:5px;height:5px"></div><span>${en} err/24h</span></div>`}
+h+=`<div class="lg"><div class="d" style="background:${op.worker_alive?'rgba(120,180,120,0.5)':'rgba(180,80,80,0.5)'}"></div><span>${op.worker_alive?'alive':'—'}</span></div>`;
+const en=op.health?.errors_24h||0;
+if(en>0)h+=`<div class="lg"><div class="d" style="background:rgba(180,150,80,0.3)"></div><span>${en} anomalies</span></div>`}
 pn.innerHTML=h}
 
-// Connection
-document.getElementById('cs').innerHTML=`<span style="color:${wsOn?'#1e293b':'#334155'}">${wsOn?'◆ live':'◇ poll'}</span>`;
-
-// Feed
+document.getElementById('cs').innerHTML=`<span>${wsOn?'◆':'◇'}</span>`;
 const now=Date.now();
-document.getElementById('feed').innerHTML=feeds.map(f=>{const age=Math.floor((now-f.t)/1000);return`<div class="fn${age<12?' nw':''}">◌ ${f.u.replace('tg:','').substring(0,10)} · ${f.m.toFixed(2)} · ${age}s</div>`}).join('');
+document.getElementById('feed').innerHTML=feeds.map(f=>{const age=Math.floor((now-f.t)/1000);return`<div class="fn${age<10?' nw':''}">◌ ${f.u.replace('tg:','').substring(0,9)} · ${age}s</div>`}).join('');
 
 requestAnimationFrame(draw)}
 requestAnimationFrame(draw);
