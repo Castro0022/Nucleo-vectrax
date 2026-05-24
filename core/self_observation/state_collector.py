@@ -127,38 +127,97 @@ def _queue_counts() -> Dict[str, int]:
     return out
 
 
+# Path to the actual gravitational DB (stars, user_stars, patterns)
+_VECTRAX_DB = os.environ.get(
+    "VECTRAX_DB",
+    os.path.join(_HOME_VECTRAX, "vectrax.db"),
+)
+
+
 def _gravity_counts() -> Dict[str, int]:
-    """Cuenta total/active/fused/archived en deep_memory + identidades + esenciales."""
+    """Cuenta estrellas, user_stars, patrones e identidades.
+
+    Reads from vectrax.db (where the gravitational engine actually stores
+    data) instead of the missing gravity.db.
+    Falls back to gravity.db/deep_memory if vectrax.db doesn't have stars.
+    """
     out = {
         "total": 0, "active": 0, "fused": 0, "archived": 0,
         "identities": 0, "essentials": 0,
     }
-    if not os.path.exists(_GRAVITY_DB):
-        return out
-    try:
-        c = sqlite3.connect(_GRAVITY_DB, timeout=2)
+
+    # Primary: read from vectrax.db (stars + user_stars + patterns)
+    if os.path.exists(_VECTRAX_DB):
         try:
-            row = c.execute("SELECT COUNT(*) FROM deep_memory").fetchone()
-            out["total"] = int(row[0]) if row else 0
-            for status in ("ACTIVE", "FUSED", "ARCHIVED"):
-                row = c.execute(
-                    "SELECT COUNT(*) FROM deep_memory "
-                    "WHERE COALESCE(memory_status, 'ACTIVE') = ?",
-                    (status,),
-                ).fetchone()
-                out[status.lower()] = int(row[0]) if row else 0
-            row = c.execute(
-                "SELECT COUNT(*) FROM context_identities",
-            ).fetchone()
-            out["identities"] = int(row[0]) if row else 0
-            row = c.execute(
-                "SELECT COUNT(*) FROM essential_memories",
-            ).fetchone()
-            out["essentials"] = int(row[0]) if row else 0
-        finally:
-            c.close()
-    except Exception as exc:
-        logger.debug("gravity_counts failed: %s", exc)
+            c = sqlite3.connect(_VECTRAX_DB, timeout=2)
+            try:
+                # Stars = knowledge nodes (the gravitational memory)
+                row = c.execute("SELECT COUNT(*) FROM stars").fetchone()
+                stars_total = int(row[0]) if row else 0
+
+                # User stars
+                row = c.execute("SELECT COUNT(*) FROM user_stars").fetchone()
+                user_stars = int(row[0]) if row else 0
+
+                # Patterns
+                row = c.execute("SELECT COUNT(*) FROM patterns").fetchone()
+                patterns = int(row[0]) if row else 0
+
+                # Layer distribution as active/fused/archived proxy
+                core = mid = outer = 0
+                for layer, cnt in c.execute(
+                    "SELECT layer, COUNT(*) FROM stars GROUP BY layer"
+                ).fetchall():
+                    if layer == "core":
+                        core = cnt
+                    elif layer == "mid":
+                        mid = cnt
+                    else:
+                        outer = cnt
+
+                out["total"] = stars_total + user_stars
+                out["active"] = core + mid   # core + mid = active gravitational mass
+                out["fused"] = patterns      # patterns = fused knowledge
+                out["archived"] = outer      # outer = cold/peripheral
+                out["identities"] = user_stars
+                out["essentials"] = core      # core stars = essential memories
+
+                if stars_total > 0:
+                    return out
+            finally:
+                c.close()
+        except Exception as exc:
+            logger.debug("vectrax.db gravity_counts failed: %s", exc)
+
+    # Fallback: legacy gravity.db with deep_memory table
+    if os.path.exists(_GRAVITY_DB):
+        try:
+            c = sqlite3.connect(_GRAVITY_DB, timeout=2)
+            try:
+                row = c.execute("SELECT COUNT(*) FROM deep_memory").fetchone()
+                out["total"] = int(row[0]) if row else 0
+                for status in ("ACTIVE", "FUSED", "ARCHIVED"):
+                    row = c.execute(
+                        "SELECT COUNT(*) FROM deep_memory "
+                        "WHERE COALESCE(memory_status, 'ACTIVE') = ?",
+                        (status,),
+                    ).fetchone()
+                    out[status.lower()] = int(row[0]) if row else 0
+                try:
+                    row = c.execute("SELECT COUNT(*) FROM context_identities").fetchone()
+                    out["identities"] = int(row[0]) if row else 0
+                except Exception:
+                    pass
+                try:
+                    row = c.execute("SELECT COUNT(*) FROM essential_memories").fetchone()
+                    out["essentials"] = int(row[0]) if row else 0
+                except Exception:
+                    pass
+            finally:
+                c.close()
+        except Exception as exc:
+            logger.debug("gravity.db gravity_counts failed: %s", exc)
+
     return out
 
 
