@@ -693,14 +693,110 @@ TRAINING_EXAMPLES: List[Dict[str, Any]] = [
 # SemanticClassifier
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Embedding-based intent reference vectors
+# ---------------------------------------------------------------------------
+# Pre-computed at first use. Each intent has a short description that gets
+# embedded. When regex frames produce low confidence, we compare the user
+# message embedding against these references for a boost.
+
+_INTENT_DESCRIPTIONS: Dict[str, str] = {
+    "place_search":   "buscar un lugar físico, restaurante, tienda, farmacia, negocio cercano",
+    "web_search":     "buscar información en internet, qué es algo, explicar un concepto, noticias",
+    "memory_lookup":  "qué recuerdas de mí, qué te dije, mi historial, mis datos personales",
+    "identity_query": "quién soy, cuál es mi nombre, me conoces, mi identidad",
+    "general_chat":   "conversación casual, saludo, nota personal, afirmación",
+    "system_action":  "ejecutar comando, crear, modificar, desplegar, configurar",
+}
+
+_intent_embeddings: Optional[Dict[str, Any]] = None
+
+
+def _get_intent_embeddings() -> Optional[Dict[str, Any]]:
+    """Lazy-load intent reference embeddings. Returns None if model unavailable."""
+    global _intent_embeddings
+    if _intent_embeddings is not None:
+        return _intent_embeddings
+    try:
+        from vectrax.embeddings import get_embedder
+        model = get_embedder()
+        import numpy as np
+        texts = list(_INTENT_DESCRIPTIONS.values())
+        keys = list(_INTENT_DESCRIPTIONS.keys())
+        vecs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+        _intent_embeddings = {
+            k: np.asarray(v, dtype=np.float32) for k, v in zip(keys, vecs)
+        }
+        logger.info("Intent embeddings loaded (%d intents)", len(_intent_embeddings))
+        return _intent_embeddings
+    except Exception as exc:
+        logger.debug("Intent embeddings unavailable: %s", exc)
+        return None
+
+
+def _embedding_boost(
+    text: str,
+    scores: Dict[SemanticIntent, float],
+) -> Dict[SemanticIntent, float]:
+    """Boost intent scores using embedding similarity when regex confidence is low.
+
+    Only activates when the top score produces confidence < 0.5 (below the
+    SmartRouter threshold). Adds up to 0.4 to the most similar intent.
+    """
+    intent_vecs = _get_intent_embeddings()
+    if intent_vecs is None:
+        return scores
+
+    # Only boost when confidence is low
+    max_score = max(scores.values()) if scores else 0
+    if max_score / 2.0 >= 0.5:  # already above threshold
+        return scores
+
+    try:
+        from vectrax.embeddings import embed
+        import numpy as np
+        query_vec = embed(text)
+
+        best_intent = None
+        best_sim = 0.0
+        for intent_key, ref_vec in intent_vecs.items():
+            sim = float(np.dot(query_vec, ref_vec))
+            if sim > best_sim:
+                best_sim = sim
+                best_intent = intent_key
+
+        if best_intent and best_sim > 0.3:
+            # Map string key back to SemanticIntent enum
+            intent_enum = {
+                "place_search": SemanticIntent.PLACE_SEARCH,
+                "web_search": SemanticIntent.WEB_SEARCH,
+                "memory_lookup": SemanticIntent.MEMORY_LOOKUP,
+                "identity_query": SemanticIntent.IDENTITY_QUERY,
+                "general_chat": SemanticIntent.GENERAL_CHAT,
+                "system_action": SemanticIntent.SYSTEM_ACTION,
+            }.get(best_intent)
+            if intent_enum:
+                boost = min(0.4, best_sim * 0.5)
+                scores[intent_enum] = scores.get(intent_enum, 0) + boost
+                logger.debug(
+                    "Embedding boost: %s +%.2f (sim=%.3f)",
+                    best_intent, boost, best_sim,
+                )
+    except Exception as exc:
+        logger.debug("Embedding boost failed: %s", exc)
+
+    return scores
+
+
 class SemanticClassifier:
     """
     Clasificador semántico central de Vectrax.
 
-    Analiza la intención del usuario en 3 fases:
+    Analiza la intención del usuario en 3+1 fases:
       1. Frame detection (estructura sintáctica)
       2. Entity extraction (entidades con contexto)
       3. Intent scoring (puntuación contextual)
+      4. Embedding boost (si confianza < 0.5, usa similaridad semántica)
 
     Usage::
 
@@ -738,6 +834,9 @@ class SemanticClassifier:
 
         # Phase 3: Intent Scoring
         scores = _score_intents(frames, entities)
+
+        # Phase 4: Embedding boost (when regex confidence is low)
+        scores = _embedding_boost(stripped, scores)
 
         # Seleccionar intent principal
         if not scores or all(v == 0.0 for v in scores.values()):

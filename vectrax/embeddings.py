@@ -54,6 +54,15 @@ def embed(text: str) -> np.ndarray:
     return vec.astype(np.float32)
 
 
+def get_embedder():
+    """Return the SentenceTransformer model singleton.
+
+    Used by StrategicRouter and SemanticClassifier which need the
+    raw model for batch .encode() calls.
+    """
+    return _get_model()
+
+
 # ---------------------------------------------------------------------------
 # Cosine similarity (numpy brute-force)
 # ---------------------------------------------------------------------------
