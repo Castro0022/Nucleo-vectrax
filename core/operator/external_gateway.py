@@ -1040,23 +1040,31 @@ class ExternalGateway:
         except Exception:
             pass
 
-        # 10.1 Feed the user's star (gravitational v2) — BACKGROUND
+        # 10.1 Feed the user's star (gravitational v2) + knowledge graph — BACKGROUND
         #   Runs in a thread so it doesn't block response delivery.
-        #   The star grows with EVERY meaningful interaction.
+        #   ingest_v2: user star grows with patterns
+        #   ingest (v1): creates knowledge stars + graph edges + convergences
         import threading
         def _bg_ingest(_content, _user_id, _channel):
+            _topic = "general"
+            try:
+                from core.smart_router import get_smart_router
+                _ctx = get_smart_router().detect_context(_content, _channel, _user_id)
+                _topic = _ctx.get("topic", "general")
+            except Exception:
+                pass
+            # v2: pattern + user star
             try:
                 from vectrax.engine import ingest_v2
-                _topic = "general"
-                try:
-                    from core.smart_router import get_smart_router
-                    _ctx = get_smart_router().detect_context(_content, _channel, _user_id)
-                    _topic = _ctx.get("topic", "general")
-                except Exception:
-                    pass
                 ingest_v2(text=_content, user_id=_user_id, topic=_topic)
             except Exception as _e:
                 logger.debug("bg ingest_v2 failed: %s", _e)
+            # v1: knowledge star + graph edges + convergences
+            try:
+                from vectrax.engine import ingest as ingest_v1
+                ingest_v1(text=_content, channel="user", owner=_user_id)
+            except Exception as _e:
+                logger.debug("bg ingest_v1 failed: %s", _e)
         threading.Thread(
             target=_bg_ingest, args=(content, user_id, channel),
             daemon=True,

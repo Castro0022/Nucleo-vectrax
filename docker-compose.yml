@@ -85,6 +85,10 @@ services:
 volumes:
   # Volume PERSISTENTE — contiene la identidad, memoria y continuidad
   # de Vectrax. NO borrar excepto en bootstrap.
+  #
+  # ⚠️  WARNING: `docker compose down -v` DESTRUYE este volumen.
+  #    Ejecutar `bash scripts/protect_volume.sh` ANTES de cualquier
+  #    operación destructiva. No hay forma de recuperar sin backup.
   vectrax-runtime:
     labels:
       - "vectrax.role=runtime-state"
