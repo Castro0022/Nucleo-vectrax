@@ -44,7 +44,8 @@ class UniverseSnapshot:
     total_mass: float = 0.0
 
     # ── Estrellas ─────────────────────────────────────────────────────────
-    star_count: int = 0
+    star_count: int = 0          # user_stars
+    knowledge_star_count: int = 0  # knowledge stars (tabla stars)
     pattern_count: int = 0
     layers: Dict[str, int] = field(default_factory=dict)
     stars: List[Dict[str, Any]] = field(default_factory=list)
@@ -97,6 +98,7 @@ class UniverseSnapshot:
             },
             "stars": self.stars,
             "star_count": self.star_count,
+            "knowledge_star_count": self.knowledge_star_count,
             "pattern_count": self.pattern_count,
             "layers": self.layers,
             "convergences": self.convergences,
@@ -150,6 +152,7 @@ def _collect_gravitational(snap: UniverseSnapshot) -> None:
         from vectrax.db import get_universe_status, get_all_user_stars
         universe = get_universe_status()
         snap.star_count = universe.get("stars", 0)
+        snap.knowledge_star_count = universe.get("knowledge_stars", 0)
         snap.pattern_count = universe.get("patterns", 0)
         snap.total_mass = universe.get("total_mass", 0.0)
         snap.layers = universe.get("layers", {})

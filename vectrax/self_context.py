@@ -230,7 +230,8 @@ def _read_universe_state() -> str:
 
         lines = [
             "[UNIVERSO GRAVITACIONAL — estado en tiempo real]",
-            f"Estrellas: {snap.star_count} totales "
+            f"Knowledge stars: {snap.knowledge_star_count}, "
+            f"User stars: {snap.star_count} "
             f"(core:{core_n}, mid:{mid_n}, outer:{outer_n})",
             f"Masa total: {round(snap.total_mass, 4)}",
             f"Patrones acumulados: {snap.pattern_count}",

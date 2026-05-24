@@ -1037,6 +1037,13 @@ def get_universe_status() -> Dict[str, Any]:
     with _get_conn() as conn:
         star_count = conn.execute("SELECT COUNT(*) FROM user_stars").fetchone()[0]
         pattern_count = conn.execute("SELECT COUNT(*) FROM patterns").fetchone()[0]
+        # Knowledge stars (gravitational memory nodes)
+        try:
+            knowledge_star_count = conn.execute(
+                "SELECT COUNT(*) FROM stars"
+            ).fetchone()[0]
+        except Exception:
+            knowledge_star_count = 0
         layers = {}
         for row in conn.execute(
             "SELECT layer, COUNT(*) as cnt FROM user_stars GROUP BY layer"
@@ -1053,6 +1060,7 @@ def get_universe_status() -> Dict[str, Any]:
         ).fetchall()
     return {
         "stars": star_count,
+        "knowledge_stars": knowledge_star_count,
         "patterns": pattern_count,
         "total_mass": round(float(total_mass), 4),
         "layers": layers,
