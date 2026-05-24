@@ -4,289 +4,434 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<title>Vectrax</title>
+<title>Vectrax — Universe</title>
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#000;overflow:hidden;font-family:'SF Mono','Fira Code',monospace;cursor:default}
-canvas{display:block}
-#hud{position:fixed;top:16px;left:16px;color:rgba(180,160,120,0.5);font-size:9px;line-height:1.5;pointer-events:none;z-index:10}
-#hud .t{font-size:10px;color:rgba(212,175,55,0.6);letter-spacing:5px;margin-bottom:6px}
-#hud .v{color:rgba(180,160,120,0.35)}
-#hud .g{color:rgba(212,175,55,0.65)}
-#panel{position:fixed;bottom:16px;right:16px;width:175px;max-height:46vh;overflow-y:auto;background:rgba(0,0,0,0.5);backdrop-filter:blur(12px);border:1px solid rgba(212,175,55,0.05);border-radius:12px;padding:10px;font-size:7px;color:rgba(180,160,120,0.4);line-height:1.4;z-index:15;pointer-events:auto;scrollbar-width:none}
-#panel::-webkit-scrollbar{display:none}
-#panel .pt{color:rgba(180,160,120,0.25);font-size:6px;letter-spacing:2.5px;text-transform:uppercase;margin-top:7px;margin-bottom:2px}
-#panel .pt:first-child{margin-top:0}
-#panel .lg{display:flex;align-items:center;gap:5px;margin:2px 0}
-#panel .d{width:5px;height:5px;border-radius:50%;flex-shrink:0}
-#panel .br{height:1.5px;border-radius:1px;margin-top:1px;opacity:0.15}
-#panel .sr{display:flex;align-items:center;gap:3px;margin:1px 0}
-#panel .sr .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#panel .sr .ms{color:rgba(212,175,55,0.45);width:28px;text-align:right}
-#feed{position:fixed;bottom:16px;left:16px;color:rgba(180,160,120,0.2);font-size:7px;line-height:1.3;pointer-events:none;z-index:10;max-height:60px;overflow:hidden}
-.fn{opacity:.35;transition:all 1s}.fn.nw{color:rgba(212,175,55,0.5);opacity:.7}
-#tt{position:fixed;display:none;background:rgba(0,0,0,0.82);backdrop-filter:blur(16px);border:1px solid rgba(212,175,55,0.08);border-radius:10px;padding:10px 13px;color:rgba(200,185,150,0.65);font-size:9px;line-height:1.5;z-index:20;pointer-events:none;max-width:210px}
-#tt .tn{font-size:10px;font-weight:500;color:rgba(212,175,55,0.75);letter-spacing:0.5px}
-#tt .tl{color:rgba(120,110,90,0.4)}
-#ld{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:rgba(212,175,55,0.35);font-size:10px;z-index:90;letter-spacing:6px}
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; font-family: 'SF Mono', 'Fira Code', monospace; }
+  canvas { display: block; }
+  #hud {
+    position: fixed; top: 16px; left: 16px; color: #0ff; font-size: 12px;
+    line-height: 1.6; pointer-events: none; z-index: 10;
+    text-shadow: 0 0 8px rgba(0,255,255,0.4);
+  }
+  #hud .label { color: #888; }
+  #hud .val { color: #0ff; }
+  #hud .creator { color: #f0c040; }
+  #hud .core { color: #ff4040; }
+  #hud .title { font-size: 16px; color: #fff; margin-bottom: 8px; letter-spacing: 2px; }
+  #hud .section { margin-top: 6px; border-top: 1px solid rgba(0,255,255,0.1); padding-top: 4px; }
+  #hud .section-title { color: #0ff; font-size: 10px; letter-spacing: 1px; opacity: 0.7; }
+  #hud .ok { color: #0f0; }
+  #hud .warn { color: #ff0; }
+  #hud .crit { color: #f44; }
+  #hud .signal-tag { display: inline-block; background: rgba(0,255,255,0.1); border: 1px solid rgba(0,255,255,0.2); border-radius: 3px; padding: 0 4px; margin: 1px 2px; font-size: 9px; }
+  #ops {
+    position: fixed; top: 16px; right: 16px; color: #0ff; font-size: 11px;
+    line-height: 1.6; pointer-events: none; z-index: 10;
+    text-shadow: 0 0 8px rgba(0,255,255,0.4);
+    text-align: right;
+  }
+  #ops .label { color: #888; }
+  #ops .val { color: #0ff; }
+  #ops .ok { color: #0f0; }
+  #ops .warn { color: #ff0; }
+  #ops .crit { color: #f44; }
+  #ops .section-title { color: #0ff; font-size: 10px; letter-spacing: 1px; opacity: 0.7; }
+  #ops .section { margin-top: 6px; border-top: 1px solid rgba(0,255,255,0.1); padding-top: 4px; }
+  #conn-status {
+    position: fixed; bottom: 12px; right: 16px; font-size: 10px;
+    z-index: 10; pointer-events: none;
+    text-shadow: 0 0 6px rgba(0,255,255,0.3);
+  }
+  #tooltip {
+    position: fixed; display: none; background: rgba(0,20,40,0.92);
+    border: 1px solid #0ff; border-radius: 6px; padding: 10px 14px;
+    color: #fff; font-size: 11px; line-height: 1.5; z-index: 20;
+    pointer-events: none; max-width: 260px;
+    box-shadow: 0 0 20px rgba(0,255,255,0.15);
+  }
+  #tooltip .tt-name { font-size: 13px; font-weight: bold; color: #0ff; }
+  #tooltip .tt-creator { color: #f0c040; }
+  #tooltip .tt-core { color: #ff6060; }
+  #error-overlay {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #f44; font-size: 14px; text-align: center; z-index: 100;
+    background: rgba(0,0,0,0.9); padding: 20px 30px; border: 1px solid #f44;
+    border-radius: 8px; display: none; max-width: 80%; word-break: break-all;
+  }
+  #loading {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #0ff; font-size: 16px; text-align: center; z-index: 90;
+    letter-spacing: 2px;
+  }
 </style>
 </head>
 <body>
-<div id="ld">VECTRAX</div>
+<div id="loading">VECTRAX UNIVERSE — cargando...</div>
+<div id="error-overlay"></div>
 <div id="hud"></div>
-<div id="panel"></div>
-<div id="feed"></div>
-<div id="tt"></div>
+<div id="ops"></div>
+<div id="conn-status"></div>
+<div id="tooltip"></div>
 <canvas id="c"></canvas>
 <script>
-const C=document.getElementById('c'),X=C.getContext('2d');
-const WS=`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/v1/universe/ws`;
-let W,H,cx,cy,data=null,prev=new Set,feeds=[],hov=null,mx=0,my=0,t=0,wsOn=0,poll=0;
-let cam={z:1,tz:1};
-// Persistent star positions (computed once per star, not per frame)
-let starPos={};
+window.onerror = function(msg, src, line, col, err) {
+  var el = document.getElementById('error-overlay');
+  el.style.display = 'block';
+  el.textContent = 'JS Error: ' + msg + ' (line ' + line + ')';
+  return false;
+};
+const API = '/v1/universe';
+const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/v1/universe/ws`;
+const POLL_MS = 3000;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hud = document.getElementById('hud');
+const ops = document.getElementById('ops');
+const connStatus = document.getElementById('conn-status');
+const tooltip = document.getElementById('tooltip');
 
-function sz(){W=C.width=innerWidth;H=C.height=innerHeight;cx=W/2;cy=H/2}
-addEventListener('resize',sz);sz();
+let W, H, cx, cy;
+let data = null;
+let hoveredStar = null;
+let mouseX = 0, mouseY = 0;
+let pulse = 0;
+let wsConnected = false;
+let pollTimer = null;
 
-function got(d){document.getElementById('ld').style.display='none';if(data){const n=new Set((d.stars||[]).map(s=>s.user_id));for(const s of d.stars||[])if(!prev.has(s.user_id))feeds.unshift({u:s.user_id,m:s.mass,t:Date.now()});if(feeds.length>5)feeds.length=5;prev=n}else prev=new Set((d.stars||[]).map(s=>s.user_id));data=d}
-async function fd(){try{const r=await fetch('/v1/universe');if(r.ok)got(await r.json())}catch(e){}}
-function sp(){if(!poll){fd();poll=setInterval(fd,2500)}}
-function xp(){if(poll){clearInterval(poll);poll=0}}
-function cw(){try{const w=new WebSocket(WS);w.onopen=()=>{wsOn=1;xp()};w.onmessage=e=>{try{got(JSON.parse(e.data))}catch(x){}};w.onclose=()=>{wsOn=0;sp();setTimeout(cw,4000)};w.onerror=()=>w.close()}catch(e){wsOn=0;sp();setTimeout(cw,4000)}}
-sp();cw();
-C.addEventListener('mousemove',e=>{mx=e.clientX;my=e.clientY});
-C.addEventListener('wheel',e=>{e.preventDefault();cam.tz=Math.max(0.35,Math.min(3.5,cam.tz*(e.deltaY>0?0.92:1.08)))},{passive:false});
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  cx = W / 2;
+  cy = H / 2;
+}
+window.addEventListener('resize', resize);
+resize();
 
-// Hash function for deterministic but organic star placement
-function hash(s){let h=0;for(let i=0;i<s.length;i++)h=((h<<5)-h+s.charCodeAt(i))|0;return h}
+// ── Data fetching: WebSocket primary, HTTP polling fallback ──
 
-// Compute star world position from its data (deterministic, organic)
-function getStarPos(s){
-  if(starPos[s.user_id]){
-    const p=starPos[s.user_id];
-    // Slowly drift toward target based on mass changes
-    p.tx=p.baseX;p.ty=p.baseY;
-    return p;
+async function fetchUniverse() {
+  try {
+    const r = await fetch(API);
+    if (r.ok) {
+      data = await r.json();
+      document.getElementById('loading').style.display = 'none';
+    }
+  } catch(e) {
+    console.error('fetchUniverse error:', e);
   }
-  const h=hash(s.user_id);
-  const h2=hash(s.user_id+'salt');
-  // Base angle from hash — NOT from index
-  const angle=((h%36000)/36000)*Math.PI*2;
-  // Distance from core — with noise
-  const baseDist=s.distance_to_core;
-  const noise=(((h2%1000)/1000)-0.5)*0.15;
-  const dist=Math.max(0.03,baseDist+noise);
-  // Convert to world coordinates with asymmetric scaling
-  const scaleX=Math.min(W,H)*0.38;
-  const scaleY=Math.min(W,H)*0.36;
-  const bx=Math.cos(angle)*dist*scaleX;
-  const by=Math.sin(angle)*dist*scaleY;
-  // Per-star drift parameters (unique organic motion)
-  const driftSpeed=0.0005+((h%500)/500)*0.002;
-  const driftAmpX=8+((h2%100)/100)*25;
-  const driftAmpY=6+((h%80)/80)*20;
-  const driftPhaseX=((h%628)/100);
-  const driftPhaseY=((h2%628)/100);
-  const p={baseX:bx,baseY:by,tx:bx,ty:by,driftSpeed,driftAmpX,driftAmpY,driftPhaseX,driftPhaseY};
-  starPos[s.user_id]=p;
-  return p;
 }
 
-// Deep field
-const S1=[],S2=[],S3=[];
-for(let i=0;i<400;i++)S1.push({x:Math.random()*10000-5000,y:Math.random()*10000-5000,r:Math.random()*0.5+0.1,p:Math.random()*6.28,s:0.001+Math.random()*0.005});
-for(let i=0;i<200;i++)S2.push({x:Math.random()*7000-3500,y:Math.random()*7000-3500,r:Math.random()*0.8+0.2,p:Math.random()*6.28,s:0.003+Math.random()*0.008});
-for(let i=0;i<70;i++)S3.push({x:Math.random()*4000-2000,y:Math.random()*4000-2000,r:Math.random()*1.2+0.4,p:Math.random()*6.28,s:0.005+Math.random()*0.012});
-// Cosmic dust (many tiny particles)
-const DUST=[];for(let i=0;i<150;i++){const a=Math.random()*6.28,d=20+Math.random()*500;DUST.push({x:Math.cos(a)*d,y:Math.sin(a)*d,r:0.3+Math.random()*0.8,s:0.0002+Math.random()*0.001,p:Math.random()*6.28})}
-// Nebula
-const FOG=[];for(let i=0;i<35;i++){const a=Math.random()*6.28,d=30+Math.random()*400;FOG.push({x:Math.cos(a)*d,y:Math.sin(a)*d,r:50+Math.random()*160,h:25+Math.random()*25,a:0.005+Math.random()*0.012,dr:0.00006+Math.random()*0.0003})}
+function startPolling() {
+  if (pollTimer) return;
+  fetchUniverse();
+  pollTimer = setInterval(fetchUniverse, POLL_MS);
+}
 
-function SC(l,ro){if(ro==='creator')return[212,175,55];if(l==='core')return[225,215,185];if(l==='mid')return[150,165,195];return[75,85,100]}
-function R(c,a){return`rgba(${c[0]},${c[1]},${c[2]},${a})`}
-function M(m){return(2+Math.pow(m,0.4)*15)*cam.z}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
 
-function draw(){
-t+=0.01;
-cam.z+=(cam.tz-cam.z)*0.04;
-X.fillStyle='#000';X.fillRect(0,0,W,H);
+function connectWS() {
+  try {
+    const ws = new WebSocket(WS_URL);
+    ws.onopen = () => {
+      wsConnected = true;
+      stopPolling();
+    };
+    ws.onmessage = (e) => {
+      try { data = JSON.parse(e.data); } catch(_) {}
+    };
+    ws.onclose = () => {
+      wsConnected = false;
+      startPolling();
+      setTimeout(connectWS, 5000);
+    };
+    ws.onerror = () => {
+      ws.close();
+    };
+  } catch(e) {
+    wsConnected = false;
+    startPolling();
+    setTimeout(connectWS, 5000);
+  }
+}
 
-// Nebula (warm fog)
-for(const f of FOG){
-const fx=cx+f.x*cam.z+Math.sin(t*f.dr*50)*30*cam.z;
-const fy=cy+f.y*cam.z+Math.cos(t*f.dr*40)*25*cam.z;
-const g=X.createRadialGradient(fx,fy,0,fx,fy,f.r*cam.z);
-g.addColorStop(0,`hsla(${f.h},25%,15%,${f.a})`);g.addColorStop(1,'transparent');
-X.fillStyle=g;X.beginPath();X.arc(fx,fy,f.r*cam.z,0,6.28);X.fill()}
+// Start: try WS, fall back to polling
+startPolling();
+connectWS();
 
-// Deep field parallax
-const layers=[[S1,0.02,0.04],[S2,0.045,0.09],[S3,0.08,0.16]];
-for(const[arr,px,ba]of layers){for(const s of arr){
-const b=ba+ba*0.8*Math.sin(t*s.s*35+s.p);
-const sx=cx+s.x*px*cam.z,sy=cy+s.y*px*cam.z;
-if(sx<-5||sx>W+5||sy<-5||sy>H+5)continue;
-X.fillStyle=`rgba(190,180,160,${b})`;
-X.beginPath();X.arc(sx,sy,s.r*cam.z,0,6.28);X.fill()}}
+// Mouse tracking for tooltip
+canvas.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
 
-// Cosmic dust (floating particles near center)
-for(const d of DUST){
-const dx=cx+(d.x+Math.sin(t*d.s*80+d.p)*40)*cam.z;
-const dy=cy+(d.y+Math.cos(t*d.s*60+d.p)*35)*cam.z;
-if(dx<-5||dx>W+5||dy<-5||dy>H+5)continue;
-const da=0.06+0.04*Math.sin(t*d.s*100+d.p);
-X.fillStyle=`rgba(212,175,55,${da})`;
-X.beginPath();X.arc(dx,dy,d.r*cam.z,0,6.28);X.fill()}
+// Map distance_to_core (0=center, 1=edge) to screen radius
+function distToRadius(d) {
+  const maxR = Math.min(W, H) * 0.42;
+  return d * maxR;
+}
 
-if(!data||!data.stars){requestAnimationFrame(draw);return}
-const stars=data.stars,nS=data.star_count||0;
-const act=Math.min(1,nS/20);
+// Mass → visual size (amplified for visibility)
+function massToSize(m) {
+  return 4 + Math.pow(m, 0.5) * 22;
+}
 
-// ═══ NUCLEUS ═══
-const p1=1+Math.sin(t*1.0)*0.1+act*0.1;
-const nR=(16+act*8)*p1*cam.z;
+// Layer → color
+function layerColor(layer, role) {
+  if (role === 'creator') return '#f0c040';
+  if (layer === 'core') return '#ff4040';
+  if (layer === 'mid') return '#00ccff';
+  return '#336688';
+}
 
-// Gravitational waves
-for(let i=0;i<4;i++){const w=((t*0.1+i*0.25)%1);const wr=nR*(2+w*18);
-X.strokeStyle=`rgba(180,140,30,${0.015*(1-w)*(0.4+act*0.6)})`;X.lineWidth=0.5*cam.z;
-X.beginPath();X.arc(cx,cy,wr,0,6.28);X.stroke()}
+function layerGlow(layer, role) {
+  if (role === 'creator') return 'rgba(240,192,64,0.3)';
+  if (layer === 'core') return 'rgba(255,64,64,0.3)';
+  if (layer === 'mid') return 'rgba(0,204,255,0.2)';
+  return 'rgba(51,102,136,0.1)';
+}
 
-// Massive aura
-let a1=X.createRadialGradient(cx,cy,0,cx,cy,nR*14);
-a1.addColorStop(0,`rgba(160,120,20,${0.05+act*0.05})`);
-a1.addColorStop(0.1,`rgba(140,100,15,${0.03+act*0.03})`);
-a1.addColorStop(0.3,'rgba(80,50,5,0.008)');a1.addColorStop(1,'transparent');
-X.fillStyle=a1;X.beginPath();X.arc(cx,cy,nR*14,0,6.28);X.fill();
+// Draw
+function draw() {
+  pulse += 0.02;
+  ctx.clearRect(0, 0, W, H);
 
-// Corona breathing
-for(let i=1;i<=3;i++){
-const cr=nR*(1.5+i*1.8)*(1+Math.sin(t*2+i*0.8)*0.05);
-X.strokeStyle=`rgba(212,175,55,${0.02/i+Math.sin(t*1.2+i)*0.008})`;
-X.lineWidth=(0.5/i)*cam.z;
-X.beginPath();X.arc(cx,cy,cr,0,6.28);X.stroke()}
+  // Background stars (decoration)
+  if (!draw._bgStars) {
+    draw._bgStars = [];
+    for (let i = 0; i < 200; i++) {
+      draw._bgStars.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        s: Math.random() * 1.2,
+        a: Math.random(),
+      });
+    }
+  }
+  for (const s of draw._bgStars) {
+    ctx.fillStyle = `rgba(255,255,255,${0.1 + s.a * 0.3})`;
+    ctx.fillRect(s.x, s.y, s.s, s.s);
+  }
 
-// Core body
-let cg=X.createRadialGradient(cx-nR*0.1,cy-nR*0.12,0,cx,cy,nR*1.1);
-cg.addColorStop(0,'#fef9e7');cg.addColorStop(0.1,'#fcd34d');
-cg.addColorStop(0.3,'#d4a017');cg.addColorStop(0.6,'#92400e');cg.addColorStop(0.85,'#451a03');cg.addColorStop(1,'rgba(30,10,0,0)');
-X.fillStyle=cg;X.beginPath();X.arc(cx,cy,nR*1.1,0,6.28);X.fill();
-// Specular
-X.fillStyle=`rgba(255,252,240,${0.25+Math.sin(t*1.8)*0.1})`;
-X.beginPath();X.arc(cx-nR*0.15,cy-nR*0.18,nR*0.18,0,6.28);X.fill();
+  if (!data || !data.stars) {
+    ctx.fillStyle = '#0ff';
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Conectando al núcleo...', cx, cy);
+    requestAnimationFrame(draw);
+    return;
+  }
 
-// ═══ CONVERGENCES ═══
-if(data.convergences){for(const c of data.convergences){
-const a=stars.find(s=>s.user_id===c.star_a),b=stars.find(s=>s.user_id===c.star_b);
-if(!a||!b||a._x==null||b._x==null)continue;
-const sim=c.similarity;
-const mx2=(a._x+b._x)/2+Math.sin(t*0.6+sim*15)*35*cam.z;
-const my2=(a._y+b._y)/2+Math.cos(t*0.6+sim*15)*35*cam.z;
-// Soft glow
-X.strokeStyle=`rgba(170,150,210,${0.01+sim*0.04})`;X.lineWidth=(3+sim*5)*cam.z;
-X.beginPath();X.moveTo(a._x,a._y);X.quadraticCurveTo(mx2,my2,b._x,b._y);X.stroke();
-// Core line
-X.strokeStyle=`rgba(170,150,210,${0.03+sim*0.12+Math.sin(t*1+sim*8)*0.02})`;X.lineWidth=(0.2+sim*0.4)*cam.z;
-X.beginPath();X.moveTo(a._x,a._y);X.quadraticCurveTo(mx2,my2,b._x,b._y);X.stroke();
-for(let p=0;p<3;p++){const pr=((t*0.35+p*0.33+sim*5)%1),it=1-pr;
-const px=it*it*a._x+2*it*pr*mx2+pr*pr*b._x;
-const py=it*it*a._y+2*it*pr*my2+pr*pr*b._y;
-X.fillStyle=`rgba(190,170,230,${(0.1+sim*0.2)*(1-pr*0.7)})`;
-X.beginPath();X.arc(px,py,(0.5+sim)*cam.z,0,6.28);X.fill()}}}
+  const stars = data.stars;
 
-// ═══ GRAVITY FLOWS ═══
-for(const s of stars){if(s._x==null||s.mass<0.06)continue;
-X.strokeStyle=`rgba(180,140,40,${0.003+(1-s.distance_to_core)*0.012})`;X.lineWidth=0.15*cam.z;
-X.beginPath();X.moveTo(cx,cy);X.lineTo(s._x,s._y);X.stroke();
-if(s.mass>0.1){const nP=s.mass>0.3?3:s.mass>0.15?2:1;
-for(let p=0;p<nP;p++){const fl=((t*(0.25+s.mass*0.3)+p/nP+hash(s.user_id)*0.001)%1);
-const px=s._x+(cx-s._x)*fl,py=s._y+(cy-s._y)*fl;
-X.fillStyle=`rgba(212,175,55,${(0.03+s.mass*0.15)*(1-fl*0.6)})`;
-X.beginPath();X.arc(px,py,(0.3+s.mass*1)*cam.z,0,6.28);X.fill()}}}
+  // Orbital rings
+  for (const d of [0.3, 0.6, 1.0]) {
+    const r = distToRadius(d);
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(0,255,255,0.06)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
 
-// ═══ STARS — organic positions, not circular ═══
-hov=null;
-for(let i=0;i<stars.length;i++){const s=stars[i];
-const pos=getStarPos(s);
-// Organic drift (each star has unique motion)
-const driftX=Math.sin(t*pos.driftSpeed*80+pos.driftPhaseX)*pos.driftAmpX;
-const driftY=Math.cos(t*pos.driftSpeed*60+pos.driftPhaseY)*pos.driftAmpY;
-// Gravitational breathing
-const breath=s.mass*15*Math.sin(t*0.3+hash(s.user_id)*0.01);
-const bx=pos.baseX-Math.sign(pos.baseX)*breath;
-const by=pos.baseY-Math.sign(pos.baseY)*breath;
-const sx=cx+(bx+driftX)*cam.z;
-const sy=cy+(by+driftY)*cam.z;
-s._x=sx;s._y=sy;
-const sz=M(s.mass),col=SC(s.layer,s.role);
-const tw=0.55+0.45*Math.sin(t*1.8+hash(s.user_id)*0.01);
+  // Layer labels
+  ctx.font = '10px monospace';
+  ctx.fillStyle = 'rgba(0,255,255,0.15)';
+  ctx.textAlign = 'left';
+  ctx.fillText('CORE', cx + distToRadius(0.15), cy - 6);
+  ctx.fillText('MID', cx + distToRadius(0.45), cy - 6);
+  ctx.fillText('OUTER', cx + distToRadius(0.8), cy - 6);
 
-// Bloom
-const b1=X.createRadialGradient(sx,sy,0,sx,sy,sz*6);
-b1.addColorStop(0,R(col,0.03*tw));b1.addColorStop(1,'transparent');
-X.fillStyle=b1;X.beginPath();X.arc(sx,sy,sz*6,0,6.28);X.fill();
-// Glow
-const b2=X.createRadialGradient(sx,sy,0,sx,sy,sz*2.5);
-b2.addColorStop(0,R(col,0.12*tw));b2.addColorStop(1,'transparent');
-X.fillStyle=b2;X.beginPath();X.arc(sx,sy,sz*2.5,0,6.28);X.fill();
-// Body
-X.fillStyle=R(col,0.65*tw);X.beginPath();X.arc(sx,sy,sz,0,6.28);X.fill();
-// Hot center
-X.fillStyle=`rgba(255,252,240,${0.25*tw})`;X.beginPath();X.arc(sx-sz*0.06,sy-sz*0.06,sz*0.22,0,6.28);X.fill();
-// Creator corona
-if(s.role==='creator'){for(let h=0;h<3;h++){
-X.strokeStyle=`rgba(212,175,55,${(0.08-h*0.025)+Math.sin(t*1.2+h*0.8)*0.03})`;
-X.lineWidth=(0.8-h*0.2)*cam.z;
-X.beginPath();X.arc(sx,sy,sz+(3+h*4)*cam.z,0,6.28);X.stroke()}}
-// Label
-if(cam.z>0.5){const lb=s.user_id.replace('tg:','').substring(0,7);
-X.fillStyle=R(col,0.08+tw*0.04);X.font=`${Math.max(5,6*cam.z)}px monospace`;X.textAlign='center';
-X.fillText(lb,sx,sy-sz-3*cam.z)}
-// Hover
-const dx=mx-sx,dy=my-sy;if(Math.sqrt(dx*dx+dy*dy)<sz+10*cam.z)hov=s}
+  // Nucleus (pulsing center)
+  const nucleusPulse = 1 + Math.sin(pulse * 2) * 0.15;
+  const nucleusR = 12 * nucleusPulse;
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, nucleusR * 3);
+  grad.addColorStop(0, 'rgba(0,255,255,0.8)');
+  grad.addColorStop(0.3, 'rgba(0,200,255,0.3)');
+  grad.addColorStop(1, 'rgba(0,100,200,0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, nucleusR * 3, 0, Math.PI * 2);
+  ctx.fill();
 
-// Tooltip
-const tt=document.getElementById('tt');
-if(hov){const s=hov;
-tt.innerHTML=`<div class="tn">${s.role==='creator'?'✦ ':'◌ '}${s.user_id}</div><div><span class="tl">mass</span> ${s.mass.toFixed(4)} · <span class="tl">layer</span> ${s.layer}</div><div><span class="tl">patterns</span> ${s.pattern_count} · <span class="tl">act</span> ${s.activation_count}</div>`;
-tt.style.display='block';tt.style.left=(mx+14)+'px';tt.style.top=(my-12)+'px'}else tt.style.display='none';
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(cx, cy, nucleusR, 0, Math.PI * 2);
+  ctx.fill();
 
-// HUD
-const tm=data.nucleus?.total_mass||0;
-document.getElementById('hud').innerHTML=`<div class="t">✦ VECTRAX</div><span class="v">${tm.toFixed(3)}</span> <span class="v">mass</span> · <span class="v">${nS}</span> <span class="v">stars</span> · <span class="v">${data.pattern_count||0}</span> <span class="v">patterns</span>`;
+  ctx.fillStyle = '#0ff';
+  ctx.beginPath();
+  ctx.arc(cx, cy, nucleusR * 0.6, 0, Math.PI * 2);
+  ctx.fill();
 
-// Panel
-const pn=document.getElementById('panel'),op=data.operational;
-if(stars.length){
-const so=[...stars].sort((a,b)=>b.mass-a.mass),mxM=so[0]?so[0].mass:1;
-const cn=data.layers?.core||0,mn=data.layers?.mid||0,on=data.layers?.outer||0;
-const cv=(data.convergences||[]).length;
-let h='<div class="pt">gravity map</div>';
-h+='<div class="lg"><div class="d" style="background:#d4a017"></div><span>creator</span></div>';
-h+='<div class="lg"><div class="d" style="background:rgba(225,215,185,0.5)"></div><span>core</span></div>';
-h+='<div class="lg"><div class="d" style="background:rgba(150,165,195,0.4)"></div><span>mid</span></div>';
-h+='<div class="lg"><div class="d" style="background:rgba(75,85,100,0.3)"></div><span>outer</span></div>';
-h+='<div class="pt">density</div>';
-h+='<div style="display:flex;gap:1px;height:3px;border-radius:1.5px;overflow:hidden">';
-if(cn)h+=`<div style="flex:${cn};background:rgba(225,215,185,0.4)"></div>`;
-if(mn)h+=`<div style="flex:${mn};background:rgba(150,165,195,0.3)"></div>`;
-if(on)h+=`<div style="flex:${on};background:rgba(75,85,100,0.2)"></div>`;
-h+='</div>';
-h+='<div class="pt">ranking</div>';
-for(let i=0;i<Math.min(so.length,8);i++){const s=so[i];
-const cl=s.role==='creator'?'rgba(212,175,55,0.6)':s.layer==='core'?'rgba(225,215,185,0.4)':s.layer==='mid'?'rgba(150,165,195,0.3)':'rgba(75,85,100,0.2)';
-const pc=Math.round(s.mass/mxM*100);
-h+=`<div class="sr"><div class="d" style="background:${cl}"></div><span class="nm">${s.user_id.replace('tg:','').substring(0,9)}</span><span class="ms">${s.mass.toFixed(3)}</span></div><div class="br" style="width:${pc}%;background:${cl}"></div>`}
-if(cv>0){h+='<div class="pt">convergences</div>';for(const c of data.convergences.slice(0,4))h+=`<div class="sr" style="color:rgba(170,150,210,0.4)"><span class="nm">${c.star_a.replace('tg:','').substring(0,6)} ↔ ${c.star_b.replace('tg:','').substring(0,6)}</span><span class="ms">${(c.similarity*100).toFixed(0)}%</span></div>`}
-if(op){h+='<div class="pt">pulse</div>';
-h+=`<div class="lg"><div class="d" style="background:${op.worker_alive?'rgba(120,160,100,0.4)':'rgba(160,80,60,0.4)'}"></div><span>${op.worker_alive?'alive':'—'}</span></div>`;
-const en=op.health?.errors_24h||0;
-if(en>0)h+=`<div class="lg"><div class="d" style="background:rgba(160,130,60,0.25)"></div><span>${en} anomalies</span></div>`}
-pn.innerHTML=h}
+  // Convergence lines
+  if (data.convergences) {
+    for (const c of data.convergences) {
+      const a = stars.find(s => s.user_id === c.star_a);
+      const b = stars.find(s => s.user_id === c.star_b);
+      if (a && b && a._sx != null && b._sx != null) {
+        ctx.beginPath();
+        ctx.moveTo(a._sx, a._sy);
+        ctx.lineTo(b._sx, b._sy);
+        ctx.strokeStyle = `rgba(0,255,255,${0.1 + c.similarity * 0.3})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+  }
 
-const now=Date.now();
-document.getElementById('feed').innerHTML=feeds.map(f=>{const age=Math.floor((now-f.t)/1000);return`<div class="fn${age<10?' nw':''}">◌ ${f.u.replace('tg:','').substring(0,9)} · ${age}s</div>`}).join('');
+  // Stars
+  hoveredStar = null;
+  const hoverDist = 20;
 
-requestAnimationFrame(draw)}
+  for (let i = 0; i < stars.length; i++) {
+    const s = stars[i];
+    const dist = s.distance_to_core;
+    const r = distToRadius(dist);
+    // Distribute angle by index + gentle orbit
+    const angle = (i / stars.length) * Math.PI * 2 + pulse * 0.1 * (1 - s.mass);
+    const sx = cx + Math.cos(angle) * r;
+    const sy = cy + Math.sin(angle) * r;
+    s._sx = sx;
+    s._sy = sy;
+
+    const size = massToSize(s.mass);
+    const color = layerColor(s.layer, s.role);
+    const glow = layerGlow(s.layer, s.role);
+
+    // Glow
+    const g2 = ctx.createRadialGradient(sx, sy, 0, sx, sy, size * 2.5);
+    g2.addColorStop(0, glow);
+    g2.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g2;
+    ctx.beginPath();
+    ctx.arc(sx, sy, size * 2.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Star body
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(sx, sy, size, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Inner bright spot
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(sx, sy, size * 0.3, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Pattern count label (visible for stars with > 5 patterns)
+    if (s.pattern_count > 5) {
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(s.pattern_count, sx, sy + size + 12);
+    }
+
+    // Hover detection
+    const dx = mouseX - sx, dy = mouseY - sy;
+    if (Math.sqrt(dx*dx + dy*dy) < size + hoverDist) {
+      hoveredStar = s;
+    }
+  }
+
+  // Tooltip
+  if (hoveredStar) {
+    const s = hoveredStar;
+    const nameClass = s.role === 'creator' ? 'tt-creator' : (s.layer === 'core' ? 'tt-core' : '');
+    tooltip.innerHTML = `
+      <div class="tt-name ${nameClass}">${s.role === 'creator' ? '★ ' : '☆ '}${s.user_id}</div>
+      <div>role: <b>${s.role}</b></div>
+      <div>mass: <b>${s.mass.toFixed(4)}</b></div>
+      <div>distance: <b>${s.distance_to_core.toFixed(4)}</b></div>
+      <div>layer: <b>${s.layer}</b></div>
+      <div>patterns: <b>${s.pattern_count}</b></div>
+      <div>activations: <b>${s.activation_count}</b></div>
+    `;
+    tooltip.style.display = 'block';
+    tooltip.style.left = (mouseX + 16) + 'px';
+    tooltip.style.top = (mouseY - 20) + 'px';
+  } else {
+    tooltip.style.display = 'none';
+  }
+
+  // ── HUD: Gravitational ──
+  const totalMass = data.nucleus?.total_mass || 0;
+  const heartbeat = data.heartbeat ? new Date(data.heartbeat * 1000).toLocaleTimeString() : '—';
+  const signals = data.signals || [];
+  const signalTags = signals.map(s => `<span class="signal-tag">${s}</span>`).join('');
+
+  hud.innerHTML = `
+    <div class="title">VECTRAX UNIVERSE</div>
+    <span class="label">nucleus:</span> <span class="val">${data.nucleus?.alive ? 'ALIVE' : 'DEAD'}</span><br>
+    <span class="label">heartbeat:</span> <span class="val">${heartbeat}</span><br>
+    <span class="label">total mass:</span> <span class="val">${totalMass.toFixed(4)}</span><br>
+    <span class="label">stars:</span> <span class="val">${data.star_count || 0}</span>
+    <span class="label"> patterns:</span> <span class="val">${data.pattern_count || 0}</span><br>
+    <span class="label">layers:</span>
+    <span class="core">core:${data.layers?.core || 0}</span>
+    <span class="val"> mid:${data.layers?.mid || 0}</span>
+    <span class="label"> outer:${data.layers?.outer || 0}</span><br>
+    <span class="label">convergences:</span> <span class="val">${data.convergences?.length || 0}</span>
+    ${signals.length ? `<div class="section"><span class="section-title">SIGNALS</span><br>${signalTags}</div>` : ''}
+  `;
+
+  // ── OPS: Operational state (right panel) ──
+  const op = data.operational;
+  if (op) {
+    const wCls = op.worker_alive ? 'ok' : 'crit';
+    const wTxt = op.worker_alive ? 'ALIVE' : 'DOWN';
+    const gwAge = op.gateway_heartbeat_age_s != null ? op.gateway_heartbeat_age_s.toFixed(0) + 's' : '—';
+    const wkAge = op.worker_heartbeat_age_s != null ? op.worker_heartbeat_age_s.toFixed(0) + 's' : '—';
+    const q = op.queue || {};
+    const qPendCls = q.pending > 10 ? 'crit' : q.pending > 3 ? 'warn' : 'ok';
+    const mem = op.memory || {};
+    const modes = op.modes || {};
+    const health = op.health || {};
+    const errCls = health.errors_24h > 50 ? 'crit' : health.errors_24h > 10 ? 'warn' : 'ok';
+
+    ops.innerHTML = `
+      <span class="section-title">OPERATIONAL</span><br>
+      <span class="label">worker:</span> <span class="${wCls}">${wTxt}</span>
+      <span class="label"> hb:</span> <span class="val">${wkAge}</span><br>
+      <span class="label">gateway hb:</span> <span class="val">${gwAge}</span>
+      <div class="section">
+        <span class="section-title">QUEUE</span><br>
+        <span class="label">pending:</span> <span class="${qPendCls}">${q.pending || 0}</span>
+        <span class="label"> processing:</span> <span class="val">${q.processing || 0}</span><br>
+        <span class="label">done:</span> <span class="val">${q.done || 0}</span>
+        <span class="label"> error:</span> <span class="val">${q.error || 0}</span>
+      </div>
+      <div class="section">
+        <span class="section-title">MEMORY</span><br>
+        <span class="label">deep:</span> <span class="val">${mem.deep_total || 0}</span>
+        <span class="label"> active:</span> <span class="val">${mem.active || 0}</span>
+        <span class="label"> fused:</span> <span class="val">${mem.fused || 0}</span><br>
+        <span class="label">identities:</span> <span class="val">${mem.identities || 0}</span>
+        <span class="label"> essentials:</span> <span class="val">${mem.essentials || 0}</span>
+      </div>
+      <div class="section">
+        <span class="section-title">MODES</span><br>
+        <span class="label">audio:</span> <span class="val">${modes.audio || '?'}</span>
+        <span class="label"> sovereignty:</span> <span class="val">${modes.sovereignty || '?'}</span><br>
+        <span class="label">proactive:</span> <span class="val">${modes.proactive ? 'ON' : 'OFF'}</span>
+      </div>
+      <div class="section">
+        <span class="section-title">HEALTH</span><br>
+        <span class="label">errors 24h:</span> <span class="${errCls}">${health.errors_24h || 0}</span>
+      </div>
+    `;
+  } else {
+    ops.innerHTML = '';
+  }
+
+  // ── Connection status ──
+  connStatus.innerHTML = wsConnected
+    ? '<span style="color:#0f0">⬤ WS LIVE</span>'
+    : '<span style="color:#ff0">⬤ HTTP POLL</span>';
+
+  requestAnimationFrame(draw);
+}
+
 requestAnimationFrame(draw);
 </script>
 </body>
