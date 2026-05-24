@@ -809,6 +809,31 @@ class TelegramGateway:
 
             # Photo — analyze with GPT-4o vision
             photo = msg.get("photo")
+
+            if not text and not photo:
+                return
+
+            # === TIER CHECK: verificar límite diario ANTES de todo ===
+            # Cuenta cada mensaje del usuario (texto, voz, foto, documento).
+            # NO cuenta respuestas del bot, avisos del sistema ni mensajes internos.
+            # Comandos /upgrade y /start pasan sin contar.
+            _t = (text or "").strip()
+            _t_lower = _t.lower().rstrip("!?.")
+            _is_upgrade_cmd = _t_lower in ("upgrade", "/upgrade", "pro", "/pro")
+            _is_start_cmd = _t_lower in ("/start", "start")
+
+            if not self._is_creator(tg_uid) and not _is_upgrade_cmd and not _is_start_cmd:
+                try:
+                    from core.operator.user_tiers import check_access
+                    access = check_access(tg_uid)
+                    if not access.allowed:
+                        if access.reason:
+                            self._send(cid, access.reason)
+                        # Silently ignore if already notified (reason is empty)
+                        return
+                except Exception:
+                    pass
+
             if photo:
                 self._handle_photo(cid, tg_uid, photo, caption=msg.get("caption", ""))
                 self._processed += 1
@@ -820,10 +845,8 @@ class TelegramGateway:
             # === PRE-ONBOARDING: comandos que deben funcionar SIEMPRE ===
             # /upgrade, /pro, /help, /privacy pasan sin importar el estado
             # de onboarding. Un usuario nuevo debe poder pagar sin dar nombre.
-            _t = text.strip()
-            _t_lower = _t.lower().rstrip("!?.")
 
-            if _t_lower in ("upgrade", "/upgrade", "pro", "/pro"):
+            if _is_upgrade_cmd:
                 try:
                     from services.billing.stripe_billing import create_checkout_session
                     url = create_checkout_session(tg_uid)
@@ -1057,16 +1080,6 @@ class TelegramGateway:
                 except Exception as e:
                     self._send(cid, f"Error: {e}")
                 return
-
-            # === TIER CHECK: verificar acceso del usuario ===
-            try:
-                from core.operator.user_tiers import check_access, can_use_feature
-                access = check_access(tg_uid)
-                if not access.allowed:
-                    self._send(cid, access.reason)
-                    return
-            except Exception:
-                pass
 
             # === LANGUAGE POLICY: detectar idioma + instrucciones ===
             try:

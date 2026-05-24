@@ -35,13 +35,14 @@ _DB_PATH = os.path.join(
 
 _CREATE_TIERS = """
 CREATE TABLE IF NOT EXISTS user_tiers (
-    user_id     TEXT PRIMARY KEY,
-    tier        TEXT NOT NULL DEFAULT 'free',
-    daily_limit INTEGER NOT NULL DEFAULT 20,
-    msgs_today  INTEGER NOT NULL DEFAULT 0,
-    last_reset  TEXT NOT NULL DEFAULT '',
-    created_at  REAL NOT NULL,
-    updated_at  REAL NOT NULL
+    user_id        TEXT PRIMARY KEY,
+    tier           TEXT NOT NULL DEFAULT 'free',
+    daily_limit    INTEGER NOT NULL DEFAULT 20,
+    msgs_today     INTEGER NOT NULL DEFAULT 0,
+    last_reset     TEXT NOT NULL DEFAULT '',
+    limit_notified INTEGER NOT NULL DEFAULT 0,
+    created_at     REAL NOT NULL,
+    updated_at     REAL NOT NULL
 );
 """
 
@@ -128,6 +129,11 @@ def _conn():
     os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
     conn = sqlite3.connect(_DB_PATH, timeout=3)
     conn.execute(_CREATE_TIERS)
+    # Migration: add limit_notified column if missing
+    try:
+        conn.execute("ALTER TABLE user_tiers ADD COLUMN limit_notified INTEGER NOT NULL DEFAULT 0")
+    except Exception:
+        pass  # already exists
     conn.commit()
     return conn
 
@@ -241,22 +247,41 @@ def check_access(user_id: str) -> UserAccess:
         if last_reset != today:
             msgs_today = 0
             conn.execute(
-                "UPDATE user_tiers SET msgs_today = 0, last_reset = ?, updated_at = ? "
+                "UPDATE user_tiers SET msgs_today = 0, limit_notified = 0, last_reset = ?, updated_at = ? "
                 "WHERE user_id = ?",
                 (today, time.time(), user_id),
             )
 
         # Check limit
         if msgs_today >= daily_limit:
+            # Check if we already notified this user today
+            notified = conn.execute(
+                "SELECT limit_notified FROM user_tiers WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            already_notified = bool(notified and notified[0])
+
+            if not already_notified:
+                # Mark as notified so we don't repeat
+                conn.execute(
+                    "UPDATE user_tiers SET limit_notified = 1, updated_at = ? WHERE user_id = ?",
+                    (time.time(), user_id),
+                )
+                conn.commit()
+                reason = _build_limit_message(user_id, msgs_today, daily_limit)
+            else:
+                # Already notified — return empty reason to signal silence
+                reason = ""
+
             conn.close()
-            reason = _build_limit_message(user_id, msgs_today, daily_limit)
             return UserAccess(
                 user_id=user_id, tier=tier, allowed=False,
                 reason=reason,
                 msgs_today=msgs_today, daily_limit=daily_limit, features=limits,
             )
 
-        # Increment
+        # Increment — only counts incoming user messages (called once per message
+        # from telegram_gateway._handle, never for bot responses)
         conn.execute(
             "UPDATE user_tiers SET msgs_today = msgs_today + 1, updated_at = ? WHERE user_id = ?",
             (time.time(), user_id),
@@ -280,29 +305,30 @@ def check_access(user_id: str) -> UserAccess:
 
 def _build_limit_message(user_id: str, msgs_today: int, daily_limit: int) -> str:
     """
-    Build the daily limit reached message with upgrade link if available.
+    Build the daily limit reached message with Stripe upgrade link.
 
-    Includes Stripe checkout URL so the user can upgrade directly.
+    Generates a fresh Stripe Checkout Session URL. If Stripe fails,
+    falls back to /upgrade command.
     """
-    base = "Por hoy llegamos al límite de mensajes."
-
     # Try to generate Stripe checkout link
+    stripe_url = None
     try:
         from services.billing.stripe_billing import create_checkout_session
-        url = create_checkout_session(user_id)
-        if url:
-            return (
-                f"{base}\n\n"
-                f"Vectrax PRO: memoria completa, voz, mapas, mercado, sin límites.\n\n"
-                f"Activar aquí: {url}"
-            )
+        stripe_url = create_checkout_session(user_id)
     except Exception as exc:
-        logger.debug("Stripe checkout failed: %s", exc)
+        logger.warning("Stripe checkout session failed for %s: %s", user_id[:20], exc)
 
-    # Fallback: suggest /upgrade command
+    if stripe_url:
+        return (
+            f"Has alcanzado tu l\u00edmite diario de {daily_limit} mensajes. "
+            f"Para continuar hoy, puedes activar acceso extendido aqu\u00ed:\n\n"
+            f"{stripe_url}"
+        )
+
+    # Fallback: /upgrade command if Stripe unavailable
     return (
-        f"{base}\n\n"
-        f"Escribe /upgrade para activar Vectrax PRO sin límites."
+        f"Has alcanzado tu l\u00edmite diario de {daily_limit} mensajes. "
+        f"Escribe /upgrade para activar acceso extendido."
     )
 
 
