@@ -284,7 +284,7 @@ if(en>0)h+=`<div class="lg"><div class="d" style="background:rgba(160,130,60,0.2
 pn.innerHTML=h}
 
 const now=Date.now();
-document.getElementById('feed').innerHTML=feeds.map(f=>{const age=Math.floor((now-f.t)/1000);return`<div class="fn${age<10?' nw':'"}">◌ ${f.u.replace('tg:','').substring(0,9)} · ${age}s</div>`}).join('');
+document.getElementById('feed').innerHTML=feeds.map(f=>{const age=Math.floor((now-f.t)/1000);return`<div class="fn${age<10?' nw':''}">◌ ${f.u.replace('tg:','').substring(0,9)} · ${age}s</div>`}).join('');
 
 requestAnimationFrame(draw)}
 requestAnimationFrame(draw);
