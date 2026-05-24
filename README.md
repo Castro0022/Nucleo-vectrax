@@ -438,14 +438,17 @@ get_learner().approve_recommendation(rec_id, approved_by="creator")
 ## 🧪 Testing
 
 ```bash
-# Run all tests
-python -m pytest test_phase*.py -v
+# Core pipeline tests (ingest, universe status, observer, self_context)
+python -m pytest tests/core/test_core_pipeline.py -v
 
-# Run specific phase
-python test_phase5.py
+# Gravity engine tests
+python -m pytest tests/gravity/ -v
+
+# All tests
+python -m pytest tests/ -v
 
 # With coverage
-pytest --cov=core --cov-report=html
+pytest --cov=core --cov=vectrax --cov-report=html
 ```
 
 ## ⚙️ Configuration
@@ -514,6 +517,20 @@ Requires:
 - SSH key at `~/.ssh/vectrax_server`
 - Docker on the server (`root@140.82.28.181`)
 - `.env` on the server with API keys (never synced from local)
+
+### Manual file deploy
+
+```bash
+# Upload specific files
+scp -i ~/.ssh/vectrax_server <local_file> root@140.82.28.181:/opt/vectrax/<path>
+
+# Rebuild container (required after code changes)
+ssh -i ~/.ssh/vectrax_server root@140.82.28.181 \
+  "cd /opt/vectrax && docker compose down && docker compose up -d --build"
+
+# IMPORTANT: Always backup the volume before destructive operations
+ssh -i ~/.ssh/vectrax_server root@140.82.28.181 "bash /opt/vectrax/scripts/protect_volume.sh"
+```
 
 ### HTTPS (Caddy)
 
@@ -611,6 +628,44 @@ Real-time unified view of the Vectrax cognitive universe.
 - **API**: `GET /v1/universe` — JSON snapshot (gravitational + operational)
 - **WebSocket**: `WS /v1/universe/ws` — Pushes snapshot every 2s
 - **LLM-aware**: Universe data is injected into `self_context.py` so Vectrax can describe its own state
+
+The `/v1/universe` endpoint returns both star types:
+- `knowledge_star_count` — Knowledge nodes from the `stars` table (gravitational graph)
+- `star_count` — User stars from the `user_stars` table (one per user)
+- `pattern_count` — Individual interaction patterns that feed user stars
+
+## ⭐ Ingest Pipeline
+
+Every message that enters Vectrax feeds **two** parallel ingest paths, both running in a background daemon thread to avoid blocking response delivery:
+
+```
+Message arrives
+    │
+    ├─ response delivered to user
+    │
+    └─ background thread (_bg_ingest):
+        ├─ ingest_v2() → Pattern + UserStar update (mass, centroid, layer)
+        └─ ingest()    → Knowledge Star + graph edges + convergence detection
+```
+
+- **ingest_v2** (`vectrax/engine.py`): Creates a `Pattern` linked to the user, recalculates the `UserStar` centroid/mass/layer, detects convergence with other user stars, updates the nucleus centroid.
+- **ingest v1** (`vectrax/engine.py`): Creates a `Star` (knowledge node) with embeddings, links it to similar stars via graph edges, detects constellation patterns, generates proposals if density thresholds are met.
+
+Both run for every interaction via `external_gateway.py` (step 10.1).
+
+## 🛡️ Volume Protection
+
+The Docker volume `vectrax_vectrax-runtime` contains all persistent state (databases, logs, identity seed). It survives `docker compose down/up` but is **destroyed** by `docker compose down -v`.
+
+```bash
+# Backup before any dangerous operation
+bash scripts/protect_volume.sh
+
+# Restore from latest backup
+bash scripts/protect_volume.sh restore
+```
+
+Backups are stored in `~/vectrax_backups/` (last 5 retained automatically).
 
 ## 📊 Router Performance
 
