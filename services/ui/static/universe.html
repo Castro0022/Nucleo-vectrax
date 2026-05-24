@@ -7,251 +7,268 @@
 <title>Vectrax — Universe</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#000408;overflow:hidden;font-family:'SF Mono','Fira Code',monospace}
+body{background:#000;overflow:hidden;font-family:'SF Mono','Fira Code',monospace;cursor:crosshair}
 canvas{display:block}
-#hud{position:fixed;top:14px;left:14px;color:#0ff;font-size:10px;line-height:1.5;pointer-events:none;z-index:10;text-shadow:0 0 6px rgba(0,255,255,0.3)}
-#hud .title{font-size:13px;color:#fbbf24;letter-spacing:3px;margin-bottom:4px;text-shadow:0 0 15px rgba(251,191,36,0.4)}
-#hud .l{color:#4a5568}
-#hud .v{color:#0ff}
+#hud{position:fixed;top:14px;left:14px;color:#94a3b8;font-size:10px;line-height:1.5;pointer-events:none;z-index:10}
+#hud .t{font-size:12px;color:#fbbf24;letter-spacing:4px;margin-bottom:5px;text-shadow:0 0 20px rgba(251,191,36,0.3);opacity:0.8}
+#hud .l{color:#334155}
+#hud .v{color:#64748b}
 #hud .g{color:#fbbf24}
-#hud .ok{color:#34d399}
-#hud .w{color:#fbbf24}
-#hud .cr{color:#f87171}
-#hud .sec{margin-top:4px;border-top:1px solid rgba(0,255,255,0.06);padding-top:3px}
-#hud .st{color:#0ff;font-size:8px;letter-spacing:1.5px;opacity:.5;text-transform:uppercase}
-#hud .tag{display:inline-block;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.2);border-radius:3px;padding:0 4px;margin:1px;font-size:7px;color:#fbbf24}
-#ops{position:fixed;top:14px;right:14px;color:#0ff;font-size:10px;line-height:1.5;pointer-events:none;z-index:10;text-shadow:0 0 6px rgba(0,255,255,0.3);text-align:right}
-#ops .l{color:#4a5568}
-#ops .v{color:#0ff}
-#ops .ok{color:#34d399}
-#ops .cr{color:#f87171}
-#ops .st{color:#0ff;font-size:8px;letter-spacing:1.5px;opacity:.5;text-transform:uppercase}
-#ops .sec{margin-top:4px;border-top:1px solid rgba(0,255,255,0.06);padding-top:3px}
-#cs{position:fixed;bottom:10px;right:14px;font-size:9px;z-index:10;pointer-events:none}
-#panel{position:fixed;bottom:14px;right:14px;width:220px;max-height:45vh;overflow-y:auto;background:rgba(0,6,12,0.92);border:1px solid rgba(0,255,255,0.1);border-radius:8px;padding:10px 12px;font-size:9px;color:#94a3b8;line-height:1.5;z-index:15;pointer-events:auto;scrollbar-width:thin;scrollbar-color:#1e293b transparent}
-#panel::-webkit-scrollbar{width:4px}
-#panel::-webkit-scrollbar-thumb{background:#1e293b;border-radius:2px}
-#panel .pt{color:#0ff;font-size:8px;letter-spacing:1.5px;opacity:.6;text-transform:uppercase;margin-top:6px;margin-bottom:2px}
+#hud .sec{margin-top:3px;border-top:1px solid rgba(100,116,139,0.08);padding-top:3px}
+#hud .st{color:#475569;font-size:7px;letter-spacing:2px;text-transform:uppercase}
+#hud .tag{display:inline-block;background:rgba(251,191,36,0.06);border:1px solid rgba(251,191,36,0.12);border-radius:3px;padding:0 4px;margin:1px;font-size:7px;color:#92400e}
+#panel{position:fixed;bottom:14px;right:14px;width:200px;max-height:50vh;overflow-y:auto;background:rgba(0,0,0,0.7);backdrop-filter:blur(8px);border:1px solid rgba(100,116,139,0.08);border-radius:10px;padding:10px 11px;font-size:8px;color:#64748b;line-height:1.4;z-index:15;pointer-events:auto;scrollbar-width:thin;scrollbar-color:#1e293b transparent}
+#panel::-webkit-scrollbar{width:3px}#panel::-webkit-scrollbar-thumb{background:#1e293b;border-radius:2px}
+#panel .pt{color:#475569;font-size:7px;letter-spacing:2px;text-transform:uppercase;margin-top:6px;margin-bottom:2px}
 #panel .pt:first-child{margin-top:0}
-#panel .leg{display:flex;align-items:center;gap:6px;margin:2px 0}
-#panel .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-#panel .ring{width:8px;height:8px;border-radius:50%;flex-shrink:0;border:2px solid;background:transparent}
-#panel .bar{height:3px;border-radius:1px;margin-top:1px}
-#panel .sr{display:flex;align-items:center;gap:4px;margin:1px 0;font-size:8px}
-#panel .sr .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#panel .sr .ms{color:#fbbf24;width:35px;text-align:right}
-#panel .sr .act{color:#4a5568;width:25px;text-align:right}
-#feed{position:fixed;bottom:14px;left:14px;color:#4a5568;font-size:8px;line-height:1.4;pointer-events:none;z-index:10;max-height:100px;overflow:hidden}
-.fn{opacity:.6}.fn.nw{color:#fbbf24;opacity:1}
-#tt{position:fixed;display:none;background:rgba(0,6,12,0.96);border:1px solid rgba(251,191,36,0.35);border-radius:8px;padding:10px 14px;color:#cbd5e1;font-size:10px;line-height:1.5;z-index:20;pointer-events:none;max-width:260px;box-shadow:0 0 30px rgba(251,191,36,0.08)}
-#tt .tn{font-size:12px;font-weight:bold;color:#fbbf24}
-#tt .tc{color:#f87171}
-#tt .tm{color:#60a5fa}
-#tt .tl{color:#4a5568}
-#ld{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#fbbf24;font-size:13px;z-index:90;letter-spacing:3px;text-shadow:0 0 20px rgba(251,191,36,0.3)}
+#panel .lg{display:flex;align-items:center;gap:5px;margin:2px 0}
+#panel .d{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+#panel .rn{width:6px;height:6px;border-radius:50%;flex-shrink:0;border:1.5px solid;background:transparent}
+#panel .br{height:2px;border-radius:1px;margin-top:1px;opacity:0.25}
+#panel .sr{display:flex;align-items:center;gap:3px;margin:1px 0;font-size:7px}
+#panel .sr .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#94a3b8}
+#panel .sr .ms{color:#fbbf24;width:30px;text-align:right;font-size:7px}
+#panel .sr .ac{color:#334155;width:20px;text-align:right}
+#feed{position:fixed;bottom:14px;left:14px;color:#334155;font-size:8px;line-height:1.3;pointer-events:none;z-index:10;max-height:80px;overflow:hidden}
+.fn{opacity:.5;transition:all 0.8s}.fn.nw{color:#fbbf24;opacity:.8}
+#tt{position:fixed;display:none;background:rgba(0,0,0,0.85);backdrop-filter:blur(12px);border:1px solid rgba(251,191,36,0.15);border-radius:10px;padding:12px 15px;color:#94a3b8;font-size:10px;line-height:1.5;z-index:20;pointer-events:none;max-width:240px;box-shadow:0 8px 40px rgba(0,0,0,0.6)}
+#tt .tn{font-size:11px;font-weight:600;color:#fbbf24;letter-spacing:0.5px}
+#tt .tc{color:#fca5a5}#tt .tm{color:#93c5fd}#tt .tl{color:#334155}
+#ld{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#fbbf24;font-size:11px;z-index:90;letter-spacing:5px;opacity:0.6;text-shadow:0 0 30px rgba(251,191,36,0.2)}
+#cs{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);font-size:8px;z-index:10;pointer-events:none;color:#334155}
 </style>
 </head>
 <body>
-<div id="ld">VECTRAX UNIVERSE</div>
+<div id="ld">VECTRAX</div>
 <div id="hud"></div>
-<div id="ops"></div>
 <div id="panel"></div>
 <div id="cs"></div>
 <div id="feed"></div>
 <div id="tt"></div>
 <canvas id="c"></canvas>
 <script>
-const API='/v1/universe',canvas=document.getElementById('c'),X=canvas.getContext('2d');
-const WS_URL=`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/v1/universe/ws`;
-let W,H,cx,cy,data=null,prev=new Set,feeds=[],hover=null,mx=0,my=0,t=0,wsOn=false,poll=null;
+const C=document.getElementById('c'),X=C.getContext('2d');
+const WS=`${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/v1/universe/ws`;
+let W,H,cx,cy,data=null,prev=new Set,feeds=[],hov=null,mx=0,my=0,t=0,wsOn=0,poll=0;
+let cam={z:1,tz:1,x:0,y:0}; // camera zoom + target zoom
 
-function sz(){W=canvas.width=innerWidth;H=canvas.height=innerHeight;cx=W/2;cy=H/2}
+function sz(){W=C.width=innerWidth;H=C.height=innerHeight;cx=W/2;cy=H/2}
 addEventListener('resize',sz);sz();
 
 // Data
-function got(d){document.getElementById('ld').style.display='none';if(data){const ns=new Set((d.stars||[]).map(s=>s.user_id));for(const s of d.stars||[])if(!prev.has(s.user_id))feeds.unshift({u:s.user_id,r:s.role,m:s.mass,t:Date.now()});if(feeds.length>8)feeds.length=8;prev=ns}else prev=new Set((d.stars||[]).map(s=>s.user_id));data=d}
-async function fd(){try{const r=await fetch(API);if(r.ok)got(await r.json())}catch(e){}}
-function sp(){if(!poll){fd();poll=setInterval(fd,3000)}}
-function xp(){if(poll){clearInterval(poll);poll=null}}
-function cws(){try{const w=new WebSocket(WS_URL);w.onopen=()=>{wsOn=true;xp()};w.onmessage=e=>{try{got(JSON.parse(e.data))}catch(x){}};w.onclose=()=>{wsOn=false;sp();setTimeout(cws,5000)};w.onerror=()=>w.close()}catch(e){wsOn=false;sp();setTimeout(cws,5000)}}
-sp();cws();
-canvas.addEventListener('mousemove',e=>{mx=e.clientX;my=e.clientY});
+function got(d){document.getElementById('ld').style.display='none';if(data){const n=new Set((d.stars||[]).map(s=>s.user_id));for(const s of d.stars||[])if(!prev.has(s.user_id))feeds.unshift({u:s.user_id,r:s.role,m:s.mass,t:Date.now()});if(feeds.length>6)feeds.length=6;prev=n}else prev=new Set((d.stars||[]).map(s=>s.user_id));data=d}
+async function fd(){try{const r=await fetch('/v1/universe');if(r.ok)got(await r.json())}catch(e){}}
+function sp(){if(!poll){fd();poll=setInterval(fd,2500)}}
+function xp(){if(poll){clearInterval(poll);poll=0}}
+function cw(){try{const w=new WebSocket(WS);w.onopen=()=>{wsOn=1;xp()};w.onmessage=e=>{try{got(JSON.parse(e.data))}catch(x){}};w.onclose=()=>{wsOn=0;sp();setTimeout(cw,4000)};w.onerror=()=>w.close()}catch(e){wsOn=0;sp();setTimeout(cw,4000)}}
+sp();cw();
+C.addEventListener('mousemove',e=>{mx=e.clientX;my=e.clientY});
+// Zoom
+C.addEventListener('wheel',e=>{e.preventDefault();cam.tz=Math.max(0.4,Math.min(3,cam.tz*(e.deltaY>0?0.92:1.08)))},{passive:false});
 
-// Background stars
-const BG=[];for(let i=0;i<500;i++)BG.push({x:Math.random()*5000-2500,y:Math.random()*5000-2500,r:Math.random()*1.2+0.2,p:Math.random()*6.28,s:0.004+Math.random()*0.015});
-// Nebula
-const NB=[];for(let i=0;i<50;i++){const a=Math.random()*6.28,d=40+Math.random()*280;NB.push({x:Math.cos(a)*d,y:Math.sin(a)*d,r:25+Math.random()*70,h:190+Math.random()*50,a:0.012+Math.random()*0.02,dr:0.0002+Math.random()*0.0008})}
+// Deep field: 3 layers of stars at different depths
+const L1=[],L2=[],L3=[];
+for(let i=0;i<300;i++)L1.push({x:Math.random()*8000-4000,y:Math.random()*8000-4000,r:Math.random()*0.6+0.1,p:Math.random()*6.28,s:0.002+Math.random()*0.008});
+for(let i=0;i<200;i++)L2.push({x:Math.random()*6000-3000,y:Math.random()*6000-3000,r:Math.random()*0.9+0.3,p:Math.random()*6.28,s:0.005+Math.random()*0.012});
+for(let i=0;i<80;i++)L3.push({x:Math.random()*4000-2000,y:Math.random()*4000-2000,r:Math.random()*1.3+0.4,p:Math.random()*6.28,s:0.008+Math.random()*0.02});
+// Nebula clouds
+const NB=[];for(let i=0;i<40;i++){const a=Math.random()*6.28,d=60+Math.random()*350;NB.push({x:Math.cos(a)*d,y:Math.sin(a)*d,r:40+Math.random()*100,h:200+Math.random()*60,a:0.008+Math.random()*0.015,dr:0.0001+Math.random()*0.0006})}
 
 // Helpers
-function dr(d){return d*Math.min(W,H)*0.40}
-function ms(m){return 3+Math.pow(m,0.45)*18}
-function sc(l,r){if(r==='creator')return[251,191,36];if(l==='core')return[248,113,113];if(l==='mid')return[96,165,250];return[71,85,105]}
-function rg(c,a){return`rgba(${c[0]},${c[1]},${c[2]},${a})`}
+function D(d){return d*Math.min(W,H)*0.38*cam.z}
+function M(m){return(2.5+Math.pow(m,0.4)*16)*cam.z}
+function SC(l,r){if(r==='creator')return[251,191,36];if(l==='core')return[252,165,165];if(l==='mid')return[147,197,253];return[71,85,105]}
+function R(c,a){return`rgba(${c[0]},${c[1]},${c[2]},${a})`}
 
 function draw(){
-t+=0.016;
-X.fillStyle='#000408';X.fillRect(0,0,W,H);
+t+=0.014;
+// Smooth zoom
+cam.z+=(cam.tz-cam.z)*0.06;
+X.fillStyle='#000';X.fillRect(0,0,W,H);
+
+// Deep field parallax (3 layers)
+const layers=[[L1,0.03,0.08],[L2,0.06,0.15],[L3,0.1,0.25]];
+for(const[stars,parallax,baseA]of layers){
+for(const s of stars){
+const b=baseA+baseA*0.6*Math.sin(t*s.s*50+s.p);
+const px=cx+(s.x-cam.x*parallax*100)*parallax*cam.z;
+const py=cy+(s.y-cam.y*parallax*100)*parallax*cam.z;
+if(px<-10||px>W+10||py<-10||py>H+10)continue;
+X.fillStyle=`rgba(200,210,230,${b})`;
+X.beginPath();X.arc(px,py,s.r*cam.z,0,6.28);X.fill()}}
 
 // Nebula
-for(const n of NB){const nx=cx+n.x+Math.sin(t*n.dr*100)*18,ny=cy+n.y+Math.cos(t*n.dr*80)*12;const g=X.createRadialGradient(nx,ny,0,nx,ny,n.r);g.addColorStop(0,`hsla(${n.h},60%,35%,${n.a})`);g.addColorStop(1,'transparent');X.fillStyle=g;X.beginPath();X.arc(nx,ny,n.r,0,6.28);X.fill()}
-
-// BG stars
-for(const s of BG){const b=0.12+0.22*Math.sin(t*s.s*60+s.p);X.fillStyle=`rgba(180,200,230,${b})`;X.beginPath();X.arc(cx+s.x*0.12,cy+s.y*0.12,s.r,0,6.28);X.fill()}
+for(const n of NB){
+const nx=cx+n.x*cam.z+Math.sin(t*n.dr*80)*20*cam.z;
+const ny=cy+n.y*cam.z+Math.cos(t*n.dr*60)*15*cam.z;
+const g=X.createRadialGradient(nx,ny,0,nx,ny,n.r*cam.z);
+g.addColorStop(0,`hsla(${n.h},50%,30%,${n.a})`);g.addColorStop(1,'transparent');
+X.fillStyle=g;X.beginPath();X.arc(nx,ny,n.r*cam.z,0,6.28);X.fill()}
 
 if(!data||!data.stars){requestAnimationFrame(draw);return}
 const stars=data.stars;
+const nStars=data.star_count||0;
+const activity=Math.min(1,nStars/30); // 0→1 based on star count
 
-// Orbit rings
-for(const d of[0.25,0.5,0.75,1.0]){const r=dr(d);X.strokeStyle=`rgba(251,191,36,${0.025+Math.sin(t*0.4+d*3)*0.01})`;X.lineWidth=0.5;X.setLineDash([2,10]);X.beginPath();X.arc(cx,cy,r,0,6.28);X.stroke();X.setLineDash([])}
-// Layer labels
-X.font='8px monospace';X.textAlign='left';X.fillStyle='rgba(251,191,36,0.1)';
-X.fillText('CORE',cx+dr(0.1),cy-3);X.fillText('MID',cx+dr(0.37),cy-3);X.fillText('OUTER',cx+dr(0.68),cy-3);
+// Orbital rings (barely visible, organic)
+for(const d of[0.2,0.45,0.7,0.95]){
+const r=D(d);
+X.strokeStyle=`rgba(251,191,36,${0.015+Math.sin(t*0.3+d*4)*0.008})`;
+X.lineWidth=0.4*cam.z;X.setLineDash([1.5*cam.z,12*cam.z]);
+X.beginPath();X.arc(cx,cy,r,0,6.28);X.stroke();X.setLineDash([])}
 
-// GOLDEN NUCLEUS
-const p1=1+Math.sin(t*1.8)*0.2,p2=1+Math.sin(t*3.2)*0.1,nR=16*p1;
-// Outer aura
-let au=X.createRadialGradient(cx,cy,0,cx,cy,nR*6);au.addColorStop(0,'rgba(251,191,36,0.12)');au.addColorStop(0.25,'rgba(251,160,0,0.05)');au.addColorStop(0.5,'rgba(200,100,0,0.02)');au.addColorStop(1,'transparent');X.fillStyle=au;X.beginPath();X.arc(cx,cy,nR*6,0,6.28);X.fill();
-// Pulse ring
-X.strokeStyle=`rgba(251,191,36,${0.12+Math.sin(t*2.5)*0.08})`;X.lineWidth=1.2;X.beginPath();X.arc(cx,cy,nR*2.8*p2,0,6.28);X.stroke();
-// Second pulse ring
-X.strokeStyle=`rgba(251,191,36,${0.06+Math.sin(t*1.5+1)*0.04})`;X.lineWidth=0.7;X.beginPath();X.arc(cx,cy,nR*4*p1,0,6.28);X.stroke();
-// Core body
-let cg=X.createRadialGradient(cx-2,cy-2,0,cx,cy,nR);cg.addColorStop(0,'#fffbeb');cg.addColorStop(0.25,'#fbbf24');cg.addColorStop(0.6,'#f59e0b');cg.addColorStop(1,'#92400e');X.fillStyle=cg;X.beginPath();X.arc(cx,cy,nR,0,6.28);X.fill();
-// Bright spot
-X.fillStyle=`rgba(255,255,255,${0.55+Math.sin(t*3)*0.2})`;X.beginPath();X.arc(cx-2,cy-2,nR*0.28,0,6.28);X.fill();
+// GOLDEN NUCLEUS — reacts to system activity
+const pulse=1+Math.sin(t*1.5)*0.15+activity*0.1;
+const pulse2=1+Math.sin(t*2.8)*0.08;
+const nR=(14+activity*4)*pulse*cam.z;
 
-// Convergences
-if(data.convergences){for(const c of data.convergences){const a=stars.find(s=>s.user_id===c.star_a),b=stars.find(s=>s.user_id===c.star_b);if(a&&b&&a._x!=null&&b._x!=null){const pr=(Math.sin(t*2+c.similarity*5)+1)/2,al=0.04+c.similarity*0.25+pr*0.08;X.strokeStyle=`rgba(167,139,250,${al})`;X.lineWidth=0.4+c.similarity*1.2;X.beginPath();X.moveTo(a._x,a._y);X.lineTo(b._x,b._y);X.stroke();const px=a._x+(b._x-a._x)*pr,py=a._y+(b._y-a._y)*pr;X.fillStyle=`rgba(167,139,250,${0.3+pr*0.4})`;X.beginPath();X.arc(px,py,1.5,0,6.28);X.fill()}}}
+// Deep aura (activity-reactive)
+let a1=X.createRadialGradient(cx,cy,0,cx,cy,nR*8);
+a1.addColorStop(0,`rgba(251,191,36,${0.06+activity*0.06})`);
+a1.addColorStop(0.2,`rgba(251,160,0,${0.025+activity*0.02})`);
+a1.addColorStop(0.5,'rgba(180,80,0,0.01)');a1.addColorStop(1,'transparent');
+X.fillStyle=a1;X.beginPath();X.arc(cx,cy,nR*8,0,6.28);X.fill();
 
-// Gravity threads (star → nucleus) with traveling energy particles
+// Breathing rings
+for(let i=1;i<=3;i++){
+const rr=nR*(1.8+i*1.2)*pulse2;
+X.strokeStyle=`rgba(251,191,36,${0.04/i+Math.sin(t*1.8+i)*0.02})`;
+X.lineWidth=(0.8/i)*cam.z;
+X.beginPath();X.arc(cx,cy,rr,0,6.28);X.stroke()}
+
+// Core sphere
+let cg=X.createRadialGradient(cx-nR*0.15,cy-nR*0.15,0,cx,cy,nR);
+cg.addColorStop(0,'#fffef5');cg.addColorStop(0.2,'#fde68a');
+cg.addColorStop(0.5,'#f59e0b');cg.addColorStop(0.85,'#b45309');cg.addColorStop(1,'#451a03');
+X.fillStyle=cg;X.beginPath();X.arc(cx,cy,nR,0,6.28);X.fill();
+// Specular
+X.fillStyle=`rgba(255,255,255,${0.4+Math.sin(t*2.5)*0.15})`;
+X.beginPath();X.arc(cx-nR*0.2,cy-nR*0.25,nR*0.22,0,6.28);X.fill();
+
+// Convergences as emergent phenomena
+if(data.convergences){for(const c of data.convergences){
+const a=stars.find(s=>s.user_id===c.star_a),b=stars.find(s=>s.user_id===c.star_b);
+if(!a||!b||a._x==null||b._x==null)continue;
+const sim=c.similarity;
+// Curved convergence line (bezier through midpoint offset)
+const mx2=(a._x+b._x)/2+Math.sin(t+sim*10)*20*cam.z;
+const my2=(a._y+b._y)/2+Math.cos(t+sim*10)*20*cam.z;
+const al=0.03+sim*0.2+Math.sin(t*1.5+sim*8)*0.05;
+X.strokeStyle=`rgba(167,139,250,${al})`;X.lineWidth=(0.3+sim)*cam.z;
+X.beginPath();X.moveTo(a._x,a._y);X.quadraticCurveTo(mx2,my2,b._x,b._y);X.stroke();
+// Energy pulse along curve
+for(let p=0;p<3;p++){
+const pr=((t*0.5+p*0.33+sim*3)%1);
+const tt2=pr,it=1-tt2;
+const px=it*it*a._x+2*it*tt2*mx2+tt2*tt2*b._x;
+const py=it*it*a._y+2*it*tt2*my2+tt2*tt2*b._y;
+X.fillStyle=`rgba(167,139,250,${(0.2+sim*0.3)*(1-pr*0.6)})`;
+X.beginPath();X.arc(px,py,(0.8+sim)*cam.z,0,6.28);X.fill()}}}
+
+// Gravity energy flows
 for(const s of stars){if(s._x==null)continue;
-const al=0.015+(1-s.distance_to_core)*0.04;
-X.strokeStyle=`rgba(251,191,36,${al})`;X.lineWidth=0.3;
+const strength=1-s.distance_to_core;
+if(s.mass<0.08)continue;
+// Thread
+X.strokeStyle=`rgba(251,191,36,${0.008+strength*0.025})`;X.lineWidth=0.25*cam.z;
 X.beginPath();X.moveTo(cx,cy);X.lineTo(s._x,s._y);X.stroke();
-// Energy particle flowing toward nucleus (stronger for heavier stars)
-if(s.mass>0.15){
-const flow=(t*0.8+s.mass*10)%1; // 0→1 repeating
-const px=s._x+(cx-s._x)*flow;
-const py=s._y+(cy-s._y)*flow;
-const pAlpha=0.15+s.mass*0.4;
-const pSize=0.8+s.mass*2;
-X.fillStyle=`rgba(251,191,36,${pAlpha*(1-flow*0.5)})`;
-X.beginPath();X.arc(px,py,pSize,0,6.28);X.fill();
-// Second particle offset
-const flow2=(t*0.6+s.mass*7+0.5)%1;
-const px2=s._x+(cx-s._x)*flow2;
-const py2=s._y+(cy-s._y)*flow2;
-X.fillStyle=`rgba(251,191,36,${pAlpha*0.5*(1-flow2*0.5)})`;
-X.beginPath();X.arc(px2,py2,pSize*0.6,0,6.28);X.fill();
-}}
+// Energy particles (count based on mass)
+const nP=s.mass>0.3?3:s.mass>0.15?2:1;
+for(let p=0;p<nP;p++){
+const fl=((t*(0.4+s.mass*0.5)+p/nP+s.mass*8)%1);
+const px=s._x+(cx-s._x)*fl,py=s._y+(cy-s._y)*fl;
+const pa=(0.08+s.mass*0.3)*(1-fl*0.5);
+X.fillStyle=`rgba(251,191,36,${pa})`;
+X.beginPath();X.arc(px,py,(0.6+s.mass*1.5)*cam.z,0,6.28);X.fill()}}
 
 // STARS
-hover=null;
+hov=null;
 for(let i=0;i<stars.length;i++){
 const s=stars[i];
-// Dynamic distance: high-mass stars drift inward over time
-const gravPull=s.mass*0.03*Math.sin(t*0.5+i*0.7); // breathe toward nucleus
-const dynDist=Math.max(0.05, s.distance_to_core - gravPull);
-const r=dr(dynDist);
-// Orbit speed: heavier = slower + slight wobble
-const spd=0.012*(1.3-s.mass)+0.004*Math.sin(t*0.3+i);
+// Gravitational breathing: heavy stars pulse closer
+const breath=s.mass*0.035*Math.sin(t*0.4+i*0.8);
+const dist=Math.max(0.04,s.distance_to_core-breath);
+const r=D(dist);
+// Organic orbit
+const spd=0.01*(1.4-s.mass)+0.003*Math.sin(t*0.25+i);
 const ang=(i/Math.max(stars.length,1))*6.28+t*spd;
-// Slight radial wobble for organic feel
-const wobbleR=r+Math.sin(t*1.2+i*2.3)*3;
-const sx=cx+Math.cos(ang)*wobbleR,sy=cy+Math.sin(ang)*wobbleR;s._x=sx;s._y=sy;
-const sz2=ms(s.mass),col=sc(s.layer,s.role),tw=0.7+0.3*Math.sin(t*3+i*1.7);
+const wobble=r+Math.sin(t*0.9+i*2.5)*2.5*cam.z;
+const sx=cx+Math.cos(ang)*wobble,sy=cy+Math.sin(ang)*wobble;
+s._x=sx;s._y=sy;
+const sz=M(s.mass),col=SC(s.layer,s.role);
+const tw=0.65+0.35*Math.sin(t*2.5+i*1.9);
 
-// Glow
-let gl=X.createRadialGradient(sx,sy,0,sx,sy,sz2*3.5);gl.addColorStop(0,rg(col,0.18*tw));gl.addColorStop(1,'transparent');X.fillStyle=gl;X.beginPath();X.arc(sx,sy,sz2*3.5,0,6.28);X.fill();
+// Soft outer glow
+const g1=X.createRadialGradient(sx,sy,0,sx,sy,sz*4);
+g1.addColorStop(0,R(col,0.1*tw));g1.addColorStop(1,'transparent');
+X.fillStyle=g1;X.beginPath();X.arc(sx,sy,sz*4,0,6.28);X.fill();
+// Inner glow
+const g2=X.createRadialGradient(sx,sy,0,sx,sy,sz*2);
+g2.addColorStop(0,R(col,0.2*tw));g2.addColorStop(1,'transparent');
+X.fillStyle=g2;X.beginPath();X.arc(sx,sy,sz*2,0,6.28);X.fill();
 // Body
-X.fillStyle=rg(col,0.85*tw);X.beginPath();X.arc(sx,sy,sz2,0,6.28);X.fill();
-// Center
-X.fillStyle=`rgba(255,255,255,${0.45*tw})`;X.beginPath();X.arc(sx,sy,sz2*0.3,0,6.28);X.fill();
-// Creator ring
-if(s.role==='creator'){X.strokeStyle=`rgba(251,191,36,${0.25+Math.sin(t*2)*0.12})`;X.lineWidth=1.5;X.beginPath();X.arc(sx,sy,sz2+5,0,6.28);X.stroke()}
-// Label
-const lb=s.user_id.replace('tg:','').substring(0,8);X.fillStyle=rg(col,0.35);X.font='7px monospace';X.textAlign='center';X.fillText(lb,sx,sy-sz2-5);
-if(s.pattern_count>3){X.fillStyle='rgba(255,255,255,0.25)';X.fillText(s.pattern_count,sx,sy+sz2+10)}
+X.fillStyle=R(col,0.75*tw);X.beginPath();X.arc(sx,sy,sz,0,6.28);X.fill();
+// Hot center
+X.fillStyle=`rgba(255,255,255,${0.35*tw})`;X.beginPath();X.arc(sx-sz*0.1,sy-sz*0.1,sz*0.28,0,6.28);X.fill();
+// Creator halo
+if(s.role==='creator'){
+X.strokeStyle=`rgba(251,191,36,${0.15+Math.sin(t*1.8)*0.1})`;X.lineWidth=1.2*cam.z;
+X.beginPath();X.arc(sx,sy,sz+4*cam.z,0,6.28);X.stroke();
+X.strokeStyle=`rgba(251,191,36,${0.06+Math.sin(t*1.2+1)*0.04})`;X.lineWidth=0.6*cam.z;
+X.beginPath();X.arc(sx,sy,sz+8*cam.z,0,6.28);X.stroke()}
+// Label (subtle)
+if(cam.z>0.6){
+const lb=s.user_id.replace('tg:','').substring(0,8);
+X.fillStyle=R(col,0.2+tw*0.1);X.font=`${Math.max(6,7*cam.z)}px monospace`;X.textAlign='center';
+X.fillText(lb,sx,sy-sz-4*cam.z);
+if(s.pattern_count>3){X.fillStyle='rgba(255,255,255,0.15)';X.fillText(s.pattern_count,sx,sy+sz+8*cam.z)}}
 // Hover
-const dx=mx-sx,dy=my-sy;if(Math.sqrt(dx*dx+dy*dy)<sz2+14)hover=s}
+const dx=mx-sx,dy=my-sy;if(Math.sqrt(dx*dx+dy*dy)<sz+12*cam.z)hov=s}
 
 // Tooltip
 const tt=document.getElementById('tt');
-if(hover){const s=hover,cl=s.role==='creator'?'tn':s.layer==='core'?'tc':s.layer==='mid'?'tm':'';
-tt.innerHTML=`<div class="${cl}">${s.role==='creator'?'★ ':'☆ '}${s.user_id}</div><div><span class="tl">role</span> ${s.role} · <span class="tl">layer</span> ${s.layer}</div><div><span class="tl">mass</span> ${s.mass.toFixed(4)} · <span class="tl">dist</span> ${s.distance_to_core.toFixed(4)}</div><div><span class="tl">patterns</span> ${s.pattern_count} · <span class="tl">activations</span> ${s.activation_count}</div>`;
-tt.style.display='block';tt.style.left=(mx+16)+'px';tt.style.top=(my-16)+'px'}else tt.style.display='none';
+if(hov){const s=hov,cl=s.role==='creator'?'tn':s.layer==='core'?'tc':s.layer==='mid'?'tm':'';
+tt.innerHTML=`<div class="${cl}">${s.role==='creator'?'✦ ':'◌ '}${s.user_id}</div><div><span class="tl">mass</span> ${s.mass.toFixed(4)} · <span class="tl">dist</span> ${s.distance_to_core.toFixed(4)}</div><div><span class="tl">layer</span> ${s.layer} · <span class="tl">patterns</span> ${s.pattern_count} · <span class="tl">act</span> ${s.activation_count}</div>`;
+tt.style.display='block';tt.style.left=(mx+16)+'px';tt.style.top=(my-14)+'px'}else tt.style.display='none';
 
-// HUD
-const tm=data.nucleus?.total_mass||0,hb=data.heartbeat?new Date(data.heartbeat*1000).toLocaleTimeString():'—',sg=data.signals||[];
-document.getElementById('hud').innerHTML=`<div class="title">✦ VECTRAX UNIVERSE</div><span class="l">nucleus</span> <span class="g">ALIVE</span> · <span class="l">hb</span> <span class="v">${hb}</span><br><span class="l">mass</span> <span class="g">${tm.toFixed(4)}</span> · <span class="l">stars</span> <span class="v">${data.star_count||0}</span> · <span class="l">patterns</span> <span class="v">${data.pattern_count||0}</span><br><span class="l">layers</span> <span style="color:#f87171">●</span>${data.layers?.core||0} <span style="color:#60a5fa">●</span>${data.layers?.mid||0} <span style="color:#475569">●</span>${data.layers?.outer||0} · <span class="l">conv</span> <span class="v">${data.convergences?.length||0}</span>${sg.length?'<div class="sec"><span class="st">signals</span><br>'+sg.map(s=>`<span class="tag">${s}</span>`).join('')+'</div>':''}`;
+// HUD (minimal)
+const tm=data.nucleus?.total_mass||0,hb=data.heartbeat?new Date(data.heartbeat*1000).toLocaleTimeString():'',sg=data.signals||[];
+document.getElementById('hud').innerHTML=`<div class="t">✦ VECTRAX</div><span class="l">mass</span> <span class="g">${tm.toFixed(4)}</span> · <span class="l">stars</span> <span class="v">${nStars}</span> · <span class="l">patterns</span> <span class="v">${data.pattern_count||0}</span><br><span style="color:#fca5a5">●</span>${data.layers?.core||0} <span style="color:#93c5fd">●</span>${data.layers?.mid||0} <span style="color:#475569">●</span>${data.layers?.outer||0} · <span class="l">conv</span> <span class="v">${(data.convergences||[]).length}</span>${sg.length?'<div class="sec"><span class="st">signals</span><br>'+sg.map(s=>`<span class="tag">${s}</span>`).join('')+'</div>':''}`;
 
-// OPS
-const op=data.operational;if(op){const q=op.queue||{},mem=op.memory||{},md=op.modes||{},h=op.health||{};document.getElementById('ops').innerHTML=`<span class="st">operational</span><br><span class="l">worker</span> <span class="${op.worker_alive?'ok':'cr'}">${op.worker_alive?'LIVE':'DOWN'}</span><div class="sec"><span class="st">queue</span><br><span class="v">${q.pending||0}</span><span class="l"> pend</span> · <span class="v">${q.processing||0}</span><span class="l"> proc</span></div><div class="sec"><span class="st">memory</span><br><span class="v">${mem.deep_total||0}</span><span class="l"> deep</span> · <span class="v">${mem.identities||0}</span><span class="l"> id</span></div><div class="sec"><span class="st">health</span><br><span class="l">err/24h</span> <span class="${h.errors_24h>50?'cr':h.errors_24h>10?'w':'ok'}">${h.errors_24h||0}</span></div>`}
+// Panel
+const pn=document.getElementById('panel'),op=data.operational;
+if(stars.length){
+const so=[...stars].sort((a,b)=>b.mass-a.mass),mxM=so[0]?so[0].mass:1;
+const cn=data.layers?.core||0,mn=data.layers?.mid||0,on=data.layers?.outer||0,cv=(data.convergences||[]).length;
+let h='<div class="pt">gravity map</div>';
+h+='<div class="lg"><div class="d" style="background:#fbbf24"></div><span style="color:#92400e">creator</span></div>';
+h+='<div class="lg"><div class="d" style="background:#fca5a5"></div><span>core</span></div>';
+h+='<div class="lg"><div class="d" style="background:#93c5fd"></div><span>mid</span></div>';
+h+='<div class="lg"><div class="d" style="background:#475569"></div><span>outer</span></div>';
+if(cv)h+='<div class="lg"><div class="rn" style="border-color:#a78bfa"></div><span style="color:#a78bfa">convergence</span></div>';
+h+='<div class="pt">layers</div>';
+h+=`<div style="display:flex;gap:1px;height:4px;border-radius:2px;overflow:hidden">`;
+if(cn)h+=`<div style="flex:${cn};background:#fca5a5"></div>`;
+if(mn)h+=`<div style="flex:${mn};background:#93c5fd"></div>`;
+if(on)h+=`<div style="flex:${on};background:#475569"></div>`;
+h+='</div>';
+h+=`<div style="display:flex;justify-content:space-between;font-size:6px;color:#334155;margin-top:1px"><span style="color:#fca5a5">${cn}</span><span style="color:#93c5fd">${mn}</span><span style="color:#475569">${on}</span></div>`;
+h+='<div class="pt">ranking</div>';
+for(let i=0;i<Math.min(so.length,10);i++){const s=so[i],cl=s.role==='creator'?'#fbbf24':s.layer==='core'?'#fca5a5':s.layer==='mid'?'#93c5fd':'#475569',pc=Math.round(s.mass/mxM*100);
+h+=`<div class="sr"><div class="d" style="background:${cl};width:5px;height:5px"></div><span class="nm">${s.user_id.replace('tg:','').substring(0,10)}</span><span class="ms">${s.mass.toFixed(3)}</span></div><div class="br" style="width:${pc}%;background:${cl}"></div>`}
+if(cv>0){h+='<div class="pt">convergences</div>';for(const c of data.convergences.slice(0,6))h+=`<div class="sr" style="color:#a78bfa"><span class="nm">${c.star_a.replace('tg:','').substring(0,7)} ↔ ${c.star_b.replace('tg:','').substring(0,7)}</span><span class="ms">${(c.similarity*100).toFixed(0)}%</span></div>`}
+else h+='<div class="pt">convergences</div><div style="color:#1e293b;font-size:7px">awaiting emergence</div>';
+if(op){h+='<div class="pt">pulse</div>';
+h+=`<div class="lg"><div class="d" style="background:${op.worker_alive?'#34d399':'#f87171'};width:5px;height:5px"></div><span>${op.worker_alive?'alive':'down'}</span></div>`;
+const en=op.health?.errors_24h||0;h+=`<div class="lg"><div class="d" style="background:${en>50?'#f87171':en>10?'#fbbf24':'#34d399'};width:5px;height:5px"></div><span>${en} err/24h</span></div>`}
+pn.innerHTML=h}
 
-// Conn
-document.getElementById('cs').innerHTML=wsOn?'<span style="color:#34d399">● WS</span>':'<span style="color:#fbbf24">● POLL</span>';
-
-// PANEL — system development
-const pnl=document.getElementById('panel');
-if(data&&stars.length){
-const sorted=[...stars].sort((a,b)=>b.mass-a.mass);
-const coreN=data.layers?.core||0,midN=data.layers?.mid||0,outN=data.layers?.outer||0,total=stars.length||1;
-const convN=(data.convergences||[]).length;
-const maxMass=sorted[0]?sorted[0].mass:1;
-
-// Legend
-let ph='<div class="pt">legend</div>';
-ph+='<div class="leg"><div class="dot" style="background:#fbbf24"></div>Creator (nucleus)</div>';
-ph+='<div class="leg"><div class="dot" style="background:#f87171"></div>Core — high gravity</div>';
-ph+='<div class="leg"><div class="dot" style="background:#60a5fa"></div>Mid — emerging</div>';
-ph+='<div class="leg"><div class="dot" style="background:#475569"></div>Outer — periphery</div>';
-ph+='<div class="leg"><div class="ring" style="border-color:#a78bfa"></div>Convergence link</div>';
-ph+='<div class="leg"><div class="ring" style="border-color:#fbbf24"></div>Gravity thread</div>';
-
-// Layer distribution
-ph+='<div class="pt">layer distribution</div>';
-ph+=`<div style="display:flex;gap:2px;height:6px;border-radius:3px;overflow:hidden">`;
-if(coreN)ph+=`<div style="flex:${coreN};background:#f87171;border-radius:2px"></div>`;
-if(midN)ph+=`<div style="flex:${midN};background:#60a5fa;border-radius:2px"></div>`;
-if(outN)ph+=`<div style="flex:${outN};background:#475569;border-radius:2px"></div>`;
-ph+=`</div>`;
-ph+=`<div style="display:flex;justify-content:space-between;font-size:7px;color:#4a5568;margin-top:2px"><span style="color:#f87171">${coreN} core</span><span style="color:#60a5fa">${midN} mid</span><span style="color:#475569">${outN} outer</span></div>`;
-
-// Star ranking
-ph+='<div class="pt">star ranking (by mass)</div>';
-for(let i=0;i<Math.min(sorted.length,12);i++){
-const s=sorted[i];
-const col=s.role==='creator'?'#fbbf24':s.layer==='core'?'#f87171':s.layer==='mid'?'#60a5fa':'#475569';
-const pct=Math.round(s.mass/maxMass*100);
-const uid=s.user_id.replace('tg:','').substring(0,10);
-ph+=`<div class="sr"><div class="dot" style="background:${col};width:6px;height:6px"></div><span class="nm">${uid}</span><span class="ms">${s.mass.toFixed(3)}</span><span class="act">${s.activation_count}</span></div>`;
-ph+=`<div class="bar" style="width:${pct}%;background:${col};opacity:0.3"></div>`;
-}
-
-// Convergences
-if(convN>0){
-ph+='<div class="pt">convergences ('+convN+')</div>';
-for(const c of data.convergences.slice(0,8)){
-ph+=`<div class="sr" style="color:#a78bfa"><span class="nm">${c.star_a.replace('tg:','').substring(0,8)} ↔ ${c.star_b.replace('tg:','').substring(0,8)}</span><span class="ms">${(c.similarity*100).toFixed(0)}%</span></div>`;
-}
-}else{
-ph+='<div class="pt">convergences</div><div style="color:#4a5568;font-size:8px">none yet — stars will converge as knowledge paths intersect</div>';
-}
-
-// System pulse
-ph+='<div class="pt">system pulse</div>';
-const errN=data.operational?.health?.errors_24h||0;
-const wk=data.operational?.worker_alive;
-ph+=`<div class="leg"><div class="dot" style="background:${wk?'#34d399':'#f87171'};width:6px;height:6px"></div>Worker ${wk?'operational':'down'}</div>`;
-ph+=`<div class="leg"><div class="dot" style="background:${errN>50?'#f87171':errN>10?'#fbbf24':'#34d399'};width:6px;height:6px"></div>${errN} errors / 24h</div>`;
-ph+=`<div class="leg"><div class="dot" style="background:#fbbf24;width:6px;height:6px"></div>Total mass: ${(data.nucleus?.total_mass||0).toFixed(4)}</div>`;
-
-pnl.innerHTML=ph;
-}
+// Connection
+document.getElementById('cs').innerHTML=`<span style="color:${wsOn?'#1e293b':'#334155'}">${wsOn?'◆ live':'◇ poll'}</span>`;
 
 // Feed
-const now=Date.now(),fh=feeds.map(f=>{const age=Math.floor((now-f.t)/1000),nw=age<15;return`<div class="fn${nw?' nw':''}">${f.r==='creator'?'★':'☆'} ${f.u.replace('tg:','').substring(0,10)} · mass ${f.m.toFixed(2)} · ${age}s</div>`}).join('');
-document.getElementById('feed').innerHTML=fh?`<span style="color:#4a5568;font-size:7px;letter-spacing:1.5px">ACTIVITY</span><br>${fh}`:'';
+const now=Date.now();
+document.getElementById('feed').innerHTML=feeds.map(f=>{const age=Math.floor((now-f.t)/1000);return`<div class="fn${age<12?' nw':''}">◌ ${f.u.replace('tg:','').substring(0,10)} · ${f.m.toFixed(2)} · ${age}s</div>`}).join('');
 
 requestAnimationFrame(draw)}
 requestAnimationFrame(draw);
