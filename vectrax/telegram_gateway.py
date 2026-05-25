@@ -834,6 +834,13 @@ class TelegramGateway:
                 except Exception:
                     pass
 
+            # === CONTINUITY REENTRY: record activity to cancel pending reentry ===
+            try:
+                from core.continuity_reentry import record_activity
+                record_activity(tg_uid)
+            except Exception:
+                pass
+
             if photo:
                 self._handle_photo(cid, tg_uid, photo, caption=msg.get("caption", ""))
                 self._processed += 1

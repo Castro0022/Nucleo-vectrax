@@ -508,6 +508,7 @@ def run_worker() -> None:
     last_heartbeat = 0.0
     last_proactive = 0.0  # última ejecución del motor proactivo
     last_scheduler = 0.0  # última ejecución del scheduler
+    last_reentry = 0.0    # última ejecución del reentry check
 
     # Discard stale messages from previous sessions (>5 min old)
     _STALE_AGE = 300  # 5 minutes
@@ -616,6 +617,25 @@ def run_worker() -> None:
             except Exception as _pe:
                 logger.debug("Proactive engine error (passthrough): %s", _pe)
                 last_proactive = time.time()  # evitar loop de errores
+
+            # Continuity reentry — one message after 12-20h silence (every 10 min)
+            try:
+                from core.continuity_reentry import check_reentry
+                from core.sovereignty import SendReason as _SR3
+                if time.time() - last_reentry > 600:  # every 10 min
+                    def _reentry_send(cid, text):
+                        return _tg_send(
+                            cid, text,
+                            _sovereignty_reason=_SR3.PROACTIVE_INSIGHT,
+                            _sovereignty_user_id=f"tg:{cid}",
+                        )
+                    n = check_reentry(_reentry_send)
+                    if n:
+                        logger.info("Reentry: %d messages sent", n)
+                    last_reentry = time.time()
+            except Exception as _re:
+                logger.debug("Reentry check error (passthrough): %s", _re)
+                last_reentry = time.time()
 
             # Scheduler — tareas programadas (cada 60s)
             try:
