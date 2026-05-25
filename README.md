@@ -497,6 +497,32 @@ routing:
 - ✅ Resource limits enforcement
 - ✅ Rate limiting to prevent abuse
 
+### Creator Sovereignty
+
+Only the authorized creator (`tg:2030762343` or `VX_CREATOR_ID` env) can execute structural commands. All admin operations require `_is_creator(tg_uid)` verification:
+
+- `/vx *` — all system commands (stats, sql, presencia, flush, etc.)
+- `tier <level> <user>` — change user tiers
+- `aprobar/rechazar RULE-*` — activate/deactivate learned rules
+- `aprobar/rechazar IDEA-*` — approve/reject system improvement ideas
+
+Non-creator users who attempt these commands are silently routed to the normal conversation pipeline. No error message, no acknowledgment — the system treats the input as regular conversation.
+
+The creator identity is hardcoded + env-overridable:
+
+```python path=/Users/mariobravo/vectrax/vectrax/telegram_gateway.py start=1296
+_CREATOR_ID = "tg:2030762343"  # Mario Bravo Castro
+
+@classmethod
+def _is_creator(cls, tg_uid: str) -> bool:
+    env_id = os.environ.get("VX_CREATOR_ID", "")
+    allowed = {cls._CREATOR_ID}
+    if env_id:
+        uid_str = env_id if env_id.startswith("tg:") else f"tg:{env_id}"
+        allowed.add(uid_str)
+    return tg_uid in allowed
+```
+
 ## 🤝 Contributing
 
 Vectrax is complete and production-ready. Future enhancements could include:
@@ -666,6 +692,34 @@ bash scripts/protect_volume.sh restore
 ```
 
 Backups are stored in `~/vectrax_backups/` (last 5 retained automatically).
+
+## 🔄 Continuity Reentry
+
+Proactive reentry after user silence (`core/continuity_reentry.py`).
+
+Rules:
+- After **12–20 hours** of silence (random delay per user), Vectrax sends **one** contextual message
+- If the user returns before the threshold → reentry is **automatically cancelled**
+- If the user doesn’t respond to the reentry → Vectrax does **not insist** until new activity
+- Creator (`tg:2030762343`) is excluded from reentry
+- Controlled by `CONTINUITY_REENTRY_ENABLED` env var (default: `1`)
+
+```
+User sends message
+    │
+    ├─ record_activity(user_id)  → resets timer + assigns random 12-20h delay
+    │                               clears reentry_sent flag
+    │
+    └─ [12-20h pass without activity]
+        │
+        ├─ check_reentry()       → sends ONE contextual message
+        │                           sets reentry_sent=1
+        │
+        └─ [user returns]        → record_activity() resets everything
+                                    next cycle starts fresh
+```
+
+Persistence: `vault/continuity_reentry.db` (SQLite).
 
 ## 📊 Router Performance
 
