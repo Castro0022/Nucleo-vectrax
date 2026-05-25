@@ -129,11 +129,15 @@ def _conn():
     os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
     conn = sqlite3.connect(_DB_PATH, timeout=3)
     conn.execute(_CREATE_TIERS)
-    # Migration: add limit_notified column if missing
-    try:
-        conn.execute("ALTER TABLE user_tiers ADD COLUMN limit_notified INTEGER NOT NULL DEFAULT 0")
-    except Exception:
-        pass  # already exists
+    # Migrations: add columns if missing
+    for col in [
+        "limit_notified INTEGER NOT NULL DEFAULT 0",
+        "trial_end REAL NOT NULL DEFAULT 0",
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE user_tiers ADD COLUMN {col}")
+        except Exception:
+            pass  # already exists
     conn.commit()
     return conn
 
@@ -218,6 +222,26 @@ def check_access(user_id: str) -> UserAccess:
             daily_limit=-1,
             features=limits,
         )
+
+    # Check active trial — bypasses daily limit entirely
+    try:
+        conn_trial = _conn()
+        row_trial = conn_trial.execute(
+            "SELECT trial_end FROM user_tiers WHERE user_id = ?", (user_id,),
+        ).fetchone()
+        conn_trial.close()
+        if row_trial and row_trial[0] and float(row_trial[0]) > time.time():
+            return UserAccess(
+                user_id=user_id,
+                tier=tier,
+                allowed=True,
+                reason="trial_active",
+                msgs_today=0,
+                daily_limit=-1,
+                features=limits,
+            )
+    except Exception as exc:
+        logger.debug("Trial check failed (passthrough): %s", exc)
 
     # Check and update counter
     try:
@@ -359,3 +383,141 @@ def list_users() -> list:
         ]
     except Exception:
         return []
+
+
+# ---------------------------------------------------------------------------
+# Trial management
+# ---------------------------------------------------------------------------
+
+def activate_trial(user_id: str, days: int = 7) -> float:
+    """Activate a free trial for a user. Returns trial_end timestamp."""
+    trial_end = time.time() + (days * 86400)
+    now = time.time()
+    try:
+        conn = _conn()
+        existing = conn.execute(
+            "SELECT user_id FROM user_tiers WHERE user_id = ?", (user_id,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE user_tiers SET trial_end = ?, msgs_today = 0, "
+                "limit_notified = 0, updated_at = ? WHERE user_id = ?",
+                (trial_end, now, user_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO user_tiers "
+                "(user_id, tier, daily_limit, msgs_today, last_reset, "
+                "limit_notified, trial_end, created_at, updated_at) "
+                "VALUES (?, 'free', 20, 0, ?, 0, ?, ?, ?)",
+                (user_id, _today(), trial_end, now, now),
+            )
+        conn.commit()
+        conn.close()
+        logger.info("Trial activated: %s → %d days (ends %.0f)", user_id[:20], days, trial_end)
+    except Exception as exc:
+        logger.error("Failed to activate trial for %s: %s", user_id[:20], exc)
+    return trial_end
+
+
+def activate_trial_for_all(days: int = 7) -> int:
+    """
+    Activate a free trial for ALL existing users.
+    Also resets msgs_today and limit_notified.
+    Returns the number of users activated.
+    """
+    trial_end = time.time() + (days * 86400)
+    now = time.time()
+    count = 0
+    try:
+        conn = _conn()
+        result = conn.execute(
+            "UPDATE user_tiers SET trial_end = ?, msgs_today = 0, "
+            "limit_notified = 0, updated_at = ? "
+            "WHERE tier = 'free'",
+            (trial_end, now),
+        )
+        count = result.rowcount
+        conn.commit()
+        conn.close()
+        logger.info("Trial activated for %d FREE users (%d days)", count, days)
+    except Exception as exc:
+        logger.error("Failed to activate global trial: %s", exc)
+    return count
+
+
+def get_trial_status(user_id: str) -> dict:
+    """Check trial status for a user."""
+    try:
+        conn = _conn()
+        row = conn.execute(
+            "SELECT trial_end FROM user_tiers WHERE user_id = ?", (user_id,),
+        ).fetchone()
+        conn.close()
+        if row and row[0] and float(row[0]) > 0:
+            trial_end = float(row[0])
+            remaining = trial_end - time.time()
+            return {
+                "active": remaining > 0,
+                "trial_end": trial_end,
+                "days_remaining": max(0, remaining / 86400),
+            }
+    except Exception:
+        pass
+    return {"active": False, "trial_end": 0, "days_remaining": 0}
+
+
+def get_all_telegram_user_ids() -> list:
+    """Return all user_ids that start with 'tg:' (Telegram users)."""
+    try:
+        conn = _conn()
+        rows = conn.execute(
+            "SELECT user_id FROM user_tiers WHERE user_id LIKE 'tg:%'"
+        ).fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except Exception:
+        return []
+
+
+def broadcast_message(message: str, exclude_creator: bool = True) -> dict:
+    """
+    Send a Telegram message to all registered users.
+    Returns {"sent": N, "failed": N, "skipped": N}.
+    """
+    import httpx
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        logger.error("Cannot broadcast: TELEGRAM_BOT_TOKEN not set")
+        return {"sent": 0, "failed": 0, "skipped": 0, "error": "no token"}
+
+    creator_uid = os.environ.get("VX_CREATOR_ID", "2030762343")
+    users = get_all_telegram_user_ids()
+    sent = failed = skipped = 0
+
+    for uid in users:
+        chat_id = uid.replace("tg:", "")
+        if exclude_creator and chat_id == creator_uid:
+            skipped += 1
+            continue
+        # Skip test/fake users
+        if not chat_id.isdigit():
+            skipped += 1
+            continue
+        try:
+            r = httpx.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": int(chat_id), "text": message},
+                timeout=10,
+            )
+            if r.json().get("ok"):
+                sent += 1
+            else:
+                failed += 1
+                logger.debug("Broadcast failed for %s: %s", uid, r.text[:100])
+        except Exception as exc:
+            failed += 1
+            logger.debug("Broadcast failed for %s: %s", uid, exc)
+
+    logger.info("Broadcast complete: sent=%d failed=%d skipped=%d", sent, failed, skipped)
+    return {"sent": sent, "failed": failed, "skipped": skipped}

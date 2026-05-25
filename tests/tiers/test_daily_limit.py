@@ -124,5 +124,82 @@ class TestDailyLimit(unittest.TestCase):
             self.assertTrue(access.allowed, f"Creator message {i+1} should be allowed")
 
 
+class TestTrial(unittest.TestCase):
+
+    def setUp(self):
+        if os.path.exists(_TEST_DB):
+            os.unlink(_TEST_DB)
+
+    def test_trial_bypasses_limit(self):
+        """Active trial allows unlimited messages."""
+        user = "tg:test_trial"
+        # Activate 7-day trial
+        ut.activate_trial(user, days=7)
+
+        # Send 50 messages — all allowed
+        for i in range(50):
+            access = ut.check_access(user)
+            self.assertTrue(access.allowed, f"Trial message {i+1} should be allowed")
+            self.assertEqual(access.reason, "trial_active")
+
+    def test_expired_trial_enforces_limit(self):
+        """Expired trial falls back to daily limit."""
+        user = "tg:test_expired_trial"
+        # Activate trial that already expired
+        ut.activate_trial(user, days=0)  # 0 days = expires immediately
+        # Manually set trial_end to the past
+        conn = ut._conn()
+        conn.execute(
+            "UPDATE user_tiers SET trial_end = ? WHERE user_id = ?",
+            (time.time() - 100, user),
+        )
+        conn.commit()
+        conn.close()
+
+        # Send 20 messages — allowed (normal limit)
+        for i in range(20):
+            access = ut.check_access(user)
+            self.assertTrue(access.allowed, f"Message {i+1} should be allowed")
+
+        # Message 21 — blocked
+        access = ut.check_access(user)
+        self.assertFalse(access.allowed)
+
+    def test_activate_trial_for_all(self):
+        """Global trial activates for all free users."""
+        # Create some users
+        for uid in ["tg:user_a", "tg:user_b", "tg:user_c"]:
+            ut.check_access(uid)  # creates entry
+
+        count = ut.activate_trial_for_all(days=7)
+        self.assertGreaterEqual(count, 3)
+
+        # All should have active trial
+        for uid in ["tg:user_a", "tg:user_b", "tg:user_c"]:
+            status = ut.get_trial_status(uid)
+            self.assertTrue(status["active"])
+            self.assertGreater(status["days_remaining"], 6)
+
+    def test_trial_resets_blocked_users(self):
+        """Activating trial unblocks users who were at limit."""
+        user = "tg:test_blocked_then_trial"
+
+        # Exhaust limit
+        for _ in range(20):
+            ut.check_access(user)
+
+        # Verify blocked
+        access = ut.check_access(user)
+        self.assertFalse(access.allowed)
+
+        # Activate trial
+        ut.activate_trial(user, days=7)
+
+        # Now allowed
+        access = ut.check_access(user)
+        self.assertTrue(access.allowed)
+        self.assertEqual(access.reason, "trial_active")
+
+
 if __name__ == "__main__":
     unittest.main()

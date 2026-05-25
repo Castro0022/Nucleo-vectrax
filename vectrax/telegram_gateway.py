@@ -1030,56 +1030,65 @@ class TelegramGateway:
                     self._send(cid, f"Error: {e}")
                 return
 
-            # Rule approval
+            # Rule approval (CREATOR ONLY)
             m = re.match(r"^(?:aprobar|approve)\s+(RULE-\w+)", text.strip(), re.I)
             if m:
-                try:
-                    from core.learn.learned_rules import get_rules_store
-                    rid = m.group(1).upper()
-                    if get_rules_store().activate_rule(rid):
-                        self._send(cid, f"✅ Regla {rid} activada.")
-                    else:
-                        self._send(cid, f"Regla {rid} no encontrada.")
-                except Exception as e:
-                    self._send(cid, f"Error: {e}")
-                return
+                if not self._is_creator(tg_uid):
+                    pass  # treat as normal conversation, fall through to pipeline
+                else:
+                    try:
+                        from core.learn.learned_rules import get_rules_store
+                        rid = m.group(1).upper()
+                        if get_rules_store().activate_rule(rid):
+                            self._send(cid, f"✅ Regla {rid} activada.")
+                        else:
+                            self._send(cid, f"Regla {rid} no encontrada.")
+                    except Exception as e:
+                        self._send(cid, f"Error: {e}")
+                    return
 
-            # Idea approval / rejection
+            # Idea approval / rejection (CREATOR ONLY)
             m_idea = re.match(
                 r"^(?:aprobar|approve)\s+(IDEA-[A-F0-9]{8})(?:\s+(.+))?",
                 text.strip(), re.I
             )
             if m_idea:
-                try:
-                    from core.idea_store import get_idea_store
-                    idea_id = m_idea.group(1).upper()
-                    note    = (m_idea.group(2) or "").strip()
-                    ok = get_idea_store().approve(idea_id, by=tg_uid, note=note)
-                    if ok:
-                        self._send(cid, f"✅ {idea_id} aprobada. Lista para implementar.")
-                    else:
-                        self._send(cid, f"No encontré {idea_id} o ya fue revisada.")
-                except Exception as e:
-                    self._send(cid, f"Error: {e}")
-                return
+                if not self._is_creator(tg_uid):
+                    pass  # treat as normal conversation
+                else:
+                    try:
+                        from core.idea_store import get_idea_store
+                        idea_id = m_idea.group(1).upper()
+                        note    = (m_idea.group(2) or "").strip()
+                        ok = get_idea_store().approve(idea_id, by=tg_uid, note=note)
+                        if ok:
+                            self._send(cid, f"✅ {idea_id} aprobada. Lista para implementar.")
+                        else:
+                            self._send(cid, f"No encontré {idea_id} o ya fue revisada.")
+                    except Exception as e:
+                        self._send(cid, f"Error: {e}")
+                    return
 
             m_idea_r = re.match(
                 r"^(?:rechazar|reject)\s+(IDEA-[A-F0-9]{8})(?:\s+(.+))?",
                 text.strip(), re.I
             )
             if m_idea_r:
-                try:
-                    from core.idea_store import get_idea_store
-                    idea_id = m_idea_r.group(1).upper()
-                    note    = (m_idea_r.group(2) or "").strip()
-                    ok = get_idea_store().reject(idea_id, by=tg_uid, note=note)
-                    if ok:
-                        self._send(cid, f"❌ {idea_id} rechazada.")
-                    else:
-                        self._send(cid, f"No encontré {idea_id} o ya fue revisada.")
-                except Exception as e:
-                    self._send(cid, f"Error: {e}")
-                return
+                if not self._is_creator(tg_uid):
+                    pass  # treat as normal conversation
+                else:
+                    try:
+                        from core.idea_store import get_idea_store
+                        idea_id = m_idea_r.group(1).upper()
+                        note    = (m_idea_r.group(2) or "").strip()
+                        ok = get_idea_store().reject(idea_id, by=tg_uid, note=note)
+                        if ok:
+                            self._send(cid, f"❌ {idea_id} rechazada.")
+                        else:
+                            self._send(cid, f"No encontré {idea_id} o ya fue revisada.")
+                    except Exception as e:
+                        self._send(cid, f"Error: {e}")
+                    return
 
             # === LANGUAGE POLICY: detectar idioma + instrucciones ===
             try:
