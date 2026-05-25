@@ -164,41 +164,139 @@ def check_reentry(tg_send_fn: Callable[[int, str], bool]) -> int:
 
 
 def _build_reentry_message(user_id: str) -> Optional[str]:
-    """Build a contextual reentry message based on user's last activity."""
-    # Get user name
+    """Generate a dynamic, contextual reentry message using the LLM.
+
+    NO hardcoded templates. The message is generated from:
+    - User name and language
+    - Last conversation topic/content
+    - Pending leads (if any)
+    - Recent memory context
+    - User's interaction history
+
+    Each user gets a unique, contextually relevant message.
+    """
+    _user_db = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "vault", "user_memory.db",
+    )
+
+    # ── Gather context ─────────────────────────────────────────
     name = ""
+    lang = "es"
+    last_topic = ""
+    last_input = ""
+    lead_context = ""
+
     try:
-        _user_db = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "vault", "user_memory.db",
-        )
         conn = sqlite3.connect(_user_db, timeout=2)
+        # Name + language
         row = conn.execute(
-            "SELECT name FROM profiles WHERE user_id = ?", (user_id,)
+            "SELECT name, language FROM profiles WHERE user_id = ?", (user_id,)
         ).fetchone()
+        if row:
+            name = (row[0] or "").split()[0] if row[0] else ""
+            lang = row[1] or "es"
+        # Last interaction (user's last message + bot response)
+        row2 = conn.execute(
+            "SELECT user_input, bot_output FROM interactions "
+            "WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        if row2:
+            last_input = (row2[0] or "")[:200]
+            last_topic = (row2[1] or "")[:200]
         conn.close()
-        if row and row[0]:
-            name = row[0].split()[0]
     except Exception:
         pass
 
-    # Check for pending leads (most actionable context)
+    # Pending leads
     try:
         from core.lead_tracker import get_silent_leads
         silent = get_silent_leads(user_id)
         if silent:
             lead = silent[0]
-            days = int(lead["days_silent"])
-            if name:
-                return f"{name}, {lead['name']} lleva {days} dias sin respuesta. Quieres que prepare un mensaje de seguimiento?"
-            return f"{lead['name']} lleva {days} dias sin respuesta. Quieres que prepare un mensaje de seguimiento?"
+            lead_context = (
+                f"Lead pendiente: {lead['name']} lleva {int(lead['days_silent'])} "
+                f"dias sin respuesta. Estado: {lead['status']}."
+            )
     except Exception:
         pass
 
-    # Generic contextual reentry
+    # ── Build LLM prompt ───────────────────────────────────────
+    context_parts = []
     if name:
-        return f"{name}, hace rato no hablamos. Algo en lo que pueda ayudarte hoy?"
-    return "Hace rato no hablamos. Algo en lo que pueda ayudarte hoy?"
+        context_parts.append(f"Nombre del usuario: {name}")
+    if last_input:
+        context_parts.append(f"Ultimo mensaje del usuario: {last_input}")
+    if last_topic:
+        context_parts.append(f"Ultima respuesta de Vectrax: {last_topic}")
+    if lead_context:
+        context_parts.append(lead_context)
+
+    if not context_parts:
+        # No context at all — skip reentry for this user
+        return None
+
+    context_block = "\n".join(context_parts)
+
+    prompt = (
+        "Eres Vectrax. Un usuario lleva horas sin hablar contigo. "
+        "Genera UN solo mensaje corto (maximo 2 frases) para retomar "
+        "la conversacion de forma natural, basandote en el contexto real. "
+        "NO uses frases genericas como 'en que puedo ayudarte' ni 'hace rato no hablamos'. "
+        "Continua desde donde quedo la conversacion. "
+        "Si hay un lead pendiente, mencionalo naturalmente. "
+        f"Idioma: {lang}.\n\n"
+        f"Contexto:\n{context_block}\n\n"
+        "Mensaje de continuidad:"
+    )
+
+    # ── Generate via LLM ───────────────────────────────────────
+    try:
+        from vectrax.intelligence_bridge import is_ready, route_single
+        if is_ready():
+            result = route_single(prompt)
+            if result.get("success") and result.get("content"):
+                msg = result["content"].strip().strip('"').strip()
+                if msg and len(msg) > 5:
+                    logger.info(
+                        "Reentry LLM generated | user=%s | len=%d",
+                        user_id[:20], len(msg),
+                    )
+                    return msg
+    except Exception as exc:
+        logger.debug("Reentry LLM generation failed: %s", exc)
+
+    # ── Fallback: OpenAI direct ────────────────────────────────
+    try:
+        import httpx
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if api_key:
+            resp = httpx.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 100,
+                    "temperature": 0.8,
+                },
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            msg = resp.json()["choices"][0]["message"]["content"].strip().strip('"').strip()
+            if msg and len(msg) > 5:
+                logger.info(
+                    "Reentry OpenAI generated | user=%s | len=%d",
+                    user_id[:20], len(msg),
+                )
+                return msg
+    except Exception as exc:
+        logger.debug("Reentry OpenAI fallback failed: %s", exc)
+
+    # No LLM available — skip reentry entirely (no templates)
+    logger.debug("Reentry skipped for %s: no LLM available", user_id[:20])
+    return None
 
 
 # ---------------------------------------------------------------------------
