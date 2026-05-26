@@ -729,22 +729,31 @@ The LLM is instructed to continue from where the conversation left off. If no LL
 
 Persistence: `vault/continuity_reentry.db` (SQLite).
 
-## 📊 Router Performance
+## 📊 Router Telemetry
 
-```bash
-# Default report (last 200 interactions)
-python3 scripts/router_report.py
+Real-time routing observability (`core/observability/router_telemetry.py`).
 
-# Compare pre/post deploy
-python3 scripts/router_report.py --since 2026-05-23T00:55 --compare
+Every SmartRouter decision is persisted to `vault/router_telemetry.jsonl` with:
+- User ID, intent, strategy, topic, confidence, risk level
+- Memory depth (interaction count for the user)
+- Latency, classification method, reason
 
-# JSON output for automation
-python3 scripts/router_report.py --json
+No message content is stored — only abstract metrics.
 
-# On production server
-ssh root@140.82.28.181 'cd /opt/vectrax && docker compose exec -T vectrax \
-  python3 /app/scripts/router_report.py --last 200'
+**Live monitoring** (creator only):
 ```
+/vx router       — summary of last 100 decisions
+/vx router 50    — summary of last 50 decisions
+```
+
+**Automated digest**: Every 6 hours, the worker sends a summary to the creator via Telegram with strategy distribution, memory depth stats, and alerts.
+
+**Alert thresholds**:
+- ⚠️ **Low-depth users >50%** — more than half of routed users have <5 interactions (memory is too thin for effective routing)
+- ⚠️ **Avg latency >5000ms** — routing pipeline is slow, likely cold-start or overload
+- ⚠️ **Memory→fallback >40%** — too many messages classified as memory are escalating to online/LLM (intent classifier needs tuning)
+
+Persistence: `vault/router_telemetry.jsonl` (auto-rotates at 1000 lines).
 
 ## 📄 License
 
