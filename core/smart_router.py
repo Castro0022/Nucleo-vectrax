@@ -782,22 +782,24 @@ class SmartRouter:
 
         # Memoria (statement/nota)
         if intent == Intent.MEMORY:
-            # Check if user has meaningful memory to resolve from.
-            # If the user has very few interactions, the LLM will give a
-            # better response than searching an almost-empty memory.
-            _mem_depth = self._estimate_memory_depth(signals.get("owner", ""))
+            _owner = signals.get("owner", "")
+            _mem_depth = self._estimate_memory_depth(_owner)
+            _affinity = self._get_user_topic_affinity(_owner)
+            _topic_match = topic in _affinity
             if _mem_depth >= 5:
+                # Boost confidence if the topic matches user's history
+                _conf = 0.95 if _topic_match else 0.9
                 return (
-                    Strategy.RESOLVE_MEMORY, [], 0.9,
-                    "Statement/nota → ingestar como star en memoria "
-                    "(memory depth=%d)" % _mem_depth,
+                    Strategy.RESOLVE_MEMORY, [], _conf,
+                    "Statement/nota → memory (depth=%d%s)" % (
+                        _mem_depth,
+                        ", topic_match" if _topic_match else "",
+                    ),
                 )
-            # Thin memory → route to LLM with lower confidence
             providers = self._suggest_providers(topic, single=True)
             return (
                 Strategy.ROUTE_SINGLE, providers, 0.6,
-                "Statement pero memoria superficial (depth=%d) "
-                "→ LLM directo" % _mem_depth,
+                "Memoria superficial (depth=%d) → LLM directo" % _mem_depth,
             )
 
         # Búsqueda de lugar físico
@@ -823,17 +825,22 @@ class SmartRouter:
 
         # Consulta local (memoria propia)
         if intent == Intent.LOCAL:
-            _mem_depth = self._estimate_memory_depth(signals.get("owner", ""))
+            _owner = signals.get("owner", "")
+            _mem_depth = self._estimate_memory_depth(_owner)
+            _affinity = self._get_user_topic_affinity(_owner)
+            _topic_match = topic in _affinity
             if _mem_depth >= 3:
+                _conf = 0.92 if _topic_match else 0.85
                 return (
-                    Strategy.RESOLVE_LOCAL, [], 0.85,
-                    "Referencia a memoria propia → búsqueda local "
-                    "(depth=%d)" % _mem_depth,
+                    Strategy.RESOLVE_LOCAL, [], _conf,
+                    "Memoria propia → local (depth=%d%s)" % (
+                        _mem_depth,
+                        ", topic_match" if _topic_match else "",
+                    ),
                 )
-            # Not enough memory → try online instead of returning empty
             return (
                 Strategy.RESOLVE_ONLINE, [], 0.65,
-                "Referencia a memoria pero depth=%d → online" % _mem_depth,
+                "Memoria insuficiente (depth=%d) → online" % _mem_depth,
             )
 
         # AI explícita (single)
@@ -979,6 +986,9 @@ class SmartRouter:
         logger.info("SmartRoute: %s (total=%.1fms)", route.summary(), latency_ms)
 
         # Emit real telemetry (persisted JSONL, no message content)
+        _mem_depth = self._estimate_memory_depth(owner)
+        _topic_affinity = self._get_user_topic_affinity(owner)
+        _topic_match = topic in _topic_affinity
         try:
             from core.observability.router_telemetry import record_decision
             record_decision(
@@ -988,10 +998,11 @@ class SmartRouter:
                 topic=topic,
                 confidence=confidence,
                 risk=risk_level.value,
-                memory_depth=self._estimate_memory_depth(owner),
+                memory_depth=_mem_depth,
                 latency_ms=latency_ms,
                 classification_method=intent_signals.get("classification_method", ""),
                 reason=reason,
+                topic_match=_topic_match,
             )
         except Exception as _te:
             logger.debug("telemetry emit failed: %s", _te)
@@ -1329,6 +1340,36 @@ class SmartRouter:
             return row[0] if row else 0
         except Exception:
             return 0
+
+    @staticmethod
+    def _get_user_topic_affinity(owner: str) -> Dict[str, int]:
+        """Return topic distribution for a user from their patterns.
+
+        Reads the gravitational patterns table (vectrax.db) to see what
+        topics the user has discussed most. Returns {topic: count}.
+        Used to boost routing confidence when the current message topic
+        matches the user's history.
+        """
+        if not owner:
+            return {}
+        try:
+            import os
+            import sqlite3
+            db = os.path.join(
+                os.path.expanduser("~"), ".vectrax", "vectrax.db",
+            )
+            if not os.path.exists(db):
+                return {}
+            conn = sqlite3.connect(db, timeout=2)
+            rows = conn.execute(
+                "SELECT topic, COUNT(*) as cnt FROM patterns "
+                "WHERE user_id = ? GROUP BY topic ORDER BY cnt DESC",
+                (owner,),
+            ).fetchall()
+            conn.close()
+            return {r[0]: r[1] for r in rows}
+        except Exception:
+            return {}
 
     # -- Clasificación semántica (lazy) ------------------------------------
 

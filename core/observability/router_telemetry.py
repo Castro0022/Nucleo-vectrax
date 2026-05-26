@@ -34,6 +34,7 @@ def record_decision(
     latency_ms: float,
     classification_method: str = "",
     reason: str = "",
+    topic_match: bool = False,
 ) -> None:
     """Append one routing decision to the telemetry log.
 
@@ -51,6 +52,7 @@ def record_decision(
         "latency_ms": round(latency_ms, 1),
         "method": classification_method,
         "reason": reason[:80],
+        "topic_match": topic_match,
     }
     try:
         os.makedirs(os.path.dirname(_LOG_PATH), exist_ok=True)
@@ -225,6 +227,12 @@ def build_summary(n: int = 100) -> str:
         low_depth_routes / max(1, total) * 100,
     ))
     lines.append("Latency: avg=%.0fms" % avg_lat)
+
+    # Topic match rate
+    topic_matches = sum(1 for e in entries if e.get("topic_match"))
+    lines.append("Topic affinity match: %d/%d (%.0f%%)" % (
+        topic_matches, total, topic_matches / max(1, total) * 100,
+    ))
 
     # Last 5 entries
     lines.append("")
