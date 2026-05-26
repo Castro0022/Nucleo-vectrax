@@ -1512,6 +1512,13 @@ class TelegramGateway:
                     self._send(cid, f"Error al cargar ideas: {e}")
                     logger.error("/vx ideas error: %s", e)
 
+            elif cmd == "router":
+                from core.observability.router_telemetry import build_summary
+                n = 100
+                if arg and arg.isdigit():
+                    n = int(arg)
+                self._send(cid, build_summary(n))
+
             elif cmd == "fallbacks":
                 try:
                     from core.fallback_intents import get_top_fallbacks, get_summary

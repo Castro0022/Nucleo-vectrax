@@ -977,6 +977,25 @@ class SmartRouter:
 
         latency_ms = (time.time() - t0) * 1000
         logger.info("SmartRoute: %s (total=%.1fms)", route.summary(), latency_ms)
+
+        # Emit real telemetry (persisted JSONL, no message content)
+        try:
+            from core.observability.router_telemetry import record_decision
+            record_decision(
+                user_id=owner,
+                intent=intent.value,
+                strategy=strategy.value,
+                topic=topic,
+                confidence=confidence,
+                risk=risk_level.value,
+                memory_depth=self._estimate_memory_depth(owner),
+                latency_ms=latency_ms,
+                classification_method=intent_signals.get("classification_method", ""),
+                reason=reason,
+            )
+        except Exception as _te:
+            logger.debug("telemetry emit failed: %s", _te)
+
         return route
 
     # -- 6. Registro de métricas (abstractas, sin contenido) -----------------
