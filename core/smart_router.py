@@ -782,9 +782,22 @@ class SmartRouter:
 
         # Memoria (statement/nota)
         if intent == Intent.MEMORY:
+            # Check if user has meaningful memory to resolve from.
+            # If the user has very few interactions, the LLM will give a
+            # better response than searching an almost-empty memory.
+            _mem_depth = self._estimate_memory_depth(signals.get("owner", ""))
+            if _mem_depth >= 5:
+                return (
+                    Strategy.RESOLVE_MEMORY, [], 0.9,
+                    "Statement/nota → ingestar como star en memoria "
+                    "(memory depth=%d)" % _mem_depth,
+                )
+            # Thin memory → route to LLM with lower confidence
+            providers = self._suggest_providers(topic, single=True)
             return (
-                Strategy.RESOLVE_MEMORY, [], 0.9,
-                "Statement/nota → ingestar como star en memoria",
+                Strategy.ROUTE_SINGLE, providers, 0.6,
+                "Statement pero memoria superficial (depth=%d) "
+                "→ LLM directo" % _mem_depth,
             )
 
         # Búsqueda de lugar físico
@@ -810,9 +823,17 @@ class SmartRouter:
 
         # Consulta local (memoria propia)
         if intent == Intent.LOCAL:
+            _mem_depth = self._estimate_memory_depth(signals.get("owner", ""))
+            if _mem_depth >= 3:
+                return (
+                    Strategy.RESOLVE_LOCAL, [], 0.85,
+                    "Referencia a memoria propia → búsqueda local "
+                    "(depth=%d)" % _mem_depth,
+                )
+            # Not enough memory → try online instead of returning empty
             return (
-                Strategy.RESOLVE_LOCAL, [], 0.85,
-                "Referencia a memoria propia → búsqueda local",
+                Strategy.RESOLVE_ONLINE, [], 0.65,
+                "Referencia a memoria pero depth=%d → online" % _mem_depth,
             )
 
         # AI explícita (single)
@@ -904,6 +925,8 @@ class SmartRouter:
         policy_action = self.evaluate_policy(intent, topic, risk_level)
 
         # Paso 4: Seleccionar estrategia
+        # Inject owner into signals so select_strategy can check memory depth
+        intent_signals["owner"] = owner
         strategy, providers, confidence, reason = self.select_strategy(
             intent, topic, risk_level, policy_action, intent_signals,
         )
@@ -1257,6 +1280,36 @@ class SmartRouter:
 
         logger.debug("_detect_required_capabilities: topic=%s → %s", topic, required)
         return required
+
+    # -- Memory depth estimation -------------------------------------------
+
+    @staticmethod
+    def _estimate_memory_depth(owner: str) -> int:
+        """Estimate how many interactions a user has.
+
+        Returns the interaction count from user_memory.db.
+        Defensive: returns 0 on any failure (DB missing, user unknown, etc.).
+        Used by select_strategy to decide whether memory-based routing
+        will be productive or should fall back to LLM/online.
+        """
+        if not owner:
+            return 0
+        try:
+            import os
+            import sqlite3
+            db = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "vault", "user_memory.db",
+            )
+            conn = sqlite3.connect(db, timeout=2)
+            row = conn.execute(
+                "SELECT COUNT(*) FROM interactions WHERE user_id = ?",
+                (owner,),
+            ).fetchone()
+            conn.close()
+            return row[0] if row else 0
+        except Exception:
+            return 0
 
     # -- Clasificación semántica (lazy) ------------------------------------
 
