@@ -24,6 +24,7 @@ MODE = "read_only"
 
 ALLOWLIST: Set[str] = frozenset({
     "api.binance.com",
+    "api.binance.us",
     "stream.binance.com",
     "data-stream.binance.vision",
     "api.coingecko.com",

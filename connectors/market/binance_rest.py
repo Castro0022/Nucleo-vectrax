@@ -23,48 +23,82 @@ from connectors.market import ALLOWLIST, validate_host
 
 logger = logging.getLogger("vectrax.market.binance_rest")
 
-BASE_URL = "https://api.binance.com"
-HOST = "api.binance.com"
+# Primary: Binance international. Fallback: Binance US (avoids HTTP 451
+# geo-block on US datacenter IPs like Vultr).
+_ENDPOINTS = [
+    ("https://api.binance.com", "api.binance.com"),
+    ("https://api.binance.us", "api.binance.us"),
+]
 REQUEST_TIMEOUT = 10
+# Cache which endpoint works to avoid repeated failures
+_working_endpoint_idx = 0
 
 
 def _get(endpoint: str, params: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    """Execute a GET request against Binance public API with ledger logging."""
-    if not validate_host(HOST):
-        return {"success": False, "error": "Host blocked by governance"}
+    """Execute a GET request against Binance API with automatic fallback.
 
-    url = f"{BASE_URL}{endpoint}"
-    if params:
-        url += "?" + urllib.parse.urlencode(params)
+    Tries the primary endpoint first. On HTTP 451 (geo-blocked) or
+    connection error, falls back to the alternative endpoint.
+    """
+    global _working_endpoint_idx
 
-    t0 = time.time()
-    try:
-        req = urllib.request.Request(url, method="GET")
-        req.add_header("User-Agent", "Vectrax/1.0")
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            body = resp.read().decode("utf-8")
+    # Try the last-known working endpoint first, then the other
+    order = [_working_endpoint_idx, 1 - _working_endpoint_idx]
+
+    for idx in order:
+        base_url, host = _ENDPOINTS[idx]
+        if not validate_host(host):
+            continue
+
+        url = f"{base_url}{endpoint}"
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+
+        t0 = time.time()
+        try:
+            req = urllib.request.Request(url, method="GET")
+            req.add_header("User-Agent", "Vectrax/1.0")
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                body = resp.read().decode("utf-8")
+                latency_ms = (time.time() - t0) * 1000
+                data = json.loads(body)
+                logger.info(
+                    "[LEDGER] binance_rest GET %s%s — %dms — OK",
+                    host.split(".")[-2], endpoint, latency_ms,
+                )
+                _working_endpoint_idx = idx
+                return {"success": True, "data": data, "latency_ms": round(latency_ms, 1)}
+        except urllib.error.HTTPError as exc:
             latency_ms = (time.time() - t0) * 1000
-            data = json.loads(body)
-            logger.info(
-                "[LEDGER] binance_rest GET %s — %dms — OK",
-                endpoint, latency_ms,
+            error_body = exc.read().decode("utf-8", errors="replace")
+            # HTTP 451 = geo-blocked — try next endpoint
+            if exc.code == 451 and idx == order[0] and len(order) > 1:
+                logger.info(
+                    "[LEDGER] binance_rest %s HTTP 451 — falling back to %s",
+                    host, _ENDPOINTS[order[1]][1],
+                )
+                continue
+            logger.error(
+                "[LEDGER] binance_rest GET %s%s — %dms — HTTP %d: %s",
+                host, endpoint, latency_ms, exc.code, error_body[:200],
             )
-            return {"success": True, "data": data, "latency_ms": round(latency_ms, 1)}
-    except urllib.error.HTTPError as exc:
-        latency_ms = (time.time() - t0) * 1000
-        error_body = exc.read().decode("utf-8", errors="replace")
-        logger.error(
-            "[LEDGER] binance_rest GET %s — %dms — HTTP %d: %s",
-            endpoint, latency_ms, exc.code, error_body[:200],
-        )
-        return {"success": False, "error": f"HTTP {exc.code}", "details": error_body[:200], "latency_ms": round(latency_ms, 1)}
-    except Exception as exc:
-        latency_ms = (time.time() - t0) * 1000
-        logger.error(
-            "[LEDGER] binance_rest GET %s — %dms — ERROR: %s",
-            endpoint, latency_ms, exc,
-        )
-        return {"success": False, "error": str(exc), "latency_ms": round(latency_ms, 1)}
+            return {"success": False, "error": f"HTTP {exc.code}", "details": error_body[:200], "latency_ms": round(latency_ms, 1)}
+        except Exception as exc:
+            latency_ms = (time.time() - t0) * 1000
+            # Connection error — try next endpoint
+            if idx == order[0] and len(order) > 1:
+                logger.info(
+                    "[LEDGER] binance_rest %s failed (%s) — falling back to %s",
+                    host, exc, _ENDPOINTS[order[1]][1],
+                )
+                continue
+            logger.error(
+                "[LEDGER] binance_rest GET %s%s — %dms — ERROR: %s",
+                host, endpoint, latency_ms, exc,
+            )
+            return {"success": False, "error": str(exc), "latency_ms": round(latency_ms, 1)}
+
+    return {"success": False, "error": "All Binance endpoints failed"}
 
 
 # ── Public Functions ────────────────────────────────────────────────

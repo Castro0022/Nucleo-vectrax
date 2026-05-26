@@ -533,6 +533,15 @@ def run_worker() -> None:
 
     logger.info("Worker started (PID %d, %d concurrent, fire-and-deliver)", os.getpid(), CONCURRENT)
 
+    # --- Scheduler DB init: ensure table exists before first tick ---
+    try:
+        from core.scheduler import _conn as _sched_conn
+        _sc = _sched_conn()
+        _sc.close()
+        logger.info("Scheduler DB initialized")
+    except Exception as _si:
+        logger.debug("Scheduler DB init skipped: %s", _si)
+
     # --- LLM warm-up: pre-initialize ExternalGateway to avoid cold-start ---
     try:
         from core.operator.external_gateway import ExternalGateway
