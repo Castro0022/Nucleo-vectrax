@@ -755,6 +755,25 @@ No message content is stored — only abstract metrics.
 
 Persistence: `vault/router_telemetry.jsonl` (auto-rotates at 1000 lines).
 
+## 🧠 SmartRouter Intelligence
+
+The SmartRouter uses three signals per user to personalize routing decisions:
+
+1. **Memory depth** — interaction count from `user_memory.db`
+   - depth < 5 → LLM direct (skip empty memory search)
+   - depth ≥ 5 → resolve from memory (conf=0.90)
+
+2. **Topic affinity** — pattern distribution from `vectrax.db`
+   - If the current topic matches the user’s historical patterns → confidence boost (+0.05)
+   - MEMORY: 0.90 → 0.95 on topic match
+   - LOCAL: 0.85 → 0.92 on topic match
+
+3. **Telemetry tracking** — `topic_match: true/false` recorded per decision
+   - `/vx router` shows topic affinity match rate
+   - Digest includes match % for trend analysis
+
+This scales automatically: as users accumulate patterns via `ingest_v2()`, the router adapts without configuration changes.
+
 ## 📄 License
 
 MIT License - See LICENSE file for details
