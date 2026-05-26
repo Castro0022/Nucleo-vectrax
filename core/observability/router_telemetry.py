@@ -89,6 +89,92 @@ def get_recent(n: int = 50) -> List[Dict[str, Any]]:
         return []
 
 
+# ---------------------------------------------------------------------------
+# Periodic digest — runs from pipeline_worker every 6h
+# ---------------------------------------------------------------------------
+
+_DIGEST_INTERVAL = 6 * 3600  # 6 hours
+_ALERT_THRESHOLDS = {
+    "low_depth_pct": 50,     # alert if >50% of routes are low-depth
+    "avg_latency_ms": 5000,  # alert if avg latency >5s
+    "fallback_pct": 40,      # alert if >40% go to fallback strategies
+}
+
+
+def run_digest(tg_send_fn) -> bool:
+    """Generate and send a telemetry digest to the creator.
+
+    Called from pipeline_worker every _DIGEST_INTERVAL.
+    Only sends if there are >=10 entries since last digest.
+    Returns True if a digest was sent.
+    """
+    entries = get_recent(200)
+    if len(entries) < 10:
+        return False
+
+    total = len(entries)
+    strategies = {}
+    depths = []
+    latencies = []
+    fallback_count = 0
+    low_depth_count = 0
+
+    for e in entries:
+        s = e.get("strategy", "")
+        strategies[s] = strategies.get(s, 0) + 1
+        d = e.get("mem_depth", 0)
+        depths.append(d)
+        latencies.append(e.get("latency_ms", 0))
+        if d < 5:
+            low_depth_count += 1
+        if s in ("resolve_online", "route_single") and e.get("intent") == "memory":
+            fallback_count += 1
+
+    avg_depth = sum(depths) / max(1, len(depths))
+    avg_lat = sum(latencies) / max(1, len(latencies))
+    low_pct = low_depth_count / max(1, total) * 100
+    fallback_pct = fallback_count / max(1, total) * 100
+
+    # Build digest
+    lines = ["\U0001f4ca Router Digest (%d decisions)" % total, ""]
+
+    # Strategy distribution
+    for s, c in sorted(strategies.items(), key=lambda x: -x[1]):
+        lines.append("  %s: %d (%.0f%%)" % (s, c, c / total * 100))
+
+    lines.append("")
+    lines.append("Memory: avg_depth=%.1f | low(<5)=%d (%.0f%%)" % (avg_depth, low_depth_count, low_pct))
+    lines.append("Latency: avg=%.0fms" % avg_lat)
+
+    # Alerts
+    alerts = []
+    if low_pct > _ALERT_THRESHOLDS["low_depth_pct"]:
+        alerts.append("\u26a0 %d%% users have shallow memory (<5 interactions)" % int(low_pct))
+    if avg_lat > _ALERT_THRESHOLDS["avg_latency_ms"]:
+        alerts.append("\u26a0 Avg latency %.0fms exceeds threshold" % avg_lat)
+    if fallback_pct > _ALERT_THRESHOLDS["fallback_pct"]:
+        alerts.append("\u26a0 %.0f%% memory\u2192fallback rate" % fallback_pct)
+
+    if alerts:
+        lines.append("")
+        for a in alerts:
+            lines.append(a)
+    else:
+        lines.append("")
+        lines.append("\u2705 No alerts")
+
+    # Send to creator
+    import os
+    creator_uid = os.environ.get("VX_CREATOR_ID", "2030762343")
+    try:
+        tg_send_fn(int(creator_uid), "\n".join(lines))
+        logger.info("Router digest sent: %d entries, %d alerts", total, len(alerts))
+        return True
+    except Exception as exc:
+        logger.debug("Router digest send failed: %s", exc)
+        return False
+
+
 def build_summary(n: int = 100) -> str:
     """Build a human-readable summary of the last N routing decisions."""
     entries = get_recent(n)

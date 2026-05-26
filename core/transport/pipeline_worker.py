@@ -509,6 +509,7 @@ def run_worker() -> None:
     last_proactive = 0.0  # última ejecución del motor proactivo
     last_scheduler = 0.0  # última ejecución del scheduler
     last_reentry = 0.0    # última ejecución del reentry check
+    last_digest = 0.0     # última ejecución del router digest
 
     # Discard stale messages from previous sessions (>5 min old)
     _STALE_AGE = 300  # 5 minutes
@@ -636,6 +637,16 @@ def run_worker() -> None:
             except Exception as _re:
                 logger.debug("Reentry check error (passthrough): %s", _re)
                 last_reentry = time.time()
+
+            # Router telemetry digest — sends summary to creator every 6h
+            try:
+                from core.observability.router_telemetry import run_digest, _DIGEST_INTERVAL
+                if time.time() - last_digest > _DIGEST_INTERVAL:
+                    run_digest(_tg_send)
+                    last_digest = time.time()
+            except Exception as _de:
+                logger.debug("Router digest error (passthrough): %s", _de)
+                last_digest = time.time()
 
             # Scheduler — tareas programadas (cada 60s)
             try:
