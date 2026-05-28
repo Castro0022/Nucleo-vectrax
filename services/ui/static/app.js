@@ -373,9 +373,9 @@ async function loadProposals() {
   const el = $('sec-proposals');
   el.innerHTML = '<p class="dim">Loading…</p>';
   try {
-    const d = await api('GET', '/proposals');
+    const d = await api('GET', '/dashboard/proposals');
     const ps = d.proposals || [];
-    if (ps.length === 0) { el.innerHTML = '<p class="dim">No proposals.</p>'; return; }
+    if (ps.length === 0) { el.innerHTML = '<p class="dim">Sin propuestas activas. Las propuestas se generan automáticamente cuando el sistema detecta patrones en constelaciones.</p>'; return; }
 
     const canApprove = USER && (USER.role === 'owner' || USER.role === 'operator');
     el.innerHTML = ps.map(p => {
@@ -484,21 +484,21 @@ async function loadAudit() {
   const el = $('sec-audit');
   el.innerHTML = '<p class="dim">Loading…</p>';
   try {
-    const d = await api('GET', '/status/audit?limit=30');
+    const d = await api('GET', '/dashboard/audit?limit=50');
     const entries = d.entries || [];
-    if (entries.length === 0) { el.innerHTML = '<p class="dim">No audit entries.</p>'; return; }
+    if (entries.length === 0) { el.innerHTML = '<p class="dim">Sin eventos de auditoría registrados.</p>'; return; }
     el.innerHTML = entries.map(e => {
       const cls = e.decision === 'approved' ? 'tag-ok' : e.decision === 'rejected' ? 'tag-err' : 'tag-warn';
       return `<div class="audit-row">
         <span class="dim audit-ts">${e.timestamp || ''}</span>
-        <span class="tag ${cls}">${e.decision || e.action}</span>
-        <span class="dim">${esc(e.actor)} (${e.role})</span>
-        <span>${esc(e.action)}</span>
+        <span class="tag ${cls}">${e.decision || e.action || '—'}</span>
+        <span class="dim">${esc(e.actor || '')} ${e.role ? '(' + e.role + ')' : ''}</span>
+        <span>${esc(e.action || '')}</span>
         <span class="dim">${esc(e.reason || '')}</span>
       </div>`;
     }).join('');
-  } catch {
-    el.innerHTML = '<p class="dim">Audit not available (requires audit.read permission)</p>';
+  } catch (e) {
+    el.innerHTML = `<p class="err">${esc(e.message)}</p>`;
   }
 }
 

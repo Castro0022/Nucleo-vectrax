@@ -336,3 +336,69 @@ async def dashboard_operator() -> Dict[str, Any]:
 
     result["ts"] = time.time()
     return result
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/dashboard/proposals
+# ---------------------------------------------------------------------------
+
+@router.get("/proposals")
+async def dashboard_proposals() -> Dict[str, Any]:
+    """Proposals from gravitational DB."""
+    try:
+        conn = _grav_conn()
+        rows = conn.execute(
+            "SELECT id, constellation_id, description, evidence, status, created_at "
+            "FROM proposals ORDER BY created_at DESC LIMIT 50"
+        ).fetchall()
+        conn.close()
+        proposals = [
+            {
+                "id": r["id"],
+                "constellation_id": r["constellation_id"],
+                "description": r["description"][:300],
+                "evidence": r["evidence"][:200] if r["evidence"] else "",
+                "status": r["status"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+        return {"proposals": proposals, "total": len(proposals)}
+    except Exception as exc:
+        return {"proposals": [], "total": 0, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/dashboard/audit
+# ---------------------------------------------------------------------------
+
+@router.get("/audit")
+async def dashboard_audit(
+    limit: int = Query(50, ge=1, le=200),
+) -> Dict[str, Any]:
+    """Audit/ledger events from vectrax_ledger.db."""
+    _ledger_db = Path(__file__).resolve().parents[3] / "vault" / "vectrax_ledger.db"
+    try:
+        conn = sqlite3.connect(str(_ledger_db), timeout=3)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, timestamp, actor, role, action, decision, reason "
+            "FROM events ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+        entries = [
+            {
+                "id": r["id"],
+                "timestamp": r["timestamp"] if r["timestamp"] else "",
+                "actor": r["actor"] if r["actor"] else "",
+                "role": r["role"] if r["role"] else "",
+                "action": r["action"] if r["action"] else "",
+                "decision": r["decision"] if r["decision"] else "",
+                "reason": r["reason"] if r["reason"] else "",
+            }
+            for r in rows
+        ]
+        return {"entries": entries, "total": len(entries)}
+    except Exception as exc:
+        return {"entries": [], "total": 0, "error": str(exc)}
