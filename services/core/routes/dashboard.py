@@ -376,26 +376,26 @@ async def dashboard_proposals() -> Dict[str, Any]:
 async def dashboard_audit(
     limit: int = Query(50, ge=1, le=200),
 ) -> Dict[str, Any]:
-    """Audit/ledger events from vectrax_ledger.db."""
-    _ledger_db = Path(__file__).resolve().parents[3] / "vault" / "vectrax_ledger.db"
+    """Audit events from audit_ledger.db (118K+ entries)."""
+    _audit_db = Path(__file__).resolve().parents[3] / "vault" / "audit_ledger.db"
     try:
-        conn = sqlite3.connect(str(_ledger_db), timeout=3)
+        conn = sqlite3.connect(str(_audit_db), timeout=3)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT id, timestamp, actor, role, action, decision, reason "
-            "FROM events ORDER BY id DESC LIMIT ?",
+            "FROM audit_ledger ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
         conn.close()
         entries = [
             {
                 "id": r["id"],
-                "timestamp": r["timestamp"] if r["timestamp"] else "",
-                "actor": r["actor"] if r["actor"] else "",
-                "role": r["role"] if r["role"] else "",
-                "action": r["action"] if r["action"] else "",
-                "decision": r["decision"] if r["decision"] else "",
-                "reason": r["reason"] if r["reason"] else "",
+                "timestamp": (r["timestamp"] or "")[:19],
+                "actor": r["actor"] or "",
+                "role": r["role"] or "",
+                "action": r["action"] or "",
+                "decision": r["decision"] or "",
+                "reason": r["reason"] or "",
             }
             for r in rows
         ]
