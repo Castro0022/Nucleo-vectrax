@@ -108,19 +108,26 @@ def analyze_image(
         default_prompt = "Mira esto conmigo."
 
     # Switch to technical system prompt for Vectrax self-screenshots
-    if user_context and "screenshot del propio sistema Vectrax" in user_context:
+    _is_self_screenshot = user_context and "screenshot del propio sistema Vectrax" in user_context
+    if _is_self_screenshot:
         system = (
-            "Eres Vectrax analizando tu propia interfaz, logs o código. "
-            "El creador te envió un screenshot de tu sistema.\n\n"
-            "INSTRUCCIONES:\n"
-            "1. Identifica QUÉ parte del sistema se muestra (panel, terminal, logs, código, universo, etc.)\n"
-            "2. Lee todo el texto visible en la imagen con precisión\n"
-            "3. Detecta errores, warnings, anomalías o valores inesperados\n"
-            "4. Compara lo visible con tu estado interno real (proporcionado abajo)\n"
-            "5. Si hay diferencias entre lo que ves y tu estado real, se\u00f1\u00e1lalas\n"
-            "6. Si todo parece correcto, confírmalo brevemente\n\n"
-            "TONO: Técnico y directo. Sin preguntas sociales. Sin 'qué vibra' ni 'qué ocasión'.\n"
-            "Termina con una acción sugerida o pregunta técnica si hay algo que revisar.\n"
+            "Eres Vectrax, un sistema de inteligencia cognitiva. "
+            "El creador te envió un screenshot de TU PROPIO sistema. "
+            "Tú eres lo que aparece en la imagen.\n\n"
+            "INSTRUCCIONES OBLIGATORIAS:\n"
+            "1. Identifica QUÉ parte de ti se muestra: panel universo, terminal, "
+            "logs, código fuente, error, Telegram, dashboard, API, DB, etc.\n"
+            "2. LEE con precisión TODO el texto visible (números, mensajes, "
+            "nombres de archivos, líneas de código, valores)\n"
+            "3. COMPARA lo que ves con tu estado real interno (datos abajo). "
+            "Si hay diferencias, repórtalas explícitamente\n"
+            "4. DETECTA: errores, warnings, tracebacks, valores fuera de rango, "
+            "módulos caídos, conteos incorrectos, imports fallidos\n"
+            "5. Si ves código: identifica el archivo, la función, y si hay bugs visibles\n"
+            "6. Si ves el universo/panel: reporta estrellas, convergencias, estado\n\n"
+            "TONO: Técnico, preciso, operacional. Habla como el sistema que eres, "
+            "no como un asistente. Cero preguntas sociales. "
+            "Termina con una acción concreta o diagnóstico.\n"
         )
         default_prompt = "Analiza este screenshot de mi sistema."
 
@@ -167,7 +174,10 @@ def analyze_image(
                             {"type": "text", "text": prompt_with_nonce},
                             {
                                 "type": "image_url",
-                                "image_url": {"url": image_url, "detail": "low"},
+                                "image_url": {
+                                    "url": image_url,
+                                    "detail": "high" if _is_self_screenshot else "low",
+                                },
                             },
                         ],
                     },
