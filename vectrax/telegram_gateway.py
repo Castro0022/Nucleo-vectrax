@@ -2434,17 +2434,37 @@ class TelegramGateway:
                 try:
                     from vectrax.self_context import _read_universe_state
                     _sys_state = _read_universe_state()
+                    _rt_block = ""
                     if _sys_state:
-                        user_ctx += (
-                            "\n\nIMPORTANTE: Esta imagen puede ser un screenshot del propio sistema Vectrax. "
-                            "Eres Vectrax analizando tu propia interfaz/logs/código. "
-                            "Identifica qué parte del sistema se muestra, detecta errores, "
-                            "anomalías, o problemas visibles. Compara con tu estado real interno:\n"
-                            + _sys_state[:800]
+                        _rt_block = _sys_state[:1200]
+                    # Add live operational metrics
+                    try:
+                        from core.operator.system_monitor import collect_metrics
+                        _m = collect_metrics()
+                        _rt_block += (
+                            f"\n[MÉTRICAS EN TIEMPO REAL]\n"
+                            f"Status: {_m.status} | CPU: {_m.cpu_percent}% | RAM: {_m.memory_mb}MB\n"
+                            f"Cola: {_m.queue_pending} pendientes, {_m.queue_processing} procesando, "
+                            f"{_m.queue_error} errores\n"
+                            f"Latencia promedio: {_m.avg_latency_s}s (máx {_m.max_latency_s}s)\n"
+                            f"Usuarios activos (5min): {_m.active_users}\n"
+                            f"Worker: {'vivo' if _m.worker_alive else 'MUERTO'} "
+                            f"(heartbeat {_m.worker_heartbeat_age_s}s)\n"
+                            f"Límites: cola={'LÍMITE' if _m.queue_at_limit else 'ok'}, "
+                            f"RAM={'LÍMITE' if _m.memory_at_limit else 'ok'}, "
+                            f"latencia={'LÍMITE' if _m.latency_at_limit else 'ok'}"
                         )
+                    except Exception:
+                        pass
+                    user_ctx += (
+                        "\n\nEsta imagen es un screenshot del propio sistema Vectrax. "
+                        "Eres Vectrax analizándote a ti mismo. "
+                        "COMPARA lo que ves en la imagen con estos datos reales en tiempo real:\n"
+                        + _rt_block
+                    )
                 except Exception:
                     user_ctx += (
-                        "\nIMPORTANTE: Esta imagen puede ser un screenshot de Vectrax. "
+                        "\nEsta imagen es un screenshot de Vectrax. "
                         "Analízala como tu propia interfaz. Detecta errores o anomalías."
                     )
                 if not caption:
@@ -2473,48 +2493,43 @@ class TelegramGateway:
                 user_id=tg_uid,
             )
 
-            # Visual Humanizer: convertir descripción cruda en texto humano
-            # (máximo 4 frases, sin "la imagen muestra", con continuidad si
-            # hay rostros conocidos). Reemplaza el viejo header
-            # "👤 Reconocido: ..." por mención natural integrada.
-            if result:
-                try:
-                    from core.voice.visual_humanizer import humanize_visual
-                    user_name_for_visual = ""
+            # Visual Humanizer + Anti-Repetition: SKIP for self-screenshots
+            # (these convert technical analysis into casual chat)
+            if not _is_self_screenshot:
+                # Visual Humanizer: convertir descripción cruda en texto humano
+                if result:
                     try:
-                        from vectrax.user_memory import get_user_profile
-                        user_name_for_visual = (
-                            get_user_profile(tg_uid).get("name", "") or ""
+                        from core.voice.visual_humanizer import humanize_visual
+                        user_name_for_visual = ""
+                        try:
+                            from vectrax.user_memory import get_user_profile
+                            user_name_for_visual = (
+                                get_user_profile(tg_uid).get("name", "") or ""
+                            )
+                        except Exception:
+                            pass
+                        humanized = humanize_visual(
+                            result,
+                            faces=recognized_names,
+                            user_name=user_name_for_visual,
+                            lang=lang,
                         )
-                    except Exception:
-                        pass
-                    humanized = humanize_visual(
-                        result,
-                        faces=recognized_names,
-                        user_name=user_name_for_visual,
-                        lang=lang,
-                    )
-                    if humanized:
-                        result = humanized
-                except Exception as exc:
-                    logger.debug("visual_humanizer skipped: %s", exc)
+                        if humanized:
+                            result = humanized
+                    except Exception as exc:
+                        logger.debug("visual_humanizer skipped: %s", exc)
 
-            # === Anti-Repetition Filter ====================================
-            # Drop de clichés prohibidos (redes sociales) y rotación
-            # estructural si la respuesta es muy parecida a las últimas
-            # 10 enviadas a este user. Defensa en profundidad: aunque
-            # el LLM ignore el system prompt, la salida no llega.
-            if result:
-                try:
-                    from core.voice.anti_repetition import (
-                        filter_response, record_response,
-                    )
-                    filtered = filter_response(result, tg_uid, lang=lang)
-                    if filtered:
-                        result = filtered
-                    # else: dejamos el result original; el caller decide
-                except Exception as exc:
-                    logger.debug("anti_repetition skipped: %s", exc)
+                # Anti-Repetition Filter
+                if result:
+                    try:
+                        from core.voice.anti_repetition import (
+                            filter_response, record_response,
+                        )
+                        filtered = filter_response(result, tg_uid, lang=lang)
+                        if filtered:
+                            result = filtered
+                    except Exception as exc:
+                        logger.debug("anti_repetition skipped: %s", exc)
 
             if result:
                 try:
