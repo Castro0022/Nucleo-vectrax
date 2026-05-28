@@ -2419,6 +2419,38 @@ class TelegramGateway:
             except Exception:
                 pass
 
+            # === SELF-RECOGNITION: detect if this is a Vectrax screenshot ===
+            _is_self_screenshot = False
+            _cap = (caption or "").lower()
+            if any(kw in _cap for kw in [
+                "vectrax", "sistema", "panel", "universe", "error",
+                "log", "terminal", "codigo", "código", "debug",
+                "router", "stats", "monitor", "dashboard",
+            ]) or (self._is_creator(tg_uid) and not caption):
+                _is_self_screenshot = True
+
+            if _is_self_screenshot:
+                # Inject real system state so GPT-4o can compare
+                try:
+                    from vectrax.self_context import _read_universe_state
+                    _sys_state = _read_universe_state()
+                    if _sys_state:
+                        user_ctx += (
+                            "\n\nIMPORTANTE: Esta imagen puede ser un screenshot del propio sistema Vectrax. "
+                            "Eres Vectrax analizando tu propia interfaz/logs/código. "
+                            "Identifica qué parte del sistema se muestra, detecta errores, "
+                            "anomalías, o problemas visibles. Compara con tu estado real interno:\n"
+                            + _sys_state[:800]
+                        )
+                except Exception:
+                    user_ctx += (
+                        "\nIMPORTANTE: Esta imagen puede ser un screenshot de Vectrax. "
+                        "Analízala como tu propia interfaz. Detecta errores o anomalías."
+                    )
+                if not caption:
+                    caption = "Analiza este screenshot de Vectrax. Identifica qué parte del sistema es y detecta cualquier error o anomalía."
+                logger.info("VISION self-screenshot detected | user=%s", tg_uid[:15])
+
             # Add recognized people to context + custom prompt
             vision_prompt = caption
             if recognized_names:
