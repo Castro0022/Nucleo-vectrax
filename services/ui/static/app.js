@@ -244,24 +244,24 @@ async function loadChatHistory() {
    ================================================================== */
 
 async function loadDashboard() {
-  // Metrics strip
+  // Metrics strip — use public dashboard/summary endpoint
   try {
-    const [stats, status, health] = await Promise.all([
-      api('GET', '/memory/stats'),
-      api('GET', '/status').catch(() => null),
+    const [summary, health] = await Promise.all([
+      api('GET', '/dashboard/summary'),
       api('GET', '/health').catch(() => null),
     ]);
 
-    const gov = status ? status.governor_mode : '?';
-    const govCls = gov === 'act' ? 'tag-ok' : gov === 'recover' ? 'tag-err' : 'tag-warn';
+    const sys = summary.system || {};
+    const stIcon = sys.status === 'healthy' ? '🟢' : sys.status === 'degraded' ? '🟡' : '🔴';
 
     $('metrics-strip').innerHTML = [
-      metric('Stars', stats.stars),
-      metric('Constellations', stats.constellations),
-      metric('Pending', stats.pending_proposals),
-      metric('Governor', `<span class="tag ${govCls}">${gov}</span>`),
-      metric('Graph', status ? `${status.graph_nodes}n / ${status.graph_edges}e` : '—'),
-      metric('Uptime', health ? `${Math.round(health.uptime_seconds)}s` : '—'),
+      metric('⭐ Stars', summary.knowledge_stars ?? 0),
+      metric('🌌 Constellations', summary.constellations ?? 0),
+      metric('👥 Users', summary.telegram_users ?? 0),
+      metric('💬 Interactions', summary.telegram_interactions ?? 0),
+      metric('🧠 Patterns', summary.patterns ?? 0),
+      metric(`${stIcon} System`, sys.status || '—'),
+      metric('⏱ Uptime', health ? `${Math.round(health.uptime_seconds)}s` : '—'),
     ].join('');
   } catch (e) {
     $('metrics-strip').innerHTML = `<div class="metric"><span class="dim">Error: ${esc(e.message)}</span></div>`;
@@ -282,7 +282,8 @@ async function loadStars() {
   const el = $('sec-stars');
   el.innerHTML = '<p class="dim">Loading…</p>';
   try {
-    const d = await api('GET', '/memory/stars?limit=50');
+    // Public endpoint (no auth required)
+    const d = await api('GET', '/dashboard/stars?limit=50');
     if (!d.stars || d.stars.length === 0) { el.innerHTML = '<p class="dim">No stars yet.</p>'; return; }
     el.innerHTML = d.stars.map(s => `
       <div class="card">
@@ -305,7 +306,7 @@ async function loadConstellations() {
   const el = $('sec-constellations');
   el.innerHTML = '<p class="dim">Loading…</p>';
   try {
-    const d = await api('GET', '/memory/constellations?limit=50');
+    const d = await api('GET', '/dashboard/constellations?limit=50');
     if (!d.constellations || d.constellations.length === 0) { el.innerHTML = '<p class="dim">No constellations yet.</p>'; return; }
     el.innerHTML = d.constellations.map(c => `
       <div class="card">
@@ -326,38 +327,44 @@ async function loadHistory() {
   const el = $('sec-history');
   el.innerHTML = '<p class="dim">Loading…</p>';
   try {
-    const d = await api('GET', '/memory/history?limit=50');
+    const d = await api('GET', '/dashboard/interactions?limit=50');
     const msgs = d.messages || [];
     if (msgs.length === 0) { el.innerHTML = '<p class="dim">No history yet.</p>'; return; }
     el.innerHTML = msgs.map(m => {
       const role = m.role || 'system';
       const cls  = role === 'user' ? 'tag-warn' : 'tag-ok';
+      const name = m.user_name || '';
       return `<div class="hist-row">
         <span class="tag ${cls}">${role}</span>
-        <span class="hist-text">${esc((m.content || m.text || '').substring(0, 300))}</span>
-        <span class="dim hist-meta">${m.session_id ? m.session_id.substring(0, 8) + '…' : ''}</span>
+        <span class="dim" style="min-width:80px">${esc(name)}</span>
+        <span class="hist-text">${esc((m.content || '').substring(0, 300))}</span>
       </div>`;
     }).join('');
   } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
-/* ---- Sessions ---- */
+/* ---- Sessions (Users) ---- */
 async function loadSessions() {
   const el = $('sec-sessions');
   el.innerHTML = '<p class="dim">Loading…</p>';
   try {
-    const d = await api('GET', '/memory/sessions');
-    const s = d.sessions || [];
-    if (s.length === 0) { el.innerHTML = '<p class="dim">No sessions yet.</p>'; return; }
-    el.innerHTML = s.map(x => `
-      <div class="card">
-        <div class="card-head"><span class="mono">${(x.session_id || x.id || '').substring(0, 14)}</span></div>
-        <div class="card-meta">
-          <span>${x.message_count || x.count || 0} messages</span>
-          <span>started ${x.started_at || x.first_ts || '—'}</span>
-          <span>last ${x.last_at || x.last_ts || '—'}</span>
+    const d = await api('GET', '/dashboard/users');
+    const users = d.users || [];
+    if (users.length === 0) { el.innerHTML = '<p class="dim">No users yet.</p>'; return; }
+    el.innerHTML = users.map(u => {
+      const lastDate = u.last_active ? new Date(u.last_active * 1000).toLocaleDateString() : '—';
+      return `<div class="card">
+        <div class="card-head">
+          <span>${esc(u.name)}</span>
+          <span class="tag tag-dim">${u.language}</span>
         </div>
-      </div>`).join('');
+        <div class="card-meta">
+          <span class="mono">${u.user_id.substring(0, 15)}</span>
+          <span>${u.msg_count} messages</span>
+          <span>last ${lastDate}</span>
+        </div>
+      </div>`;
+    }).join('');
   } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
@@ -409,49 +416,62 @@ async function loadOperator() {
   const el = $('sec-operator');
   el.innerHTML = '<p class="dim">Loading…</p>';
   try {
-    const [op, status, health] = await Promise.all([
-      api('GET', '/status/operator'),
-      api('GET', '/status').catch(() => null),
+    const [op, health] = await Promise.all([
+      api('GET', '/dashboard/operator'),
       api('GET', '/health').catch(() => null),
     ]);
+    const r = op.runtime || {};
+    const g = op.governor || {};
+    const u = op.universe || {};
+    const stIcon = r.status === 'healthy' ? '🟢' : r.status === 'degraded' ? '🟡' : '🔴';
+    const wIcon  = r.worker_alive ? '✅' : '❌';
+    const govCls = g.mode === 'act' ? 'tag-ok' : g.mode === 'recover' ? 'tag-err' : 'tag-warn';
 
-    let html = `<div class="card">
-      <div class="card-head"><strong>${esc(op.operator_name)}</strong> <span class="dim">${op.mode} mode</span></div>
-      <div class="card-meta"><span>${op.active_layers}/${op.total_layers} layers active</span></div>
+    let html = `<div class="sys-grid">
+      <div class="card">
+        <div class="card-head">${stIcon} Runtime</div>
+        <div class="kv"><span class="dim">Estado</span><span>${r.status || '—'}</span></div>
+        <div class="kv"><span class="dim">Worker</span><span>${wIcon} ${r.worker_alive ? 'vivo' : 'MUERTO'} (${r.worker_heartbeat_age_s ?? '—'}s)</span></div>
+        <div class="kv"><span class="dim">Cola</span><span>${r.queue_pending ?? 0} pend / ${r.queue_processing ?? 0} proc / ${r.queue_error ?? 0} err</span></div>
+        <div class="kv"><span class="dim">RAM</span><span>${r.memory_mb ?? '—'} MB</span></div>
+        <div class="kv"><span class="dim">Latencia</span><span>avg ${r.avg_latency_s ?? 0}s / max ${r.max_latency_s ?? 0}s</span></div>
+        <div class="kv"><span class="dim">Usuarios activos</span><span>${r.active_users ?? 0}</span></div>
+      </div>
+      <div class="card">
+        <div class="card-head">⚖️ Governor</div>
+        <div class="kv"><span class="dim">Modo</span><span class="tag ${govCls}">${g.mode || '—'}</span></div>
+        <div class="kv"><span class="dim">Razón</span><span>${esc(g.reason || '—')}</span></div>
+        <div class="kv"><span class="dim">Autopatch</span><span>${g.autopatch_allowed ? 'Sí' : 'No'}</span></div>
+        <div class="kv"><span class="dim">Racha limpia</span><span>${g.clean_streak ?? 0}</span></div>
+      </div>
+      <div class="card">
+        <div class="card-head">🌌 Universo</div>
+        <div class="kv"><span class="dim">Knowledge Stars</span><span>${u.knowledge_stars ?? 0}</span></div>
+        <div class="kv"><span class="dim">User Stars</span><span>${u.user_stars ?? 0}</span></div>
+        <div class="kv"><span class="dim">Masa total</span><span>${u.total_mass ?? 0}</span></div>
+        <div class="kv"><span class="dim">Patrones</span><span>${u.pattern_count ?? 0}</span></div>
+        <div class="kv"><span class="dim">Convergencias</span><span>${u.convergences ?? 0}</span></div>
+        <div class="kv"><span class="dim">Memoria profunda</span><span>${u.deep_memory ?? 0}</span></div>
+        <div class="kv"><span class="dim">Errores 24h</span><span>${u.errors_24h ?? 0}</span></div>
+      </div>
     </div>`;
 
     // Layers
-    html += (op.layers || []).map(l => {
-      const cls = l.status === 'active' ? 'tag-ok' : 'tag-warn';
-      return `<div class="layer-row"><span class="layer-id">${l.id}</span> <span>${esc(l.name)}</span> <span class="tag ${cls}">${l.status}</span></div>`;
-    }).join('');
-
-    // System status
-    if (status) {
-      const govCls = status.governor_mode === 'act' ? 'tag-ok' : status.governor_mode === 'recover' ? 'tag-err' : 'tag-warn';
-      html += `<div class="card" style="margin-top:12px">
-        <div class="card-head">System Status</div>
-        <div class="kv"><span class="dim">Governor</span><span class="tag ${govCls}">${status.governor_mode}</span></div>
-        <div class="kv"><span class="dim">Reason</span><span>${esc(status.governor_reason)}</span></div>
-        <div class="kv"><span class="dim">Autopatch</span><span>${status.autopatch_allowed ? 'Yes' : 'No'}</span></div>
-        <div class="kv"><span class="dim">Clean streak</span><span>${status.clean_streak}</span></div>
-        <div class="kv"><span class="dim">Graph</span><span>${status.graph_nodes} nodes / ${status.graph_edges} edges</span></div>
-      </div>`;
+    if (op.layers && op.layers.length > 0) {
+      html += '<div class="card" style="margin-top:12px"><div class="card-head">Operator Layers</div>';
+      html += op.layers.map(l => {
+        const cls = l.status === 'active' ? 'tag-ok' : 'tag-warn';
+        return `<div class="layer-row"><span class="layer-id">${l.id}</span> <span>${esc(l.name)}</span> <span class="tag ${cls}">${l.status}</span></div>`;
+      }).join('');
+      html += '</div>';
     }
 
     // Health
     if (health) {
-      const compHtml = Object.entries(health.components || {}).map(([k, v]) => {
-        const c = (v === 'ok' || v === 'act') ? 'tag-ok' : 'tag-warn';
-        return `<div class="kv"><span class="dim">${k}</span><span class="tag ${c}">${v}</span></div>`;
-      }).join('');
       html += `<div class="card" style="margin-top:12px">
         <div class="card-head">Health</div>
         <div class="kv"><span class="dim">Status</span><span class="tag tag-ok">${health.status}</span></div>
-        <div class="kv"><span class="dim">Version</span><span>${health.version}</span></div>
-        <div class="kv"><span class="dim">Env</span><span>${health.env}</span></div>
         <div class="kv"><span class="dim">Uptime</span><span>${Math.round(health.uptime_seconds)}s</span></div>
-        ${compHtml}
       </div>`;
     }
 
