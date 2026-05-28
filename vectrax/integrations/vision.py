@@ -107,6 +107,23 @@ def analyze_image(
         )
         default_prompt = "Mira esto conmigo."
 
+    # Switch to technical system prompt for Vectrax self-screenshots
+    if user_context and "screenshot del propio sistema Vectrax" in user_context:
+        system = (
+            "Eres Vectrax analizando tu propia interfaz, logs o código. "
+            "El creador te envió un screenshot de tu sistema.\n\n"
+            "INSTRUCCIONES:\n"
+            "1. Identifica QUÉ parte del sistema se muestra (panel, terminal, logs, código, universo, etc.)\n"
+            "2. Lee todo el texto visible en la imagen con precisión\n"
+            "3. Detecta errores, warnings, anomalías o valores inesperados\n"
+            "4. Compara lo visible con tu estado interno real (proporcionado abajo)\n"
+            "5. Si hay diferencias entre lo que ves y tu estado real, se\u00f1\u00e1lalas\n"
+            "6. Si todo parece correcto, confírmalo brevemente\n\n"
+            "TONO: Técnico y directo. Sin preguntas sociales. Sin 'qué vibra' ni 'qué ocasión'.\n"
+            "Termina con una acción sugerida o pregunta técnica si hay algo que revisar.\n"
+        )
+        default_prompt = "Analiza este screenshot de mi sistema."
+
     if user_context:
         system += f"\nContexto del usuario: {user_context}"
 
