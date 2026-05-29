@@ -855,6 +855,19 @@ def enforce_final_answer(
     ui = user_input.strip() if user_input else ""
     raw = raw_response.strip() if raw_response else ""
 
+    # ── ADMIN ACTION TRUNCATION ───────────────────────────────
+    # Admin commands (aprobar, rechazar, tier, /vx) should produce
+    # concise confirmations. If the LLM added filler after the
+    # confirmation, truncate it.
+    _admin_result = _truncate_admin_filler(ui, raw)
+    if _admin_result is not None:
+        final = _enforce_lang(_admin_result, ui, user_id)
+        logger.info(
+            "FINAL | source=admin_truncated | len=%d | input=%r",
+            len(final), ui[:60],
+        )
+        return final
+
     # ── RUTA SOBERANA DE MEMORIA ─────────────────────────────
     if memory_resolved and raw:
         final = enforce_style(raw)
@@ -957,6 +970,67 @@ def _enforce_lang(text: str, user_input: str, user_id: str) -> str:
     except Exception as exc:
         logger.debug("Language gate failed (passthrough): %s", exc)
         return text
+
+
+# ---------------------------------------------------------------------------
+# Admin action truncation
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate the user input is an admin command
+_ADMIN_INPUT_PATTERNS = re.compile(
+    r"^(?:"
+    r"(?:aprobar|approve|rechazar|reject)\s+(?:IDEA|RULE)-[A-F0-9]+"
+    r"|tier\s+(?:free|pro|creator)\s+"
+    r"|/?vx\s+"
+    r"|/?lead\s+"
+    r"|/?team\s+"
+    r"|/?tasks?\s+"
+    r"|/?help\b"
+    r"|/?privacy\b"
+    r"|/?start\b"
+    r"|/?upgrade\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Patterns in the LLM response that confirm the action was done
+_ADMIN_CONFIRM_PATTERNS = re.compile(
+    r"(?:"
+    r"(?:aprobad[ao]|rechazad[ao]|activad[ao]|eliminad[ao]|registrad[ao])"
+    r"|(?:approved|rejected|activated|deleted|registered)"
+    r"|✅|❌|🔵"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _truncate_admin_filler(user_input: str, raw_response: str) -> str | None:
+    """If the user input is an admin command and the response contains
+    a confirmation, truncate everything after the first 1-2 sentences.
+    Returns None if this is not an admin action."""
+    if not user_input or not raw_response:
+        return None
+
+    # Only trigger for admin-pattern inputs
+    if not _ADMIN_INPUT_PATTERNS.match(user_input.strip()):
+        return None
+
+    # Check if response contains a confirmation
+    if not _ADMIN_CONFIRM_PATTERNS.search(raw_response):
+        return None
+
+    # Truncate: keep only the first 2 sentences (the confirmation)
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", raw_response) if s.strip()]
+    if len(sentences) <= 2:
+        return raw_response  # already concise
+
+    # Keep first 2 sentences only
+    truncated = " ".join(sentences[:2])
+    logger.info(
+        "Admin filler truncated: %d sentences → 2 | dropped %d chars",
+        len(sentences), len(raw_response) - len(truncated),
+    )
+    return truncated
 
 
 # Backward compat: apply_identity llama a enforce_final_answer
