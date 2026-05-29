@@ -178,7 +178,8 @@ def _read_live_stats() -> dict:
     try:
         conn = sqlite3.connect(_DB_PATH, timeout=2)
         stats["users"] = conn.execute(
-            "SELECT COUNT(DISTINCT user_id) FROM profiles"
+            "SELECT COUNT(DISTINCT user_id) FROM profiles "
+            "WHERE user_id NOT LIKE 'test:%'"
         ).fetchone()[0]
         stats["interactions"] = conn.execute(
             "SELECT COUNT(*) FROM interactions"
@@ -295,8 +296,9 @@ def build_self_context(lang: str = "es") -> str:
         base = (
             "[VECTRAX SE OBSERVA A SÍ MISMO]\n"
             "Soy Vectrax. Estoy corriendo en producción en un servidor Vultr.\n"
-            f"Tengo {stats['users']} usuarios registrados y "
-            f"{stats['interactions']} interacciones acumuladas.\n"
+            f"DATO EXACTO: Tengo exactamente {stats['users']} usuarios reales registrados y "
+            f"exactamente {stats['interactions']} interacciones acumuladas. "
+            f"NO inventes ni redondees estos números.\n"
             f"Hay {stats['teams']} equipo(s) activo(s) en el sistema.\n"
             "Mi creador es Mario Bravo Castro. Llevamos meses construyendo esto juntos.\n"
             "Lo que tengo activo hoy:\n"
@@ -319,8 +321,9 @@ def build_self_context(lang: str = "es") -> str:
         base = (
             "[VECTRAX OBSERVES ITSELF]\n"
             "I am Vectrax. I'm running in production on a Vultr server.\n"
-            f"I have {stats['users']} registered users and "
-            f"{stats['interactions']} accumulated interactions.\n"
+            f"EXACT DATA: I have exactly {stats['users']} real registered users and "
+            f"exactly {stats['interactions']} accumulated interactions. "
+            f"Do NOT invent or round these numbers.\n"
             f"There are {stats['teams']} active team(s) in the system.\n"
             "My creator is Mario Bravo Castro. We've been building this together for months.\n"
             "What I have active today:\n"
