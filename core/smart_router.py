@@ -582,12 +582,9 @@ class SmartRouter:
 
         # Conflicto o semántico ausente → regex decide solo
         #
-        # Excepción: cuando el semántico dice MEMORY y el regex dice ONLINE,
-        # el semántico tiene prioridad incluso con confianza baja. Motivo:
-        # preguntas sobre memoria personal ("qué te dije?", "recuerdas X?")
-        # contienen question marks/starts que el regex interpreta como
-        # búsqueda online, pero la intención real es acceder a memoria local.
-        # Datos: 80 conflictos memory→online, 16% eran fallback_better.
+        # Excepción 1: semántico=MEMORY vs regex=ONLINE → semántico gana.
+        # Preguntas personales con ? que el regex ve como ONLINE.
+        # IDEA-6B42AC11: 78 conflictos memory→online resueltos aquí.
         if (
             semantic_intent is not None
             and semantic_intent.value == "memory"
@@ -603,6 +600,28 @@ class SmartRouter:
             logger.info(
                 "classify_intent: memory via semantic_memory_rescue "
                 "(sem_conf=%.2f, regex was online)",
+                sem_conf,
+            )
+            return semantic_intent, signals
+
+        # Excepción 2: semántico=PLACE_SEARCH vs regex=MEMORY → semántico gana.
+        # Place queries without explicit search verbs that regex defaults to MEMORY.
+        # IDEA-316106FF: 10 conflictos place_search→memory resueltos aquí.
+        if (
+            semantic_intent is not None
+            and semantic_intent.value == "local"
+            and regex_intent == Intent.MEMORY
+            and sem_conf > 0.25
+        ):
+            signals["classification_method"] = "semantic_place_rescue"
+            signals["regex_agrees"] = False
+            signals["decision_note"] = (
+                f"place rescue: semantic=local(conf={sem_conf:.2f}) "
+                f"overrides regex=memory (place-without-verb pattern)"
+            )
+            logger.info(
+                "classify_intent: local via semantic_place_rescue "
+                "(sem_conf=%.2f, regex was memory)",
                 sem_conf,
             )
             return semantic_intent, signals

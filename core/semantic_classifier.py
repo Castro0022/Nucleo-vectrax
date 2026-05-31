@@ -171,14 +171,27 @@ _FRAME_PATTERNS: List[Tuple[re.Pattern, _Frame, float]] = [
         re.I,
     ), _Frame.SEARCH_PLACE, 0.85),
 
-    # Estructura: sustantivo_lugar + en + CIUDAD
+    # Estructura: sustantivo_lugar (standalone or with context)
+    # Covers both "restaurante en Miami" AND "un restaurante bueno"
+    # Weight 0.82 → 0.82 * 1.25 = 1.025 → conf 0.5125 (> threshold 0.5)
     (re.compile(
-        r"\b(?:restaurantes?|farmacias?|hoteles?|talleres?|mecánicos?|mecanicos?|"
-        r"tiendas?|bancos?|hospitales?|clínicas?|clinicas?|gimnasios?|bares?|"
-        r"cafés?|cafes?|abogados?|dentistas?|veterinarios?|peluquerías?|peluquerias?)\b"
-        r".*\b(?:en|in|de|cerca)\b\s+[A-ZÁÉÍÓÚÑ]",
+        r"\b(?:restaurantes?|farmacias?|hoteles?|talleres?|mec[aá]nicos?|mecanicos?|"
+        r"tiendas?|bancos?|hospitales?|cl[ií]nicas?|clinicas?|gimnasios?|bares?|"
+        r"caf[eé]s?|cafes?|abogados?|dentistas?|veterinarios?|peluquer[ií]as?|peluquerias?|"
+        r"supermercados?|gasolineras?|ferreter[ií]as?|lavanderias?|cerrajeros?|"
+        r"electricistas?|plomeros?|fontaneros?)\b"
+        r".*\b(?:en|in|de|cerca|bueno|buen[ao]|mejor|mejor[ea]s|abierto|abierta|barato|econ[oó]mico)\b",
         re.I,
-    ), _Frame.SEARCH_PLACE, 0.8),
+    ), _Frame.SEARCH_PLACE, 0.82),
+
+    # Sustantivo_lugar + en + CIUDAD (original pattern, higher confidence)
+    (re.compile(
+        r"\b(?:restaurantes?|farmacias?|hoteles?|talleres?|mec[aá]nicos?|mecanicos?|"
+        r"tiendas?|bancos?|hospitales?|cl[ií]nicas?|clinicas?|gimnasios?|bares?|"
+        r"caf[eé]s?|cafes?|abogados?|dentistas?|veterinarios?|peluquer[ií]as?|peluquerias?)\b"
+        r".*\b(?:en|in)\b\s+[A-ZÁÉÍÓÚÑ]",
+        re.I,
+    ), _Frame.SEARCH_PLACE, 0.88),
 
     # Estructura: hay + artículo + sustantivo_lugar + cerca
     (re.compile(
@@ -272,11 +285,11 @@ _FRAME_PATTERNS: List[Tuple[re.Pattern, _Frame, float]] = [
     # === BÚSQUEDA DE INFORMACIÓN GENERAL ===
     # Estructura: verbo_pregunta + qué/quién/cómo/cuándo/cuánto/por qué
     # Peso 0.75: 0.75 * 1.40 (WEB_SEARCH map) = 1.05 → conf 0.525 (> threshold 0.5).
-    # Subido desde 0.70 (0.70*1.40=0.98 → conf 0.49, bajo threshold) para que
-    # preguntas con palabra-interrogativa decidan semánticamente y no caigan a
-    # regex_fallback (responsable de los 78 conflictos general_chat→online).
+    # EXCEPTION: preguntas con pronombres personales (mí, mi, yo, me, I, my)
+    # son MEMORY, no SEARCH_INFO — handled by ASK_MEMORY patterns above.
     (re.compile(
         r"^(?:qu[eé]|qui[eé]n|c[oó]mo|cu[aá]ndo|cu[aá]ntos?|d[oó]nde|por\s+qu[eé]|cu[aá]l)\b"
+        r"(?!.*\b(?:m[ií]s?|yo|me\b|m[ií]o|conmigo|my|I\s))"
         r".*(?:\?|$)",
         re.I,
     ), _Frame.SEARCH_INFO, 0.75),
@@ -290,9 +303,10 @@ _FRAME_PATTERNS: List[Tuple[re.Pattern, _Frame, float]] = [
 
     # English question patterns
     # Peso 0.73: 0.73 * 1.40 = 1.022 → conf 0.511 (> threshold 0.5).
-    # Subido desde 0.65 (0.65*1.40=0.91 → conf 0.455, bajo threshold).
+    # EXCEPTION: personal questions (about me, my, I) are MEMORY.
     (re.compile(
         r"^(?:what|who|where|when|why|how|which|is|are|was|were|do|does|did|can|could|should|would|will)\b"
+        r"(?!.*\b(?:my\b|about\s+me|I\s+(?:said|told|wrote|did|have)))"
         r".*\??\s*$",
         re.I,
     ), _Frame.SEARCH_INFO, 0.73),
