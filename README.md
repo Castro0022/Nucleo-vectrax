@@ -774,9 +774,83 @@ The SmartRouter uses three signals per user to personalize routing decisions:
 
 This scales automatically: as users accumulate patterns via `ingest_v2()`, the router adapts without configuration changes.
 
+## 📈 Precios de Mercado en Tiempo Real
+
+Vectrax integra datos de mercado en tiempo real para todos los usuarios, sin autenticación requerida.
+
+### Fuentes de datos
+
+| Fuente | Activos | Auth | Usuarios |
+|--------|---------|------|----------|
+| **Binance REST** | 20+ criptomonedas | ❌ Ninguna | Todos |
+| **AlphaVantage** | Stocks (AAPL, TSLA...) | API Key | Todos |
+| **eToro API** | Portfolio personal, órdenes | Claves propias | Solo creador |
+
+### Detección multilingüe
+
+El motor detecta preguntas de precios en **7 idiomas** y responde con datos en tiempo real:
+
+```
+# Español
+"Dime cómo está el BTC"      → BTC: $73,901 (↑ +0.14%)
+"precio de ethereum"          → ETH: $2,012 (↓ -0.50%)
+"a cuánto está el bitcoin"   → BTC: $73,901 ...
+
+# English
+"how is bitcoin?"             → BTC: $73,901 (↑ +0.14%)
+"what is the ETH price"      → ETH: $2,012 ...
+
+# Français
+"comment va le BTC"          → BTC: $73,901 ...
+
+# Deutsch
+"Wie steht der Bitcoin"      → BTC: $73,901 ...
+
+# Italiano
+"come va bitcoin"            → BTC: $73,901 ...
+
+# Português
+"como está o btc"            → BTC: $73,901 ...
+
+# Standalone ticker
+"ETH" / "sol" / "btc"       → precio directo
+```
+
+### Criptos soportadas
+
+BTC · ETH · SOL · BNB · ADA · XRP · DOGE · DOT · AVAX · MATIC · LINK · LTC · UNI · SHIB · NEAR · ATOM y más.
+
+### Stocks soportados
+
+AAPL · TSLA · NVDA · MSFT · AMZN · GOOGL · META · NFLX · DIS · SPY · QQQ y más.
+
+### Arquitectura de respuesta
+
+```
+Usuario: "Dime cómo está el BTC"
+    │
+    ├── detect_market_intent()   ← multilingüe, sin LLM
+    │       ↓
+    ├── handle_market_intent()   ← Binance REST (~100ms)
+    │       ↓
+    └── _send()                  ← respuesta directa al usuario
+    
+    Total: ~150ms  (sin pipeline, sin cola)
+```
+
+> **eToro**: Las claves ETORO_API_KEY / ETORO_USER_KEY deben generarse en
+> [api-portal.etoro.com](https://api-portal.etoro.com) con permisos Read+Write.
+> Ver `docs/ETORO_API_SETUP.md` para instrucciones completas.
+
+---
+
 ## 📋 Changelog
 
 ### 2026-05-31
+- **feat: precios de mercado multilingüe** — detección de consultas de precio en ES/EN/FR/DE/IT/PT/NL para 20+ criptos y stocks. Respuesta directa vía Binance REST (~100ms) sin pasar por el pipeline. 20/20 queries detectadas, 0 falsos positivos en smoke test de producción.
+- **feat: eToro Learning Engine** — motor de aprendizaje de mercado completo: `signal_recorder`, `outcome_tracker`, `pattern_memory`, `learning_engine`, `auto_executor`. Ciclo OFF→PAPER→LIVE con límites de riesgo obligatorios (stop-loss 1.5%, max $100/op, shutdown por 3 pérdidas consecutivas). Comandos: `/vx etoro learn` y `/vx etoro auto`.
+- **feat: eToro connector** — cliente REST autenticado, observador de 4 condiciones (PRECIO_EN_ZONA, VOLUMEN_RELATIVO, ALINEACION_TEMPORAL, DIRECCION_TENDENCIA), ejecutor con gate de autorización del creador. Modos STRICT/EXPLORATION.
+- **fix: SSL backoff telegram_gateway** — crashes periódicos (5-9 min) por SSL handshake timeout a nivel C. Fix: backoff exponencial 10-30s desde el 2do SIGALRM consecutivo + reset del watchdog timer. Verificado en producción con SIGALRM real survivido sin crash.
 - **fix: TCP stale heartbeat elimination** — Telegram's load balancer drops keepalive TCP connections at ~3h (10800s). The poll would block on a dead SSL socket, SIGALRM would fire but the SSL shutdown held the GIL, preventing the heartbeat thread from running. The supervisor detected stale heartbeat and killed the process (REPEAT FAILURE #389, every 3h for months). **Fix**: `max_keepalive_connections=0` on the poll HTTP client — every `getUpdates` call uses a fresh TCP+TLS connection. No persistent sockets, no stale connections possible. ~50ms overhead per 30s long-poll is negligible.
 - **feat: admin action truncation** — Identity layer now detects admin commands (`aprobar`, `rechazar`, `tier`, `/vx`, `/lead`, `/team`) and truncates LLM filler after the confirmation to max 2 sentences.
 - **fix: user count accuracy** — `_read_live_stats()` now excludes test profiles (`WHERE user_id NOT LIKE 'test:%'`). Self-context prompt adds explicit anti-hallucination directive (`DATO EXACTO: NO inventes ni redondees estos números`).
