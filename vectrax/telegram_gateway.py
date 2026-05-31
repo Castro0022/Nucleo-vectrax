@@ -1195,6 +1195,29 @@ class TelegramGateway:
                 logger.info("FAST %s | %s → %d ch", uid, text[:30], len(fast))
                 return
 
+            # === MARKET DATA: precios para todos los usuarios, todas las lenguas ===
+            # Usa Binance (sin auth). eToro es solo para cuenta personal del creador.
+            try:
+                from intents.market_intents import detect_market_intent, handle_market_intent
+                _market = detect_market_intent(text)
+                if _market:
+                    _intent, _mparams = _market
+                    _mresult = handle_market_intent(_intent, _mparams)
+                    if _mresult.get("success") and _mresult.get("response"):
+                        try:
+                            from core.language_gate import enforce_language, get_user_language
+                            _mlang = get_user_language(tg_uid, text)
+                            _mresponse = enforce_language(_mresult["response"], _mlang, tg_uid)
+                        except Exception:
+                            _mresponse = _mresult["response"]
+                        self._send(cid, _mresponse)
+                        self._processed += 1
+                        logger.info("MARKET %s | %s %s → %d ch",
+                                    uid, _intent, _mparams, len(_mresponse))
+                        return
+            except Exception as _me:
+                logger.debug("market intent swallowed: %s", _me)
+
             # === SCHEDULING: recordatorios y tareas programadas ===
             if self._detect_schedule(cid, tg_uid, text):
                 self._processed += 1

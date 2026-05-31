@@ -35,59 +35,124 @@ logger = logging.getLogger("vectrax.intents.market")
 
 # ── Intent Detection Patterns ───────────────────────────────────────
 
+# All known crypto tickers (used in standalone + embedded patterns)
+_CRYPTO_TICKERS = (
+    r"btc|bitcoin|ethereum|eth|bnb|binancecoin|sol|solana|ada|cardano"
+    r"|dot|polkadot|avax|avalanche|matic|polygon|link|chainlink|xrp|ripple"
+    r"|doge|dogecoin|shib|shibainu|ltc|litecoin|uni|uniswap|atom|cosmos"
+    r"|near|algo|algorand|ftm|fantom|sand|mana|axs|aave|crv|curve"
+)
+
+# All known stock tickers
+_STOCK_TICKERS = (
+    r"aapl|apple|tsla|tesla|nvda|nvidia|spy|qqq|msft|microsoft|amzn|amazon"
+    r"|goog|google|meta|facebook|baba|alibaba|nflx|netflix|dis|disney"
+    r"|jpm|jpmorgan|gs|goldmansachs|v|visa|ma|mastercard|ko|cocacola"
+)
+
+_ALL_TICKERS = f"(?:{_CRYPTO_TICKERS}|{_STOCK_TICKERS})"
+
 # Standalone crypto ticker pattern ("btc", "bitcoin", "eth" as full message)
 _STANDALONE_CRYPTO = re.compile(
-    r"^\s*(?P<symbol>btc|bitcoin|ethereum|eth|bnb|sol|ada|dot|avax|matic|link|xrp)\s*[?]?\s*$",
+    rf"^\s*(?P<symbol>{_CRYPTO_TICKERS})\s*[?]?\s*$",
     re.IGNORECASE,
 )
 
+# Price/status query verbs — all supported languages
+_STATUS_VERBS = (
+    # Spanish
+    r"c[oó]mo\s+(?:est[aá]|va|anda|qued[oó])|cu[aá]nto\s+(?:vale|cuesta|est[aá])"
+    r"|d[ií]me\s+(?:el\s+)?(?:precio|estado|valor)|a\s+cu[aá]nto\s+est[aá]"
+    r"|precio\s+(?:de[l]?\s+)?|cotizaci[oó]n|qu[eé]\s+tal\s+(?:est[aá]|va)"
+    # English
+    r"|how\s+is|how(?:'s|\s+is)\s+(?:the\s+)?|what(?:'s|\s+is)\s+(?:the\s+)?"
+    r"|price\s+of|current\s+price|tell\s+me\s+(?:the\s+)?price"
+    r"|check\s+|show\s+(?:me\s+)?(?:the\s+)?"
+    # French
+    r"|comment\s+(?:va|est)|quel\s+(?:est\s+le\s+)?prix|c'est\s+quoi\s+le\s+prix"
+    r"|prix\s+(?:du?\s+)?|combien\s+(?:vaut|co.te)"
+    # German
+    r"|wie\s+(?:steht|ist|l.uft|viel\s+kostet)|preis\s+(?:von\s+)?|kurs\s+(?:von\s+)?"
+    r"|was\s+(?:kostet|ist\s+der\s+kurs)"
+    # Italian
+    r"|come\s+(?:va|sta)|quanto\s+(?:vale|costa)|prezzo\s+(?:di\s+)?|che\s+prezzo"
+    # Portuguese
+    r"|como\s+est[aá]|quanto\s+(?:vale|custa|est[aá])|pre[cç]o\s+(?:do?\s+)?"
+    r"|me\s+fala\s+(?:o\s+)?"
+    # Dutch
+    r"|hoe\s+(?:staat|is)|wat\s+is\s+de\s+koers|koers\s+(?:van\s+)?"
+)
+
 MARKET_PATTERNS = {
-    "market_price": re.compile(
-        r"(?:"
-        # "precio de btc", "price of bitcoin"
-        r"(?:precio|price|cotizaci[oó]n|valor|cu[aá]nto (?:vale|cuesta|est[aá]))\s+"
-        r"(?:de[l]?\s+)?(?:of\s+)?(?:el\s+)?(\w+)"
-        # "btc precio", "bitcoin price" (reversed)
-        r"|(\b(?:btc|bitcoin|eth|ethereum|bnb|sol|spy|qqq|aapl|tsla|nvda)\b)\s+"
-        r"(?:precio|price|cotizaci[oó]n|valor)"
-        # "a cuanto esta btc", "a cuanto esta el bitcoin"
-        r"|a\s+cu[aá]nto\s+est[aá]\s+(?:el\s+)?(\w+)"
-        r")",
-        re.IGNORECASE,
-    ),
+    # Natural language: "Dime cómo está el BTC", "How is bitcoin?", "Wie steht ETH?"
     "bitcoin_status": re.compile(
-        r"(?:"
-        r"(?:c[oó]mo\s+(?:est[aá]|va)|status|estado)\s+(?:el\s+)?(?:de[l]?\s+)?(?:btc|bitcoin|eth|ethereum)"
-        r"|(?:btc|bitcoin|eth|ethereum)\s+(?:hoy|now|ahora|status|today)"
-        r")",
+        rf"(?:"
+        rf"(?:{_STATUS_VERBS})\s*(?:el\s+|the\s+|der\s+|le\s+|il\s+|o\s+)?(?:{_CRYPTO_TICKERS})"
+        rf"|(?:{_CRYPTO_TICKERS})\s+(?:hoy|today|now|ahora|aktuell|maintenant|oggi|agora|koers|status|price|precio|preis|prix|prezzo|pre[cç]o|cours)"
+        rf"|dime\s+(?:como|cómo)\s+(?:está|esta)\s+(?:el\s+)?(?:{_CRYPTO_TICKERS})"
+        rf")",
         re.IGNORECASE,
     ),
+    # Price queries: "precio de bitcoin", "price of ETH", "BTC price"
+    "market_price": re.compile(
+        rf"(?:"
+        rf"(?:{_STATUS_VERBS})\s*(?:el\s+|the\s+|der\s+|le\s+|il\s+|o\s+)?(?:{_ALL_TICKERS})"
+        rf"|(?:{_ALL_TICKERS})\s+(?:precio|price|preis|prix|prezzo|pre[cç]o|cours|koers)"
+        rf")",
+        re.IGNORECASE,
+    ),
+    # Stock queries: "cómo está NVDA", "how is Apple"
     "stock_status": re.compile(
-        r"(?:c[oó]mo est[aá]|status|estado)\s+(?:de[l]?\s+)?(?:SPY|QQQ|AAPL|TSLA|NVDA|"
-        r"apple|tesla|nvidia|spy|qqq)\b",
+        rf"(?:"
+        rf"(?:{_STATUS_VERBS})\s*(?:el\s+|the\s+|der\s+|la\s+)?(?:{_STOCK_TICKERS})"
+        rf"|(?:{_STOCK_TICKERS})\s+(?:hoy|today|now|ahora|status|price|precio)"
+        rf")",
         re.IGNORECASE,
     ),
     "market_trend": re.compile(
-        r"(?:tendencia|trend|direcci[oó]n)\s+(?:de[l]?\s+)?(\w+)\s*(\d+[mhd])?",
+        r"(?:tendencia|trend|direcci[oó]n|richtung|tendance|andamento|tend.ncia)\s+(?:de[l]?\s+|of\s+|von\s+|de\s+|di\s+)?(\w+)\s*(\d+[mhd])?",
         re.IGNORECASE,
     ),
     "market_snapshot": re.compile(
-        r"(?:resumen|snapshot|summary|overview|mercado)\s*(?:del?\s+)?(?:mercado)?",
+        r"(?:resumen|snapshot|summary|overview|[uü]bersicht|r[eé]sum[eé]|riepilogo|resumo)\s*(?:del?\s+|du\s+|des?\s+|di\s+|do\s+)?(?:mercado|market|markt|march[eé]|mercato|mercado)?",
         re.IGNORECASE,
     ),
     "watchlist_review": re.compile(
-        r"(?:revisa|review|watchlist|lista)\s*(?:mi\s+)?(?:watchlist|lista)?",
+        r"(?:revisa|review|watchlist|lista|[üu]bersicht)\s*(?:mi\s+)?(?:watchlist|lista)?",
         re.IGNORECASE,
     ),
 }
 
-# Symbol aliases for natural language
+# Symbol aliases — natural language → Binance/stock symbol
 SYMBOL_ALIASES = {
-    "bitcoin": "BTCUSDT", "btc": "BTCUSDT",
-    "ethereum": "ETHUSDT", "eth": "ETHUSDT",
-    "solana": "SOLUSDT", "sol": "SOLUSDT",
-    "apple": "AAPL", "tesla": "TSLA", "nvidia": "NVDA",
-    "spy": "SPY", "qqq": "QQQ",
+    # Crypto
+    "bitcoin": "BTCUSDT",   "btc": "BTCUSDT",
+    "ethereum": "ETHUSDT",  "eth": "ETHUSDT",
+    "solana": "SOLUSDT",    "sol": "SOLUSDT",
+    "bnb": "BNBUSDT",       "binancecoin": "BNBUSDT",
+    "cardano": "ADAUSDT",   "ada": "ADAUSDT",
+    "ripple": "XRPUSDT",    "xrp": "XRPUSDT",
+    "dogecoin": "DOGEUSDT", "doge": "DOGEUSDT",
+    "polkadot": "DOTUSDT",  "dot": "DOTUSDT",
+    "avalanche": "AVAXUSDT","avax": "AVAXUSDT",
+    "polygon": "MATICUSDT", "matic": "MATICUSDT",
+    "chainlink": "LINKUSDT","link": "LINKUSDT",
+    "litecoin": "LTCUSDT",  "ltc": "LTCUSDT",
+    "uniswap": "UNIUSDT",   "uni": "UNIUSDT",
+    "shib": "SHIBUSDT",     "shibainu": "SHIBUSDT",
+    "near": "NEARUSDT",
+    "atom": "ATOMUSDT",     "cosmos": "ATOMUSDT",
+    # Stocks
+    "apple": "AAPL",        "tesla": "TSLA",
+    "nvidia": "NVDA",       "microsoft": "MSFT",
+    "amazon": "AMZN",       "google": "GOOGL",
+    "meta": "META",         "facebook": "META",
+    "netflix": "NFLX",      "disney": "DIS",
+    "spy": "SPY",           "qqq": "QQQ",
+    "msft": "MSFT",         "amzn": "AMZN",
+    "goog": "GOOGL",        "nflx": "NFLX",
+    "aapl": "AAPL",         "tsla": "TSLA",
+    "nvda": "NVDA",
 }
 
 TIMEFRAME_MAP = {
@@ -147,36 +212,51 @@ def _parse_vx_command(text: str) -> Tuple[str, Dict[str, Any]]:
 def _extract_params(intent: str, match: re.Match, text: str) -> Dict[str, Any]:
     """Extract parameters from regex match."""
     params: Dict[str, Any] = {}
+    text_lower = text.lower()
+
+    # Universal symbol scan: always find the best symbol from text
+    def _scan_symbol(default: str = "BTCUSDT") -> str:
+        for alias, sym in SYMBOL_ALIASES.items():
+            if re.search(r'\b' + re.escape(alias) + r'\b', text_lower):
+                return sym
+        return default
 
     if intent == "market_price":
-        # Multiple capture groups: try each one (group 1, 2, 3)
+        # Try capture groups first, fallback to full text scan
         symbol_raw = None
-        for i in range(1, match.lastindex + 1 if match.lastindex else 2):
-            g = match.group(i)
-            if g:
-                symbol_raw = g.strip().lower()
-                break
-        if not symbol_raw:
-            # Fallback: scan text for known aliases
-            for alias in SYMBOL_ALIASES:
-                if alias in text.lower():
-                    symbol_raw = alias
-                    break
-            symbol_raw = symbol_raw or "btc"
-        params["symbol"] = SYMBOL_ALIASES.get(symbol_raw, symbol_raw.upper())
+        try:
+            if match.lastindex:
+                for i in range(1, match.lastindex + 1):
+                    try:
+                        g = match.group(i)
+                        if g:
+                            symbol_raw = g.strip().lower()
+                            break
+                    except IndexError:
+                        pass
+        except Exception:
+            pass
+        if symbol_raw and symbol_raw in SYMBOL_ALIASES:
+            params["symbol"] = SYMBOL_ALIASES[symbol_raw]
+        else:
+            params["symbol"] = _scan_symbol("BTCUSDT")
 
     elif intent == "market_trend":
-        symbol_raw = match.group(1).lower()
-        params["symbol"] = SYMBOL_ALIASES.get(symbol_raw, symbol_raw.upper())
-        tf = match.group(2) if match.lastindex and match.lastindex >= 2 else "1h"
-        params["timeframe"] = TIMEFRAME_MAP.get(tf, "1h") if tf else "1h"
+        try:
+            symbol_raw = match.group(1).lower() if match.lastindex and match.lastindex >= 1 else ""
+            params["symbol"] = SYMBOL_ALIASES.get(symbol_raw, symbol_raw.upper() or "BTCUSDT")
+        except Exception:
+            params["symbol"] = _scan_symbol()
+        try:
+            tf = match.group(2) if match.lastindex and match.lastindex >= 2 else None
+            params["timeframe"] = TIMEFRAME_MAP.get(tf, "1h") if tf else "1h"
+        except Exception:
+            params["timeframe"] = "1h"
 
     elif intent in ("bitcoin_status", "stock_status"):
-        # Extract symbol from text
-        for alias, symbol in SYMBOL_ALIASES.items():
-            if alias in text.lower():
-                params["symbol"] = symbol
-                break
+        params["symbol"] = _scan_symbol(
+            "BTCUSDT" if intent == "bitcoin_status" else "SPY"
+        )
 
     return params
 
