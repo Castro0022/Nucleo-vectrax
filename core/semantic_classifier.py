@@ -40,6 +40,7 @@ class SemanticIntent(str, Enum):
     IDENTITY_QUERY = "identity_query"   # quién soy / mi nombre / datos personales
     GENERAL_CHAT   = "general_chat"     # conversación general / saludo
     SYSTEM_ACTION  = "system_action"    # comando del sistema o acción ejecutable
+    MARKET_QUERY   = "market_query"     # precio, tendencia, análisis de mercado
     MIXED          = "mixed"            # múltiples intenciones detectadas
 
 
@@ -98,6 +99,7 @@ _INTENT_TOOLS: Dict[SemanticIntent, List[str]] = {
     SemanticIntent.IDENTITY_QUERY: ["user_memory", "identity_anchor"],
     SemanticIntent.GENERAL_CHAT:   ["llm"],
     SemanticIntent.SYSTEM_ACTION:  ["command_executor"],
+    SemanticIntent.MARKET_QUERY:   ["market_vigilance", "binance"],
     SemanticIntent.MIXED:          ["llm", "web_search"],
 }
 
@@ -113,6 +115,7 @@ class _Frame(str, Enum):
     SEARCH_PLACE    = "search_place"     # buscar lugar / negocio
     SEARCH_INFO     = "search_info"      # buscar información factual
     SEARCH_NEWS     = "search_news"      # qué pasó / noticias
+    MARKET_DATA     = "market_data"      # precio / tendencia / análisis crypto/stock
     ASK_IDENTITY    = "ask_identity"     # quién soy / mi nombre
     ASK_MEMORY      = "ask_memory"       # qué recuerdas / qué sabes de mí
     STORE_DATA      = "store_data"       # recuérdame / guarda esto
@@ -127,6 +130,51 @@ class _Frame(str, Enum):
 _FRAME_PATTERNS: List[Tuple[re.Pattern, _Frame, float]] = [
     # === COMANDOS explícitos ===
     (re.compile(r"^/\w+", re.I), _Frame.COMMAND, 1.0),
+
+    # === MERCADO (crypto, stocks, análisis) ===
+    # IDEA-57101B43: semántico clasificaba market queries como WEB_SEARCH.
+    # Estos patrones detectan market intent ANTES de SEARCH_INFO.
+    # Peso 0.95: 0.95 * 1.0 = 0.95 → conf 0.475, reforzado por entity boost.
+
+    # "precio de btc", "bitcoin price", "cotización del eth"
+    (re.compile(
+        r"\b(?:precio|price|cotizaci[oó]n|valor|cotizacion)\b"
+        r".*\b(?:btc|bitcoin|eth|ethereum|bnb|sol|ada|dot|xrp|avax|matic|link|"
+        r"spy|qqq|aapl|tsla|nvda|crypto|cripto)\b",
+        re.I,
+    ), _Frame.MARKET_DATA, 0.95),
+
+    # Reversed: "btc precio", "bitcoin hoy", "eth now"
+    (re.compile(
+        r"\b(?:btc|bitcoin|eth|ethereum|bnb|sol|ada|dot|xrp|avax|matic|link)\b"
+        r".*\b(?:precio|price|cotizaci[oó]n|valor|hoy|today|now|ahora|status|"
+        r"tendencia|trend|an[aá]lisis|analysis|momentum|breakout)\b",
+        re.I,
+    ), _Frame.MARKET_DATA, 0.95),
+
+    # "cuánto vale/cuesta btc", "cómo está/va bitcoin"
+    (re.compile(
+        r"\b(?:cu[aá]nto|how\s+much)\b.*\b(?:vale|cuesta|est[aá]|is|costs?)\b"
+        r".*\b(?:btc|bitcoin|eth|ethereum|bnb|sol)\b",
+        re.I,
+    ), _Frame.MARKET_DATA, 0.95),
+    (re.compile(
+        r"\b(?:c[oó]mo|how)\b.*\b(?:est[aá]|va|is|going)\b"
+        r".*\b(?:btc|bitcoin|eth|ethereum|el\s+mercado|the\s+market)\b",
+        re.I,
+    ), _Frame.MARKET_DATA, 0.90),
+
+    # "mercado crypto", "resumen del mercado", "market snapshot"
+    (re.compile(
+        r"\b(?:mercado|market)\b.*\b(?:crypto|cripto|stock|bolsa|resumen|snapshot|estado)\b",
+        re.I,
+    ), _Frame.MARKET_DATA, 0.90),
+
+    # Standalone tickers as full message: "btc", "bitcoin", "eth?"
+    (re.compile(
+        r"^\s*(?:btc|bitcoin|ethereum|eth|bnb|sol|ada|dot|avax|matic|link|xrp)\s*[?]?\s*$",
+        re.I,
+    ), _Frame.MARKET_DATA, 0.95),
 
     # === BÚSQUEDA DE LUGAR ===
     # Estructura: verbo_búsqueda + artículo? + tipo_servicio + ubicación?
@@ -531,14 +579,12 @@ def _extract_entities(text: str, frames: List[Tuple[_Frame, float]]) -> List[Ent
 #   - ASK_MEMORY: 100% success con conf=0.50 → reforzar para margen de seguridad
 #   - STATEMENT: 100% success con conf=0.51 → estable (ya ajustado)
 _FRAME_INTENT_MAP: Dict[_Frame, List[Tuple[SemanticIntent, float]]] = {
-    # SEARCH_PLACE weight subido de 1.0 → 1.25:
-    # Con frame_conf 0.85: 0.85*1.25 = 1.0625 → conf 0.531 (> threshold 0.5).
-    # Antes era 0.85*1.0 = 0.85 → conf 0.425, bajo threshold → regex_fallback
-    # → routing incorrecto a MEMORY (10 conflictos place_search→memory).
-    # Ahora SEARCH_PLACE gana semánticamente incluso sin entidad de categoría.
     _Frame.SEARCH_PLACE:   [(SemanticIntent.PLACE_SEARCH, 1.25)],
     _Frame.SEARCH_INFO:    [(SemanticIntent.WEB_SEARCH, 1.4), (SemanticIntent.GENERAL_CHAT, 0.2)],
     _Frame.SEARCH_NEWS:    [(SemanticIntent.WEB_SEARCH, 1.2)],
+    # MARKET_DATA: peso 1.3 → 0.95*1.3 = 1.235 → conf 0.617 (> threshold 0.5).
+    # Supera WEB_SEARCH (0.75*1.4=1.05 → conf 0.525) cuando ambos matchean.
+    _Frame.MARKET_DATA:    [(SemanticIntent.MARKET_QUERY, 1.3)],
     _Frame.ASK_IDENTITY:   [(SemanticIntent.IDENTITY_QUERY, 1.0)],
     # ASK_MEMORY weight subido de 1.2 → 1.35 para garantizar que gane sobre
     # SEARCH_INFO (0.70*1.40=0.98) cuando ambos frames se detectan simultáneamente
@@ -721,6 +767,7 @@ _INTENT_DESCRIPTIONS: Dict[str, str] = {
     "identity_query": "quién soy, cuál es mi nombre, me conoces, mi identidad",
     "general_chat":   "conversación casual, saludo, nota personal, afirmación",
     "system_action":  "ejecutar comando, crear, modificar, desplegar, configurar",
+    "market_query":   "precio de bitcoin, cotización de ethereum, tendencia de mercado crypto, análisis btc",
 }
 
 _intent_embeddings: Optional[Dict[str, Any]] = None
