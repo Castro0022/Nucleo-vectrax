@@ -1423,6 +1423,7 @@ try:
         _SI.IDENTITY_QUERY: Intent.IDENTITY,
         _SI.GENERAL_CHAT:   Intent.MEMORY,
         _SI.SYSTEM_ACTION:  Intent.COMMAND,
+        _SI.MARKET_QUERY:   Intent.MARKET,
         _SI.MIXED:          Intent.ONLINE,  # mixed → resolver online como safe default
     }
 except ImportError:
