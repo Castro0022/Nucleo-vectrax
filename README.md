@@ -774,6 +774,17 @@ The SmartRouter uses three signals per user to personalize routing decisions:
 
 This scales automatically: as users accumulate patterns via `ingest_v2()`, the router adapts without configuration changes.
 
+## 📋 Changelog
+
+### 2026-05-31
+- **fix: TCP stale heartbeat elimination** — Telegram's load balancer drops keepalive TCP connections at ~3h (10800s). The poll would block on a dead SSL socket, SIGALRM would fire but the SSL shutdown held the GIL, preventing the heartbeat thread from running. The supervisor detected stale heartbeat and killed the process (REPEAT FAILURE #389, every 3h for months). **Fix**: `max_keepalive_connections=0` on the poll HTTP client — every `getUpdates` call uses a fresh TCP+TLS connection. No persistent sockets, no stale connections possible. ~50ms overhead per 30s long-poll is negligible.
+- **feat: admin action truncation** — Identity layer now detects admin commands (`aprobar`, `rechazar`, `tier`, `/vx`, `/lead`, `/team`) and truncates LLM filler after the confirmation to max 2 sentences.
+- **fix: user count accuracy** — `_read_live_stats()` now excludes test profiles (`WHERE user_id NOT LIKE 'test:%'`). Self-context prompt adds explicit anti-hallucination directive (`DATO EXACTO: NO inventes ni redondees estos números`).
+
+### 2026-05-28
+- **feat: public dashboard endpoints** — New `/v1/dashboard/*` routes (no auth required) serving real data from both `vectrax.db` (gravitational) and `user_memory.db` (Telegram): stars, constellations, interactions, users, operator, proposals, audit (118K+ entries).
+- **fix: self-screenshot analysis** — Vectrax self-recognition now bypasses Visual Humanizer and Anti-Repetition Filter. Technical prompt with 5-step structured analysis. `temperature=0.3`, `max_tokens=1000`, `detail=high` for precise OCR. Real-time system metrics injected for comparison.
+
 ## 📄 License
 
 MIT License - See LICENSE file for details
