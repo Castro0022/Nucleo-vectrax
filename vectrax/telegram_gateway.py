@@ -611,6 +611,7 @@ class TelegramGateway:
         else:
             logger.info("Bot started — queue-based polling (heartbeat thread active)")
 
+        _consecutive_sigalrm = 0  # tracks back-to-back SSL timeouts for backoff
         while self._running:
             try:
                 # Refresh poll client if it was closed by watchdog
@@ -651,6 +652,7 @@ class TelegramGateway:
                 updates = d.get("result", []) if d.get("ok") else []
                 self._polls += 1
                 self._errors = 0
+                _consecutive_sigalrm = 0  # reset: successful poll
 
                 if updates:
                     self._last_update_time = time.time()
@@ -726,6 +728,18 @@ class TelegramGateway:
                 self._last_poll_ok = time.time()
                 # Fresh client just created; any pending refresh signal is obsolete.
                 self._needs_poll_refresh = False
+                # SSL_BACKOFF: consecutive SSL timeouts exhaust the 35s watchdog window
+                # because each failed poll consumes time before _last_poll_ok resets.
+                # Sleep with exponential backoff so the watchdog timer stays safe.
+                _consecutive_sigalrm += 1
+                if _consecutive_sigalrm > 1:
+                    _backoff = min(_consecutive_sigalrm * 5, 30)
+                    logger.warning(
+                        "SSL_BACKOFF | consecutive=%d → sleeping %ds before retry",
+                        _consecutive_sigalrm, _backoff,
+                    )
+                    time.sleep(_backoff)
+                    self._last_poll_ok = time.time()  # refresh watchdog after sleep
                 continue
 
             except Exception as e:
