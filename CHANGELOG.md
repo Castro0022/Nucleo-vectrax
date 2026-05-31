@@ -2,7 +2,70 @@
 
 All notable changes to Vectrax are documented in this file.
 
-## [2026-05-22g] — Router Cycle 3 + Fix Generación de Imágenes
+## [2026-05-31] — fix(gateway): SSL backoff para prevenir crashes del telegram_gateway
+
+### Contexto
+El `telegram_gateway` crasheaba periódicamente (cada 5–9 minutos) con exit=1 durante
+ventanas de inestabilidad de red entre el servidor Vultr y `api.telegram.org`.
+El supervisor reiniciaba el proceso correctamente, pero el ciclo se repetía.
+Causa raíz: el SSL handshake de Python (`_ssl.c:999`) se colgaba a nivel C ignorando
+el timeout configurado de 5s en httpx, el SIGALRM disparaba a los 32s, y el WATCHDOG
+mataba el proceso a los 35s antes de que el siguiente poll pudiera completarse.
+
+### Diagnóstico
+```
+16:50:09  WATCHDOG | Poll stuck 37s → os._exit(1)
+16:50:56  SIGALRM  | Poll exceeded 32s — abandoning dead socket
+16:51:59  SIGALRM  | Poll exceeded 32s — abandoning dead socket
+16:52:31  SIGALRM  | Poll exceeded 32s — abandoning dead socket
+16:55:08  ERROR    | httpx.ConnectTimeout: _ssl.c:999: The handshake timed out
+16:55:44  WATCHDOG | Poll stuck 41s → os._exit(1)
+```
+El SIGALRM refrescaba el cliente HTTP y reseteaba `_last_poll_ok`, pero el siguiente
+poll arrancaba inmediatamente y también se colgaba, agotando los 35s del watchdog.
+
+### Cambios — `vectrax/telegram_gateway.py`
+
+**1. Contador de SIGALRM consecutivos** (línea 614)
+- `_consecutive_sigalrm = 0` inicializado antes del loop principal
+
+**2. Reset en poll exitoso** (línea 655)
+- `_consecutive_sigalrm = 0` después de `self._errors = 0` en el path de éxito
+
+**3. Backoff exponencial en handler `_PollTimeout`** (líneas 734–743)
+- Primer SIGALRM: sin cambio (comportamiento anterior)
+- Segundo SIGALRM consecutivo: `sleep(10s)` + refresh watchdog timer
+- Tercero: `sleep(15s)` + refresh
+- Cuarto+: `sleep(20–30s)` + refresh (máximo 30s)
+- Cada sleep llama `self._last_poll_ok = time.time()` para que el WATCHDOG
+  no dispare durante el período de recuperación de red
+
+### Comportamiento antes vs después
+```
+Antes:  SIGALRM → poll inmediato → SIGALRM → WATCHDOG (35s) → os._exit(1)
+Después: SIGALRM → poll → SIGALRM → sleep(10s+reset) → poll → recuperación
+```
+
+### Verificación en producción — 2026-05-31 17:10 UTC
+```
+Contenedor:  vectrax-core  Up 6+ minutos (healthy)  — sin crashes
+Gateway:     STATUS up=0h5m0s | polls=9 | errors=0 | handler_err=0
+Heartbeat:   3s (fresco)
+SIGALRM:     0  |  WATCHDOG: 0  |  ConnectTimeout: 0
+```
+La instancia anterior crasheaba en este mismo punto (5 min). Con el fix, el gateway
+completó 9 polls consecutivos limpios pasada la ventana crítica.
+
+### Archivos modificados
+- `vectrax/telegram_gateway.py` — 3 cambios quirúrgicos en `run()`
+
+### Deploy
+- Fix aplicado directamente en servidor Vultr `140.82.28.181` + sincronizado al repo
+- Container restarted: 2026-05-31 17:05:52 UTC
+
+---
+
+## [2026-05-22g]
 
 ### Contexto
 Sesión enfocada en dos ciclos independientes: (1) reducción de `regex_fallback`
