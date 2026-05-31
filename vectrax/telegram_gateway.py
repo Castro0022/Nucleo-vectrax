@@ -1629,6 +1629,9 @@ class TelegramGateway:
                 else:
                     self._send(cid, "(sin resultados)")
 
+            elif cmd == "etoro":
+                self._handle_vx_etoro(cid, tg_uid, arg)
+
             else:
                 self._send(cid, f"Comando /vx {cmd} no reconocido. Usa /vx help.")
 
@@ -2117,6 +2120,447 @@ class TelegramGateway:
         except Exception as e:
             self._send(cid, f"Error: {e}")
             logger.error("team cmd error: %s", e)
+
+    # == eToro commands (/vx etoro) ========================================
+
+    def _handle_vx_etoro(self, cid: int, tg_uid: str, arg: str) -> None:
+        """
+        /vx etoro <subcmd> [args]
+
+        portfolio               — portfolio actual (cash, invertido, PnL, equity)
+        price <symbol>          — precio bid/ask del instrumento
+        status <symbol> [buy|sell] — evalúa las 4 condiciones del observador
+        positions               — posiciones abiertas
+        buy <symbol> <monto> [sl] [tp]  — abrir posición larga (creator only)
+        sell <symbol> <monto> [sl] [tp] — abrir posición corta (creator only)
+        close <position_id> <symbol>    — cerrar posición (creator only)
+        mode [strict|explore]   — cambiar modo del observador
+        env [demo|real]         — ver/cambiar entorno de trading
+        history                 — últimas operaciones del audit log
+        connect                 — verificar conectividad con la API
+        """
+        parts = arg.split(None, 3) if arg else []
+        sub   = parts[0].lower() if parts else "portfolio"
+        rest  = parts[1:]
+
+        try:
+            if sub in ("", "help"):
+                self._send(cid, (
+                    "📈 /vx etoro — eToro Engine\n\n"
+                    "portfolio           — cash, PnL, equity\n"
+                    "price <symbol>      — precio actual\n"
+                    "status <sym> [buy]  — 4 condiciones del observador\n"
+                    "positions           — posiciones abiertas\n"
+                    "buy <sym> <$> [sl] [tp]  — comprar\n"
+                    "sell <sym> <$> [sl] [tp] — vender\n"
+                    "close <pos_id> <sym>     — cerrar posición\n"
+                    "mode strict|explore — modo del observador\n"
+                    "env                 — ver entorno (demo/real)\n"
+                    "history             — audit log\n"
+                    "connect             — verificar API"
+                ))
+                return
+
+            # ── connect ──────────────────────────────────────────────────
+            if sub == "connect":
+                from connectors.etoro.etoro_client import healthcheck
+                r = healthcheck()
+                env_label = "🟢 DEMO" if r.get("environment", "demo") == "demo" else "🔴 REAL"
+                if r.get("success"):
+                    self._send(cid, (
+                        f"✅ eToro API conectada\n"
+                        f"Entorno: {env_label}\n"
+                        f"Latencia: {r.get('latency_ms', '?')}ms\n"
+                        f"{r.get('test_result', '')}"
+                    ))
+                else:
+                    self._send(cid, f"❌ Error: {r.get('error', 'desconocido')}")
+                return
+
+            # ── env ───────────────────────────────────────────────────────
+            if sub == "env":
+                import os as _os
+                current = _os.environ.get("ETORO_ENVIRONMENT", "demo")
+                if rest:
+                    new_env = rest[0].lower()
+                    if new_env in ("demo", "real"):
+                        _os.environ["ETORO_ENVIRONMENT"] = new_env
+                        warn = "\n⚠️ OPERACIONES CON DINERO REAL" if new_env == "real" else ""
+                        self._send(cid, f"✅ Entorno cambiado a: {new_env.upper()}{warn}")
+                    else:
+                        self._send(cid, "Uso: /vx etoro env demo | real")
+                else:
+                    label = "🟢 DEMO (seguro)" if current == "demo" else "🔴 REAL (dinero real)"
+                    self._send(cid, f"Entorno actual: {label}")
+                return
+
+            # ── portfolio ─────────────────────────────────────────────────
+            if sub == "portfolio":
+                from connectors.etoro.etoro_client import get_portfolio
+                r = get_portfolio()
+                if not r.get("success"):
+                    self._send(cid, f"❌ Error: {r.get('error')}")
+                    return
+                env_label = "🟢 DEMO" if r["environment"] == "demo" else "🔴 REAL"
+                pnl_icon = "📈" if r["pnl"] >= 0 else "📉"
+                self._send(cid, (
+                    f"💼 Portfolio eToro — {env_label}\n\n"
+                    f"💵 Cash disponible: ${r['credit']:,.2f}\n"
+                    f"📊 Invertido:       ${r['invested']:,.2f}\n"
+                    f"{pnl_icon} PnL no realizado: ${r['pnl']:+,.2f}\n"
+                    f"⚖️  Equity total:    ${r['equity']:,.2f}\n"
+                    f"📌 Posiciones:      {r['n_positions']}"
+                ))
+                return
+
+            # ── price ─────────────────────────────────────────────────────
+            if sub == "price":
+                if not rest:
+                    self._send(cid, "Uso: /vx etoro price <SYMBOL>")
+                    return
+                symbol = rest[0].upper()
+                from connectors.etoro.etoro_client import get_instrument_id, get_price
+                self._send(cid, f"⏳ Consultando {symbol}...")
+                iid = get_instrument_id(symbol)
+                if not iid:
+                    self._send(cid, f"Instrumento '{symbol}' no encontrado en eToro.")
+                    return
+                r = get_price(iid)
+                if not r.get("success"):
+                    self._send(cid, f"❌ Error: {r.get('error')}")
+                    return
+                spread = round(r["ask"] - r["bid"], 5)
+                self._send(cid, (
+                    f"💲 {symbol}\n"
+                    f"Ask: {r['ask']}\n"
+                    f"Bid: {r['bid']}\n"
+                    f"Mid: {r['mid']}\n"
+                    f"Spread: {spread}\n"
+                    f"Latencia: {r['latency_ms']:.0f}ms"
+                ))
+                return
+
+            # ── positions ─────────────────────────────────────────────────
+            if sub == "positions":
+                from connectors.etoro.etoro_client import get_portfolio
+                r = get_portfolio()
+                if not r.get("success"):
+                    self._send(cid, f"❌ Error: {r.get('error')}")
+                    return
+                positions = r.get("positions", [])
+                if not positions:
+                    self._send(cid, "No hay posiciones abiertas.")
+                    return
+                env_label = "🟢 DEMO" if r["environment"] == "demo" else "🔴 REAL"
+                lines = [f"📌 Posiciones abiertas ({env_label}):\n"]
+                for p in positions[:10]:
+                    pnl = p.get("unrealizedPnL", {}).get("pnL", 0)
+                    pnl_icon = "📈" if pnl >= 0 else "📉"
+                    direction = "LONG" if p.get("isBuy", True) else "SHORT"
+                    lines.append(
+                        f"{pnl_icon} {p.get('instrumentID', '?')} [{direction}]\n"
+                        f"   Amount: ${p.get('amount', 0):,.2f} | PnL: ${pnl:+,.2f}"
+                    )
+                self._send(cid, "\n".join(lines))
+                return
+
+            # ── status (market observer) ───────────────────────────────────
+            if sub == "status":
+                if not rest:
+                    self._send(cid, "Uso: /vx etoro status <SYMBOL> [buy|sell]")
+                    return
+                symbol    = rest[0].upper()
+                direction = rest[1].lower() if len(rest) > 1 else "buy"
+                if direction not in ("buy", "sell"):
+                    direction = "buy"
+                self._send(cid, f"⏳ Evaluando {symbol} ({direction.upper()})...")
+                from connectors.etoro.market_observer import evaluate, format_scenario
+                result = evaluate(symbol=symbol, direction=direction)
+                self._send(cid, format_scenario(result))
+                return
+
+            # ── mode ─────────────────────────────────────────────────────
+            if sub == "mode":
+                from connectors.etoro.market_observer import set_mode, get_mode
+                if rest:
+                    new_mode = set_mode(rest[0])
+                    icons = {"strict": "🔒", "exploration": "🔬"}
+                    self._send(cid, (
+                        f"{icons.get(new_mode.value, '⚙️')} Modo cambiado a: "
+                        f"{new_mode.value.upper()}\n"
+                        + ("Requiere 4/4 condiciones." if new_mode.value == "strict"
+                           else "Permite entrada con 3/4 condiciones (máx 25%).")
+                    ))
+                else:
+                    current = get_mode()
+                    icons = {"strict": "🔒", "exploration": "🔬"}
+                    self._send(cid, f"Modo actual: {icons.get(current.value, '⚙️')} {current.value.upper()}")
+                return
+
+            # ── buy ──────────────────────────────────────────────────────
+            if sub == "buy":
+                if len(rest) < 2:
+                    self._send(cid, "Uso: /vx etoro buy <SYMBOL> <monto> [stop_loss] [take_profit]")
+                    return
+                symbol = rest[0].upper()
+                try:
+                    amount = float(rest[1])
+                except ValueError:
+                    self._send(cid, "Monto inválido.")
+                    return
+                sl = float(rest[2]) if len(rest) > 2 else None
+                tp = float(rest[3]) if len(rest) > 3 else None
+                from connectors.etoro.trade_executor import execute_open
+                self._send(cid, f"⏳ Ejecutando BUY {symbol} ${amount:.2f}...")
+                result = execute_open(
+                    user_id=tg_uid, symbol=symbol, amount=amount,
+                    is_buy=True, stop_loss=sl, take_profit=tp,
+                )
+                self._send(cid, result.to_telegram())
+                logger.info("ETORO BUY %s | %s $%.2f | %s", tg_uid[:15], symbol, amount,
+                            "OK" if result.success else result.error)
+                return
+
+            # ── sell ─────────────────────────────────────────────────────
+            if sub == "sell":
+                if len(rest) < 2:
+                    self._send(cid, "Uso: /vx etoro sell <SYMBOL> <monto> [stop_loss] [take_profit]")
+                    return
+                symbol = rest[0].upper()
+                try:
+                    amount = float(rest[1])
+                except ValueError:
+                    self._send(cid, "Monto inválido.")
+                    return
+                sl = float(rest[2]) if len(rest) > 2 else None
+                tp = float(rest[3]) if len(rest) > 3 else None
+                from connectors.etoro.trade_executor import execute_open
+                self._send(cid, f"⏳ Ejecutando SELL {symbol} ${amount:.2f}...")
+                result = execute_open(
+                    user_id=tg_uid, symbol=symbol, amount=amount,
+                    is_buy=False, stop_loss=sl, take_profit=tp,
+                )
+                self._send(cid, result.to_telegram())
+                logger.info("ETORO SELL %s | %s $%.2f | %s", tg_uid[:15], symbol, amount,
+                            "OK" if result.success else result.error)
+                return
+
+            # ── close ────────────────────────────────────────────────────
+            if sub == "close":
+                if len(rest) < 2:
+                    self._send(cid, "Uso: /vx etoro close <position_id> <SYMBOL>")
+                    return
+                position_id = rest[0]
+                symbol      = rest[1].upper()
+                from connectors.etoro.trade_executor import execute_close
+                self._send(cid, f"⏳ Cerrando posición {position_id}...")
+                result = execute_close(
+                    user_id=tg_uid, position_id=position_id, symbol=symbol
+                )
+                self._send(cid, result.to_telegram())
+                return
+
+            # ── history ──────────────────────────────────────────────────
+            if sub == "history":
+                from connectors.etoro.trade_executor import get_audit_log
+                records = get_audit_log(limit=10)
+                if not records:
+                    self._send(cid, "Sin historial de operaciones.")
+                    return
+                lines = ["📋 Audit log eToro (últimas 10 entradas):\n"]
+                import datetime as _dt
+                for r in records:
+                    ts = r.get("timestamp", 0)
+                    t_str = _dt.datetime.utcfromtimestamp(ts).strftime("%m/%d %H:%M") if ts else "?"
+                    action = r.get("action", "?")
+                    symbol = r.get("symbol", r.get("position_id", "?"))
+                    ok = "✅" if r.get("success") else ("❌" if "success" in r else "📝")
+                    lines.append(f"{ok} {t_str} {action} {symbol}")
+                self._send(cid, "\n".join(lines))
+                return
+
+            # ── learn ─────────────────────────────────────────────────────
+            if sub == "learn":
+                learn_sub = rest[0].lower() if rest else "status"
+                learn_arg = rest[1] if len(rest) > 1 else ""
+
+                if learn_sub == "status":
+                    from connectors.etoro.learning_engine import get_learning_status
+                    self._send(cid, get_learning_status())
+
+                elif learn_sub == "run":
+                    syms = learn_arg.upper().split(",") if learn_arg else None
+                    self._send(cid, "⏳ Ejecutando ciclo de aprendizaje...")
+                    from connectors.etoro.learning_engine import run_learning_cycle
+                    r = run_learning_cycle(symbols=syms)
+                    self._send(cid, (
+                        f"✅ Ciclo completado en {r['elapsed_s']}s\n"
+                        f"📡 Señales registradas:  {r['signals_recorded']}\n"
+                        f"🔍 Outcomes resueltos:   {r['outcomes_resolved']} "
+                        f"(✅{r['outcomes_wins']} ❌{r['outcomes_losses']})\n"
+                        f"🧠 Patrones:             {r['patterns_total']} total, "
+                        f"{r['patterns_usable']} usables\n"
+                        f"📋 Propuestas nuevas:    {r['proposals_new']}"
+                    ))
+
+                elif learn_sub == "signals":
+                    from connectors.etoro.signal_recorder import load_signals, get_signal_stats
+                    import datetime as _dt
+                    stats = get_signal_stats()
+                    signals = load_signals(limit=8)
+                    icons = {"pending": "⏳", "win": "✅", "loss": "❌",
+                             "neutral": "⚪", "expired": "⏳"}
+                    lines = [
+                        f"📡 Señales — Total:{stats['total']} "
+                        f"WR:{stats['win_rate']}%\n"
+                    ]
+                    for s in reversed(signals):
+                        ts = _dt.datetime.utcfromtimestamp(s.timestamp).strftime("%m/%d %H:%M")
+                        ret = f" {s.return_pct:+.2f}%" if s.return_pct is not None else ""
+                        lines.append(
+                            f"{icons.get(s.status,'?')} {ts} "
+                            f"{s.direction.upper()} {s.symbol}{ret}"
+                        )
+                    self._send(cid, "\n".join(lines))
+
+                elif learn_sub == "outcomes":
+                    from connectors.etoro.outcome_tracker import format_outcomes_panel
+                    self._send(cid, format_outcomes_panel())
+
+                elif learn_sub == "patterns":
+                    from connectors.etoro.pattern_memory import format_patterns_panel
+                    self._send(cid, format_patterns_panel())
+
+                elif learn_sub == "proposals":
+                    from connectors.etoro.learning_engine import format_proposals_panel
+                    self._send(cid, format_proposals_panel())
+
+                else:
+                    self._send(cid, (
+                        "📚 /vx etoro learn <sub>\n"
+                        "  status    — estado del motor\n"
+                        "  run [SYM] — ejecutar ciclo completo\n"
+                        "  signals   — señales recientes\n"
+                        "  outcomes  — resultados vs predicciones\n"
+                        "  patterns  — memoria estadística\n"
+                        "  proposals — propuestas generadas"
+                    ))
+                return
+
+            # ── auto ──────────────────────────────────────────────────────
+            if sub == "auto":
+                auto_sub = rest[0].lower() if rest else "status"
+                auto_args = rest[1:]
+
+                if auto_sub == "status":
+                    from connectors.etoro.auto_executor import format_auto_status
+                    self._send(cid, format_auto_status())
+
+                elif auto_sub == "paper":
+                    from connectors.etoro.auto_executor import activate_paper
+                    self._send(cid, activate_paper())
+
+                elif auto_sub == "live":
+                    from connectors.etoro.auto_executor import activate_live
+                    self._send(cid, activate_live(tg_uid))
+
+                elif auto_sub == "off":
+                    from connectors.etoro.auto_executor import deactivate
+                    deactivate(reason="manual por creador")
+                    self._send(cid, "⚫ Auto-executor desactivado (OFF).")
+
+                elif auto_sub == "exec":
+                    # Execute a specific proposal: /vx etoro auto exec PROP-ID [amount]
+                    if not auto_args:
+                        self._send(cid, "Uso: /vx etoro auto exec <PROP-ID> [monto]")
+                        return
+                    pid = auto_args[0]
+                    amt = float(auto_args[1]) if len(auto_args) > 1 else None
+                    from connectors.etoro.auto_executor import execute_proposal
+                    self._send(cid, f"⏳ Ejecutando propuesta {pid}...")
+                    r = execute_proposal(proposal_id=pid, amount_usd=amt)
+                    if r.get("success"):
+                        mode_icon = "🟡 PAPER" if r["mode"] == "paper" else "🔴 LIVE"
+                        self._send(cid, (
+                            f"✅ Ejecutado ({mode_icon})\n"
+                            f"{r['direction'].upper()} {r['symbol']} "
+                            f"${r['amount_usd']:.0f}\n"
+                            f"Entry: {r['entry_price']:.5g}\n"
+                            f"SL: {r['stop_loss']:.5g} | TP: {r['take_profit']:.5g}"
+                            + (f"\nOrder: {r.get('order_id')}" if r.get('order_id') else "")
+                        ))
+                    else:
+                        self._send(cid, f"❌ {r.get('error', 'Error desconocido')}")
+
+                elif auto_sub == "config":
+                    # View or set risk limits: /vx etoro auto config [key value]
+                    from connectors.etoro.auto_executor import get_config, update_config
+                    if len(auto_args) >= 2:
+                        key, val = auto_args[0], auto_args[1]
+                        allowed_keys = {
+                            "max_position_usd", "max_daily_loss_usd",
+                            "stop_loss_pct", "max_consecutive_losses",
+                            "max_positions_open", "min_paper_signals", "min_paper_win_rate"
+                        }
+                        if key not in allowed_keys:
+                            self._send(cid, f"Clave inválida. Permitidas: {', '.join(sorted(allowed_keys))}")
+                            return
+                        try:
+                            numeric = float(val)
+                            if key in ("max_consecutive_losses", "max_positions_open",
+                                       "min_paper_signals"):
+                                numeric = int(numeric)
+                            update_config({key: numeric})
+                            self._send(cid, f"✅ {key} = {numeric}")
+                        except ValueError:
+                            self._send(cid, "Valor inválido.")
+                    else:
+                        cfg = get_config()
+                        lines = ["⚙️ Config límites de riesgo:\n"]
+                        risk_keys = [
+                            "max_position_usd", "max_daily_loss_usd", "stop_loss_pct",
+                            "max_consecutive_losses", "max_positions_open",
+                            "min_paper_signals", "min_paper_win_rate",
+                        ]
+                        for k in risk_keys:
+                            lines.append(f"  {k}: {cfg.get(k)}")
+                        lines.append("\nUso: /vx etoro auto config <clave> <valor>")
+                        self._send(cid, "\n".join(lines))
+
+                elif auto_sub == "paper_log":
+                    from connectors.etoro.auto_executor import get_paper_trades
+                    import datetime as _dt
+                    trades = get_paper_trades(limit=10)
+                    if not trades:
+                        self._send(cid, "Sin paper trades registrados.")
+                        return
+                    lines = [f"🟡 Paper trades ({len(trades)}):\n"]
+                    for t in reversed(trades):
+                        ts = _dt.datetime.utcfromtimestamp(t.timestamp).strftime("%m/%d %H:%M")
+                        lines.append(
+                            f"📄 {ts} {t.direction.upper()} {t.symbol} "
+                            f"${t.amount_usd:.0f} @ {t.entry_price:.5g}"
+                        )
+                    self._send(cid, "\n".join(lines))
+
+                else:
+                    self._send(cid, (
+                        "🤖 /vx etoro auto <sub>\n"
+                        "  status         — estado del auto-executor\n"
+                        "  paper           — activar simulación\n"
+                        "  live            — activar ejecución real (requiere fase)\n"
+                        "  off             — desactivar\n"
+                        "  exec <ID> [$]   — ejecutar propuesta\n"
+                        "  config [k v]    — ver/cambiar límites de riesgo\n"
+                        "  paper_log       — historial de trades simulados"
+                    ))
+                return
+
+            self._send(cid, f"Subcomando '{sub}' no reconocido. Usa /vx etoro help.")
+
+        except Exception as e:
+            self._send(cid, f"Error eToro: {e}")
+            logger.error("/vx etoro %s error: %s", sub, e)
 
     def _build_monitor_panel(self) -> str:
         """Construye el panel de monitoreo compacto con números."""
