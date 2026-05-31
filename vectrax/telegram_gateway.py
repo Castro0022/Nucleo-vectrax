@@ -69,7 +69,7 @@ RESPONSE_WAIT_TIMEOUT = 25.0
 WORKERS = 6
 HEARTBEAT_INTERVAL = 10  # seconds between heartbeat writes
 STATUS_LOG_INTERVAL = 300  # log status summary every 5 min
-POLL_CLIENT_REFRESH = 1800  # recreate HTTP client every 30 min to avoid stale TCP
+POLL_CLIENT_REFRESH = 900   # recreate HTTP client every 15 min (defense in depth)
 # POLL_STUCK_THRESHOLD: watchdog kills process if poll hasn't completed in N seconds.
 # Must be > POLL_ALARM_TIMEOUT (32s) to give SIGALRM time to fire first,
 # but low enough to catch cases where SIGALRM can't interrupt C-level code.
@@ -139,14 +139,17 @@ class TelegramGateway:
     @staticmethod
     def _make_poll_client() -> httpx.Client:
         """Create a fresh HTTP client for long-polling.
-        Uses max_keepalive_connections=1 to minimize stale TCP connections.
+
+        KEY FIX: max_keepalive_connections=0 forces a fresh TCP+TLS
+        connection for every poll. This eliminates stale socket issues
+        caused by Telegram's load balancer dropping connections at ~3h.
+        The ~50ms overhead per poll is negligible for 30s long-polls.
         """
         return httpx.Client(
-            timeout=httpx.Timeout(POLL_TIMEOUT + 10, connect=10),
+            timeout=httpx.Timeout(POLL_TIMEOUT + 5, connect=5),
             limits=httpx.Limits(
-                max_connections=5,
-                max_keepalive_connections=1,
-                keepalive_expiry=300,  # 5 min max for idle connections
+                max_connections=2,
+                max_keepalive_connections=0,  # NO keepalive — fresh TCP every poll
             ),
         )
 
