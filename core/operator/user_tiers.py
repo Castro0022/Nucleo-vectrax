@@ -420,6 +420,28 @@ def activate_trial(user_id: str, days: int = 7) -> float:
     return trial_end
 
 
+def start_trial_if_new(user_id: str, days: int = 7) -> bool:
+    """
+    Activar trial de 7 días solo si el usuario no tiene uno previo.
+    Se llama en el primer mensaje (activación instantánea).
+    Retorna True si se activó, False si ya tenía trial.
+    """
+    try:
+        conn = _conn()
+        row = conn.execute(
+            "SELECT trial_end FROM user_tiers WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        conn.close()
+        # Si ya tiene trial (mayor que 0), no reiniciar
+        if row and row[0] and float(row[0]) > 0:
+            return False
+    except Exception:
+        pass
+    # Sin trial previo → activar
+    activate_trial(user_id, days=days)
+    return True
+
+
 def activate_trial_for_all(days: int = 7) -> int:
     """
     Activate a free trial for ALL existing users.
