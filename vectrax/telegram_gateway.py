@@ -887,26 +887,34 @@ class TelegramGateway:
                 self._processed += 1
                 return
 
-            # === ONBOARDING — dos pasos: presencia → nombre ===
+            # === ONBOARDING — activación instantánea ===
+            # El primer mensaje activa al usuario automáticamente.
+            # Sin pedir nombre, sin pasos intermedios, sin fricción.
+            # El nombre puede aprenderse luego desde la conversación.
             _ob = self._get_onboarding_state(tg_uid)
 
-            # Paso 1: usuario nuevo → presencia pura, sin comandos, esperar nombre
             if _ob["state"] == "none":
-                self._send_presence(cid, tg_uid)
-                return
+                # Activar sin bloquear: crear perfil y continuar procesando el mensaje
+                self._activate_instant(cid, tg_uid)
+                # No return — el mensaje sigue procesándose normalmente
 
-            # Paso 2: esperando nombre → cualquier mensaje no-comando es el nombre
-            if _ob["state"] == "awaiting_name" and not _t.startswith("/"):
-                self._complete_onboarding(cid, tg_uid, _t)
-                return
+            elif _ob["state"] == "awaiting_name" and not _t.startswith("/"):
+                # Usuario en estado legacy: salir del limbo silenciosamente
+                try:
+                    from vectrax.onboarding import set_completed
+                    set_completed(tg_uid, "")
+                except Exception:
+                    pass
+                # No return — el mensaje sigue procesándose
 
-            # /start → comportamiento según estado
+            # /start → saludo sin bloquear
             if _t.lower() in ("/start", "start"):
-                if _ob["state"] == "completed":
-                    _name = _ob.get("name", "")
-                    self._send(cid, f"Ya estoy aqu\u00ed, {_name}." if _name else "Ya estoy aqu\u00ed.")
-                else:
-                    self._send_presence(cid, tg_uid)
+                try:
+                    from vectrax.user_memory import get_user_profile
+                    _name = get_user_profile(tg_uid).get("name", "")
+                except Exception:
+                    _name = ""
+                self._send(cid, f"Hola{f', {_name}' if _name else ''}. Vectrax activo.")
                 return
 
             # === IDIOMA — preguntar si ambiguo, resolver si respuesta pendiente ===
@@ -1877,6 +1885,27 @@ class TelegramGateway:
         except Exception as exc:
             logger.debug("onboarding get_state failed: %s", exc)
             return {"state": "none", "name": "", "welcome_sent": False}
+
+    def _activate_instant(self, cid: int, tg_uid: str) -> None:
+        """
+        Activación instantánea en el primer mensaje.
+        Sin pedir nombre, sin registro, sin pasos intermedios.
+        El trial de 7 días empieza aqui.
+        """
+        try:
+            from vectrax.onboarding import set_completed
+            set_completed(tg_uid, "")   # activar sin nombre
+        except Exception as exc:
+            logger.debug("activate_instant onboarding failed: %s", exc)
+
+        # Iniciar el contador del trial de 7 días desde el primer mensaje
+        try:
+            from core.operator.user_tiers import start_trial_if_new
+            start_trial_if_new(tg_uid)
+        except Exception:
+            pass
+
+        logger.info("ACTIVATE instant | user=%s", tg_uid[:20])
 
     def _send_presence(self, cid: int, tg_uid: str) -> None:
         """
