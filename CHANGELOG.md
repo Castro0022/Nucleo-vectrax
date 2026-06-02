@@ -2,7 +2,25 @@
 
 All notable changes to Vectrax are documented in this file.
 
-## [2026-05-31] — fix(gateway): SSL backoff para prevenir crashes del telegram_gateway
+## [2026-06-02] — Producción: env fix + onboarding sin fricción + auditoría
+
+### Correcciones de producción
+- **fix(config): VX_ENV=production** — Health endpoint devolvía `env:dev` porque `os.getenv()` evalúa antes de `dotenv`. Fix: variable añadida al bloque `environment:` de `docker-compose.yml`. Verificado: `/health` retorna `env:production`.
+- **fix(db): test_webhook_user eliminado de billing.db** — Registro simulado de pruebas de Stripe eliminado. DB limpia con 1 registro real (creador).
+
+### Nuevas funcionalidades
+- **feat(onboarding): activación instantánea** — El gate de nombre obligatorio bloqueaba al 87% de los usuarios. Nuevo flujo: primer mensaje activa al usuario automáticamente sin fricción, inicia trial 7 días y registra en tracker de reentry. Los 26 usuarios bloqueados en `awaiting_name` se liberan en su próximo mensaje.
+- **feat(reentry): backfill 13 usuarios** — Solo 5 de 30 usuarios estaban en el tracker reentry 12-20h. Se agregaron 13 faltantes. Resultado: 7 mensajes reentry enviados automáticamente por meta_loop.
+
+### Auditoría integral (14 módulos)
+- Estado: **93% salud** — 12/14 módulos OK, 2/14 WARN
+- WARN: Learner (22 ideas pendientes de aprobación del creador)
+- WARN: Conversión (0% FREE→PRO — onboarding corregido hoy)
+- OK: Infraestructura · DB · Gateway · Broadcast · Router · Memoria · Observer · Governor · Scheduler · Cola · Stripe · Panel
+
+---
+
+## [2026-05-31]
 
 ### Contexto
 El `telegram_gateway` crasheaba periódicamente (cada 5–9 minutos) con exit=1 durante
