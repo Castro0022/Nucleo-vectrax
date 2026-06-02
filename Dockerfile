@@ -39,10 +39,12 @@ RUN if [ -d /app/.git ]; then \
         echo "[build] no .git — created /app/.git_snapshot fallback"; \
     fi
 
-RUN mkdir -p /app/vault /root/.vectrax
+RUN mkdir -p /app/vault /root/.vectrax \
+    && ln -sfn /app /root/Vectrax
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
+ENV VECTRAX_VAULT_DIR=/app/vault
 
 EXPOSE 8900
 

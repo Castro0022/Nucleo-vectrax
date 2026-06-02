@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 # Constants
 # ---------------------------------------------------------------------------
 
-VAULT_DIR = os.path.join(os.path.expanduser("~/Vectrax"), "vault")
+VAULT_DIR = os.environ.get("VECTRAX_VAULT_DIR", os.path.join(os.path.expanduser("~/Vectrax"), "vault"))
 LEDGER_PATH = os.path.join(VAULT_DIR, "causal_ledger.jsonl")
 
 

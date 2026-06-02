@@ -14,7 +14,10 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
-VAULT_DIR = os.path.join(os.path.expanduser("~/Vectrax"), "vault")
+VAULT_DIR = os.environ.get(
+    "VECTRAX_VAULT_DIR",
+    os.path.join(os.path.expanduser("~"), "Vectrax", "vault"),
+)
 LEDGER_PATH = os.path.join(VAULT_DIR, "audit_ledger.db")
 
 _CREATE_TABLE = """
