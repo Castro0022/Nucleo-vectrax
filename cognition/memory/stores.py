@@ -25,7 +25,10 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("vectrax.cognition.memory.stores")
 
-VAULT_DIR = os.path.join(os.path.expanduser("~"), "Vectrax", "vault")
+VAULT_DIR = os.environ.get(
+    "VECTRAX_VAULT_DIR",
+    os.path.join(os.path.expanduser("~"), "Vectrax", "vault"),
+)
 
 MAX_SIGNAL_HISTORY = 500
 MAX_ERROR_HISTORY = 200

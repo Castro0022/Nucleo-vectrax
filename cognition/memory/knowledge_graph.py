@@ -20,7 +20,7 @@ from cognition.types import KnowledgeNodeType
 
 logger = logging.getLogger("vectrax.cognition.memory.knowledge_graph")
 
-VAULT_DIR = os.path.join(os.path.expanduser("~"), "Vectrax", "vault")
+VAULT_DIR = os.environ.get("VECTRAX_VAULT_DIR", os.path.join(os.path.expanduser("~"), "Vectrax", "vault"))
 GRAPH_PATH = os.path.join(VAULT_DIR, "knowledge_graph.json")
 
 

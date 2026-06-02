@@ -16,7 +16,7 @@ from cognition.types import TraceEntry
 
 logger = logging.getLogger("vectrax.cognition.orchestrator.tracer")
 
-VAULT_DIR = os.path.join(os.path.expanduser("~"), "Vectrax", "vault")
+VAULT_DIR = os.environ.get("VECTRAX_VAULT_DIR", os.path.join(os.path.expanduser("~"), "Vectrax", "vault"))
 TRACE_PATH = os.path.join(VAULT_DIR, "cognition_trace.jsonl")
 
 

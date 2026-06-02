@@ -31,7 +31,7 @@ from core.invariants import MIN_CONFIDENCE_FLOOR
 # Paths
 # ---------------------------------------------------------------------------
 
-VAULT_DIR = os.path.join(os.path.expanduser("~/Vectrax"), "vault")
+VAULT_DIR = os.environ.get("VECTRAX_VAULT_DIR", os.path.join(os.path.expanduser("~/Vectrax"), "vault"))
 REGISTRY_PATH = os.path.join(VAULT_DIR, "policy_registry.db")
 
 # ---------------------------------------------------------------------------

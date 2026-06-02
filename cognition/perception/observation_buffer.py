@@ -17,7 +17,10 @@ from cognition.types import CognitiveSignal, SignalCategory
 
 logger = logging.getLogger("vectrax.cognition.perception.buffer")
 
-VAULT_DIR = os.path.join(os.path.expanduser("~"), "Vectrax", "vault")
+VAULT_DIR = os.environ.get(
+    "VECTRAX_VAULT_DIR",
+    os.path.join(os.path.expanduser("~"), "Vectrax", "vault"),
+)
 BUFFER_PATH = os.path.join(VAULT_DIR, "cognition_buffer.jsonl")
 
 DEFAULT_MAX_SIZE = 1000
