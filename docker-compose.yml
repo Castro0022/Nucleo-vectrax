@@ -18,6 +18,7 @@ services:
     environment:
       - PYTHONPATH=/app
       - PYTHONUNBUFFERED=1
+      - VX_ENV=production
     ports:
       # Kept bound to host for local curl/debug; public traffic goes via caddy:443
       - "8900:8900"

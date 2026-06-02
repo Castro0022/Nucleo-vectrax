@@ -719,3 +719,10 @@ t=92s  → STALE → supervisor kills gateway
 - Before fix: heartbeat age reached 90-102s → kill every ~3h
 - After fix: heartbeat age stays under 1.5s → zero restarts
 - Commit: `e1acd80`
+
+### 2026-06-02
+- **fix(config): VX_ENV=production** — La variable de entorno `VX_ENV` no estaba definida en el entorno del contenedor Docker, por lo que el health endpoint devolvía `"env":"dev"` en producción. Fix: añadida al bloque `environment:` de `docker-compose.yml` (las variables de sistema tienen prioridad sobre `dotenv`). Verificado: `curl /health` ahora retorna `"env":"production"`.
+- **fix(db): eliminado registro test_webhook_user de billing.db** — La tabla `billing` en producción contenía un registro simulado (`tg:test_webhook_user / cus_test_simulated_12345`) creado durante pruebas de webhook. Eliminado manualmente. DB limpia con 1 registro real del creador.
+- **feat(onboarding): activación instantánea sin fricción** — El onboarding de 2 pasos (presencia + nombre obligatorio) bloqueaba al 87% de los usuarios. Nuevo flujo: el primer mensaje activa al usuario automáticamente sin pedir nombre, inicia el trial de 7 días y lo agrega al tracker de reentry. Los 26 usuarios bloqueados en estado `awaiting_name` se liberan automáticamente al siguiente mensaje.
+- **feat(reentry): backfill de 13 usuarios al tracker** — Solo 5 de 30 usuarios estaban en el tracker de reentry 12-20h. Se agregaron los 13 usuarios reales faltantes. Resultado: 7 mensajes de reentry enviados automáticamente hoy por el meta_loop.
+- **audit: salud del sistema 93%** — Auditoría integral de 14 módulos. 12/14 OK, 2/14 WARN (Learner: 22 ideas pendientes; Conversión: 0% FREE→PRO).
