@@ -1036,6 +1036,14 @@ class TelegramGateway:
                 self._handle_team(cid, tg_uid, _t)
                 return
 
+            # === ETORO COMMANDS: /etoro (solo creador) ===
+            if re.match(r"^/?etoro\b", _t, re.IGNORECASE):
+                if not self._is_creator(tg_uid):
+                    pass  # treat as normal conversation
+                else:
+                    self._handle_etoro(cid, tg_uid, _t)
+                    return
+
             # === CREATOR MODE: /vx commands (solo creador) ===
             if _t.startswith("/vx") or (self._is_creator(tg_uid) and _t.lower().startswith("vx ")):
                 # Normalizar: si no tiene /, agregarla
@@ -1075,6 +1083,47 @@ class TelegramGateway:
                             self._send(cid, f"✅ Regla {rid} activada.")
                         else:
                             self._send(cid, f"Regla {rid} no encontrada.")
+                    except Exception as e:
+                        self._send(cid, f"Error: {e}")
+                    return
+
+            # Trade approval / rejection (CREATOR ONLY — eToro)
+            m_trade = re.match(
+                r"^(?:aprobar|approve)\s+(TRADE-[A-F0-9]{8})(?:\s+(.+))?",
+                text.strip(), re.I
+            )
+            if m_trade:
+                if not self._is_creator(tg_uid):
+                    pass
+                else:
+                    try:
+                        from connectors.etoro.trading import approve_trade
+                        trade_id = m_trade.group(1).upper()
+                        result = approve_trade(trade_id)
+                        if result and not result.get("error"):
+                            self._send(cid, f"✅ {trade_id} ejecutado en eToro.")
+                        else:
+                            err = result.get("error", "unknown") if result else "no response"
+                            self._send(cid, f"❌ {trade_id}: {err}")
+                    except Exception as e:
+                        self._send(cid, f"Error: {e}")
+                    return
+
+            m_trade_r = re.match(
+                r"^(?:rechazar|reject)\s+(TRADE-[A-F0-9]{8})",
+                text.strip(), re.I
+            )
+            if m_trade_r:
+                if not self._is_creator(tg_uid):
+                    pass
+                else:
+                    try:
+                        from connectors.etoro.trading import reject_trade
+                        trade_id = m_trade_r.group(1).upper()
+                        if reject_trade(trade_id):
+                            self._send(cid, f"❌ {trade_id} rechazado.")
+                        else:
+                            self._send(cid, f"{trade_id} no encontrado o ya procesado.")
                     except Exception as e:
                         self._send(cid, f"Error: {e}")
                     return
@@ -2706,6 +2755,101 @@ class TelegramGateway:
         ]
 
         return "\n".join(lines)
+
+    # == eToro commands (/etoro) =============================================
+
+    def _handle_etoro(self, cid: int, tg_uid: str, text: str) -> None:
+        """Handle /etoro commands — creator only."""
+        clean = re.sub(r"^/?etoro\s*", "", text, flags=re.IGNORECASE).strip()
+        parts = clean.split(None, 2)
+        sub = parts[0].lower() if parts else "help"
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        extra = parts[2].strip() if len(parts) > 2 else ""
+
+        try:
+            if sub == "help":
+                self._send(cid, (
+                    "📊 eToro Commands\n\n"
+                    "/etoro portfolio — posiciones + P&L\n"
+                    "/etoro price <symbol> — precio actual\n"
+                    "/etoro buy <symbol> <amount> — proponer compra\n"
+                    "/etoro sell <symbol> <amount> — proponer venta\n"
+                    "/etoro pending — trades pendientes de aprobación\n"
+                    "/etoro balance — equity + disponible"
+                ))
+
+            elif sub in ("portfolio", "pos", "positions"):
+                from connectors.etoro.portfolio import format_portfolio_summary
+                self._send(cid, format_portfolio_summary())
+
+            elif sub in ("price", "precio"):
+                if not arg:
+                    self._send(cid, "Uso: /etoro price AAPL")
+                    return
+                from connectors.etoro.market import get_price
+                p = get_price(arg)
+                if p:
+                    self._send(cid, (
+                        f"{p['symbol']}\n"
+                        f"  Bid: ${p['bid']}\n"
+                        f"  Ask: ${p['ask']}\n"
+                        f"  Last: ${p['last']}"
+                    ))
+                else:
+                    self._send(cid, f"No encontré {arg} en eToro.")
+
+            elif sub == "buy":
+                if not arg:
+                    self._send(cid, "Uso: /etoro buy AAPL 500")
+                    return
+                amount = float(extra) if extra else 100.0
+                from connectors.etoro.trading import propose_trade
+                proposal = propose_trade(arg, is_buy=True, amount=amount)
+                if proposal:
+                    self._send(cid, proposal.to_message())
+                else:
+                    self._send(cid, f"No se pudo crear la propuesta para {arg}.")
+
+            elif sub == "sell":
+                if not arg:
+                    self._send(cid, "Uso: /etoro sell AAPL 500")
+                    return
+                amount = float(extra) if extra else 100.0
+                from connectors.etoro.trading import propose_trade
+                proposal = propose_trade(arg, is_buy=False, amount=amount)
+                if proposal:
+                    self._send(cid, proposal.to_message())
+                else:
+                    self._send(cid, f"No se pudo crear la propuesta para {arg}.")
+
+            elif sub == "pending":
+                from connectors.etoro.trading import get_pending_trades
+                pending = get_pending_trades()
+                if not pending:
+                    self._send(cid, "Sin trades pendientes.")
+                else:
+                    lines = [f"📋 {len(pending)} trades pendientes:"]
+                    for p in pending:
+                        lines.append(f"  {p.trade_id}: {p.direction} {p.symbol} ${p.amount:,.0f}")
+                    self._send(cid, "\n".join(lines))
+
+            elif sub in ("balance", "equity"):
+                from connectors.etoro.portfolio import get_pnl
+                pnl = get_pnl()
+                if pnl:
+                    self._send(cid, (
+                        f"💰 Equity: ${pnl.get('equity', 0):,.2f}\n"
+                        f"💵 Disponible: ${pnl.get('availableBalance', 0):,.2f}"
+                    ))
+                else:
+                    self._send(cid, "No se pudo conectar a eToro.")
+
+            else:
+                self._send(cid, f"Comando /etoro {sub} no reconocido. Usa /etoro help.")
+
+        except Exception as e:
+            self._send(cid, f"Error eToro: {e}")
+            logger.error("/etoro %s error: %s", sub, e)
 
     def _vx_lang(self, cid: int, tg_uid: str, arg: str) -> None:
         """Forzar idioma: /vx lang es | /vx lang tg:123 fr"""
