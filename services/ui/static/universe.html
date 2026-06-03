@@ -764,15 +764,23 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         const gConvergences = (gData.gravity && gData.gravity.convergences) || [];
 
         // Map gravity stars to visual format
+        // Market + user_interest: distance driven by coherence (cc)
+        //   cc=0 → outer (0.85), cc=1 → core (0.10)
+        // Cognitive (unknown): use tier-based distance
         const TIER_DIST = { HOT: 0.15, WARM: 0.35, COLD: 0.6, DEEP: 0.85 };
         const TIER_LAYER = { HOT: 'core', WARM: 'mid', COLD: 'outer', DEEP: 'outer' };
         for (const gs of gStars) {
+          const isMarket = gs.domain === 'market' || gs.domain === 'user_interest';
+          const dist = isMarket
+            ? 0.85 - gs.cc * 0.75          // cc=0→0.85 (outer), cc=1→0.10 (core)
+            : (TIER_DIST[gs.tier] || 0.5);
+          const layer = dist < 0.25 ? 'core' : dist < 0.5 ? 'mid' : 'outer';
           const mapped = {
             id: gs.id,
             content: gs.summary || gs.intent || gs.id,
             mass: Math.min(gs.weight / 200, 1.0),
-            distance_to_core: TIER_DIST[gs.tier] || 0.5,
-            layer: TIER_LAYER[gs.tier] || 'outer',
+            distance_to_core: dist,
+            layer: layer,
             star_type: 'primary',
             owner: gs.domain,
             activation_count: gs.hits,
