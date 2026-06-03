@@ -1465,6 +1465,7 @@ class TelegramGateway:
                     "/vx core <uid> — ver core_memory de un usuario\n"
                     "/vx memory — ver perfil + hechos\n"
                     "/vx stats — estado del sistema\n"
+                    "/vx universe — reporte del universo gravitacional\n"
                     "/vx up — uptime + estado rápido\n"
                     "/vx market [snapshot|status] — mercado\n"
                     "/vx btc | eth | sol — precio directo\n"
@@ -1548,6 +1549,10 @@ class TelegramGateway:
                     self._send(cid, json.dumps(result["data"], indent=2, ensure_ascii=False)[:4000])
                 else:
                     self._send(cid, f"Error de mercado: {result.get('error', 'sin datos')}")
+
+            elif cmd == "universe":
+                from core.learn.gravity_engine import universe_report
+                self._send(cid, universe_report(), parse_mode="HTML")
 
             elif cmd == "cycle":
                 from core.operational_cycle import get_cycle_stats
