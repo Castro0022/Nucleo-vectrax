@@ -371,7 +371,9 @@ async function loadOverview() {
       html += `<div class="card">
         <div class="card-head">🌐 Dominios</div>`;
       domainKeys.forEach(d => {
-        html += `<div class="kv"><span class="dim">${esc(d)}</span><span>${domains[d]}</span></div>`;
+        const v = domains[d];
+        const label = typeof v === 'object' ? `${v.count ?? 0} stars` : v;
+        html += `<div class="kv"><span class="dim">${esc(d)}</span><span>${label}</span></div>`;
       });
       html += `</div>`;
     }
@@ -453,7 +455,7 @@ async function loadMercado() {
             <span>${s.patterns} patrones</span>
             <span>${s.wins}W / ${s.losses}L</span>
             <span>exp: ${s.best_expectancy}</span>
-            ${s.last_signal ? `<span class="dim">${s.last_signal.substring(0,16)}</span>` : ''}
+            ${s.last_signal ? `<span class="dim">${String(s.last_signal).substring(0,16)}</span>` : ''}
           </div>
         </div>`;
       });

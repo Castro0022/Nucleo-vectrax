@@ -1,73 +1,73 @@
 {
-  "head": "35ed670",
+  "head": "6808308",
   "branch": "main",
   "recent_commits": [
     {
-      "sha": "35ed670d",
-      "subject": "feat(dashboard): panel de control — tabs Sistema e Ideas con auto-refresh",
+      "sha": "68083080",
+      "subject": "feat: integrate observatory into main dashboard — overview, gravity, market, convergences tabs",
       "author": "Mario Bravo Castro",
-      "ts": 1779488046,
-      "files_changed": 5
-    },
-    {
-      "sha": "d3424a08",
-      "subject": "feat(meta_loop): auto-refresh IdeaStore cada 15min + alertas proactivas HIGH/CRITICAL al creador",
-      "author": "Mario Bravo Castro",
-      "ts": 1779480508,
-      "files_changed": 2
-    },
-    {
-      "sha": "938c5c27",
-      "subject": "feat(idea-engine): IdeaStore unificado + /vx ideas + aprobar/rechazar IDEA-xxx",
-      "author": "Mario Bravo Castro",
-      "ts": 1779479655,
+      "ts": 1780457278,
       "files_changed": 3
     },
     {
-      "sha": "476fe95b",
-      "subject": "fix(vision): usar gpt-image-1 + subir imagen como archivo binario",
+      "sha": "f96f6fd9",
+      "subject": "feat: Vectrax Observatory — complete dashboard rebuild",
       "author": "Mario Bravo Castro",
-      "ts": 1779473143,
+      "ts": 1780456692,
+      "files_changed": 3
+    },
+    {
+      "sha": "6b637aa3",
+      "subject": "fix: unified star count — Vectrax reports one total, not 3 confusing numbers",
+      "author": "Mario Bravo Castro",
+      "ts": 1780456037,
+      "files_changed": 1
+    },
+    {
+      "sha": "4f9e08c4",
+      "subject": "fix: atomic star swap eliminates flicker + self-context sees all stars",
+      "author": "Mario Bravo Castro",
+      "ts": 1780455605,
       "files_changed": 2
     },
     {
-      "sha": "28529bd3",
-      "subject": "fix(gateway): resolver gateway_stale cada 3h — abandonar socket SSL muerto",
+      "sha": "caa9ac00",
+      "subject": "fix: spread cognitive stars across full field by gravitational weight",
       "author": "Mario Bravo Castro",
-      "ts": 1779472643,
+      "ts": 1780454959,
       "files_changed": 1
     },
     {
-      "sha": "e5757015",
-      "subject": "docs(changelog): sesión 2026-05-22g — Router Cycle 3 + Fix Generación Imágenes",
+      "sha": "1e1933a6",
+      "subject": "fix: eliminate universe flicker — preserve star positions on refresh",
       "author": "Mario Bravo Castro",
-      "ts": 1779440501,
+      "ts": 1780454891,
       "files_changed": 1
     },
     {
-      "sha": "6c73f03c",
-      "subject": "fix(vision): habilitar generación de imágenes con lenguaje natural (#3)",
-      "author": "Nucleo-vectrax",
-      "ts": 1779439465,
-      "files_changed": 0
+      "sha": "847ba923",
+      "subject": "fix: eliminate universe panel flicker — single layout pass",
+      "author": "Mario Bravo Castro",
+      "ts": 1780454702,
+      "files_changed": 1
     },
     {
-      "sha": "4afeef9f",
-      "subject": "test(vision): 43 tests verifying image generation fix",
+      "sha": "485ae4f8",
+      "subject": "fix: always include market + user_interest stars in universe snapshot",
       "author": "Mario Bravo Castro",
-      "ts": 1779439325,
+      "ts": 1780454265,
       "files_changed": 1
     }
   ],
   "modified_modules": [
-    "CHANGELOG.md",
     "vectrax/telegram_gateway.py",
-    ".git_snapshot/SUMMARY.json",
-    "core/nucleus/presencia_pura.py",
-    "vectrax/integrations/vision.py",
-    "core/semantic_classifier.py",
-    "README.md",
-    "tests/test_image_generation_fix.py"
+    "core/learn/gravity_engine.py",
+    "services/ui/static/universe.html",
+    "services/core/routes/dashboard.py",
+    "vectrax/self_context.py",
+    "connectors/etoro/learning_engine.py",
+    "services/ui/static/app.js",
+    "README.md"
   ],
-  "generated_at": 1779497204
+  "generated_at": 1780457307
 }
