@@ -307,6 +307,63 @@ def _generate_proposals(symbols: List[str]) -> List[TradeProposal]:
 
 # ── Main public functions ─────────────────────────────────────────────
 
+def _feed_gravity(symbols: List[str]) -> int:
+    """
+    Step 5: Feed market observations into the gravitational universe.
+    Each symbol gets a gravity record with domain='market'.
+    Patterns with high win rates gain more gravitational mass.
+    This makes market observations visible as stars in the universe.
+    """
+    fed = 0
+    try:
+        from core.learn.gravity_engine import get_gravity_index
+        from connectors.etoro.pattern_memory import get_patterns
+        from connectors.etoro.signal_recorder import get_signal_stats, load_signals
+
+        gi = get_gravity_index()
+        all_patterns = get_patterns()
+        all_signals = load_signals(limit=500)
+
+        for symbol in symbols:
+            sym = symbol.upper()
+            sym_patterns = [p for p in all_patterns if p.symbol == sym]
+            sym_signals = [s for s in all_signals if s.symbol == sym]
+
+            # Coherence score based on best pattern win rate
+            best_wr = max((p.win_rate for p in sym_patterns), default=0) / 100
+            n_signals = len(sym_signals)
+            impact = "high" if best_wr >= 0.6 and n_signals >= 10 else (
+                "medium" if n_signals >= 5 else "low"
+            )
+
+            # Record as gravity event — fingerprint per symbol
+            fingerprint = f"market:{sym}"
+            outcome = "observed"
+            if sym_patterns:
+                best = max(sym_patterns, key=lambda p: p.expectancy)
+                outcome = f"WR={best.win_rate:.0f}% E={best.expectancy:+.3f}%"
+
+            summary = (
+                f"{sym}: {n_signals} signals, "
+                f"{len(sym_patterns)} patterns"
+            )
+
+            gi.record_event(
+                fingerprint=fingerprint,
+                cc_score=best_wr,
+                impact=impact,
+                domain="market",
+                intent=sym,
+                outcome=outcome,
+                summary=summary,
+            )
+            fed += 1
+
+    except Exception as e:
+        logger.debug("feed_gravity error: %s", e)
+    return fed
+
+
 def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     Execute one full learning cycle:
@@ -314,6 +371,7 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
       2. Resolve outcomes
       3. Update patterns
       4. Generate proposals
+      5. Feed observations into gravitational universe
 
     Returns a summary dict.
     """
@@ -327,6 +385,7 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     r2 = _resolve_outcomes()
     r3 = _update_patterns()
     proposals = _generate_proposals(symbols)
+    gravity_fed = _feed_gravity(symbols)
 
     elapsed = round(time.time() - t0, 1)
 
@@ -339,6 +398,7 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         "patterns_total":   r3.get("patterns", 0),
         "patterns_usable":  r3.get("usable", 0),
         "proposals_new":    len(proposals),
+        "gravity_fed":     gravity_fed,
     }
     logger.info("[LEARN] Cycle complete in %.1fs: %s", elapsed, summary)
     return summary
