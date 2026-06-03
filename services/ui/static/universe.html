@@ -731,53 +731,56 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   });
 
   // --- Load data ---
+  let _loadGen = 0; // debounce guard
   async function loadUniverse() {
-    // Try to get auth token from localStorage (same as main app)
+    const gen = ++_loadGen;
+
+    // Build new arrays without touching the live ones yet
+    let newStars = [], newEdges = [], newConst = [];
+
+    // 1. Gravitational DB stars
     const token = localStorage.getItem('vectrax_token') || '';
     try {
       const res = await fetch('/v1/gravitational/universe', {
         headers: { 'Authorization': `Bearer ${token}` },
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-
-      stars = data.stars || [];
-      edges = data.edges || [];
-      constellations = data.constellations || [];
+      if (res.ok) {
+        const data = await res.json();
+        newStars = data.stars || [];
+        newEdges = data.edges || [];
+        newConst = data.constellations || [];
+      }
     } catch (err) {
       console.warn('gravitational load error:', err.message);
     }
+    if (gen !== _loadGen) return; // stale fetch
 
-    // --- Merge gravity engine stars (cognitive + market) ---
+    // 2. Gravity engine stars (cognitive + market)
     try {
       const gRes = await fetch('/v1/universe');
       if (gRes.ok) {
         const gData = await gRes.json();
         const gStars = (gData.gravity && gData.gravity.stars) || [];
         const gConvergences = (gData.gravity && gData.gravity.convergences) || [];
+        const seen = new Set(newStars.map(s => s.id));
 
-        // Map gravity stars to visual format
-        // Market + user_interest: distance by coherence (cc=0→outer, cc=1→core)
-        // Cognitive: spread by weight rank across full field
-        //   heaviest → near core, lightest → outer
         const maxWeight = Math.max(...gStars.map(s => s.weight), 1);
         for (const gs of gStars) {
+          if (seen.has(gs.id)) continue;
           const isMarket = gs.domain === 'market' || gs.domain === 'user_interest';
           let dist;
           if (isMarket) {
             dist = 0.85 - gs.cc * 0.75;
           } else {
-            // Spread cognitive stars: weight/max → 0..1 → inverted to distance
-            const rank = gs.weight / maxWeight;  // 0=lightest, 1=heaviest
-            dist = 0.15 + (1 - rank) * 0.70;     // heaviest=0.15 (core), lightest=0.85 (outer)
+            const rank = gs.weight / maxWeight;
+            dist = 0.15 + (1 - rank) * 0.70;
           }
-          const layer = dist < 0.25 ? 'core' : dist < 0.5 ? 'mid' : 'outer';
-          const mapped = {
+          newStars.push({
             id: gs.id,
             content: gs.summary || gs.intent || gs.id,
             mass: Math.min(gs.weight / 200, 1.0),
             distance_to_core: dist,
-            layer: layer,
+            layer: dist < 0.25 ? 'core' : dist < 0.5 ? 'mid' : 'outer',
             star_type: 'primary',
             owner: gs.domain,
             activation_count: gs.hits,
@@ -785,18 +788,11 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
             pattern_count: 0,
             last_active: '',
             _domain: gs.domain,
-          };
-          // Avoid duplicates
-          if (!stars.find(s => s.id === mapped.id)) {
-            stars.push(mapped);
-          }
+          });
         }
-
-        // Add cross-domain convergences as edges
         for (const c of gConvergences) {
-          edges.push({
-            source: c.star_a,
-            target: c.star_b,
+          newEdges.push({
+            source: c.star_a, target: c.star_b,
             weight: Math.min((c.combined_cc || 0.1) * 2, 1),
           });
         }
@@ -804,29 +800,28 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     } catch (gErr) {
       console.warn('gravity engine load error:', gErr.message);
     }
+    if (gen !== _loadGen) return;
 
-    if (stars.length === 0) {
-      emptyEl.style.display = 'block';
-    } else {
-      emptyEl.style.display = 'none';
-    }
+    // 3. Atomic swap — no intermediate empty state
+    stars = newStars;
+    edges = newEdges;
+    constellations = newConst;
+
+    emptyEl.style.display = stars.length === 0 ? 'block' : 'none';
 
     layoutStars();
     applyFilters();
 
-    // Stats (update with merged counts)
+    // Stats
     const nGravity = stars.filter(s => s._domain).length;
     const nMarket = stars.filter(s => s._domain === 'market').length;
     const nUser = stars.filter(s => s._domain === 'user_interest').length;
-    const nConv = stars.filter(s => s.star_type === 'convergence' && s.owner !== '__collective__').length;
-    const nColl = stars.filter(s => s.owner === '__collective__').length;
     let statsHtml =
       `<b>${stars.length}</b> estrellas · ` +
       `<b>${edges.length}</b> conexiones`;
     if (nGravity) statsHtml += ` · <b>${nGravity}</b> gravitacionales`;
     if (nMarket) statsHtml += ` · <b>${nMarket}</b> mercado`;
     if (nUser) statsHtml += ` · <b>${nUser}</b> interés`;
-    if (nConv) statsHtml += ` · <b>${nConv}</b> convergencias`;
     statsEl.innerHTML = statsHtml;
   }
 

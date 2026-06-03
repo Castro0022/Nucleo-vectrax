@@ -234,6 +234,9 @@ def _read_universe_state() -> str:
             f"Knowledge stars: {snap.knowledge_star_count}, "
             f"User stars: {snap.star_count} "
             f"(core:{core_n}, mid:{mid_n}, outer:{outer_n})",
+            f"Gravity engine stars: {snap.gravity_total} "
+            f"(dominios: {', '.join(snap.gravity_domains.keys()) if snap.gravity_domains else 'ninguno'})",
+            f"Convergencias cross-domain: {len(snap.gravity_convergences)}",
             f"Masa total: {round(snap.total_mass, 4)}",
             f"Patrones acumulados: {snap.pattern_count}",
             f"Convergencias activas: {len(snap.convergences)}",
