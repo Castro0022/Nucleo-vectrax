@@ -253,12 +253,16 @@ def _collect_gravity_engine(snap: UniverseSnapshot) -> None:
         records = gi.all_records()
         snap.gravity_total = len(records)
 
-        # Top 50 stars by weight for the visual panel
-        for r in sorted(
-            records,
+        # Always include market + user_interest stars, then fill with top by weight
+        priority_domains = {"market", "user_interest"}
+        priority = [r for r in records if r.domain in priority_domains]
+        others = sorted(
+            [r for r in records if r.domain not in priority_domains],
             key=lambda r: r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor,
             reverse=True,
-        )[:50]:
+        )
+        combined = priority + others[:50 - len(priority)]
+        for r in combined:
             snap.gravity_stars.append({
                 "id": r.fingerprint,
                 "domain": r.domain,
