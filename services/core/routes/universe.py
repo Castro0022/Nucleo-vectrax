@@ -23,6 +23,7 @@ router = APIRouter(tags=["universe"])
 logger = logging.getLogger("vectrax.routes.universe")
 
 _UNIVERSE_HTML = Path(__file__).resolve().parent.parent.parent / "ui" / "static" / "universe.html"
+_OBSERVATORY_HTML = Path(__file__).resolve().parent.parent.parent / "ui" / "static" / "observatory.html"
 
 _WS_INTERVAL_S = 2.0  # Push interval for WebSocket stream
 
@@ -33,6 +34,14 @@ async def universe_view():
     if _UNIVERSE_HTML.exists():
         return HTMLResponse(_UNIVERSE_HTML.read_text())
     return HTMLResponse("<h1>universe.html not found</h1>", status_code=404)
+
+
+@router.get("/observatory", response_class=HTMLResponse)
+async def observatory_view():
+    """Vectrax Observatory — full system dashboard."""
+    if _OBSERVATORY_HTML.exists():
+        return HTMLResponse(_OBSERVATORY_HTML.read_text())
+    return HTMLResponse("<h1>observatory.html not found</h1>", status_code=404)
 
 
 def _build_snapshot() -> Dict[str, Any]:

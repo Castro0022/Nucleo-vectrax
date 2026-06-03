@@ -402,3 +402,210 @@ async def dashboard_audit(
         return {"entries": entries, "total": len(entries)}
     except Exception as exc:
         return {"entries": [], "total": 0, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/dashboard/observatory
+# ---------------------------------------------------------------------------
+
+@router.get("/observatory")
+async def dashboard_observatory() -> Dict[str, Any]:
+    """Consolidated observatory: every data source in one response.
+
+    Sections: overview, universe, market, convergences, evolution, operator.
+    All data is real — no placeholders, no simulated values.
+    """
+    result: Dict[str, Any] = {"ts": time.time()}
+
+    # === GRAVITY ENGINE ===
+    gravity = {"total": 0, "domains": {}, "top_stars": [], "convergences": [], "tiers": {}}
+    try:
+        from core.learn.gravity_engine import get_gravity_index
+        gi = get_gravity_index()
+        gravity["total"] = len(gi.all_records())
+        gravity["domains"] = gi.domain_stats()
+        gravity["tiers"] = gi.tier_counts()
+        gravity["convergences"] = gi.cross_domain_convergences()[:20]
+        top = gi.top_stars(n=20)
+        gravity["top_stars"] = [
+            {
+                "id": r.fingerprint[:30], "domain": r.domain, "intent": r.intent,
+                "tier": r.tier, "hits": r.hits, "cc": round(r.cc_score, 3),
+                "freq": round(r.freq, 3),
+                "weight": round(r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor, 2),
+                "summary": (r.summary or "")[:80],
+            }
+            for r in top
+        ]
+        trends = gi.growth_trends(days=7)
+        gravity["trends_7d"] = {
+            "new": trends["new_stars"],
+            "active": trends["active_stars"],
+            "growing": trends["growing_stars"],
+            "new_by_domain": trends["new_by_domain"],
+        }
+        trends_1d = gi.growth_trends(days=1)
+        gravity["trends_24h"] = {
+            "new": trends_1d["new_stars"],
+            "active": trends_1d["active_stars"],
+            "new_by_domain": trends_1d["new_by_domain"],
+        }
+    except Exception as exc:
+        gravity["error"] = str(exc)
+    result["gravity"] = gravity
+
+    # === LEGACY GRAVITATIONAL DB ===
+    legacy = {"knowledge_stars": 0, "user_stars": 0, "patterns": 0, "constellations": 0, "layers": {}}
+    try:
+        conn = _grav_conn()
+        legacy["knowledge_stars"] = conn.execute("SELECT COUNT(*) FROM stars").fetchone()[0]
+        legacy["user_stars"] = conn.execute("SELECT COUNT(*) FROM user_stars").fetchone()[0]
+        legacy["patterns"] = conn.execute("SELECT COUNT(*) FROM patterns").fetchone()[0]
+        try:
+            legacy["constellations"] = conn.execute("SELECT COUNT(*) FROM constellations").fetchone()[0]
+        except Exception:
+            pass
+        for row in conn.execute("SELECT layer, COUNT(*) as c FROM stars GROUP BY layer").fetchall():
+            legacy["layers"][row["layer"]] = row["c"]
+        conn.close()
+    except Exception as exc:
+        legacy["error"] = str(exc)
+    result["legacy"] = legacy
+
+    # === TOTAL STARS (unified) ===
+    result["total_stars"] = gravity["total"] + legacy.get("user_stars", 0)
+
+    # === MARKET OBSERVATORY ===
+    market = {"symbols": [], "total_signals": 0, "total_patterns": 0}
+    try:
+        from connectors.etoro.learning_engine import DEFAULT_WATCHLIST
+        from connectors.etoro.signal_recorder import load_signals, get_signal_stats
+        from connectors.etoro.pattern_memory import get_patterns
+
+        all_signals = load_signals(limit=500)
+        all_patterns = get_patterns()
+        stats = get_signal_stats()
+        market["total_signals"] = stats.get("total", 0)
+        market["total_patterns"] = len(all_patterns)
+        market["global_win_rate"] = stats.get("win_rate", 0)
+
+        for sym in DEFAULT_WATCHLIST:
+            s_upper = sym.upper()
+            sym_signals = [s for s in all_signals if s.symbol == s_upper]
+            sym_patterns = [p for p in all_patterns if p.symbol == s_upper]
+            wins = sum(1 for s in sym_signals if s.status == "win")
+            losses = sum(1 for s in sym_signals if s.status == "loss")
+            best_exp = max((p.expectancy for p in sym_patterns), default=0)
+
+            # Check gravity star
+            gravity_star = None
+            try:
+                rec = gi.get(f"market:{s_upper}")
+                if rec:
+                    gravity_star = {
+                        "hits": rec.hits, "cc": round(rec.cc_score, 3),
+                        "tier": rec.tier,
+                    }
+            except Exception:
+                pass
+
+            market["symbols"].append({
+                "symbol": s_upper,
+                "signals": len(sym_signals),
+                "patterns": len(sym_patterns),
+                "wins": wins, "losses": losses,
+                "win_rate": round(wins / max(wins + losses, 1) * 100, 1),
+                "best_expectancy": round(best_exp, 3),
+                "gravity_star": gravity_star,
+                "last_signal": sym_signals[-1].timestamp if sym_signals else None,
+            })
+    except Exception as exc:
+        market["error"] = str(exc)
+    result["market"] = market
+
+    # === USER MEMORY ===
+    users = {"total": 0, "interactions": 0, "facts": 0, "core_memory": 0, "teams": 0}
+    try:
+        conn = _user_conn()
+        users["total"] = conn.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM profiles WHERE user_id NOT LIKE 'test:%'"
+        ).fetchone()[0]
+        users["interactions"] = conn.execute("SELECT COUNT(*) FROM interactions").fetchone()[0]
+        try:
+            users["facts"] = conn.execute("SELECT COUNT(*) FROM user_facts").fetchone()[0]
+        except Exception:
+            pass
+        try:
+            users["core_memory"] = conn.execute("SELECT COUNT(*) FROM core_memory").fetchone()[0]
+        except Exception:
+            pass
+        try:
+            users["teams"] = conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
+        except Exception:
+            pass
+        conn.close()
+    except Exception as exc:
+        users["error"] = str(exc)
+    result["users"] = users
+
+    # === CONVERGENCES ===
+    convergences = {"cross_domain": 0, "details": []}
+    try:
+        convergences["cross_domain"] = len(gravity.get("convergences", []))
+        convergences["details"] = gravity.get("convergences", [])[:10]
+        # Alert history
+        from core.learn.gravity_engine import get_alert_history
+        convergences["alert_history"] = get_alert_history(limit=10)
+    except Exception as exc:
+        convergences["error"] = str(exc)
+    result["convergences"] = convergences
+
+    # === OPERATOR ===
+    operator = {}
+    try:
+        from core.operator.system_monitor import collect_metrics
+        m = collect_metrics()
+        operator["worker_alive"] = m.worker_alive
+        operator["worker_heartbeat_age"] = round(m.worker_heartbeat_age_s, 1)
+        operator["status"] = m.status
+        operator["queue_pending"] = m.queue_pending
+        operator["queue_processing"] = m.queue_processing
+        operator["queue_error"] = m.queue_error
+        operator["memory_mb"] = m.memory_mb
+        operator["active_users"] = m.active_users
+        operator["avg_latency_s"] = m.avg_latency_s
+    except Exception as exc:
+        operator["runtime_error"] = str(exc)
+
+    # Scheduler
+    try:
+        _sched_db = Path(__file__).resolve().parents[3] / "vault" / "scheduler.db"
+        conn = sqlite3.connect(str(_sched_db), timeout=2)
+        operator["scheduled_tasks"] = conn.execute("SELECT COUNT(*) FROM scheduled_tasks").fetchone()[0]
+        conn.close()
+    except Exception:
+        operator["scheduled_tasks"] = 0
+
+    # Audit ledger
+    try:
+        _audit_db = Path(__file__).resolve().parents[3] / "vault" / "audit_ledger.db"
+        conn = sqlite3.connect(str(_audit_db), timeout=2)
+        operator["audit_entries"] = conn.execute("SELECT COUNT(*) FROM audit_ledger").fetchone()[0]
+        latest = conn.execute("SELECT timestamp FROM audit_ledger ORDER BY id DESC LIMIT 1").fetchone()
+        operator["audit_latest"] = (latest[0] or "")[:19] if latest else ""
+        conn.close()
+    except Exception:
+        operator["audit_entries"] = 0
+
+    # Operational cycles
+    try:
+        _cycles_db = Path(__file__).resolve().parents[3] / "vault" / "operational_cycles.db"
+        conn = sqlite3.connect(str(_cycles_db), timeout=2)
+        operator["convergence_cycles"] = conn.execute("SELECT COUNT(*) FROM op_cycles").fetchone()[0]
+        conn.close()
+    except Exception:
+        operator["convergence_cycles"] = 0
+
+    result["operator"] = operator
+
+    return result

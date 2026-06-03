@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vectrax — Observatory</title>
+<style>
+:root {
+  --bg: #060a10; --surface: #0e1420; --border: #1a2235;
+  --text: #d1d5db; --dim: #5a6374; --accent: #4f8ff7;
+  --core: #fbbf24; --market: #06d6a0; --interest: #22d3ee;
+  --warn: #f59e0b; --danger: #ef4444; --success: #10b981;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'SF Mono', Menlo, Consolas, monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.header {
+  padding: 20px 24px; display: flex; align-items: center; gap: 16px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(14,20,32,0.95) 0%, var(--bg) 100%);
+}
+.header .logo { font-size: 20px; font-weight: 800; color: var(--accent); }
+.header .subtitle { font-size: 13px; color: var(--dim); }
+.header .status { margin-left: auto; font-family: var(--mono); font-size: 12px; }
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.status-healthy { background: var(--success); box-shadow: 0 0 6px var(--success); }
+.status-degraded { background: var(--warn); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; padding: 20px 24px; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 16px 20px; overflow: hidden;
+}
+.card-title {
+  font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--accent); margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+}
+.card-title .icon { font-size: 16px; }
+
+.metric { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid rgba(26,34,53,0.5); font-size: 13px; }
+.metric:last-child { border-bottom: none; }
+.metric .label { color: var(--dim); }
+.metric .value { font-family: var(--mono); font-weight: 600; }
+.metric .value.accent { color: var(--accent); }
+.metric .value.market { color: var(--market); }
+.metric .value.warn { color: var(--warn); }
+.metric .value.success { color: var(--success); }
+.metric .value.danger { color: var(--danger); }
+
+.section-title {
+  grid-column: 1 / -1; font-size: 16px; font-weight: 700; color: var(--text);
+  padding: 12px 0 4px 0; border-top: 1px solid var(--border); margin-top: 8px;
+}
+
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th { text-align: left; color: var(--dim); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family: var(--mono); }
+.domain-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+
+.empty { color: var(--dim); font-style: italic; font-size: 12px; padding: 8px 0; }
+.nav-links { display: flex; gap: 16px; padding: 8px 24px 0; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="logo">✦ VECTRAX OBSERVATORY</span>
+  <span class="subtitle">Centro de observación del universo cognitivo</span>
+  <span class="status" id="status"><span class="status-dot"></span>Cargando...</span>
+</div>
+<div class="nav-links">
+  <a href="/universe/view">🌌 Universe</a>
+  <a href="/">← Vectrax</a>
+  <span style="margin-left:auto;color:var(--dim);font-family:var(--mono);font-size:11px" id="refresh-info"></span>
+</div>
+
+<div class="grid" id="dashboard">
+  <div class="card"><div class="card-title">Cargando datos...</div></div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+  const grid = document.getElementById('dashboard');
+  const statusEl = document.getElementById('status');
+  const refreshEl = document.getElementById('refresh-info');
+
+  const DOMAIN_COLORS = {
+    market: '#06d6a0', user_interest: '#22d3ee', unknown: '#4f8ff7',
+    services: '#a78bfa', tests: '#6b7280',
+  };
+
+  function fmt(n, dec=0) { return typeof n === 'number' ? n.toFixed(dec) : (n || '—'); }
+  function pct(n) { return typeof n === 'number' ? n.toFixed(1) + '%' : '—'; }
+  function ago(ts) {
+    if (!ts) return '—';
+    const s = Math.floor(Date.now()/1000 - ts);
+    if (s < 60) return s + 's ago';
+    if (s < 3600) return Math.floor(s/60) + 'm ago';
+    if (s < 86400) return Math.floor(s/3600) + 'h ago';
+    return Math.floor(s/86400) + 'd ago';
+  }
+
+  function metric(label, value, cls='') {
+    return `<div class="metric"><span class="label">${label}</span><span class="value ${cls}">${value}</span></div>`;
+  }
+
+  function card(icon, title, content) {
+    return `<div class="card"><div class="card-title"><span class="icon">${icon}</span>${title}</div>${content}</div>`;
+  }
+
+  function sectionTitle(text) {
+    return `<div class="section-title">${text}</div>`;
+  }
+
+  function domainDot(domain) {
+    const c = DOMAIN_COLORS[domain] || '#4f8ff7';
+    return `<span class="domain-dot" style="background:${c}"></span>`;
+  }
+
+  async function load() {
+    try {
+      const res = await fetch('/v1/dashboard/observatory');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const d = await res.json();
+      render(d);
+      const st = d.operator?.status || 'unknown';
+      const cls = st === 'healthy' ? 'status-healthy' : 'status-degraded';
+      statusEl.innerHTML = `<span class="status-dot ${cls}"></span>${st.toUpperCase()}`;
+      refreshEl.textContent = new Date().toLocaleTimeString();
+    } catch (e) {
+      statusEl.innerHTML = `<span class="status-dot status-degraded"></span>ERROR: ${e.message}`;
+    }
+  }
+
+  function render(d) {
+    const g = d.gravity || {};
+    const m = d.market || {};
+    const u = d.users || {};
+    const c = d.convergences || {};
+    const op = d.operator || {};
+    const lg = d.legacy || {};
+
+    let html = '';
+
+    // === RESUMEN GENERAL ===
+    html += sectionTitle('📊 Resumen General');
+
+    html += card('⭐', 'Universo', [
+      metric('Estrellas totales', fmt(d.total_stars), 'accent'),
+      metric('Gravitacionales', fmt(g.total)),
+      metric('De usuarios', fmt(lg.user_stars)),
+      metric('Knowledge (legacy)', fmt(lg.knowledge_stars)),
+      metric('Patrones', fmt(lg.patterns)),
+      metric('Constelaciones', fmt(lg.constellations)),
+      metric('Masa total', fmt(d.legacy?.layers ? Object.values(d.legacy.layers).reduce((a,b)=>a+b,0) : 0)),
+    ].join(''));
+
+    html += card('👥', 'Usuarios', [
+      metric('Usuarios reales', fmt(u.total), 'accent'),
+      metric('Interacciones', fmt(u.interactions)),
+      metric('Facts almacenados', fmt(u.facts)),
+      metric('Core memory', fmt(u.core_memory)),
+      metric('Equipos', fmt(u.teams)),
+    ].join(''));
+
+    html += card('⚙️', 'Sistema', [
+      metric('Estado', op.status || '—', op.status === 'healthy' ? 'success' : 'warn'),
+      metric('Worker', op.worker_alive ? '✅ Activo' : '❌ Inactivo', op.worker_alive ? 'success' : 'danger'),
+      metric('Heartbeat', fmt(op.worker_heartbeat_age, 0) + 's'),
+      metric('Cola pendiente', fmt(op.queue_pending)),
+      metric('Cola errores', fmt(op.queue_error), op.queue_error > 0 ? 'warn' : ''),
+      metric('RAM', fmt(op.memory_mb) + ' MB'),
+      metric('Latencia avg', fmt(op.avg_latency_s, 2) + 's'),
+    ].join(''));
+
+    html += card('📋', 'Operador', [
+      metric('Ciclos convergencia', fmt(op.convergence_cycles)),
+      metric('Tareas programadas', fmt(op.scheduled_tasks)),
+      metric('Audit entries', fmt(op.audit_entries)),
+      metric('Último audit', op.audit_latest || '—'),
+      metric('Usuarios activos', fmt(op.active_users)),
+    ].join(''));
+
+    // === UNIVERSO ===
+    html += sectionTitle('🌌 Universo — Dominios');
+
+    const domains = g.domains || {};
+    for (const [name, stats] of Object.entries(domains)) {
+      const t7 = (g.trends_7d?.new_by_domain || {})[name] || 0;
+      const t1 = (g.trends_24h?.new_by_domain || {})[name] || 0;
+      html += card(domainDot(name), name.toUpperCase(), [
+        metric('Estrellas', fmt(stats.count), 'accent'),
+        metric('Hits totales', fmt(stats.total_hits)),
+        metric('CC promedio', fmt(stats.avg_cc, 3)),
+        metric('Frecuencia avg', fmt(stats.avg_freq, 3)),
+        metric('Nuevas 24h', t1 > 0 ? '+' + t1 : '0', t1 > 0 ? 'success' : ''),
+        metric('Nuevas 7d', t7 > 0 ? '+' + t7 : '0', t7 > 0 ? 'success' : ''),
+        metric('Tiers', Object.entries(stats.tiers || {}).map(([t,c]) => `${t}=${c}`).join(' ') || '—'),
+      ].join(''));
+    }
+
+    // === MERCADO ===
+    html += sectionTitle('📈 Market Observatory');
+
+    let marketSummary = [
+      metric('Señales totales', fmt(m.total_signals)),
+      metric('Patrones', fmt(m.total_patterns)),
+      metric('Win rate global', pct(m.global_win_rate)),
+    ].join('');
+    html += card('📡', 'Resumen Mercado', marketSummary);
+
+    const symbols = m.symbols || [];
+    if (symbols.length) {
+      let rows = '';
+      for (const s of symbols) {
+        const wrCls = s.win_rate >= 55 ? 'success' : s.win_rate > 0 ? 'warn' : '';
+        const grav = s.gravity_star || {};
+        rows += `<tr>
+          <td>${domainDot('market')}${s.symbol}</td>
+          <td>${s.signals}</td>
+          <td>${s.patterns}</td>
+          <td>${s.wins}/${s.losses}</td>
+          <td class="${wrCls}">${pct(s.win_rate)}</td>
+          <td>${fmt(s.best_expectancy, 3)}</td>
+          <td>${grav.tier || '—'}</td>
+          <td>${s.last_signal ? ago(s.last_signal) : '—'}</td>
+        </tr>`;
+      }
+      html += `<div class="card" style="grid-column:1/-1"><div class="card-title"><span class="icon">📊</span>Símbolos Observados</div>
+        <table><tr><th>Símbolo</th><th>Señales</th><th>Patrones</th><th>W/L</th><th>WR</th><th>Expect.</th><th>Tier</th><th>Última</th></tr>${rows}</table></div>`;
+    }
+
+    // === CONVERGENCIAS ===
+    html += sectionTitle('🔗 Convergencias');
+
+    html += card('🔗', 'Cross-Domain', [
+      metric('Convergencias activas', fmt(c.cross_domain), 'accent'),
+    ].join(''));
+
+    const details = c.details || [];
+    if (details.length) {
+      let cRows = '';
+      for (const cv of details) {
+        cRows += `<tr>
+          <td>${cv.intent || cv.a_intent || '—'}</td>
+          <td>${cv.star_a}</td>
+          <td>${cv.star_b}</td>
+          <td>${fmt(cv.combined_cc, 3)}</td>
+          <td>${fmt(cv.combined_hits)}</td>
+          <td>${cv.type}</td>
+        </tr>`;
+      }
+      html += `<div class="card" style="grid-column:1/-1"><div class="card-title"><span class="icon">⚡</span>Detalle Convergencias</div>
+        <table><tr><th>Intent</th><th>Star A</th><th>Star B</th><th>CC</th><th>Hits</th><th>Tipo</th></tr>${cRows}</table></div>`;
+    }
+
+    const alerts = c.alert_history || [];
+    if (alerts.length) {
+      let aRows = '';
+      for (const a of alerts) {
+        aRows += `<tr><td>${(a.timestamp||'').slice(0,16)}</td><td>${a.intent||'—'}</td><td>${fmt(a.combined_hits)}</td><td>${fmt(a.combined_cc,3)}</td><td>${(a.reasons||[]).join(', ')}</td></tr>`;
+      }
+      html += `<div class="card" style="grid-column:1/-1"><div class="card-title"><span class="icon">🚨</span>Historial de Alertas</div>
+        <table><tr><th>Fecha</th><th>Símbolo</th><th>Hits</th><th>CC</th><th>Razón</th></tr>${aRows}</table></div>`;
+    }
+
+    // === EVOLUCIÓN ===
+    html += sectionTitle('📈 Evolución del Universo');
+
+    const t7 = g.trends_7d || {};
+    const t1 = g.trends_24h || {};
+    html += card('📈', 'Tendencias', [
+      metric('Nuevas 24h', fmt(t1.new), t1.new > 0 ? 'success' : ''),
+      metric('Activas 24h', fmt(t1.active)),
+      metric('Nuevas 7d', fmt(t7.new), t7.new > 0 ? 'success' : ''),
+      metric('Activas 7d', fmt(t7.active)),
+      metric('Creciendo (≥3 hits)', fmt(t7.growing), t7.growing > 0 ? 'accent' : ''),
+    ].join(''));
+
+    // Top stars
+    const topStars = g.top_stars || [];
+    if (topStars.length) {
+      let tRows = '';
+      for (const s of topStars.slice(0, 12)) {
+        tRows += `<tr>
+          <td>${domainDot(s.domain)}${s.id}</td>
+          <td>${s.domain}</td>
+          <td>${s.hits}</td>
+          <td>${fmt(s.cc, 3)}</td>
+          <td>${fmt(s.weight, 1)}</td>
+          <td>${s.summary || '—'}</td>
+        </tr>`;
+      }
+      html += `<div class="card" style="grid-column:1/-1"><div class="card-title"><span class="icon">🏆</span>Top Estrellas por Masa</div>
+        <table><tr><th>ID</th><th>Dominio</th><th>Hits</th><th>CC</th><th>Peso</th><th>Resumen</th></tr>${tRows}</table></div>`;
+    }
+
+    grid.innerHTML = html;
+  }
+
+  load();
+  setInterval(load, 15000);
+})();
+</script>
+</body>
+</html>
