@@ -79,8 +79,14 @@ class UniverseSnapshot:
     recent_error_count_24h: int = 0
     recent_error_lines: List[str] = field(default_factory=list)
 
-    # ── Señales de percepción ─────────────────────────────────────────────
+    # ── Señales de percepción ─────────────────────────────────────────
     signals: List[str] = field(default_factory=list)
+
+    # ── Gravity Engine (estrellas cognitivas + mercado) ───────────────────
+    gravity_stars: List[Dict[str, Any]] = field(default_factory=list)
+    gravity_domains: Dict[str, Any] = field(default_factory=dict)
+    gravity_convergences: List[Dict[str, Any]] = field(default_factory=list)
+    gravity_total: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -139,6 +145,12 @@ class UniverseSnapshot:
                 },
             },
             "signals": self.signals,
+            "gravity": {
+                "total": self.gravity_total,
+                "stars": self.gravity_stars,
+                "domains": self.gravity_domains,
+                "convergences": self.gravity_convergences,
+            },
         }
 
 
@@ -233,6 +245,47 @@ def _collect_operational(snap: UniverseSnapshot) -> None:
         snap.signals.append("operational_state_unavailable")
 
 
+def _collect_gravity_engine(snap: UniverseSnapshot) -> None:
+    """Collect stars from the gravity engine (cognitive + market domains)."""
+    try:
+        from core.learn.gravity_engine import get_gravity_index
+        gi = get_gravity_index()
+        records = gi.all_records()
+        snap.gravity_total = len(records)
+
+        # Top 50 stars by weight for the visual panel
+        for r in sorted(
+            records,
+            key=lambda r: r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor,
+            reverse=True,
+        )[:50]:
+            snap.gravity_stars.append({
+                "id": r.fingerprint,
+                "domain": r.domain,
+                "intent": r.intent,
+                "tier": r.tier,
+                "hits": r.hits,
+                "cc": round(r.cc_score, 3),
+                "freq": round(r.freq, 3),
+                "weight": round(
+                    r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor, 2
+                ),
+                "summary": r.summary[:80] if r.summary else "",
+            })
+
+        # Domain stats
+        snap.gravity_domains = gi.domain_stats()
+
+        # Cross-domain convergences
+        convs = gi.cross_domain_convergences()
+        for c in convs[:20]:
+            snap.gravity_convergences.append(c)
+
+    except Exception as exc:
+        logger.debug("gravity engine collection failed: %s", exc)
+        snap.signals.append("gravity_engine_unavailable")
+
+
 def _derive_signals(snap: UniverseSnapshot) -> None:
     """Genera señales de percepción a partir del estado recolectado."""
     if snap.queue_pending > 10:
@@ -273,6 +326,7 @@ def observe_universe() -> UniverseSnapshot:
     _collect_gravitational(snap)
     _collect_nucleus(snap)
     _collect_convergences(snap)
+    _collect_gravity_engine(snap)
     _collect_operational(snap)
     _derive_signals(snap)
 
