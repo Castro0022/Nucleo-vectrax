@@ -301,7 +301,8 @@ class GravityIndex:
                         })
                         continue
 
-                # Temporal proximity: both active in last 7 days
+                # Temporal proximity: both active in last 7 days AND
+                # both have meaningful coherence (avoids noise)
                 a_last = _parse_iso(a.last_seen)
                 b_last = _parse_iso(b.last_seen)
                 now = datetime.now(timezone.utc)
@@ -309,14 +310,15 @@ class GravityIndex:
                     (now - a_last).total_seconds() < 7 * 86400
                     and (now - b_last).total_seconds() < 7 * 86400
                 )
-                if both_recent and a.cc_score >= min_cc and b.cc_score >= min_cc:
+                combined_cc_tp = (a.cc_score + b.cc_score) / 2
+                if both_recent and combined_cc_tp >= 0.3:
                     convergences.append({
                         "type": "temporal_proximity",
                         "star_a": a.fingerprint,
                         "star_b": b.fingerprint,
                         "a_intent": a.intent,
                         "b_intent": b.intent,
-                        "combined_cc": round((a.cc_score + b.cc_score) / 2, 4),
+                        "combined_cc": round(combined_cc_tp, 4),
                         "domains": [domain_a, domain_b],
                     })
 
