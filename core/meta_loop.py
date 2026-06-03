@@ -9,6 +9,7 @@ Reflection layers:
   2. Health    — any errors accumulated?
   3. Rhythm    — cycle cadence and uptime awareness.
   4. Ideas     — auto-refresh IdeaStore every 15 min + creator alerts.
+  5. Observation — autonomous universe observation, persisted to ledger.
 
 Privacidad:
   - No almacena contenido de mensajes ni datos personales.
@@ -152,6 +153,20 @@ def _run_idea_refresh() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Autonomous observation
+# ---------------------------------------------------------------------------
+
+def _run_autonomous_observation() -> int:
+    """Run the autonomous observer. Returns count of observations recorded."""
+    try:
+        from core.self_observation.autonomous_observer import observe_and_record
+        return observe_and_record()
+    except Exception as exc:
+        logger.debug("meta_loop._run_autonomous_observation error: %s", exc)
+        return 0
+
+
+# ---------------------------------------------------------------------------
 # Main reflect function
 # ---------------------------------------------------------------------------
 
@@ -202,6 +217,11 @@ def reflect(ingested_count=0):
         _last_idea_refresh = now
         idea_alerts = _run_idea_refresh()
         reflection["idea_alerts_sent"] = idea_alerts
+
+    # --- Layer 5: Autonomous observation (every cycle) ---
+    obs_count = _run_autonomous_observation()
+    if obs_count > 0:
+        reflection["observations_recorded"] = obs_count
 
     # Persist reflection into state
     state["last_reflection"] = reflection

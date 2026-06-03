@@ -55,6 +55,10 @@ _SELF_REFERENCE = re.compile(
     r"|\bse[nñ]ales?\b"
     r"|\bmasa\s+total\b"
     r"|\bpatrones\b"
+    r"|\bobservacion(?:es)?\b"
+    r"|\bqu[eé]\s+(?:has|haz|has)\s+(?:observado|visto|detectado)\b"
+    r"|\b[uú]ltim(?:as?|os?)\s+(?:observacion|cambios?|detecciones?)\b"
+    r"|\bledger\b"
     r")",
     re.IGNORECASE,
 )
@@ -282,6 +286,41 @@ def _read_universe_state() -> str:
         return ""
 
 
+def _read_recent_observations(limit: int = 15) -> str:
+    """Read recent autonomous observations from the persistent ledger.
+
+    These are injected into the LLM context so Vectrax can answer
+    questions like 'qué has observado?' or 'últimas observaciones'.
+    """
+    try:
+        from core.self_observation.observation_ledger import get_recent, count
+        total = count()
+        if total == 0:
+            return ""
+        obs = get_recent(limit=limit)
+        if not obs:
+            return ""
+
+        lines = [
+            f"[OBSERVACIONES AUTÓNOMAS — {total} registradas en total, últimas {len(obs)}]",
+        ]
+        for o in obs:
+            star = f" estrella:{o['star_id'][:20]}" if o.get('star_id') else ""
+            ev = ""
+            if o.get("evidence") and isinstance(o["evidence"], dict):
+                # compact evidence summary
+                ev_parts = [f"{k}={v}" for k, v in list(o["evidence"].items())[:3]]
+                ev = f" [{', '.join(ev_parts)}]"
+            lines.append(
+                f"  {o['timestamp']} | {o['domain']}/{o['obs_type']} | "
+                f"{o['summary'][:80]}{star}{ev}"
+            )
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.debug("_read_recent_observations failed: %s", exc)
+        return ""
+
+
 def build_self_context(lang: str = "es") -> str:
     """
     Construye el contexto de auto-observación de Vectrax.
@@ -352,9 +391,14 @@ def build_self_context(lang: str = "es") -> str:
     except Exception:
         pass
 
+    # Autonomous observations (persistent memory of what Vectrax observed)
+    obs_ctx = _read_recent_observations()
+
     parts = [base]
     if universe:
         parts.append(universe)
     if market_ctx:
         parts.append(f"[OBSERVACIÓN DE MERCADO]\n{market_ctx}")
+    if obs_ctx:
+        parts.append(obs_ctx)
     return "\n\n".join(parts)

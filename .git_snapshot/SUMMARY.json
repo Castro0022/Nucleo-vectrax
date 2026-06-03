@@ -1,7 +1,14 @@
 {
-  "head": "6808308",
+  "head": "1dbf09c",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "1dbf09ce",
+      "subject": "fix: handle non-string last_signal and object domain values in dashboard",
+      "author": "Mario Bravo Castro",
+      "ts": 1780457457,
+      "files_changed": 2
+    },
     {
       "sha": "68083080",
       "subject": "feat: integrate observatory into main dashboard — overview, gravity, market, convergences tabs",
@@ -50,24 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1780454702,
       "files_changed": 1
-    },
-    {
-      "sha": "485ae4f8",
-      "subject": "fix: always include market + user_interest stars in universe snapshot",
-      "author": "Mario Bravo Castro",
-      "ts": 1780454265,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
     "vectrax/telegram_gateway.py",
     "core/learn/gravity_engine.py",
     "services/ui/static/universe.html",
+    "services/ui/static/app.js",
     "services/core/routes/dashboard.py",
     "vectrax/self_context.py",
     "connectors/etoro/learning_engine.py",
-    "services/ui/static/app.js",
     "README.md"
   ],
-  "generated_at": 1780457307
+  "generated_at": 1780457466
 }
