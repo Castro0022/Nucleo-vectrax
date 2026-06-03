@@ -844,6 +844,185 @@ Usuario: "Dime cómo está el BTC"
 
 ---
 
+## 🔍 Self-Audit Engine
+
+Vectrax includes a permanent self-observation system that audits the entire infrastructure automatically and reports findings to the creator via Telegram.
+
+### Schedule
+
+| Mode | Schedule | Duration | Checks |
+|------|----------|----------|--------|
+| **Daily** | 06:00 UTC | ~5s | 9 checks |
+| **Weekly** | Sunday 06:30 UTC | ~10s | 22 checks |
+
+### Daily Checks (lightweight)
+- Container active + supervisor healthy
+- Process detection (4 services, no duplicates)
+- Resources: CPU, RAM, disk usage
+- Worker + gateway heartbeats
+- Telegram bot API connectivity
+- Core API health (port 8900)
+- Message queue (stuck messages)
+- Scheduler (active tasks)
+- Error count in logs (24h)
+
+### Weekly Checks (deep)
+All daily checks plus:
+- Audit ledger (actively recording)
+- Gravitational memory (gravity_index.json integrity)
+- User memory database (interactions, profiles, core_memory, facts)
+- Convergence engine (operational cycles count)
+- Cognition files (signals, buffer, episodic — freshness)
+- External services: eToro, Stripe, Gemini, OpenAI
+- Orphan databases (empty `.db` files)
+- Database integrity (`PRAGMA integrity_check`)
+- Log errors (7-day scan)
+- Docker build cache
+
+### Classification
+
+| State | Meaning |
+|-------|---------|
+| 🟢 **ÓPTIMO** | All checks pass |
+| 🟡 **ESTABLE** | 1 HIGH or 2 MEDIUM problems |
+| 🟠 **DEGRADADO** | 2+ HIGH or mixed HIGH+MEDIUM |
+| 🔴 **CRÍTICO** | Any CRITICAL failure (container, processes, DB integrity) |
+
+### Behavior
+- **ÓPTIMO/ESTABLE** → weekly summary sent via Telegram (silent)
+- **DEGRADADO/CRÍTICO** → immediate alert to creator's Telegram
+- Auto-corrects safe issues only (e.g., deletes empty orphan DBs outside vault)
+- Structural changes reported as "pending approval" — never executed automatically
+- All reports persisted to `vault/audit_reports/` (last 60 retained)
+- Each audit recorded in the audit ledger
+
+### Manual Execution
+
+```bash
+# Run daily audit manually
+docker exec vectrax-core python -m observability.audit_cron --daily
+
+# Run weekly audit manually
+docker exec vectrax-core python -m observability.audit_cron --weekly
+
+# Run both
+docker exec vectrax-core python -m observability.audit_cron --daily --weekly
+```
+
+### Architecture
+
+```
+crontab (inside container)
+    │
+    ├── 06:00 daily  → observability.audit_cron --daily
+    └── 06:30 Sunday → observability.audit_cron --weekly
+                          │
+                          ├── audit_engine.run_daily_audit()
+                          │   or run_weekly_audit()
+                          │
+                          ├── 9-22 check functions
+                          ├── classify() → ÓPTIMO/ESTABLE/DEGRADADO/CRÍTICO
+                          ├── auto_correct() → safe fixes only
+                          ├── _save_report() → vault/audit_reports/*.json
+                          ├── _send_telegram() → creator alert
+                          └── audit_ledger.record() → audit trail
+```
+
+The cron daemon runs as a supervised service (`audit_cron` in `vectrax_supervisor.py`), ensuring it survives container restarts.
+
+Files:
+- `observability/audit_engine.py` — 22 checks, classification, auto-correction, Telegram alerts
+- `observability/audit_cron.py` — cron entry point (`--daily` / `--weekly`)
+
+## 🔧 Maintenance Procedures
+
+### Server Access
+
+```bash
+ssh -i ~/.ssh/vectrax_server root@140.82.28.181
+```
+
+### Common Operations
+
+```bash
+# View container status
+docker ps --format '{{.Names}}: {{.Status}}'
+
+# View live logs
+docker logs vectrax-core --follow --tail 50
+
+# Restart (preserves .env):
+docker compose up -d --force-recreate
+
+# Full rebuild (after Dockerfile changes):
+docker compose build && docker compose up -d --force-recreate
+
+# IMPORTANT: 'docker compose restart' does NOT reload .env.
+# Always use 'docker compose up -d --force-recreate' after .env changes.
+```
+
+### Environment Variables
+
+All secrets live in `/opt/vectrax/.env` on the server (never in git).
+
+```bash
+# Update a key (example):
+ssh -i ~/.ssh/vectrax_server root@140.82.28.181 \
+  "sed -i 's|^SOME_KEY=.*|SOME_KEY=new_value|' /opt/vectrax/.env"
+
+# Recreate container to load new env:
+ssh -i ~/.ssh/vectrax_server root@140.82.28.181 \
+  "cd /opt/vectrax && docker compose up -d --force-recreate"
+```
+
+### Docker Cache Cleanup
+
+```bash
+# Check cache size:
+ssh -i ~/.ssh/vectrax_server root@140.82.28.181 "docker system df"
+
+# Clean build cache (safe, doesn't affect running containers):
+ssh -i ~/.ssh/vectrax_server root@140.82.28.181 "docker builder prune --all --force"
+```
+
+### Database Health
+
+```bash
+# Check database integrity:
+docker exec vectrax-core python3 -c "
+import sqlite3
+for db in ['user_memory.db', 'audit_ledger.db', 'operational_cycles.db']:
+    c = sqlite3.connect(f'/app/vault/{db}')
+    r = c.execute('PRAGMA integrity_check').fetchone()[0]
+    print(f'{db}: {r}')
+    c.close()
+"
+```
+
+### Vault Path Convention
+
+All persistent data lives in `/app/vault/` inside the container (mounted from `./vault/` on host).
+
+Modules that reference vault paths MUST use the `VECTRAX_VAULT_DIR` environment variable:
+
+```python
+VAULT_DIR = os.environ.get(
+    "VECTRAX_VAULT_DIR",
+    os.path.join(os.path.expanduser("~"), "Vectrax", "vault"),
+)
+```
+
+The Dockerfile sets `ENV VECTRAX_VAULT_DIR=/app/vault` and creates a symlink `/root/Vectrax → /app` as a safety net for any legacy paths.
+
+> **Never** use hardcoded `~/Vectrax/vault/` without the env var fallback — it resolves to `/root/Vectrax/vault/` inside Docker, which is ephemeral.
+
+### Integration Test
+
+```bash
+# Run 12-point integration test:
+docker exec vectrax-core python -m observability.audit_cron --weekly
+```
+
 ## 📋 Changelog
 
 ### 2026-05-31
