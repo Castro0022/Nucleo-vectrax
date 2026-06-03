@@ -208,8 +208,23 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   function layoutStars() {
     const cx = 0, cy = 0;
     const maxR = Math.min(W, H) * 0.42;
+    const prevMap = starMap;
     starMap = {};
     for (const s of stars) {
+      // Preserve animated position if star already existed
+      const prev = prevMap[s.id];
+      if (prev) {
+        s._baseX = prev._baseX; s._baseY = prev._baseY;
+        s._x = prev._x; s._y = prev._y;
+        s._r = 3 + s.mass * 17;
+        s._visible = prev._visible;
+        s._driftAmp = prev._driftAmp; s._driftSpeed = prev._driftSpeed;
+        s._driftPhase = prev._driftPhase;
+        s._twinkleSpeed = prev._twinkleSpeed; s._twinklePhase = prev._twinklePhase;
+        starMap[s.id] = s;
+        continue;
+      }
+      // New star — compute position
       const h = hashStr(s.id);
       const h2 = hashStr(s.id + 'x');
       const angle = (h % 36000) / 36000 * Math.PI * 2;
@@ -221,7 +236,6 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       s._y = s._baseY;
       s._r = 3 + s.mass * 17;
       s._visible = true;
-      // Per-star drift params
       s._driftAmp = 3 + (Math.abs(h2) % 100) / 100 * 12;
       s._driftSpeed = 0.0004 + (Math.abs(h) % 500) / 500 * 0.0015;
       s._driftPhase = (Math.abs(h) % 628) / 100;
@@ -816,8 +830,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   loadUniverse();
   draw();
 
-  // Refresh data every 5s (faster than 15s for real-time feel)
-  setInterval(loadUniverse, 5000);
+  // Refresh data every 15s (positions preserved, no flicker)
+  setInterval(loadUniverse, 15000);
 
 })();
 </script>
