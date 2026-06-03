@@ -757,16 +757,20 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         const gConvergences = (gData.gravity && gData.gravity.convergences) || [];
 
         // Map gravity stars to visual format
-        // Market + user_interest: distance driven by coherence (cc)
-        //   cc=0 → outer (0.85), cc=1 → core (0.10)
-        // Cognitive (unknown): use tier-based distance
-        const TIER_DIST = { HOT: 0.15, WARM: 0.35, COLD: 0.6, DEEP: 0.85 };
-        const TIER_LAYER = { HOT: 'core', WARM: 'mid', COLD: 'outer', DEEP: 'outer' };
+        // Market + user_interest: distance by coherence (cc=0→outer, cc=1→core)
+        // Cognitive: spread by weight rank across full field
+        //   heaviest → near core, lightest → outer
+        const maxWeight = Math.max(...gStars.map(s => s.weight), 1);
         for (const gs of gStars) {
           const isMarket = gs.domain === 'market' || gs.domain === 'user_interest';
-          const dist = isMarket
-            ? 0.85 - gs.cc * 0.75          // cc=0→0.85 (outer), cc=1→0.10 (core)
-            : (TIER_DIST[gs.tier] || 0.5);
+          let dist;
+          if (isMarket) {
+            dist = 0.85 - gs.cc * 0.75;
+          } else {
+            // Spread cognitive stars: weight/max → 0..1 → inverted to distance
+            const rank = gs.weight / maxWeight;  // 0=lightest, 1=heaviest
+            dist = 0.15 + (1 - rank) * 0.70;     // heaviest=0.15 (core), lightest=0.85 (outer)
+          }
           const layer = dist < 0.25 ? 'core' : dist < 0.5 ? 'mid' : 'outer';
           const mapped = {
             id: gs.id,
