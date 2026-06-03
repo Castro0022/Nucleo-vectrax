@@ -229,17 +229,18 @@ def _read_universe_state() -> str:
                 f"patterns={s['pattern_count']}, layer={s['layer']})"
             )
 
+        # Total unificado: gravity engine es el conteo más completo
+        total_stars = snap.gravity_total + snap.star_count
+        domain_list = ', '.join(snap.gravity_domains.keys()) if snap.gravity_domains else 'cognitivo'
+
         lines = [
             "[UNIVERSO GRAVITACIONAL — estado en tiempo real]",
-            f"Knowledge stars: {snap.knowledge_star_count}, "
-            f"User stars: {snap.star_count} "
-            f"(core:{core_n}, mid:{mid_n}, outer:{outer_n})",
-            f"Gravity engine stars: {snap.gravity_total} "
-            f"(dominios: {', '.join(snap.gravity_domains.keys()) if snap.gravity_domains else 'ninguno'})",
-            f"Convergencias cross-domain: {len(snap.gravity_convergences)}",
+            f"DATO EXACTO: Mi universo tiene {total_stars} estrellas en total.",
+            f"  • {snap.gravity_total} estrellas gravitacionales (dominios: {domain_list})",
+            f"  • {snap.star_count} estrellas de usuarios (core:{core_n}, mid:{mid_n}, outer:{outer_n})",
+            f"Convergencias cross-domain (mercado ↔ interés): {len(snap.gravity_convergences)}",
             f"Masa total: {round(snap.total_mass, 4)}",
             f"Patrones acumulados: {snap.pattern_count}",
-            f"Convergencias activas: {len(snap.convergences)}",
             f"Núcleo: {'centroide activo' if snap.nucleus_has_centroid else 'sin centroide'}, "
             f"{snap.core_star_count} estrellas core",
         ]
