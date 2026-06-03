@@ -1271,7 +1271,8 @@ class TelegramGateway:
                     _sym_candidate = _opinion_match.group(1)
                     _resolved = resolve_symbol(_sym_candidate)
                     if _resolved:
-                        from connectors.etoro.market_context import get_market_insight
+                        from connectors.etoro.market_context import get_market_insight, record_market_interest
+                        record_market_interest(_resolved, tg_uid)
                         _insight = get_market_insight(_resolved)
                         if _insight:
                             # Inject observation context and route to LLM via queue

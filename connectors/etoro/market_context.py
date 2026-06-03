@@ -54,6 +54,28 @@ def resolve_symbol(text: str) -> Optional[str]:
     return None
 
 
+def record_market_interest(symbol: str, user_id: str = "") -> None:
+    """Record that a user asked about a market symbol.
+
+    Creates a gravity event in the cognitive domain with the symbol as
+    intent, enabling cross-domain convergence detection with market stars.
+    """
+    try:
+        from core.learn.gravity_engine import get_gravity_index
+        gi = get_gravity_index()
+        gi.record_event(
+            fingerprint=f"user_market_interest:{symbol.upper()}",
+            cc_score=0.5,
+            impact="medium",
+            domain="user_interest",
+            intent=symbol.upper(),
+            outcome="queried",
+            summary=f"User asked about {symbol.upper()}",
+        )
+    except Exception:
+        pass
+
+
 def get_market_insight(symbol: str) -> Optional[str]:
     """
     Build a structured market insight block for a symbol.

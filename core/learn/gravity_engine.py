@@ -264,17 +264,21 @@ class GravityIndex:
     def cross_domain_convergences(
         self,
         domain_a: str = "market",
-        domain_b: str = "cognition",
-        min_cc: float = 0.3,
+        domain_b: str = "",
+        min_cc: float = 0.0,
     ) -> List[Dict[str, Any]]:
         """Find convergences between two domains.
 
         A convergence is detected when stars from different domains
         share the same intent or have overlapping temporal activity.
+        If domain_b is empty, matches against ALL non-domain_a stars.
         """
         records = self._load()
         a_recs = [r for r in records.values() if r.domain == domain_a]
-        b_recs = [r for r in records.values() if r.domain == domain_b]
+        b_recs = [
+            r for r in records.values()
+            if (r.domain == domain_b if domain_b else r.domain != domain_a)
+        ]
 
         convergences = []
         for a in a_recs:
