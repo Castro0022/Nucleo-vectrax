@@ -165,8 +165,18 @@ def check_container() -> Dict:
 
 def check_processes() -> Dict:
     """Check for expected processes, detect duplicates."""
-    out, _ = _shell("ps aux | grep python | grep -v grep")
-    lines = [l for l in out.split("\n") if l.strip()]
+    # Use /proc to find Python processes (works reliably inside docker exec)
+    lines = []
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                cmd = f.read().decode("utf-8", errors="replace").replace("\x00", " ")
+                if "python" in cmd.lower():
+                    lines.append(cmd)
+        except (OSError, PermissionError):
+            pass
     expected = ["telegram_gateway", "pipeline_worker", "uvicorn", "vectrax_unified"]
     found = []
     duplicates = []
