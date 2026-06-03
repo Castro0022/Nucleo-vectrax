@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import statistics
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -460,8 +461,9 @@ _MAX_ALERT_HISTORY = 200
 
 def _append_alert_history(alert: Dict[str, Any]) -> None:
     """Append alert to persistent JSONL history."""
+    hist_file = os.path.join(VAULT_DIR, "convergence_alert_history.jsonl")
     try:
-        os.makedirs(os.path.dirname(_ALERT_HISTORY_FILE), exist_ok=True)
+        os.makedirs(os.path.dirname(hist_file), exist_ok=True)
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "ts": time.time(),
@@ -474,10 +476,8 @@ def _append_alert_history(alert: Dict[str, Any]) -> None:
             "domains": alert.get("domains", []),
             "reasons": alert.get("alert_reasons", []),
         }
-        with open(_ALERT_HISTORY_FILE, "a", encoding="utf-8") as f:
+        with open(hist_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        # Trim to last N
-        _trim_alert_history()
     except Exception:
         pass
 
@@ -495,11 +495,12 @@ def _trim_alert_history() -> None:
 
 def get_alert_history(limit: int = 20) -> List[Dict[str, Any]]:
     """Return recent alert history (newest first)."""
-    if not os.path.isfile(_ALERT_HISTORY_FILE):
+    hist_file = os.path.join(VAULT_DIR, "convergence_alert_history.jsonl")
+    if not os.path.isfile(hist_file):
         return []
     entries = []
     try:
-        with open(_ALERT_HISTORY_FILE) as f:
+        with open(hist_file) as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -552,13 +553,18 @@ def send_convergence_alerts() -> int:
         _append_alert_history(alert)
         intent = alert.get("intent", alert.get("a_intent", "?"))
         reasons = ", ".join(alert["alert_reasons"])
+        star_a = alert["star_a"]
+        star_b = alert["star_b"]
+        hits = alert.get("combined_hits", "?")
+        cc = alert.get("combined_cc", "?")
+        domains = " ↔ ".join(alert.get("domains", []))
         text = (
-            f"\u26a1 <b>Convergencia cr\u00edtica detectada</b>\n\n"
-            f"\ud83d\udd17 {alert['star_a']} \u2194 {alert['star_b']}\n"
-            f"\ud83c\udfaf S\u00edmbolo: {intent}\n"
-            f"\ud83d\udcca Hits: {alert.get('combined_hits', '?')} | CC: {alert.get('combined_cc', '?')}\n"
-            f"\ud83d\udea8 Raz\u00f3n: {reasons}\n"
-            f"\ud83c\udf10 Dominios: {' \u2194 '.join(alert.get('domains', []))}"
+            f"⚡ <b>Convergencia crítica detectada</b>\n\n"
+            f"🔗 {star_a} ↔ {star_b}\n"
+            f"🎯 Símbolo: {intent}\n"
+            f"📊 Hits: {hits} | CC: {cc}\n"
+            f"🚨 Razón: {reasons}\n"
+            f"🌐 Dominios: {domains}"
         )
 
         try:
