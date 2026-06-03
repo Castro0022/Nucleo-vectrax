@@ -454,6 +454,86 @@ def check_convergence_alerts() -> List[Dict[str, Any]]:
     return new_alerts
 
 
+_ALERT_HISTORY_FILE = os.path.join(VAULT_DIR, "convergence_alert_history.jsonl")
+_MAX_ALERT_HISTORY = 200
+
+
+def _append_alert_history(alert: Dict[str, Any]) -> None:
+    """Append alert to persistent JSONL history."""
+    try:
+        os.makedirs(os.path.dirname(_ALERT_HISTORY_FILE), exist_ok=True)
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "ts": time.time(),
+            "star_a": alert.get("star_a", ""),
+            "star_b": alert.get("star_b", ""),
+            "intent": alert.get("intent", alert.get("a_intent", "")),
+            "type": alert.get("type", ""),
+            "combined_hits": alert.get("combined_hits", 0),
+            "combined_cc": alert.get("combined_cc", 0),
+            "domains": alert.get("domains", []),
+            "reasons": alert.get("alert_reasons", []),
+        }
+        with open(_ALERT_HISTORY_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        # Trim to last N
+        _trim_alert_history()
+    except Exception:
+        pass
+
+
+def _trim_alert_history() -> None:
+    try:
+        with open(_ALERT_HISTORY_FILE) as f:
+            lines = f.readlines()
+        if len(lines) > _MAX_ALERT_HISTORY:
+            with open(_ALERT_HISTORY_FILE, "w") as f:
+                f.writelines(lines[-_MAX_ALERT_HISTORY:])
+    except Exception:
+        pass
+
+
+def get_alert_history(limit: int = 20) -> List[Dict[str, Any]]:
+    """Return recent alert history (newest first)."""
+    if not os.path.isfile(_ALERT_HISTORY_FILE):
+        return []
+    entries = []
+    try:
+        with open(_ALERT_HISTORY_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+    except Exception:
+        pass
+    return list(reversed(entries[-limit:]))
+
+
+def format_alert_history(limit: int = 10) -> str:
+    """Format alert history for Telegram."""
+    alerts = get_alert_history(limit)
+    if not alerts:
+        return "Sin alertas de convergencia registradas."
+
+    lines = [f"\u26a1 <b>Historial de alertas ({len(alerts)} recientes)</b>\n"]
+    for a in alerts:
+        ts = a.get("timestamp", "")[:16]
+        intent = a.get("intent", "?")
+        hits = a.get("combined_hits", 0)
+        cc = a.get("combined_cc", 0)
+        reasons = ", ".join(a.get("reasons", []))
+        lines.append(
+            f"[{ts}] <b>{intent}</b>\n"
+            f"  {a.get('star_a', '')} \u2194 {a.get('star_b', '')}\n"
+            f"  hits={hits} cc={cc} | {reasons}"
+        )
+
+    return "\n".join(lines)
+
+
 def send_convergence_alerts() -> int:
     """Check for critical convergences and notify creator via Telegram.
 
@@ -469,6 +549,7 @@ def send_convergence_alerts() -> int:
         return 0
 
     for alert in alerts:
+        _append_alert_history(alert)
         intent = alert.get("intent", alert.get("a_intent", "?"))
         reasons = ", ".join(alert["alert_reasons"])
         text = (

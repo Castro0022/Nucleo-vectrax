@@ -1466,6 +1466,7 @@ class TelegramGateway:
                     "/vx memory — ver perfil + hechos\n"
                     "/vx stats — estado del sistema\n"
                     "/vx universe — reporte del universo gravitacional\n"
+                    "/vx alerts [n] — historial de alertas de convergencia\n"
                     "/vx up — uptime + estado rápido\n"
                     "/vx market [snapshot|status] — mercado\n"
                     "/vx btc | eth | sol — precio directo\n"
@@ -1553,6 +1554,11 @@ class TelegramGateway:
             elif cmd == "universe":
                 from core.learn.gravity_engine import universe_report
                 self._send(cid, universe_report(), parse_mode="HTML")
+
+            elif cmd == "alerts":
+                from core.learn.gravity_engine import format_alert_history
+                n = int(arg) if arg and arg.isdigit() else 10
+                self._send(cid, format_alert_history(n), parse_mode="HTML")
 
             elif cmd == "cycle":
                 from core.operational_cycle import get_cycle_stats
