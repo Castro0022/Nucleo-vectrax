@@ -364,6 +364,88 @@ def _feed_gravity(symbols: List[str]) -> int:
     return fed
 
 
+def _auto_execute_proposals(proposals: List[TradeProposal]) -> int:
+    """Auto-execute qualifying proposals if auto-executor is active."""
+    if not proposals:
+        return 0
+    try:
+        from connectors.etoro.auto_executor import (
+            get_mode, AutoMode, execute_proposal, record_symbol_op,
+        )
+        from connectors.etoro.entry_validator import validate_entry
+
+        mode = get_mode()
+        if mode == AutoMode.OFF:
+            return 0
+
+        executed = 0
+        for p in proposals:
+            # Validate ALL entry conditions
+            allowed, reasons = validate_entry(
+                p.symbol, p.direction, p, mode=mode.value,
+            )
+            if not allowed:
+                logger.info(
+                    "[AUTO] Proposal %s BLOCKED: %s",
+                    p.proposal_id, "; ".join(reasons[:3]),
+                )
+                continue
+
+            # Execute
+            result = execute_proposal(p.proposal_id)
+            if result.get("success"):
+                record_symbol_op(p.symbol)
+                executed += 1
+                logger.info(
+                    "[AUTO] Proposal %s EXECUTED (%s): %s %s $%.0f",
+                    p.proposal_id, mode.value.upper(),
+                    p.direction.upper(), p.symbol,
+                    result.get("amount_usd", 0),
+                )
+                # Log to observation ledger
+                try:
+                    from core.self_observation.observation_ledger import record
+                    record(
+                        domain="market",
+                        obs_type="trade_executed",
+                        summary=(
+                            f"Operación ejecutada ({mode.value}): "
+                            f"{p.direction.upper()} {p.symbol} "
+                            f"${result.get('amount_usd', 0):.0f}"
+                        ),
+                        star_id=f"market:{p.symbol}",
+                        evidence={
+                            "proposal_id": p.proposal_id,
+                            "mode": mode.value,
+                            "direction": p.direction,
+                            "amount": result.get("amount_usd"),
+                        },
+                    )
+                except Exception:
+                    pass
+            else:
+                logger.warning(
+                    "[AUTO] Proposal %s execution failed: %s",
+                    p.proposal_id, result.get("error", "?"),
+                )
+
+        return executed
+    except Exception as e:
+        logger.debug("auto_execute_proposals error: %s", e)
+        return 0
+
+
+def _check_positions() -> int:
+    """Check open positions for exit conditions."""
+    try:
+        from connectors.etoro.position_manager import check_open_positions
+        actions = check_open_positions()
+        return len(actions)
+    except Exception as e:
+        logger.debug("check_positions error: %s", e)
+        return 0
+
+
 def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     Execute one full learning cycle:
@@ -397,6 +479,12 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     except Exception as e:
         logger.debug("convergence alerts error: %s", e)
 
+    # Step 7: Auto-execute qualifying proposals (PAPER or LIVE)
+    auto_executed = _auto_execute_proposals(proposals)
+
+    # Step 8: Check open positions for exit conditions
+    positions_closed = _check_positions()
+
     elapsed = round(time.time() - t0, 1)
 
     summary = {
@@ -410,6 +498,8 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         "proposals_new":    len(proposals),
         "gravity_fed":     gravity_fed,
         "alerts_sent":     alerts_sent,
+        "auto_executed":   auto_executed,
+        "positions_closed": positions_closed,
     }
     logger.info("[LEARN] Cycle complete in %.1fs: %s", elapsed, summary)
     return summary

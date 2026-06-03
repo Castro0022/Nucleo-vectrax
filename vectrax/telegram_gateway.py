@@ -1468,7 +1468,7 @@ class TelegramGateway:
                     "/vx universe — reporte del universo gravitacional\n"
                     "/vx alerts [n] — historial de alertas de convergencia\n"
                     "/vx up — uptime + estado rápido\n"
-                    "/vx market [snapshot|status] — mercado\n"
+                    "/vx market [execution|budget|halt|approve|positions|auto] — mercado\n"
                     "/vx btc | eth | sol — precio directo\n"
                     "/vx fallbacks — intenciones fallidas (7 días)\n"
                     "/vx users — usuarios activos\n"
@@ -1525,19 +1525,16 @@ class TelegramGateway:
             elif cmd == "stats":
                 self._send(cid, self._build_monitor_panel())
 
-            elif cmd in ("market", "btc", "eth", "sol", "bnb", "xrp"):
-                # /vx market [snapshot|status|watch]
+            elif cmd == "market":
+                # /vx market <subcommand>
+                self._handle_market_cmd(cid, tg_uid, arg)
+
+            elif cmd in ("btc", "eth", "sol", "bnb", "xrp"):
                 # /vx btc [price|trend|1h]
-                # /vx eth, /vx sol, etc.
                 from intents.market_intents import detect_market_intent, handle_market_intent
-                # Construir query para detect_market_intent
-                if cmd == "market":
-                    raw = f"vx market {arg}" if arg else "vx market snapshot"
-                else:
-                    raw = f"{cmd} {arg}" if arg else cmd
+                raw = f"{cmd} {arg}" if arg else cmd
                 detected = detect_market_intent(raw)
                 if not detected:
-                    # Fallback: precio directo del ticker
                     detected = ("bitcoin_status" if cmd in ("btc", "bitcoin")
                                 else "market_price",
                                 {"symbol": cmd.upper() + "USDT"})
@@ -2802,6 +2799,106 @@ class TelegramGateway:
         ]
 
         return "\n".join(lines)
+
+    # == Market auto-execution commands (/vx market) =========================
+
+    def _handle_market_cmd(self, cid: int, tg_uid: str, arg: str) -> None:
+        """Handle /vx market <subcommand>."""
+        parts = arg.split(None, 1) if arg else []
+        sub = parts[0].lower() if parts else "help"
+        sub_arg = parts[1].strip() if len(parts) > 1 else ""
+
+        try:
+            if sub == "help" or not arg:
+                self._send(cid, (
+                    "📊 Market Auto-Execution\n\n"
+                    "/vx market execution on — activar modo PAPER\n"
+                    "/vx market execution off — desactivar\n"
+                    "/vx market live on — activar modo LIVE (si cumple requisitos)\n"
+                    "/vx market budget <n> — cambiar presupuesto máximo\n"
+                    "/vx market auto status — estado completo\n"
+                    "/vx market halt — parada de emergencia\n"
+                    "/vx market unhalt — desactivar halt\n"
+                    "/vx market approve <SYMBOL> — aprobar símbolo para LIVE\n"
+                    "/vx market positions — posiciones abiertas\n"
+                    "/vx market snapshot — vista rápida del mercado"
+                ))
+
+            elif sub == "execution":
+                if sub_arg == "on":
+                    from connectors.etoro.auto_executor import activate_paper
+                    self._send(cid, activate_paper())
+                elif sub_arg == "off":
+                    from connectors.etoro.auto_executor import deactivate
+                    deactivate(reason="manual via /vx market execution off")
+                    self._send(cid, "⚫ Ejecución automática desactivada.")
+                else:
+                    self._send(cid, "Uso: /vx market execution on|off")
+
+            elif sub == "live":
+                if sub_arg == "on":
+                    from connectors.etoro.auto_executor import activate_live
+                    self._send(cid, activate_live(tg_uid))
+                else:
+                    self._send(cid, "Uso: /vx market live on")
+
+            elif sub == "budget":
+                if not sub_arg or not sub_arg.replace(".", "").isdigit():
+                    self._send(cid, "Uso: /vx market budget 50")
+                    return
+                amount = float(sub_arg)
+                if amount > 50:
+                    self._send(cid, "⚠️ Máximo permitido: $50. No se puede aumentar automáticamente.")
+                    return
+                from connectors.etoro.auto_executor import update_config
+                update_config({"max_position_usd": amount})
+                self._send(cid, f"✅ Presupuesto máximo actualizado: ${amount:.0f}")
+
+            elif sub == "auto" and sub_arg == "status":
+                from connectors.etoro.auto_executor import format_auto_status
+                self._send(cid, format_auto_status())
+
+            elif sub == "halt":
+                from connectors.etoro.auto_executor import halt
+                self._send(cid, halt(reason=f"manual via Telegram by {tg_uid}"))
+
+            elif sub == "unhalt":
+                from connectors.etoro.auto_executor import unhalt
+                self._send(cid, unhalt())
+
+            elif sub == "approve":
+                if not sub_arg:
+                    self._send(cid, "Uso: /vx market approve AAPL")
+                    return
+                from connectors.etoro.auto_executor import approve_symbol
+                self._send(cid, approve_symbol(sub_arg))
+
+            elif sub == "positions":
+                from connectors.etoro.position_manager import get_open_positions_summary
+                self._send(cid, get_open_positions_summary())
+
+            elif sub == "snapshot":
+                from intents.market_intents import detect_market_intent, handle_market_intent
+                raw = "vx market snapshot"
+                detected = detect_market_intent(raw)
+                if detected:
+                    intent_name, params = detected
+                    result = handle_market_intent(intent_name, params)
+                    if result.get("success") and result.get("response"):
+                        self._send(cid, result["response"])
+                        return
+                self._send(cid, "No se pudo obtener snapshot del mercado.")
+
+            elif sub == "status":
+                from connectors.etoro.auto_executor import format_auto_status
+                self._send(cid, format_auto_status())
+
+            else:
+                self._send(cid, f"Subcomando /vx market {sub} no reconocido. Usa /vx market help.")
+
+        except Exception as e:
+            self._send(cid, f"Error market: {e}")
+            logger.error("/vx market %s error: %s", sub, e)
 
     # == eToro commands (/etoro) =============================================
 

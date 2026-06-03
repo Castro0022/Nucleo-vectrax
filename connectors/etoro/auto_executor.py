@@ -47,19 +47,28 @@ _PAPER_LOG_FILE = os.path.join(
 # ── Default risk limits ───────────────────────────────────────────────
 DEFAULTS = {
     "mode":                    "off",
-    "max_position_usd":        100.0,
-    "max_daily_loss_usd":      50.0,
+    "max_position_usd":        50.0,
+    "max_daily_loss_usd":      10.0,
     "stop_loss_pct":           1.5,
     "max_consecutive_losses":  3,
     "max_positions_open":      2,
     "min_paper_signals":       30,
     "min_paper_win_rate":      60.0,
+    # Controlled execution limits
+    "max_ops_per_symbol_day":  1,
+    "min_confidence":          "MEDIUM",    # MEDIUM or HIGH
+    "paper_phase_hours":       24,           # min hours in PAPER before LIVE
+    "approved_symbols":        [],           # symbols manually approved for LIVE
+    "halt":                    False,        # emergency stop flag
+    "max_hold_hours":          24,           # max position hold time
     # Runtime state
     "consecutive_losses":      0,
     "daily_loss_usd":          0.0,
     "daily_loss_date":         "",
+    "daily_ops_by_symbol":     {},           # {"AAPL": 1, ...} resets daily
     "live_activated_by":       "",
     "live_activated_at":       0.0,
+    "paper_activated_at":      0.0,
     "paper_trades_total":      0,
     "paper_trades_wins":       0,
     "last_shutdown_reason":    "",
@@ -127,8 +136,62 @@ def _set_mode(mode: AutoMode, reason: str = "", activated_by: str = "") -> None:
     logger.info("[AUTO] Mode changed to %s | reason=%s", mode.value.upper(), reason or "manual")
 
 
+def halt(reason: str = "manual") -> str:
+    """Emergency stop — immediately disable all execution."""
+    cfg = _load_config()
+    cfg["halt"] = True
+    cfg["mode"] = AutoMode.OFF.value
+    cfg["last_shutdown_reason"] = f"HALT: {reason}"
+    _save_config(cfg)
+    logger.warning("[AUTO] 🛑 HALT activated: %s", reason)
+    return "🛑 HALT activado. Toda ejecución automática detenida."
+
+
+def unhalt() -> str:
+    cfg = _load_config()
+    cfg["halt"] = False
+    _save_config(cfg)
+    return "✅ HALT desactivado. Puedes reactivar con /vx market execution on."
+
+
+def is_halted() -> bool:
+    return _load_config().get("halt", False)
+
+
+def approve_symbol(symbol: str) -> str:
+    cfg = _load_config()
+    sym = symbol.upper()
+    approved = cfg.get("approved_symbols", [])
+    if sym not in approved:
+        approved.append(sym)
+        cfg["approved_symbols"] = approved
+        _save_config(cfg)
+    return f"✅ {sym} aprobado para ejecución LIVE."
+
+
+def record_symbol_op(symbol: str) -> None:
+    """Record that a symbol was traded today (for daily limit)."""
+    cfg = _reset_daily_loss_if_new_day(_load_config())
+    ops = cfg.get("daily_ops_by_symbol", {})
+    sym = symbol.upper()
+    ops[sym] = ops.get(sym, 0) + 1
+    cfg["daily_ops_by_symbol"] = ops
+    _save_config(cfg)
+
+
+def symbol_ops_today(symbol: str) -> int:
+    cfg = _reset_daily_loss_if_new_day(_load_config())
+    return cfg.get("daily_ops_by_symbol", {}).get(symbol.upper(), 0)
+
+
 def activate_paper() -> str:
+    cfg = _load_config()
+    if cfg.get("halt"):
+        return "🛑 Sistema en HALT. Usa /vx market unhalt primero."
     _set_mode(AutoMode.PAPER)
+    cfg = _load_config()
+    cfg["paper_activated_at"] = time.time()
+    _save_config(cfg)
     cfg = _load_config()
     paper_wr = _get_paper_win_rate(cfg)
     return (
@@ -207,6 +270,7 @@ def _reset_daily_loss_if_new_day(cfg: Dict) -> Dict:
     if cfg.get("daily_loss_date") != today:
         cfg["daily_loss_usd"]    = 0.0
         cfg["daily_loss_date"]   = today
+        cfg["daily_ops_by_symbol"] = {}   # reset daily ops counter
     return cfg
 
 
@@ -218,6 +282,10 @@ def check_risk_before_trade(
     Returns (allowed, reason_if_blocked).
     """
     cfg = _reset_daily_loss_if_new_day(_load_config())
+
+    # 0. Halt check
+    if cfg.get("halt"):
+        return False, "🛑 Sistema en HALT. Ejecución bloqueada."
 
     # 1. Mode must be PAPER or LIVE
     mode = AutoMode(cfg["mode"])

@@ -1,7 +1,14 @@
 {
-  "head": "1dbf09c",
+  "head": "0de569f",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "0de569fb",
+      "subject": "feat: autonomous observation memory — Vectrax remembers everything it observes",
+      "author": "Mario Bravo Castro",
+      "ts": 1780505258,
+      "files_changed": 5
+    },
     {
       "sha": "1dbf09ce",
       "subject": "fix: handle non-string last_signal and object domain values in dashboard",
@@ -50,24 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1780454891,
       "files_changed": 1
-    },
-    {
-      "sha": "847ba923",
-      "subject": "fix: eliminate universe panel flicker — single layout pass",
-      "author": "Mario Bravo Castro",
-      "ts": 1780454702,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
     "vectrax/telegram_gateway.py",
     "core/learn/gravity_engine.py",
     "services/ui/static/universe.html",
+    "vectrax/self_context.py",
     "services/ui/static/app.js",
     "services/core/routes/dashboard.py",
-    "vectrax/self_context.py",
     "connectors/etoro/learning_engine.py",
     "README.md"
   ],
-  "generated_at": 1780457466
+  "generated_at": 1780505272
 }
