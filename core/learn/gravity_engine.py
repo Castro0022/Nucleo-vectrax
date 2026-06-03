@@ -378,6 +378,123 @@ class GravityIndex:
         }
 
 
+# ---------------------------------------------------------------------------
+# Convergence alerts
+# ---------------------------------------------------------------------------
+
+# Thresholds for triggering alerts
+ALERT_MIN_HITS = 5        # combined hits to consider significant
+ALERT_MIN_CC = 0.4        # combined coherence to consider strong
+ALERT_GROWTH_FACTOR = 2   # hits doubled since last check
+
+_ALERTS_SENT_FILE = os.path.join(VAULT_DIR, "convergence_alerts_sent.json")
+
+
+def _load_sent_alerts() -> Dict[str, Any]:
+    try:
+        if os.path.isfile(_ALERTS_SENT_FILE):
+            with open(_ALERTS_SENT_FILE) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_sent_alerts(sent: Dict[str, Any]) -> None:
+    try:
+        with open(_ALERTS_SENT_FILE, "w") as f:
+            json.dump(sent, f, indent=2)
+    except Exception:
+        pass
+
+
+def check_convergence_alerts() -> List[Dict[str, Any]]:
+    """Scan for convergences that exceed critical thresholds.
+
+    Returns list of new alerts (not previously sent).
+    Each alert includes the convergence detail + reason.
+    """
+    gi = get_gravity_index()
+    convergences = gi.cross_domain_convergences()
+    sent = _load_sent_alerts()
+    new_alerts = []
+
+    for conv in convergences:
+        # Build a stable key for deduplication
+        key = f"{conv['star_a']}:{conv['star_b']}"
+        prev = sent.get(key, {})
+        prev_hits = prev.get("hits", 0)
+
+        hits = conv.get("combined_hits", 0)
+        cc = conv.get("combined_cc", 0)
+        reasons = []
+
+        # Check thresholds
+        if hits >= ALERT_MIN_HITS and prev_hits < ALERT_MIN_HITS:
+            reasons.append(f"hits={hits} superó umbral ({ALERT_MIN_HITS})")
+
+        if cc >= ALERT_MIN_CC and prev.get("cc", 0) < ALERT_MIN_CC:
+            reasons.append(f"coherencia={cc:.2f} superó umbral ({ALERT_MIN_CC})")
+
+        if prev_hits > 0 and hits >= prev_hits * ALERT_GROWTH_FACTOR:
+            reasons.append(f"hits x{hits / max(prev_hits, 1):.1f} desde última alerta")
+
+        if reasons:
+            alert = {
+                **conv,
+                "alert_reasons": reasons,
+                "key": key,
+            }
+            new_alerts.append(alert)
+            sent[key] = {"hits": hits, "cc": cc, "alerted_at": time.time()}
+
+    if new_alerts:
+        _save_sent_alerts(sent)
+
+    return new_alerts
+
+
+def send_convergence_alerts() -> int:
+    """Check for critical convergences and notify creator via Telegram.
+
+    Returns number of alerts sent.
+    """
+    alerts = check_convergence_alerts()
+    if not alerts:
+        return 0
+
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CREATOR_CHAT_ID", "")
+    if not token or not chat_id:
+        return 0
+
+    for alert in alerts:
+        intent = alert.get("intent", alert.get("a_intent", "?"))
+        reasons = ", ".join(alert["alert_reasons"])
+        text = (
+            f"\u26a1 <b>Convergencia cr\u00edtica detectada</b>\n\n"
+            f"\ud83d\udd17 {alert['star_a']} \u2194 {alert['star_b']}\n"
+            f"\ud83c\udfaf S\u00edmbolo: {intent}\n"
+            f"\ud83d\udcca Hits: {alert.get('combined_hits', '?')} | CC: {alert.get('combined_cc', '?')}\n"
+            f"\ud83d\udea8 Raz\u00f3n: {reasons}\n"
+            f"\ud83c\udf10 Dominios: {' \u2194 '.join(alert.get('domains', []))}"
+        )
+
+        try:
+            import urllib.request
+            data = json.dumps({"chat_id": chat_id, "text": text, "parse_mode": "HTML"}).encode()
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=data,
+                headers={"Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=10)
+        except Exception:
+            pass
+
+    return len(alerts)
+
+
 def universe_report(lang: str = "es") -> str:
     """Generate a human-readable universe report for Telegram / self-context."""
     gi = get_gravity_index()

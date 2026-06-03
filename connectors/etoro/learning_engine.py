@@ -387,6 +387,16 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     proposals = _generate_proposals(symbols)
     gravity_fed = _feed_gravity(symbols)
 
+    # Step 6: check for critical convergences and alert
+    alerts_sent = 0
+    try:
+        from core.learn.gravity_engine import send_convergence_alerts
+        alerts_sent = send_convergence_alerts()
+        if alerts_sent:
+            logger.info("[LEARN] %d convergence alerts sent", alerts_sent)
+    except Exception as e:
+        logger.debug("convergence alerts error: %s", e)
+
     elapsed = round(time.time() - t0, 1)
 
     summary = {
@@ -399,6 +409,7 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         "patterns_usable":  r3.get("usable", 0),
         "proposals_new":    len(proposals),
         "gravity_fed":     gravity_fed,
+        "alerts_sent":     alerts_sent,
     }
     logger.info("[LEARN] Cycle complete in %.1fs: %s", elapsed, summary)
     return summary
