@@ -339,6 +339,126 @@ class GravityIndex:
         }
 
 
+    def top_stars(
+        self,
+        n: int = 10,
+        domain: Optional[str] = None,
+    ) -> List[GravityRecord]:
+        """Return the top N stars by gravitational weight (hits × cc × freq)."""
+        recs = self.by_domain(domain) if domain else self.all_records()
+        for r in recs:
+            r._weight = r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor
+        return sorted(recs, key=lambda r: r._weight, reverse=True)[:n]
+
+    def growth_trends(self, days: int = 7) -> Dict[str, Any]:
+        """Analyze growth trends over a time window."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        records = self._load()
+        new_stars = [r for r in records.values()
+                     if _parse_iso(r.first_seen) >= cutoff]
+        active_stars = [r for r in records.values()
+                        if _parse_iso(r.last_seen) >= cutoff]
+        growing = [r for r in active_stars if r.hits >= 3]
+
+        # Domain breakdown of new stars
+        new_by_domain: Dict[str, int] = {}
+        for r in new_stars:
+            new_by_domain[r.domain] = new_by_domain.get(r.domain, 0) + 1
+
+        return {
+            "window_days": days,
+            "new_stars": len(new_stars),
+            "active_stars": len(active_stars),
+            "growing_stars": len(growing),
+            "total_stars": len(records),
+            "new_by_domain": new_by_domain,
+            "top_growing": sorted(
+                growing, key=lambda r: r.freq, reverse=True,
+            )[:5],
+        }
+
+
+def universe_report(lang: str = "es") -> str:
+    """Generate a human-readable universe report for Telegram / self-context."""
+    gi = get_gravity_index()
+    summary = gi.universe_summary()
+    trends = gi.growth_trends(days=7)
+    top = gi.top_stars(n=8)
+    convergences = summary.get("convergence_details", [])
+
+    lines = []
+    if lang == "es":
+        lines.append("🌌 <b>Universo Gravitacional — Reporte</b>")
+    else:
+        lines.append("🌌 <b>Gravitational Universe — Report</b>")
+
+    # Overview
+    total = summary["total_stars"]
+    tiers = summary["tiers"]
+    lines.append(f"")
+    lines.append(f"⭐ {total} estrellas totales")
+    lines.append(
+        f"   HOT={tiers.get('HOT', 0)} | WARM={tiers.get('WARM', 0)} | "
+        f"COLD={tiers.get('COLD', 0)} | DEEP={tiers.get('DEEP', 0)}"
+    )
+
+    # Domains
+    lines.append("")
+    lines.append("<b>Dominios:</b>")
+    for d, stats in summary["domains"].items():
+        lines.append(
+            f"  {d}: {stats['count']} ⭐ | cc={stats['avg_cc']} | "
+            f"hits={stats['total_hits']}"
+        )
+
+    # Top stars by gravitational weight
+    lines.append("")
+    lines.append("<b>Estrellas con mayor masa gravitacional:</b>")
+    for i, r in enumerate(top, 1):
+        weight = round(r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor, 2)
+        lines.append(
+            f"  {i}. {r.fingerprint[:25]} [{r.domain}]\n"
+            f"     hits={r.hits} cc={r.cc_score:.2f} freq={r.freq:.2f} "
+            f"peso={weight}"
+        )
+
+    # Growth trends
+    lines.append("")
+    lines.append(f"<b>Tendencia (últimos {trends['window_days']}d):</b>")
+    lines.append(
+        f"  Nuevas: {trends['new_stars']} | "
+        f"Activas: {trends['active_stars']} | "
+        f"Creciendo: {trends['growing_stars']}"
+    )
+    if trends["new_by_domain"]:
+        parts = [f"{d}={n}" for d, n in trends["new_by_domain"].items()]
+        lines.append(f"  Nuevas por dominio: {', '.join(parts)}")
+
+    if trends["top_growing"]:
+        lines.append("  Más activas:")
+        for r in trends["top_growing"]:
+            lines.append(
+                f"    📈 {r.fingerprint[:25]} freq={r.freq:.2f} hits={r.hits}"
+            )
+
+    # Cross-domain convergences
+    intent_convs = [c for c in convergences if c["type"] == "intent_overlap"]
+    if intent_convs:
+        lines.append("")
+        lines.append(f"<b>Convergencias cross-domain: {len(intent_convs)}</b>")
+        for c in intent_convs:
+            lines.append(
+                f"  🔗 {c['star_a']} ↔ {c['star_b']}\n"
+                f"     symbol={c['intent']} cc={c['combined_cc']} "
+                f"hits={c['combined_hits']}"
+            )
+    else:
+        lines.append("")
+        lines.append("Convergencias cross-domain: 0 (se forman con observación continua)")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Module-level singleton
 # ---------------------------------------------------------------------------
