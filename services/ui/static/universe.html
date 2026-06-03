@@ -730,27 +730,6 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       stars = data.stars || [];
       edges = data.edges || [];
       constellations = data.constellations || [];
-
-      if (stars.length === 0) {
-        emptyEl.style.display = 'block';
-      } else {
-        emptyEl.style.display = 'none';
-      }
-
-      layoutStars();
-      applyFilters();
-
-      // Stats
-      const nConv = stars.filter(s => s.star_type === 'convergence' && s.owner !== '__collective__').length;
-      const nColl = stars.filter(s => s.owner === '__collective__').length;
-      const nPrim = stars.filter(s => s.star_type === 'primary').length;
-      statsEl.innerHTML =
-        `<b>${stars.length}</b> estrellas · ` +
-        `<b>${edges.length}</b> conexiones · ` +
-        `<b>${constellations.length}</b> constelaciones` +
-        (nConv ? ` · <b>${nConv}</b> convergencias` : '') +
-        (nColl ? ` · <b>${nColl}</b> colectivas` : '');
-
     } catch (err) {
       console.warn('gravitational load error:', err.message);
     }
