@@ -105,6 +105,13 @@ SERVICES: Dict[str, Dict] = {
         "restart_delay": 10,
         "max_restarts": 5,
     },
+    "audit_cron": {
+        "cmd": ["cron", "-f"],           # foreground mode
+        "cwd": str(VECTRAX_DIR),
+        "required": False,               # Audit is not critical path
+        "restart_delay": 30,
+        "max_restarts": 3,
+    },
 }
 
 # ---------------------------------------------------------------------------

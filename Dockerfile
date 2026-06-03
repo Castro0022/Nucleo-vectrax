@@ -16,8 +16,9 @@ FROM python:3.11-slim
 # git: requerido por core/self_observation/deployment_memory.py para
 #   leer commits + ramas + diffs y exponerlos al CREATOR MODE.
 # sqlite3 (CLI): útil para diagnóstico runtime de las DBs persistentes.
+# cron: motor de autoauditoría permanente.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc g++ git sqlite3 && \
+    gcc g++ git sqlite3 cron && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -39,8 +40,19 @@ RUN if [ -d /app/.git ]; then \
         echo "[build] no .git — created /app/.git_snapshot fallback"; \
     fi
 
-RUN mkdir -p /app/vault /root/.vectrax \
+RUN mkdir -p /app/vault /root/.vectrax /app/vault/audit_reports \
     && ln -sfn /app /root/Vectrax
+
+# ── Self-audit cron jobs ──────────────────────────────────────────
+# Daily at 06:00 UTC, Weekly on Sundays at 06:30 UTC
+RUN printf '%s\n' \
+    'PYTHONPATH=/app' \
+    'VECTRAX_VAULT_DIR=/app/vault' \
+    '0 6 * * * /usr/local/bin/python -m observability.audit_cron --daily >> /app/vault/audit_reports/cron.log 2>&1' \
+    '30 6 * * 0 /usr/local/bin/python -m observability.audit_cron --weekly >> /app/vault/audit_reports/cron.log 2>&1' \
+    '' > /etc/cron.d/vectrax-audit \
+    && chmod 0644 /etc/cron.d/vectrax-audit \
+    && crontab /etc/cron.d/vectrax-audit
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
