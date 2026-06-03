@@ -234,6 +234,105 @@ class GravityIndex:
         return self._load()
 
 
+    # -- cross-domain queries ------------------------------------------------
+
+    def by_domain(self, domain: str) -> List[GravityRecord]:
+        """Return all records in a given domain."""
+        return [r for r in self._load().values() if r.domain == domain]
+
+    def domain_stats(self) -> Dict[str, Dict[str, Any]]:
+        """Aggregate stats per domain (market, cognition, etc.)."""
+        domains: Dict[str, list] = {}
+        for rec in self._load().values():
+            domains.setdefault(rec.domain, []).append(rec)
+        result = {}
+        for d, recs in domains.items():
+            cc_vals = [r.cc_score for r in recs]
+            freq_vals = [r.freq for r in recs]
+            tiers = {}
+            for r in recs:
+                tiers[r.tier] = tiers.get(r.tier, 0) + 1
+            result[d] = {
+                "count": len(recs),
+                "avg_cc": round(statistics.mean(cc_vals), 4) if cc_vals else 0,
+                "avg_freq": round(statistics.mean(freq_vals), 4) if freq_vals else 0,
+                "total_hits": sum(r.hits for r in recs),
+                "tiers": tiers,
+            }
+        return result
+
+    def cross_domain_convergences(
+        self,
+        domain_a: str = "market",
+        domain_b: str = "cognition",
+        min_cc: float = 0.3,
+    ) -> List[Dict[str, Any]]:
+        """Find convergences between two domains.
+
+        A convergence is detected when stars from different domains
+        share the same intent or have overlapping temporal activity.
+        """
+        records = self._load()
+        a_recs = [r for r in records.values() if r.domain == domain_a]
+        b_recs = [r for r in records.values() if r.domain == domain_b]
+
+        convergences = []
+        for a in a_recs:
+            for b in b_recs:
+                # Intent overlap: same intent keyword
+                if a.intent and b.intent and (
+                    a.intent.lower() in b.intent.lower()
+                    or b.intent.lower() in a.intent.lower()
+                ):
+                    combined_cc = (a.cc_score + b.cc_score) / 2
+                    if combined_cc >= min_cc:
+                        convergences.append({
+                            "type": "intent_overlap",
+                            "star_a": a.fingerprint,
+                            "star_b": b.fingerprint,
+                            "intent": a.intent,
+                            "combined_cc": round(combined_cc, 4),
+                            "combined_hits": a.hits + b.hits,
+                            "domains": [domain_a, domain_b],
+                        })
+                        continue
+
+                # Temporal proximity: both active in last 7 days
+                a_last = _parse_iso(a.last_seen)
+                b_last = _parse_iso(b.last_seen)
+                now = datetime.now(timezone.utc)
+                both_recent = (
+                    (now - a_last).total_seconds() < 7 * 86400
+                    and (now - b_last).total_seconds() < 7 * 86400
+                )
+                if both_recent and a.cc_score >= min_cc and b.cc_score >= min_cc:
+                    convergences.append({
+                        "type": "temporal_proximity",
+                        "star_a": a.fingerprint,
+                        "star_b": b.fingerprint,
+                        "a_intent": a.intent,
+                        "b_intent": b.intent,
+                        "combined_cc": round((a.cc_score + b.cc_score) / 2, 4),
+                        "domains": [domain_a, domain_b],
+                    })
+
+        return convergences
+
+    def universe_summary(self) -> Dict[str, Any]:
+        """Full universe snapshot: domains, tiers, convergences."""
+        records = self.all_records()
+        domains = self.domain_stats()
+        tiers = self.tier_counts()
+        market_cognitive = self.cross_domain_convergences()
+        return {
+            "total_stars": len(records),
+            "tiers": tiers,
+            "domains": domains,
+            "cross_domain_convergences": len(market_cognitive),
+            "convergence_details": market_cognitive[:10],
+        }
+
+
 # ---------------------------------------------------------------------------
 # Module-level singleton
 # ---------------------------------------------------------------------------
