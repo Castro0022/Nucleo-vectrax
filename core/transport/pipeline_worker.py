@@ -510,6 +510,7 @@ def run_worker() -> None:
     last_scheduler = 0.0  # última ejecución del scheduler
     last_reentry = 0.0    # última ejecución del reentry check
     last_digest = 0.0     # última ejecución del router digest
+    last_market_learn = 0.0  # ciclo de aprendizaje de mercado (cada 30 min)
 
     # Discard stale messages from previous sessions (>5 min old)
     _STALE_AGE = 300  # 5 minutes
@@ -627,6 +628,25 @@ def run_worker() -> None:
             except Exception as _pe:
                 logger.debug("Proactive engine error (passthrough): %s", _pe)
                 last_proactive = time.time()  # evitar loop de errores
+
+            # Market learning cycle — observe, record, learn patterns (every 30 min)
+            try:
+                _MARKET_LEARN_INTERVAL = 1800  # 30 min
+                if time.time() - last_market_learn > _MARKET_LEARN_INTERVAL:
+                    from connectors.etoro.learning_engine import run_learning_cycle
+                    watchlist_env = os.environ.get("ETORO_WATCHLIST", "")
+                    symbols = watchlist_env.split(",") if watchlist_env else None
+                    summary = run_learning_cycle(symbols)
+                    if summary.get("signals_recorded", 0) > 0:
+                        logger.info(
+                            "Market learn: %d signals, %d patterns",
+                            summary["signals_recorded"],
+                            summary.get("patterns_total", 0),
+                        )
+                    last_market_learn = time.time()
+            except Exception as _ml:
+                logger.debug("Market learn error (passthrough): %s", _ml)
+                last_market_learn = time.time()
 
             # Continuity reentry — one message after 12-20h silence (every 10 min)
             try:

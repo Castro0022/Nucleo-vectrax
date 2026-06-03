@@ -340,6 +340,17 @@ def build_self_context(lang: str = "es") -> str:
             "I respond from what I am and what already exists — not from generic theory."
         )
 
+    # Market observation awareness
+    market_ctx = ""
+    try:
+        from connectors.etoro.market_context import get_watchlist_summary
+        market_ctx = get_watchlist_summary()
+    except Exception:
+        pass
+
+    parts = [base]
     if universe:
-        return base + "\n\n" + universe
-    return base
+        parts.append(universe)
+    if market_ctx:
+        parts.append(f"[OBSERVACIÓN DE MERCADO]\n{market_ctx}")
+    return "\n\n".join(parts)

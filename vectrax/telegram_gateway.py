@@ -1252,6 +1252,41 @@ class TelegramGateway:
                 logger.info("FAST %s | %s → %d ch", uid, text[:30], len(fast))
                 return
 
+            # === MARKET OPINION: inject eToro observations into LLM context ===
+            # Detects questions like "qué opinas de NVIDIA", "cómo ves el BTC",
+            # "analiza Tesla" and injects accumulated market observations.
+            try:
+                from connectors.etoro.market_context import resolve_symbol
+                import re as _mre
+                _opinion_match = _mre.search(
+                    r'(?:qu[eé]\s+(?:opinas?|piensas?|crees?)'
+                    r'|c[oó]mo\s+(?:ves?|est[aá])'
+                    r'|analiz[ae]|observ[ae]'
+                    r'|what.*(?:think|opinion)'
+                    r'|how.*(?:look|doing))'
+                    r'.*?\b([A-Za-z]{2,10})\b',
+                    text, _mre.IGNORECASE,
+                )
+                if _opinion_match:
+                    _sym_candidate = _opinion_match.group(1)
+                    _resolved = resolve_symbol(_sym_candidate)
+                    if _resolved:
+                        from connectors.etoro.market_context import get_market_insight
+                        _insight = get_market_insight(_resolved)
+                        if _insight:
+                            # Inject observation context and route to LLM via queue
+                            _enriched = f"{text}\n\n{_insight}"
+                            from core.transport.message_queue import enqueue
+                            msg_id = enqueue(tg_uid, cid, _enriched, "telegram")
+                            self._processed += 1
+                            logger.info(
+                                "MARKET_OPINION %s | %s → queued with insight",
+                                uid, _resolved,
+                            )
+                            return
+            except Exception as _mo:
+                logger.debug("market opinion swallowed: %s", _mo)
+
             # === MARKET DATA: precios para todos los usuarios, todas las lenguas ===
             # Usa Binance (sin auth). eToro es solo para cuenta personal del creador.
             try:

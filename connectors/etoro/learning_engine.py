@@ -33,7 +33,7 @@ _PROPOSALS_FILE = os.path.join(
 )
 
 # Symbols to observe during a learn cycle
-DEFAULT_WATCHLIST = ["BTCUSD", "ETHUSD", "EURUSD", "AAPL", "TSLA"]
+DEFAULT_WATCHLIST = ["BTCUSD", "ETHUSD", "EURUSD", "AAPL", "TSLA", "NVDA"]
 
 
 # ── Proposal dataclass ────────────────────────────────────────────────
