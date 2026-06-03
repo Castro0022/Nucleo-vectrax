@@ -123,7 +123,9 @@ function showDashSection(sec) {
   document.querySelector(`.dash-tab[data-section="${sec}"]`).classList.add('active');
 
   // Load section data on switch
-  const loaders = { stars: loadStars, constellations: loadConstellations,
+  const loaders = { overview: loadOverview, gravity: loadGravity,
+    mercado: loadMercado, convergencias: loadConvergencias,
+    stars: loadStars, constellations: loadConstellations,
     history: loadHistory, sessions: loadSessions, proposals: loadProposals,
     operator: loadOperator, audit: loadAudit,
     sistema: loadSistema, ideas: loadIdeas };
@@ -243,25 +245,41 @@ async function loadChatHistory() {
    4. DASHBOARD
    ================================================================== */
 
+// Cache observatory data to avoid re-fetching on every tab switch
+let _obsCache = null;
+let _obsCacheTs = 0;
+const OBS_CACHE_TTL = 10000; // 10s
+
+async function fetchObservatory() {
+  if (_obsCache && Date.now() - _obsCacheTs < OBS_CACHE_TTL) return _obsCache;
+  _obsCache = await api('GET', '/dashboard/observatory');
+  _obsCacheTs = Date.now();
+  return _obsCache;
+}
+
 async function loadDashboard() {
-  // Metrics strip — use public dashboard/summary endpoint
+  // Metrics strip — use consolidated observatory endpoint
   try {
-    const [summary, health] = await Promise.all([
-      api('GET', '/dashboard/summary'),
+    const [obs, health] = await Promise.all([
+      fetchObservatory(),
       api('GET', '/health').catch(() => null),
     ]);
 
-    const sys = summary.system || {};
-    const stIcon = sys.status === 'healthy' ? '🟢' : sys.status === 'degraded' ? '🟡' : '🔴';
+    const op = obs.operator || {};
+    const grav = obs.gravity || {};
+    const mkt = obs.market || {};
+    const users = obs.users || {};
+    const stIcon = op.status === 'healthy' ? '🟢' : op.status === 'degraded' ? '🟡' : '🔴';
 
     $('metrics-strip').innerHTML = [
-      metric('⭐ Stars', summary.knowledge_stars ?? 0),
-      metric('🌌 Constellations', summary.constellations ?? 0),
-      metric('👥 Users', summary.telegram_users ?? 0),
-      metric('💬 Interactions', summary.telegram_interactions ?? 0),
-      metric('🧠 Patterns', summary.patterns ?? 0),
-      metric(`${stIcon} System`, sys.status || '—'),
-      metric('⏱ Uptime', health ? `${Math.round(health.uptime_seconds)}s` : '—'),
+      metric('🌌 Total Stars', obs.total_stars ?? 0),
+      metric('⭐ Gravity', grav.total ?? 0),
+      metric('📊 Market', mkt.total_signals ?? 0),
+      metric('👥 Users', users.total ?? 0),
+      metric('💬 Interactions', users.interactions ?? 0),
+      metric('🔗 Convergences', (obs.convergences || {}).cross_domain ?? 0),
+      metric(`${stIcon} System`, op.status || '—'),
+      metric('⏱ Uptime', health ? fmtUptime(health.uptime_seconds) : '—'),
     ].join('');
   } catch (e) {
     $('metrics-strip').innerHTML = `<div class="metric"><span class="dim">Error: ${esc(e.message)}</span></div>`;
@@ -269,12 +287,224 @@ async function loadDashboard() {
 
   // Load the active section
   const active = document.querySelector('.dash-tab.active');
-  const sec = active ? active.dataset.section : 'stars';
+  const sec = active ? active.dataset.section : 'overview';
   showDashSection(sec);
+}
+
+function fmtUptime(s) {
+  if (!s) return '—';
+  if (s < 3600) return Math.round(s/60) + 'm';
+  if (s < 86400) return (s/3600).toFixed(1) + 'h';
+  return (s/86400).toFixed(1) + 'd';
 }
 
 function metric(label, value) {
   return `<div class="metric"><div class="metric-val">${value}</div><div class="metric-label">${label}</div></div>`;
+}
+
+/* ---- Overview (Observatory summary) ---- */
+async function loadOverview() {
+  const el = $('sec-overview');
+  el.innerHTML = '<p class="dim">Cargando observatory…</p>';
+  try {
+    const obs = await fetchObservatory();
+    const grav = obs.gravity || {};
+    const legacy = obs.legacy || {};
+    const mkt = obs.market || {};
+    const users = obs.users || {};
+    const op = obs.operator || {};
+    const conv = obs.convergences || {};
+    const t24 = grav.trends_24h || {};
+    const t7 = grav.trends_7d || {};
+
+    let html = `<div class="sys-grid">`;
+    // Universe card
+    html += `<div class="card">
+      <div class="card-head">🌌 Universo</div>
+      <div class="kv"><span class="dim">Total estrellas</span><span><strong>${obs.total_stars ?? 0}</strong></span></div>
+      <div class="kv"><span class="dim">Gravity engine</span><span>${grav.total ?? 0}</span></div>
+      <div class="kv"><span class="dim">Knowledge stars</span><span>${legacy.knowledge_stars ?? 0}</span></div>
+      <div class="kv"><span class="dim">User stars</span><span>${legacy.user_stars ?? 0}</span></div>
+      <div class="kv"><span class="dim">Patrones</span><span>${legacy.patterns ?? 0}</span></div>
+      <div class="kv"><span class="dim">Constelaciones</span><span>${legacy.constellations ?? 0}</span></div>
+    </div>`;
+    // Trends card
+    html += `<div class="card">
+      <div class="card-head">📈 Tendencias</div>
+      <div class="kv"><span class="dim">Nuevas 24h</span><span>${t24.new ?? 0}</span></div>
+      <div class="kv"><span class="dim">Activas 24h</span><span>${t24.active ?? 0}</span></div>
+      <div class="kv"><span class="dim">Nuevas 7d</span><span>${t7.new ?? 0}</span></div>
+      <div class="kv"><span class="dim">Activas 7d</span><span>${t7.active ?? 0}</span></div>
+      <div class="kv"><span class="dim">Creciendo 7d</span><span>${t7.growing ?? 0}</span></div>
+    </div>`;
+    // Users card
+    html += `<div class="card">
+      <div class="card-head">👥 Usuarios</div>
+      <div class="kv"><span class="dim">Total</span><span>${users.total ?? 0}</span></div>
+      <div class="kv"><span class="dim">Interacciones</span><span>${users.interactions ?? 0}</span></div>
+      <div class="kv"><span class="dim">Hechos</span><span>${users.facts ?? 0}</span></div>
+      <div class="kv"><span class="dim">Core memory</span><span>${users.core_memory ?? 0}</span></div>
+      <div class="kv"><span class="dim">Equipos</span><span>${users.teams ?? 0}</span></div>
+    </div>`;
+    // Market card
+    html += `<div class="card">
+      <div class="card-head">📊 Mercado</div>
+      <div class="kv"><span class="dim">Señales</span><span>${mkt.total_signals ?? 0}</span></div>
+      <div class="kv"><span class="dim">Patrones</span><span>${mkt.total_patterns ?? 0}</span></div>
+      <div class="kv"><span class="dim">Win rate global</span><span>${mkt.global_win_rate ?? 0}%</span></div>
+      <div class="kv"><span class="dim">Convergencias</span><span>${conv.cross_domain ?? 0}</span></div>
+    </div>`;
+    // Operator card
+    html += `<div class="card">
+      <div class="card-head">${op.status === 'healthy' ? '🟢' : '🟡'} Operador</div>
+      <div class="kv"><span class="dim">Worker</span><span>${op.worker_alive ? '✅ Vivo' : '❌ Muerto'}</span></div>
+      <div class="kv"><span class="dim">Cola</span><span>${op.queue_pending ?? 0} pend / ${op.queue_processing ?? 0} proc</span></div>
+      <div class="kv"><span class="dim">RAM</span><span>${op.memory_mb ?? '—'} MB</span></div>
+      <div class="kv"><span class="dim">Latencia</span><span>${op.avg_latency_s ?? 0}s</span></div>
+      <div class="kv"><span class="dim">Audit entries</span><span>${op.audit_entries ?? 0}</span></div>
+      <div class="kv"><span class="dim">Ciclos convergencia</span><span>${op.convergence_cycles ?? 0}</span></div>
+    </div>`;
+    // Domains card
+    const domains = grav.domains || {};
+    const domainKeys = Object.keys(domains);
+    if (domainKeys.length > 0) {
+      html += `<div class="card">
+        <div class="card-head">🌐 Dominios</div>`;
+      domainKeys.forEach(d => {
+        html += `<div class="kv"><span class="dim">${esc(d)}</span><span>${domains[d]}</span></div>`;
+      });
+      html += `</div>`;
+    }
+    html += `</div>`;
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+/* ---- Gravity Engine ---- */
+async function loadGravity() {
+  const el = $('sec-gravity');
+  el.innerHTML = '<p class="dim">Cargando gravity engine…</p>';
+  try {
+    const obs = await fetchObservatory();
+    const grav = obs.gravity || {};
+    const top = grav.top_stars || [];
+    const tiers = grav.tiers || {};
+
+    let html = '';
+    // Tier distribution
+    const tierKeys = Object.keys(tiers);
+    if (tierKeys.length > 0) {
+      html += `<div class="card"><div class="card-head">🏗 Distribución por Tier</div>`;
+      tierKeys.forEach(t => {
+        const cls = t === 'core' ? 'tag-ok' : t === 'consolidated' ? 'tag-warn' : 'tag-dim';
+        html += `<div class="kv"><span class="tag ${cls}">${t}</span><span>${tiers[t]}</span></div>`;
+      });
+      html += `</div>`;
+    }
+    // Top stars table
+    if (top.length > 0) {
+      html += `<div class="card"><div class="card-head">⭐ Top Stars (por peso gravitacional)</div>`;
+      top.forEach(s => {
+        const tierCls = s.tier === 'core' ? 'tag-ok' : s.tier === 'consolidated' ? 'tag-warn' : 'tag-dim';
+        html += `<div class="star-row">
+          <span class="tag ${tierCls}">${s.tier}</span>
+          <span class="dim" style="min-width:70px">${s.domain}</span>
+          <span style="min-width:50px">w: <strong>${s.weight}</strong></span>
+          <span class="dim">hits:${s.hits} cc:${s.cc} f:${s.freq}</span>
+          <span class="dim">${esc(s.summary || s.id)}</span>
+        </div>`;
+      });
+      html += `</div>`;
+    } else {
+      html += `<p class="dim">Sin estrellas gravitacionales registradas.</p>`;
+    }
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+/* ---- Mercado (Market Observatory) ---- */
+async function loadMercado() {
+  const el = $('sec-mercado');
+  el.innerHTML = '<p class="dim">Cargando mercado…</p>';
+  try {
+    const obs = await fetchObservatory();
+    const mkt = obs.market || {};
+    const symbols = mkt.symbols || [];
+
+    let html = `<div class="card"><div class="card-head">📊 Market Observatory</div>
+      <div class="kv"><span class="dim">Total señales</span><span>${mkt.total_signals ?? 0}</span></div>
+      <div class="kv"><span class="dim">Total patrones</span><span>${mkt.total_patterns ?? 0}</span></div>
+      <div class="kv"><span class="dim">Win rate global</span><span>${mkt.global_win_rate ?? 0}%</span></div>
+    </div>`;
+
+    if (symbols.length > 0) {
+      symbols.forEach(s => {
+        const wr = s.win_rate || 0;
+        const wrCls = wr >= 60 ? 'tag-ok' : wr >= 40 ? 'tag-warn' : 'tag-err';
+        const gStar = s.gravity_star;
+        html += `<div class="card">
+          <div class="card-head">
+            <span><strong>${s.symbol}</strong></span>
+            <span class="tag ${wrCls}">${wr}% win</span>
+            ${gStar ? `<span class="tag tag-dim">tier:${gStar.tier} hits:${gStar.hits}</span>` : ''}
+          </div>
+          <div class="card-meta">
+            <span>${s.signals} señales</span>
+            <span>${s.patterns} patrones</span>
+            <span>${s.wins}W / ${s.losses}L</span>
+            <span>exp: ${s.best_expectancy}</span>
+            ${s.last_signal ? `<span class="dim">${s.last_signal.substring(0,16)}</span>` : ''}
+          </div>
+        </div>`;
+      });
+    } else {
+      html += `<p class="dim">Sin símbolos de mercado en seguimiento.</p>`;
+    }
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+/* ---- Convergencias ---- */
+async function loadConvergencias() {
+  const el = $('sec-convergencias');
+  el.innerHTML = '<p class="dim">Cargando convergencias…</p>';
+  try {
+    const obs = await fetchObservatory();
+    const conv = obs.convergences || {};
+    const details = conv.details || [];
+    const alerts = conv.alert_history || [];
+
+    let html = `<div class="card"><div class="card-head">🔗 Cross-Domain Convergences</div>
+      <div class="kv"><span class="dim">Convergencias detectadas</span><span><strong>${conv.cross_domain ?? 0}</strong></span></div>
+    </div>`;
+
+    if (details.length > 0) {
+      html += `<div class="card"><div class="card-head">Detalle</div>`;
+      details.forEach(d => {
+        const domains = (d.domains || []).join(', ');
+        html += `<div class="kv">
+          <span>${esc(d.intent || d.fingerprint || '—')}</span>
+          <span class="dim">${domains} — hits:${d.total_hits ?? '?'} cc:${d.avg_cc != null ? d.avg_cc.toFixed(2) : '?'}</span>
+        </div>`;
+      });
+      html += `</div>`;
+    }
+
+    if (alerts.length > 0) {
+      html += `<div class="card"><div class="card-head">🔔 Historial de Alertas</div>`;
+      alerts.forEach(a => {
+        html += `<div class="hist-row">
+          <span class="dim audit-ts">${(a.timestamp || '').substring(0,16)}</span>
+          <span class="tag tag-warn">${esc(a.intent || '—')}</span>
+          <span class="dim">${esc(a.message || '')}</span>
+        </div>`;
+      });
+      html += `</div>`;
+    } else {
+      html += `<p class="dim" style="margin-top:10px">Sin alertas de convergencia recientes.</p>`;
+    }
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }
 
 /* ---- Stars ---- */

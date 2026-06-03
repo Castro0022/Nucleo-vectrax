@@ -44,6 +44,7 @@
       <button class="nav-btn active" data-view="chat">Chat</button>
       <button class="nav-btn" data-view="dashboard">Dashboard</button>
       <a href="/universe" class="nav-btn" style="text-decoration:none">Universe</a>
+      <a href="/v1/observatory" class="nav-btn" style="text-decoration:none">Observatory</a>
       <a href="/portals" class="nav-btn" style="text-decoration:none">Portals</a>
     </nav>
     <div class="topbar-right">
@@ -79,7 +80,11 @@
 
     <!-- Sub-navigation -->
     <div class="dash-nav">
-      <button class="dash-tab active" data-section="stars">Stars</button>
+      <button class="dash-tab active" data-section="overview">Overview</button>
+      <button class="dash-tab" data-section="gravity">Gravity</button>
+      <button class="dash-tab" data-section="mercado">Mercado</button>
+      <button class="dash-tab" data-section="convergencias">Convergencias</button>
+      <button class="dash-tab" data-section="stars">Stars</button>
       <button class="dash-tab" data-section="constellations">Constellations</button>
       <button class="dash-tab" data-section="history">History</button>
       <button class="dash-tab" data-section="sessions">Sessions</button>
@@ -92,7 +97,11 @@
 
     <!-- Section containers -->
     <div class="dash-content">
-      <div id="sec-stars" class="dash-section active"></div>
+      <div id="sec-overview" class="dash-section active"></div>
+      <div id="sec-gravity" class="dash-section"></div>
+      <div id="sec-mercado" class="dash-section"></div>
+      <div id="sec-convergencias" class="dash-section"></div>
+      <div id="sec-stars" class="dash-section"></div>
       <div id="sec-constellations" class="dash-section"></div>
       <div id="sec-history" class="dash-section"></div>
       <div id="sec-sessions" class="dash-section"></div>
@@ -106,6 +115,6 @@
 
 </div>
 
-<script src="/static/app.js?v=2"></script>
+<script src="/static/app.js?v=3"></script>
 </body>
 </html>

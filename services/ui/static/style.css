@@ -315,6 +315,25 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); font
 /* Proposal actions */
 .prop-actions { display: flex; gap: 8px; margin-top: 8px; }
 
+/* System grid (observatory overview, operator) */
+.sys-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+.sys-header { font-size: 12px; margin-bottom: 10px; }
+
+/* Star rows (gravity engine) */
+.star-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 13px;
+}
+.star-row:last-child { border-bottom: none; }
+
+/* Ideas header */
+.ideas-header { margin-bottom: 12px; }
+.ideas-stats { display: flex; gap: 16px; font-size: 13px; color: var(--dim); margin-bottom: 8px; }
+.ideas-stats strong { color: var(--text); }
+
 /* ----------------------------------------------------------------
    RESPONSIVE
    ---------------------------------------------------------------- */
