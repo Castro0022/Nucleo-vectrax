@@ -1,7 +1,14 @@
 {
-  "head": "2b9aa3b",
+  "head": "4a8d85f",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "4a8d85f0",
+      "subject": "fix: daily reflection triggers at 22:00 UTC (Wall Street close), not dependent on crypto",
+      "author": "Mario Bravo Castro",
+      "ts": 1780611409,
+      "files_changed": 3
+    },
     {
       "sha": "2b9aa3b9",
       "subject": "feat: Market Mode vs Memory Mode — smart observation gating",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1780534925,
       "files_changed": 2
-    },
-    {
-      "sha": "b0d6e61a",
-      "subject": "fix: amplify 3D depth + convergence visibility dramatically",
-      "author": "Mario Bravo Castro",
-      "ts": 1780534721,
-      "files_changed": 2
     }
   ],
   "modified_modules": [
@@ -69,5 +69,5 @@
     "vectrax/self_context.py",
     "README.md"
   ],
-  "generated_at": 1780611176
+  "generated_at": 1780611437
 }

@@ -197,6 +197,9 @@ def _send_observation_alerts() -> int:
         if not recent:
             return 0
 
+        # Process oldest first so _last_obs_alert_id advances correctly
+        recent.sort(key=lambda o: o.get("id", 0))
+
         sent = 0
         for obs in recent:
             obs_id = obs.get("id", 0)
