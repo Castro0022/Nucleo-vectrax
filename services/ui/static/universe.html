@@ -45,6 +45,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
 #hud-controls input[type=checkbox] { accent-color: var(--accent); }
 #hud-controls .sep { height: 1px; background: var(--border); margin: 8px 0; }
 #hud-controls .filter-title { font-weight: 600; color: var(--text); margin-bottom: 6px; }
+#hud-controls .cnt { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--dim); }
 
 /* Legend */
 #hud-legend {
@@ -109,17 +110,19 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
 <!-- HUD: Controls -->
 <div id="hud-controls" class="hud hud-interactive">
   <div class="filter-title">Capas</div>
-  <label><input type="checkbox" data-filter="layer-core" checked> <span style="color:var(--core)">●</span> Core</label>
-  <label><input type="checkbox" data-filter="layer-mid" checked> <span style="color:var(--mid)">●</span> Mid</label>
-  <label><input type="checkbox" data-filter="layer-outer" checked> <span style="color:var(--outer)">●</span> Outer</label>
+  <label><input type="checkbox" data-filter="layer-core" checked> <span style="color:var(--core)">●</span> Core <span class="cnt" id="cnt-core"></span></label>
+  <label><input type="checkbox" data-filter="layer-mid" checked> <span style="color:var(--mid)">●</span> Mid <span class="cnt" id="cnt-mid"></span></label>
+  <label><input type="checkbox" data-filter="layer-outer" checked> <span style="color:var(--outer)">●</span> Outer <span class="cnt" id="cnt-outer"></span></label>
   <div class="sep"></div>
-  <div class="filter-title">Tipos</div>
-  <label><input type="checkbox" data-filter="type-primary" checked> Primarias</label>
-  <label><input type="checkbox" data-filter="type-convergence" checked> Convergencia</label>
-  <label><input type="checkbox" data-filter="type-collective" checked> Colectivas</label>
+  <div class="filter-title">Dominios</div>
+  <label><input type="checkbox" data-filter="dom-cognitive" checked> <span style="color:#4f8ff7">●</span> Cognitivo <span class="cnt" id="cnt-cognitive"></span></label>
+  <label><input type="checkbox" data-filter="dom-market" checked> <span style="color:#06d6a0">●</span> Mercado <span class="cnt" id="cnt-market"></span></label>
+  <label><input type="checkbox" data-filter="dom-interest" checked> <span style="color:#22d3ee">●</span> Interés <span class="cnt" id="cnt-interest"></span></label>
+  <label><input type="checkbox" data-filter="dom-users" checked> <span style="color:#fbbf24">●</span> Usuarios <span class="cnt" id="cnt-users"></span></label>
   <div class="sep"></div>
   <div class="filter-title">Vista</div>
   <label><input type="checkbox" data-filter="show-edges" checked> Conexiones</label>
+  <label><input type="checkbox" data-filter="show-convergences" checked> <span style="color:var(--convergence)">✧</span> Convergencias</label>
   <label><input type="checkbox" data-filter="show-constellations" checked> Constelaciones</label>
   <label><input type="checkbox" data-filter="show-labels" checked> Etiquetas</label>
   <label><input type="checkbox" data-filter="show-orbits"> Órbitas</label>
@@ -130,11 +133,14 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   <div class="legend-row"><div class="legend-dot" style="background:var(--core)"></div> Core (alta gravedad)</div>
   <div class="legend-row"><div class="legend-dot" style="background:var(--mid)"></div> Mid (emergente)</div>
   <div class="legend-row"><div class="legend-dot" style="background:var(--outer)"></div> Outer (periferia)</div>
-  <div class="legend-row"><div class="legend-ring" style="border-color:var(--convergence)"></div> Convergencia</div>
-  <div class="legend-row"><div class="legend-ring" style="border-color:var(--collective)"></div> Colectiva</div>
-  <div class="legend-row" style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px"><div class="legend-dot" style="background:#06d6a0"></div> Mercado (eToro)</div>
+  <div class="sep" style="height:1px;background:var(--border);margin:6px 0"></div>
+  <div class="legend-row"><div class="legend-dot" style="background:#4f8ff7"></div> Cognitivo</div>
+  <div class="legend-row"><div class="legend-dot" style="background:#06d6a0"></div> Mercado</div>
   <div class="legend-row"><div class="legend-dot" style="background:#22d3ee"></div> Interés usuario</div>
-  <div class="legend-row" style="margin-top:4px;opacity:0.6">Tamaño = masa gravitacional</div>
+  <div class="legend-row"><div class="legend-dot" style="background:#fbbf24"></div> Usuarios</div>
+  <div class="sep" style="height:1px;background:var(--border);margin:6px 0"></div>
+  <div class="legend-row"><div class="legend-ring" style="border-color:var(--convergence)"></div> Arco de convergencia</div>
+  <div class="legend-row" style="opacity:0.6">Tamaño = masa · Brillo = profundidad</div>
 </div>
 
 <!-- Tooltip -->
@@ -166,9 +172,9 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   let animFrame = 0;
   let filters = {
     'layer-core': true, 'layer-mid': true, 'layer-outer': true,
-    'type-primary': true, 'type-convergence': true, 'type-collective': true,
-    'show-edges': true, 'show-constellations': true, 'show-labels': true,
-    'show-orbits': false,
+    'dom-cognitive': true, 'dom-market': true, 'dom-interest': true, 'dom-users': true,
+    'show-edges': true, 'show-convergences': true, 'show-constellations': true,
+    'show-labels': true, 'show-orbits': false,
   };
 
   // --- Colors ---
@@ -255,16 +261,42 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
 
   // --- Filter visibility ---
   function applyFilters() {
+    // Classify each star into a domain category
     for (const s of stars) {
       let vis = true;
+      // Layer filter
       if (s.layer === 'core' && !filters['layer-core']) vis = false;
       if (s.layer === 'mid' && !filters['layer-mid']) vis = false;
       if (s.layer === 'outer' && !filters['layer-outer']) vis = false;
-      const isCollective = s.owner === '__collective__';
-      if (s.star_type === 'primary' && !filters['type-primary']) vis = false;
-      if (s.star_type === 'convergence' && !isCollective && !filters['type-convergence']) vis = false;
-      if (isCollective && !filters['type-collective']) vis = false;
+      // Domain filter
+      const dom = s._domain || '';
+      if (dom === 'market' && !filters['dom-market']) vis = false;
+      if (dom === 'user_interest' && !filters['dom-interest']) vis = false;
+      if ((dom === 'unknown' || dom === 'services' || dom === 'tests') && !filters['dom-cognitive']) vis = false;
+      // User stars (no _domain = legacy gravitational user stars)
+      if (!dom && s.star_type !== 'convergence' && !filters['dom-users']) vis = false;
       s._visible = vis;
+    }
+    // Update counters in control panel
+    _updateCounts();
+  }
+
+  function _updateCounts() {
+    const counts = { core: 0, mid: 0, outer: 0, cognitive: 0, market: 0, interest: 0, users: 0 };
+    for (const s of stars) {
+      if (!s._visible) continue;
+      if (s.layer === 'core') counts.core++;
+      if (s.layer === 'mid') counts.mid++;
+      if (s.layer === 'outer') counts.outer++;
+      const dom = s._domain || '';
+      if (dom === 'market') counts.market++;
+      else if (dom === 'user_interest') counts.interest++;
+      else if (dom) counts.cognitive++;
+      else counts.users++;
+    }
+    for (const [key, val] of Object.entries(counts)) {
+      const el = document.getElementById('cnt-' + key);
+      if (el) el.textContent = val || '';
     }
   }
 
@@ -563,7 +595,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     }
 
     // --- Convergence Phenomena (visible energy zones) ---
-    // Draw glowing triangular regions connecting converging gravity stars
+    if (filters['show-convergences']) {
+    // Draw glowing arcs connecting converging gravity stars
     const gravStarsByDomain = {};
     for (const s of stars) {
       if (s._domain && s._visible) {
@@ -654,6 +687,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         }
       }
     }
+    } // end show-convergences
 
     // --- Adaptive Label System ---
     if (filters['show-labels']) {
