@@ -1,7 +1,14 @@
 {
-  "head": "dda4948",
+  "head": "1b733c2",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "1b733c2d",
+      "subject": "fix: TCP pre-poll probe + pre-poll heartbeat to mitigate Telegram SSL hangs",
+      "author": "Mario Bravo Castro",
+      "ts": 1780609040,
+      "files_changed": 2
+    },
     {
       "sha": "dda49481",
       "subject": "fix: rewire universe controls to reflect actual data",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1780507963,
       "files_changed": 6
-    },
-    {
-      "sha": "0de569fb",
-      "subject": "feat: autonomous observation memory — Vectrax remembers everything it observes",
-      "author": "Mario Bravo Castro",
-      "ts": 1780505258,
-      "files_changed": 5
     }
   ],
   "modified_modules": [
@@ -69,5 +69,5 @@
     "README.md",
     "CHANGELOG.md"
   ],
-  "generated_at": 1780536599
+  "generated_at": 1780609053
 }

@@ -34,17 +34,36 @@ All notable changes to Vectrax are documented in this file.
 - Contador de convergencias en HUD stats (violeta)
 - Hasta 6 pares por combinación de dominios
 
+### Sistema de alertas por observación (Layer 6)
+- **`meta_loop.py` Layer 6**: envía alertas Telegram cuando el observador autónomo detecta eventos críticos
+- 8 tipos de alerta: `worker_state`, `error_spike`, `snapshot_failure`, `trade_executed`, `trade_validation`, `position_closed`, `convergence_detected`, `universe_growth`
+- Deduplicación por ID de observación (nunca re-alerta el mismo evento)
+
+### Sonda TCP pre-poll (fix: REPEAT FAILURE #412)
+- **TCP probe**: antes de cada poll, socket connect a api.telegram.org:443 con 3s timeout
+- Si red caída: skip poll + sleep 10s (en vez de colgar 32s esperando SIGALRM)
+- DNS resuelto una vez y cacheado, invalidado en fallo (soporta rotación IP de Telegram)
+- **Heartbeat pre-poll**: escribe heartbeat ANTES de entrar al poll para reducir ventana de "inactivo" de ~40s a <5s
+- Modo de fallo: `NET_DOWN | Skipping poll` en vez de `SIGALRM | Poll exceeded 32s`
+
+### Panel de controles del universo recableado
+- Reemplazada sección "Tipos" (Primarias/Convergencia/Colectivas — no funcionaba) por "Dominios" (Cognitivo/Mercado/Interés/Usuarios — filtros reales)
+- Contadores en vivo junto a cada filtro mostrando estrellas visibles
+- Toggle "Convergencias" en Vista para mostrar/ocultar arcos energéticos
+- Leyenda actualizada: capas + dominios + arcos de convergencia
+
 ### Rendimiento verificado
 - 10/10 checks funcionales pasados
 - Load test 70 requests: 100% exitosos
-- Universe HTML: avg 179ms, p95 345ms
-- Universe API: avg 220ms, p95 321ms
+- Universe HTML: avg 163ms, p95 225ms
+- Universe API: avg 225ms, p95 284ms
 - Observatory API: avg 224ms, p95 332ms
 - Health: avg 93ms, p95 164ms
+- Backend sin degradación por volumen de alertas (17 obs/hora = carga insignificante)
 
 ### Deploy
 - Servidor: Vultr 140.82.28.181 — vectrax-core (healthy)
-- Commits: 6 (feat + fixes)
+- Commits: 10 (feat + fixes)
 - Archivos nuevos: `observation_ledger.py`, `autonomous_observer.py`, `entry_validator.py`, `position_manager.py`
 - Archivos modificados: `auto_executor.py`, `learning_engine.py`, `meta_loop.py`, `self_context.py`, `telegram_gateway.py`, `universe.html`, `app.js`, `style.css`, `index.html`
 
