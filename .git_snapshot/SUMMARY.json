@@ -1,7 +1,21 @@
 {
-  "head": "b0d6e61",
+  "head": "5b6133a",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "5b6133a3",
+      "subject": "feat: Layer 6 — Telegram alerts for critical observations and trade events",
+      "author": "Mario Bravo Castro",
+      "ts": 1780535429,
+      "files_changed": 1
+    },
+    {
+      "sha": "bc9976d9",
+      "subject": "docs: CHANGELOG entry for 2026-06-04 session — observatory, observations, auto-execution, 3D universe",
+      "author": "Mario Bravo Castro",
+      "ts": 1780534925,
+      "files_changed": 2
+    },
     {
       "sha": "b0d6e61a",
       "subject": "fix: amplify 3D depth + convergence visibility dramatically",
@@ -43,20 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1780457278,
       "files_changed": 3
-    },
-    {
-      "sha": "f96f6fd9",
-      "subject": "feat: Vectrax Observatory — complete dashboard rebuild",
-      "author": "Mario Bravo Castro",
-      "ts": 1780456692,
-      "files_changed": 3
-    },
-    {
-      "sha": "6b637aa3",
-      "subject": "fix: unified star count — Vectrax reports one total, not 3 confusing numbers",
-      "author": "Mario Bravo Castro",
-      "ts": 1780456037,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
@@ -66,8 +66,8 @@
     ".git_snapshot/SUMMARY.json",
     "connectors/etoro/learning_engine.py",
     "vectrax/self_context.py",
-    "services/ui/static/app.js",
-    "services/core/routes/dashboard.py"
+    "CHANGELOG.md",
+    "services/ui/static/app.js"
   ],
-  "generated_at": 1780534740
+  "generated_at": 1780535438
 }

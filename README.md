@@ -934,6 +934,167 @@ Files:
 - `observability/audit_engine.py` — 22 checks, classification, auto-correction, Telegram alerts
 - `observability/audit_cron.py` — cron entry point (`--daily` / `--weekly`)
 
+## 📝 Autonomous Observation Memory
+
+Vectrax observes its own universe continuously and remembers what it sees. Every change is recorded as a persistent observation with timestamp, domain, affected star, and evidence.
+
+### Architecture
+
+```
+meta_loop (every ~60s)
+    └── Layer 5: autonomous_observer.observe_and_record()
+            │
+            ├── observe_universe() → current snapshot
+            ├── compare vs previous snapshot
+            ├── detect changes across 6 domains
+            └── record to observation_ledger.db
+```
+
+### Domains Monitored
+
+- **gravity** — new stars, star growth, universe expansion
+- **market** — new market symbols, activity changes
+- **convergence** — new cross-domain convergences
+- **operator** — worker state changes, queue pressure
+- **health** — error spikes, perception signals
+- **user** — new user stars
+
+### Storage
+
+- Table: `autonomous_observations` in `vault/observation_ledger.db`
+- Columns: id, timestamp, domain, obs_type, star_id, summary, evidence (JSON), severity
+- Auto-prune: retains last 5000 observations
+- WAL mode for concurrent reads
+
+### LLM Integration
+
+The last 15 observations are injected into the self-context prompt, so Vectrax can answer questions like *"¿qué has observado?"* or *"últimas observaciones"* from real persistent memory.
+
+Files:
+- `core/self_observation/observation_ledger.py` — persistent store
+- `core/self_observation/autonomous_observer.py` — snapshot comparison + change detection
+- `vectrax/self_context.py` — `_read_recent_observations()` injects into LLM context
+
+---
+
+## 📊 Market Auto-Execution (Experimental)
+
+Controlled automatic trade execution with strict safety limits. Default mode: **OFF**.
+
+### Phases
+
+1. **OFF** (default) — observer only, no execution
+2. **PAPER** — simulated trades, builds track record (minimum 24h before LIVE)
+3. **LIVE** — real trades via eToro API (requires phase requirements met + manual activation)
+
+### Risk Limits (hardcoded defaults)
+
+```
+max_position_usd:        $50    (per trade, cannot be increased automatically)
+max_daily_loss_usd:      $10    (cumulative, auto-shutdown when reached)
+max_ops_per_symbol_day:  1      (one operation per symbol per day)
+max_consecutive_losses:  3      (auto-reverts to PAPER)
+stop_loss_pct:           1.5%   (mandatory on every trade)
+max_positions_open:      2      (simultaneous)
+max_hold_hours:          24     (position auto-close)
+min_confidence:          MEDIUM (configurable)
+```
+
+### Entry Conditions (ALL must be true)
+
+1. Convergence in gravity engine for the symbol
+2. Usable pattern exists (≥15 signals, ≥55% win rate, positive expectancy)
+3. Repeated signal (≥2 in 24h for same symbol+direction)
+4. Confidence ≥ min_confidence
+5. Market active (within trading session)
+6. No critical system alert
+7. Symbol not already traded today
+8. Symbol approved for LIVE (manual per-symbol approval)
+9. Evidence recorded in observation ledger
+
+### Exit Conditions
+
+- Stop loss hit
+- Take profit hit
+- Coherence loss (gravity engine cc_score drops)
+- Contrary signal detected
+- Max hold time expired
+
+### LIVE Phase Requirements
+
+- ≥30 resolved paper trades
+- ≥60% win rate in paper phase
+- ETORO_ENVIRONMENT set to "real"
+- Creator explicitly activates via `/vx market live on`
+
+### Telegram Commands
+
+```
+/vx market execution on      → activate PAPER mode
+/vx market execution off     → deactivate to OFF
+/vx market live on           → activate LIVE (if requirements met)
+/vx market budget <n>        → set max position (≤$50)
+/vx market auto status       → full status panel
+/vx market halt              → emergency stop
+/vx market unhalt            → clear emergency stop
+/vx market approve <SYMBOL>  → approve symbol for LIVE trading
+/vx market positions         → show open positions
+```
+
+### Safety Invariants
+
+- Budget NEVER exceeds $50 and cannot be increased automatically
+- HALT command immediately stops all execution
+- No trade without registered evidence in observation ledger
+- Every decision logged to audit_ledger and observation_ledger
+- Telegram alert sent before and after every operation
+
+Files:
+- `connectors/etoro/auto_executor.py` — mode management, risk limits, paper trade log
+- `connectors/etoro/entry_validator.py` — 9-condition validation gate
+- `connectors/etoro/position_manager.py` — exit condition monitoring
+- `connectors/etoro/learning_engine.py` — Steps 7+8: auto-execute + check positions
+
+Config: `~/.vectrax/etoro_auto_config.json` (runtime state, not in git)
+
+---
+
+## 🔔 Observation Alert System
+
+Layer 6 of the meta_loop sends Telegram notifications when the autonomous observer detects critical events.
+
+### Events That Trigger Alerts
+
+- `worker_state` — worker goes up or down
+- `error_spike` — errors increase by >10 in one cycle
+- `snapshot_failure` — universe observation failed
+- `trade_executed` — paper or live trade completed
+- `trade_validation` — entry validator approved/rejected a proposal
+- `position_closed` — position closed with PnL result
+- `convergence_detected` — new cross-domain convergence
+- `universe_growth` — gravity engine gained new stars
+
+### Alert Format
+
+```
+🔴 Observación [CRITICAL]
+operator/worker_state
+Worker se detuvo
+⭐ worker
+2026-06-04T01:09
+```
+
+### Behavior
+
+- Deduplication by observation ID (never re-alerts the same event)
+- Only severity=warning/critical + specific event types trigger alerts
+- All observations still recorded in ledger regardless of alert status
+- Runs every meta_loop cycle (~60s)
+
+File: `core/meta_loop.py` — `_send_observation_alerts()` (Layer 6)
+
+---
+
 ## 🔧 Maintenance Procedures
 
 ### Server Access
