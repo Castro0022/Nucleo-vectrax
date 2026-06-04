@@ -2,6 +2,54 @@
 
 All notable changes to Vectrax are documented in this file.
 
+## [2026-06-04] — Observatory + Memoria de Observaciones + Auto-Execution + Universo 3D
+
+### Dashboard Observatory integrado en panel principal
+- Dashboard ahora consume `/v1/dashboard/observatory` (endpoint consolidado)
+- Nuevas tabs: **Overview** (resumen universo), **Gravity** (tiers + top stars), **Mercado** (señales/patrones por símbolo), **Convergencias** (cross-domain + historial alertas)
+- Métricas strip muestra total stars, gravity, market signals, convergencias, users
+- Link **Observatory** en barra de navegación superior
+- Cache 10s en frontend para evitar re-fetch redundante entre tabs
+- Fix: `last_signal` no-string manejado con `String()`, domain objects muestran count
+
+### Memoria autónoma de observaciones (nuevo)
+- **`observation_ledger.py`**: tabla SQLite `autonomous_observations` en vault, auto-prune 5000 rows, WAL mode
+- **`autonomous_observer.py`**: compara snapshots sucesivos del universo, detecta cambios en 6 dominios (gravity, market, convergence, operator, health, user), registra cada observación con timestamp, evidencia y estrella afectada
+- **`meta_loop.py` Layer 5**: ejecuta el observador autónomo en cada ciclo (~60s)
+- **`self_context.py`**: inyecta últimas 15 observaciones en el contexto LLM para responder preguntas como "¿qué has observado?"
+- Regex self-referencial ampliado: "observaciones", "qué has observado", "últimas detecciones"
+- **Circuito cerrado**: observar → registrar → recordar → responder
+
+### Market Auto-Execution controlada (nuevo)
+- **`auto_executor.py`** endurecido: $50 max/op, $10 pérdida diaria, 1 op/símbolo/día, halt flag, approved_symbols, 24h mínimo en PAPER
+- **`entry_validator.py`** (nuevo): 9 condiciones obligatorias antes de cualquier trade (convergencia, patrón usable, señal repetida ≥2 en 24h, confianza mínima, mercado activo, sin alertas críticas, límite diario, símbolo aprobado)
+- **`position_manager.py`** (nuevo): condiciones de salida (SL/TP, pérdida coherencia, señal contraria, expiración temporal 24h)
+- **`learning_engine.py`** Steps 7+8: auto-ejecuta propuestas calificadas, chequea posiciones abiertas
+- Comandos Telegram: `/vx market execution on|off`, `budget`, `halt`, `unhalt`, `approve`, `positions`, `live on`, `auto status`
+- Invariantes: modo OFF por defecto, presupuesto nunca supera $50, HALT inmediato, evidencia obligatoria
+
+### Universo 3D + Convergencias visibles
+- **Profundidad 3D**: estrellas con coordenada Z, core al frente (scale 1.0), outer al fondo (scale 0.45). Sort back-to-front para overlap correcto
+- **Convergencias visibles**: arcos energéticos violeta pulsantes entre dominios cruzados (market ↔ user_interest ↔ unknown), nodos de energía con 3 capas de glow, partículas viajeras bidireccionales, etiqueta "✧ convergencia"
+- Contador de convergencias en HUD stats (violeta)
+- Hasta 6 pares por combinación de dominios
+
+### Rendimiento verificado
+- 10/10 checks funcionales pasados
+- Load test 70 requests: 100% exitosos
+- Universe HTML: avg 179ms, p95 345ms
+- Universe API: avg 220ms, p95 321ms
+- Observatory API: avg 224ms, p95 332ms
+- Health: avg 93ms, p95 164ms
+
+### Deploy
+- Servidor: Vultr 140.82.28.181 — vectrax-core (healthy)
+- Commits: 6 (feat + fixes)
+- Archivos nuevos: `observation_ledger.py`, `autonomous_observer.py`, `entry_validator.py`, `position_manager.py`
+- Archivos modificados: `auto_executor.py`, `learning_engine.py`, `meta_loop.py`, `self_context.py`, `telegram_gateway.py`, `universe.html`, `app.js`, `style.css`, `index.html`
+
+---
+
 ## [2026-06-02] — Producción: env fix + onboarding sin fricción + auditoría
 
 ### Correcciones de producción

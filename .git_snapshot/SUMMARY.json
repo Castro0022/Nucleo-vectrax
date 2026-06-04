@@ -1,7 +1,14 @@
 {
-  "head": "d164a79",
+  "head": "b0d6e61",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "b0d6e61a",
+      "subject": "fix: amplify 3D depth + convergence visibility dramatically",
+      "author": "Mario Bravo Castro",
+      "ts": 1780534721,
+      "files_changed": 2
+    },
     {
       "sha": "d164a792",
       "subject": "feat: 3D depth + visible convergence phenomena in universe visualizer",
@@ -50,24 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1780456037,
       "files_changed": 1
-    },
-    {
-      "sha": "4f9e08c4",
-      "subject": "fix: atomic star swap eliminates flicker + self-context sees all stars",
-      "author": "Mario Bravo Castro",
-      "ts": 1780455605,
-      "files_changed": 2
     }
   ],
   "modified_modules": [
     "vectrax/telegram_gateway.py",
     "services/ui/static/universe.html",
     "core/learn/gravity_engine.py",
+    ".git_snapshot/SUMMARY.json",
     "connectors/etoro/learning_engine.py",
     "vectrax/self_context.py",
-    ".git_snapshot/SUMMARY.json",
     "services/ui/static/app.js",
     "services/core/routes/dashboard.py"
   ],
-  "generated_at": 1780534377
+  "generated_at": 1780534740
 }
