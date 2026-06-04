@@ -36,6 +36,7 @@ _MAX_ALERTS_PER_CYCLE  = 3     # máx. alertas por refresh
 # Módulo-level state
 _last_idea_refresh: float = 0.0
 _alerted_idea_ids: set = set()  # evitar reenviar la misma idea
+_last_obs_alert_id: int = 0     # track last observation alerted
 
 
 def _now_iso():
@@ -167,6 +168,82 @@ def _run_autonomous_observation() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Observation alerts (Layer 6)
+# ---------------------------------------------------------------------------
+
+# Observation types that trigger Telegram alerts
+_ALERT_OBS_TYPES = {
+    # severity: warning/critical always alert
+    "worker_state",  "error_spike",  "snapshot_failure",
+    # trade events
+    "trade_executed", "trade_validation", "position_closed",
+    # convergence events
+    "convergence_detected",
+    # new stars (only on significant growth)
+    "universe_growth",
+}
+
+def _send_observation_alerts() -> int:
+    """Check recent observations and send Telegram alerts for critical ones."""
+    global _last_obs_alert_id
+    creator_chat_id = os.getenv("TELEGRAM_CREATOR_CHAT_ID", "")
+    if not creator_chat_id:
+        return 0
+    try:
+        from core.self_observation.observation_ledger import get_recent
+        recent = get_recent(limit=20)
+        if not recent:
+            return 0
+
+        sent = 0
+        for obs in recent:
+            obs_id = obs.get("id", 0)
+            if obs_id <= _last_obs_alert_id:
+                continue
+
+            severity = obs.get("severity", "info")
+            obs_type = obs.get("obs_type", "")
+
+            # Alert on warning/critical severity OR specific trade/anomaly types
+            should_alert = (
+                severity in ("warning", "critical")
+                or obs_type in _ALERT_OBS_TYPES
+            )
+            if not should_alert:
+                _last_obs_alert_id = max(_last_obs_alert_id, obs_id)
+                continue
+
+            # Build alert message
+            icons = {"critical": "\U0001f534", "warning": "\u26a0\ufe0f", "info": "\U0001f535"}
+            icon = icons.get(severity, "\U0001f535")
+            domain = obs.get("domain", "?")
+            summary = obs.get("summary", "")[:120]
+            star = obs.get("star_id", "")
+            ts = obs.get("timestamp", "")[:16]
+
+            msg = f"{icon} <b>Observaci\u00f3n [{severity.upper()}]</b>\n"
+            msg += f"<code>{domain}/{obs_type}</code>\n"
+            msg += f"{summary}"
+            if star:
+                msg += f"\n\u2b50 {star}"
+            msg += f"\n<i>{ts}</i>"
+
+            if _send_telegram(creator_chat_id, msg):
+                sent += 1
+                logger.info(
+                    "meta_loop: observation alert sent — %s/%s [%s]",
+                    domain, obs_type, severity,
+                )
+
+            _last_obs_alert_id = max(_last_obs_alert_id, obs_id)
+
+        return sent
+    except Exception as exc:
+        logger.debug("meta_loop._send_observation_alerts error: %s", exc)
+        return 0
+
+
+# ---------------------------------------------------------------------------
 # Main reflect function
 # ---------------------------------------------------------------------------
 
@@ -222,6 +299,11 @@ def reflect(ingested_count=0):
     obs_count = _run_autonomous_observation()
     if obs_count > 0:
         reflection["observations_recorded"] = obs_count
+
+    # --- Layer 6: Telegram alerts for critical observations ---
+    obs_alerts = _send_observation_alerts()
+    if obs_alerts > 0:
+        reflection["observation_alerts_sent"] = obs_alerts
 
     # Persist reflection into state
     state["last_reflection"] = reflection
