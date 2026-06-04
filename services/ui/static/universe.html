@@ -216,7 +216,9 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       if (prev) {
         s._baseX = prev._baseX; s._baseY = prev._baseY;
         s._x = prev._x; s._y = prev._y;
-        s._r = 3 + s.mass * 17;
+        s._z = prev._z || 0.5;
+        s._depthScale = prev._depthScale || 1;
+        s._r = (3 + s.mass * 17) * s._depthScale;
         s._visible = prev._visible;
         s._driftAmp = prev._driftAmp; s._driftSpeed = prev._driftSpeed;
         s._driftPhase = prev._driftPhase;
@@ -224,9 +226,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         starMap[s.id] = s;
         continue;
       }
-      // New star — compute position
+      // New star — compute position with 3D depth
       const h = hashStr(s.id);
       const h2 = hashStr(s.id + 'x');
+      const h3 = hashStr(s.id + 'z');
       const angle = (h % 36000) / 36000 * Math.PI * 2;
       const noise = ((h2 % 1000) / 1000 - 0.5) * 0.12;
       const r = Math.max(8, (s.distance_to_core + noise) * maxR);
@@ -234,9 +237,14 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       s._baseY = cy + Math.sin(angle) * r;
       s._x = s._baseX;
       s._y = s._baseY;
-      s._r = 3 + s.mass * 17;
+      // Z-depth: 0 (near/front) to 1 (far/back). Core stars stay near front.
+      const zRaw = (Math.abs(h3) % 1000) / 1000;
+      s._z = s.layer === 'core' ? zRaw * 0.3 : s.layer === 'mid' ? 0.2 + zRaw * 0.4 : 0.4 + zRaw * 0.6;
+      const depthScale = 1 / (1 + s._z * 0.5); // perspective: 1.0 (front) → 0.67 (back)
+      s._r = (3 + s.mass * 17) * depthScale;
+      s._depthScale = depthScale;
       s._visible = true;
-      s._driftAmp = 3 + (Math.abs(h2) % 100) / 100 * 12;
+      s._driftAmp = (3 + (Math.abs(h2) % 100) / 100 * 12) * depthScale;
       s._driftSpeed = 0.0004 + (Math.abs(h) % 500) / 500 * 0.0015;
       s._driftPhase = (Math.abs(h) % 628) / 100;
       s._twinkleSpeed = 0.01 + (Math.abs(h2) % 200) / 200 * 0.03;
@@ -479,8 +487,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       }
     }
 
-    // Stars — cinematic glow + twinkling
-    for (const s of stars) {
+    // Stars — cinematic glow + twinkling + 3D depth
+    // Sort by Z (back-to-front) so nearer stars draw on top
+    const sortedStars = stars.slice().sort((a, b) => (b._z || 0.5) - (a._z || 0.5));
+    for (const s of sortedStars) {
       if (!s._visible) continue;
       const [sx, sy] = toScreen(s._x, s._y);
       const r = s._r * cam.zoom;
@@ -488,11 +498,12 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
 
       const isHovered = hovered && hovered.id === s.id;
       const color = getStarColor(s);
-      const twinkle = 0.65 + 0.35 * Math.sin(t * (s._twinkleSpeed || 0.02) * 60 + (s._twinklePhase || 0));
+      const depth = s._depthScale || 1;
+      const twinkle = (0.5 + depth * 0.5) * (0.65 + 0.35 * Math.sin(t * (s._twinkleSpeed || 0.02) * 60 + (s._twinklePhase || 0)));
 
-      // Outer bloom (soft, wide)
+      // Outer bloom (soft, wide — dimmer for far stars)
       const bloom = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 4);
-      bloom.addColorStop(0, getStarColor(s, 0.04 * twinkle));
+      bloom.addColorStop(0, getStarColor(s, 0.04 * twinkle * depth));
       bloom.addColorStop(1, 'transparent');
       ctx.fillStyle = bloom;
       ctx.beginPath();
@@ -510,8 +521,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         ctx.fill();
       }
 
-      // Star body (with twinkle)
-      ctx.fillStyle = getStarColor(s, 0.8 * twinkle);
+      // Star body (depth modulates opacity)
+      ctx.fillStyle = getStarColor(s, (0.6 + depth * 0.4) * twinkle);
       ctx.beginPath();
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.fill();
@@ -549,6 +560,72 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         ctx.fillText(`g:${s.gravity_score.toFixed(2)} · ${s.owner || '–'}`, sx, detailY);
       }
 
+    }
+
+    // --- Convergence Phenomena (visible energy zones) ---
+    // Draw glowing triangular regions connecting converging gravity stars
+    const gravStarsByDomain = {};
+    for (const s of stars) {
+      if (s._domain && s._visible) {
+        if (!gravStarsByDomain[s._domain]) gravStarsByDomain[s._domain] = [];
+        gravStarsByDomain[s._domain].push(s);
+      }
+    }
+    // Cross-domain convergence zones: connect market + user_interest stars
+    const convDomains = [['market', 'user_interest'], ['market', 'unknown'], ['user_interest', 'unknown']];
+    for (const [dA, dB] of convDomains) {
+      const groupA = gravStarsByDomain[dA] || [];
+      const groupB = gravStarsByDomain[dB] || [];
+      if (groupA.length === 0 || groupB.length === 0) continue;
+      // Draw energy arcs between closest pairs (max 4)
+      let pairs = [];
+      for (const a of groupA) {
+        for (const b of groupB) {
+          const dx = a._x - b._x, dy = a._y - b._y;
+          pairs.push({ a, b, dist: Math.sqrt(dx*dx + dy*dy) });
+        }
+      }
+      pairs.sort((x, y) => x.dist - y.dist);
+      for (let pi = 0; pi < Math.min(pairs.length, 4); pi++) {
+        const { a, b } = pairs[pi];
+        const [ax, ay] = toScreen(a._x, a._y);
+        const [bx, by] = toScreen(b._x, b._y);
+        const mx = (ax+bx)/2, my = (ay+by)/2;
+        const dist = Math.sqrt((bx-ax)**2 + (by-ay)**2);
+        if (dist > W) continue; // skip if too far on screen
+
+        // Pulsing convergence arc
+        const pulse = 0.5 + 0.5 * Math.sin(t * 1.5 + pi * 1.7);
+        const arcBend = 20 * cam.zoom * Math.sin(t * 0.8 + pi);
+        const cx2 = mx + arcBend, cy2 = my - arcBend;
+
+        // Outer glow arc
+        ctx.strokeStyle = `rgba(167,139,250,${0.06 * pulse})`;
+        ctx.lineWidth = (6 + pulse * 4) * cam.zoom;
+        ctx.beginPath(); ctx.moveTo(ax,ay); ctx.quadraticCurveTo(cx2,cy2,bx,by); ctx.stroke();
+
+        // Inner energy arc
+        ctx.strokeStyle = `rgba(167,139,250,${0.12 * pulse})`;
+        ctx.lineWidth = (1.5 + pulse * 1.5) * cam.zoom;
+        ctx.beginPath(); ctx.moveTo(ax,ay); ctx.quadraticCurveTo(cx2,cy2,bx,by); ctx.stroke();
+
+        // Energy node at midpoint
+        const nodeR = (3 + pulse * 3) * cam.zoom;
+        const nodeGlow = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, nodeR * 3);
+        nodeGlow.addColorStop(0, `rgba(167,139,250,${0.15 * pulse})`);
+        nodeGlow.addColorStop(1, 'transparent');
+        ctx.fillStyle = nodeGlow;
+        ctx.beginPath(); ctx.arc(cx2, cy2, nodeR * 3, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = `rgba(167,139,250,${0.35 * pulse})`;
+        ctx.beginPath(); ctx.arc(cx2, cy2, nodeR, 0, Math.PI * 2); ctx.fill();
+
+        // Traveling energy particle
+        const pp = ((t * 0.5 + pi * 2.3) % 1), ip = 1 - pp;
+        const epx = ip*ip*ax + 2*ip*pp*cx2 + pp*pp*bx;
+        const epy = ip*ip*ay + 2*ip*pp*cy2 + pp*pp*by;
+        ctx.fillStyle = `rgba(200,180,255,${0.3 * (1 - pp * 0.7)})`;
+        ctx.beginPath(); ctx.arc(epx, epy, (1.5 + pulse) * cam.zoom, 0, Math.PI * 2); ctx.fill();
+      }
     }
 
     // --- Adaptive Label System ---

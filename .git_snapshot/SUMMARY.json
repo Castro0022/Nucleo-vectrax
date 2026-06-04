@@ -1,7 +1,14 @@
 {
-  "head": "0de569f",
+  "head": "7213149",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "72131492",
+      "subject": "feat: controlled market auto-execution mode with strict safety limits",
+      "author": "Mario Bravo Castro",
+      "ts": 1780507963,
+      "files_changed": 6
+    },
     {
       "sha": "0de569fb",
       "subject": "feat: autonomous observation memory — Vectrax remembers everything it observes",
@@ -50,24 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1780454959,
       "files_changed": 1
-    },
-    {
-      "sha": "1e1933a6",
-      "subject": "fix: eliminate universe flicker — preserve star positions on refresh",
-      "author": "Mario Bravo Castro",
-      "ts": 1780454891,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
     "vectrax/telegram_gateway.py",
     "core/learn/gravity_engine.py",
     "services/ui/static/universe.html",
+    "connectors/etoro/learning_engine.py",
     "vectrax/self_context.py",
     "services/ui/static/app.js",
     "services/core/routes/dashboard.py",
-    "connectors/etoro/learning_engine.py",
-    "README.md"
+    ".git_snapshot/SUMMARY.json"
   ],
-  "generated_at": 1780505272
+  "generated_at": 1780507978
 }
