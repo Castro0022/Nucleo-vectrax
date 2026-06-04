@@ -38,6 +38,11 @@ _last_idea_refresh: float = 0.0
 _alerted_idea_ids: set = set()  # evitar reenviar la misma idea
 _last_obs_alert_id: int = 0     # track last observation alerted
 
+# Rate limiter for observation alerts
+_OBS_ALERT_MAX_PER_MIN = 5      # max alerts per minute (Telegram rate limit ~30/s)
+_OBS_ALERT_MAX_PER_CYCLE = 3    # max alerts per meta_loop cycle
+_obs_alert_timestamps: list = []  # timestamps of recent alerts for rate limiting
+
 
 def _now_iso():
     return datetime.now().isoformat(timespec="seconds")
@@ -185,8 +190,25 @@ _ALERT_OBS_TYPES = {
     "mode_transition", "daily_reflection",
 }
 
+def _is_rate_limited() -> bool:
+    """Check if we've exceeded the per-minute alert rate limit."""
+    now = time.time()
+    cutoff = now - 60
+    # Prune old timestamps
+    while _obs_alert_timestamps and _obs_alert_timestamps[0] < cutoff:
+        _obs_alert_timestamps.pop(0)
+    return len(_obs_alert_timestamps) >= _OBS_ALERT_MAX_PER_MIN
+
+
 def _send_observation_alerts() -> int:
-    """Check recent observations and send Telegram alerts for critical ones."""
+    """Check recent observations and send Telegram alerts for critical ones.
+
+    Rate limits:
+      - Max 5 alerts per minute (prevents Telegram 429 Too Many Requests)
+      - Max 3 alerts per cycle (prevents burst flooding)
+      - severity=critical bypasses per-cycle limit (never suppressed)
+      - Remaining alerts deferred to next cycle (ID tracking ensures no loss)
+    """
     global _last_obs_alert_id
     creator_chat_id = os.getenv("TELEGRAM_CREATOR_CHAT_ID", "")
     if not creator_chat_id:
@@ -201,6 +223,7 @@ def _send_observation_alerts() -> int:
         recent.sort(key=lambda o: o.get("id", 0))
 
         sent = 0
+        deferred = 0
         for obs in recent:
             obs_id = obs.get("id", 0)
             if obs_id <= _last_obs_alert_id:
@@ -217,6 +240,15 @@ def _send_observation_alerts() -> int:
             if not should_alert:
                 _last_obs_alert_id = max(_last_obs_alert_id, obs_id)
                 continue
+
+            # Rate limit check (critical bypasses per-cycle limit)
+            is_critical = severity == "critical"
+            if _is_rate_limited():
+                deferred += 1
+                break  # stop processing, retry next cycle
+            if not is_critical and sent >= _OBS_ALERT_MAX_PER_CYCLE:
+                deferred += 1
+                break  # defer remaining to next cycle
 
             # Build alert message
             icons = {"critical": "\U0001f534", "warning": "\u26a0\ufe0f", "info": "\U0001f535"}
@@ -235,12 +267,20 @@ def _send_observation_alerts() -> int:
 
             if _send_telegram(creator_chat_id, msg):
                 sent += 1
+                _obs_alert_timestamps.append(time.time())
                 logger.info(
                     "meta_loop: observation alert sent — %s/%s [%s]",
                     domain, obs_type, severity,
                 )
 
             _last_obs_alert_id = max(_last_obs_alert_id, obs_id)
+
+        if deferred:
+            logger.info(
+                "meta_loop: %d alerts deferred (rate limit: %d/%d per min, %d/%d per cycle)",
+                deferred, len(_obs_alert_timestamps), _OBS_ALERT_MAX_PER_MIN,
+                sent, _OBS_ALERT_MAX_PER_CYCLE,
+            )
 
         return sent
     except Exception as exc:
