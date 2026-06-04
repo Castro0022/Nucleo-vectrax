@@ -1,7 +1,21 @@
 {
-  "head": "5b6133a",
+  "head": "dda4948",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "dda49481",
+      "subject": "fix: rewire universe controls to reflect actual data",
+      "author": "Mario Bravo Castro",
+      "ts": 1780536589,
+      "files_changed": 1
+    },
+    {
+      "sha": "a74f7440",
+      "subject": "docs: add Autonomous Observations, Market Auto-Execution, and Alert System to README",
+      "author": "Mario Bravo Castro",
+      "ts": 1780536396,
+      "files_changed": 2
+    },
     {
       "sha": "5b6133a3",
       "subject": "feat: Layer 6 — Telegram alerts for critical observations and trade events",
@@ -43,31 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1780505258,
       "files_changed": 5
-    },
-    {
-      "sha": "1dbf09ce",
-      "subject": "fix: handle non-string last_signal and object domain values in dashboard",
-      "author": "Mario Bravo Castro",
-      "ts": 1780457457,
-      "files_changed": 2
-    },
-    {
-      "sha": "68083080",
-      "subject": "feat: integrate observatory into main dashboard — overview, gravity, market, convergences tabs",
-      "author": "Mario Bravo Castro",
-      "ts": 1780457278,
-      "files_changed": 3
     }
   ],
   "modified_modules": [
     "vectrax/telegram_gateway.py",
     "services/ui/static/universe.html",
-    "core/learn/gravity_engine.py",
     ".git_snapshot/SUMMARY.json",
+    "core/learn/gravity_engine.py",
     "connectors/etoro/learning_engine.py",
     "vectrax/self_context.py",
-    "CHANGELOG.md",
-    "services/ui/static/app.js"
+    "README.md",
+    "CHANGELOG.md"
   ],
-  "generated_at": 1780535438
+  "generated_at": 1780536599
 }

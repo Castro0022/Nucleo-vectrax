@@ -75,6 +75,10 @@ POLL_CLIENT_REFRESH = 900   # recreate HTTP client every 15 min (defense in dept
 # but low enough to catch cases where SIGALRM can't interrupt C-level code.
 POLL_STUCK_THRESHOLD = 35
 POLL_ALARM_TIMEOUT = POLL_TIMEOUT + 2   # 32s: SIGALRM fires before 35s watchdog
+TCP_PROBE_TIMEOUT = 3                    # pre-poll TCP probe timeout
+TCP_PROBE_HOST = "api.telegram.org"      # resolved once, cached
+TCP_PROBE_PORT = 443
+NETWORK_DOWN_SLEEP = 10                  # sleep when network is unreachable
 _OFFSET_FILE = os.path.join(os.path.expanduser("~"), ".vectrax", "gateway_offset")
 
 
@@ -152,6 +156,40 @@ class TelegramGateway:
                 max_keepalive_connections=0,  # NO keepalive — fresh TCP every poll
             ),
         )
+
+    # --- TCP pre-poll probe ---
+    _dns_cache: str = ""  # resolved IP for api.telegram.org
+    _consecutive_net_fail: int = 0
+
+    @classmethod
+    def _tcp_probe(cls) -> bool:
+        """Quick TCP connect to api.telegram.org:443 before polling.
+
+        Catches network-down conditions in 3s instead of waiting 32s
+        for SIGALRM. Caches DNS resolution to avoid DNS hangs.
+        Returns True if reachable, False if not.
+        """
+        import socket
+        try:
+            # Resolve DNS once, cache the IP
+            if not cls._dns_cache:
+                cls._dns_cache = socket.gethostbyname(TCP_PROBE_HOST)
+                logger.info("TCP_PROBE | resolved %s → %s", TCP_PROBE_HOST, cls._dns_cache)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(TCP_PROBE_TIMEOUT)
+            sock.connect((cls._dns_cache, TCP_PROBE_PORT))
+            sock.close()
+            cls._consecutive_net_fail = 0
+            return True
+        except (socket.timeout, socket.error, OSError) as exc:
+            cls._consecutive_net_fail += 1
+            # Invalidate DNS cache on failure (IP may have changed)
+            cls._dns_cache = ""
+            logger.warning(
+                "TCP_PROBE | api.telegram.org:%d unreachable (attempt %d): %s",
+                TCP_PROBE_PORT, cls._consecutive_net_fail, exc,
+            )
+            return False
 
     def _refresh_poll_client(self, close_old: bool = False) -> None:
         """Create a fresh poll HTTP client.
@@ -614,6 +652,23 @@ class TelegramGateway:
         _consecutive_sigalrm = 0  # tracks back-to-back SSL timeouts for backoff
         while self._running:
             try:
+                # === PRE-POLL: heartbeat + TCP probe ===
+                # Write heartbeat BEFORE the poll so supervisor knows we're
+                # alive right up to the moment we enter the potentially-hanging call.
+                self._write_heartbeat()
+
+                # TCP probe: quick 3s check that api.telegram.org:443 is
+                # reachable. If the network is down, skip the poll entirely
+                # instead of waiting 32s for SIGALRM to fire.
+                if not self._tcp_probe():
+                    logger.warning(
+                        "NET_DOWN | Skipping poll — sleeping %ds",
+                        NETWORK_DOWN_SLEEP,
+                    )
+                    self._last_poll_ok = time.time()  # keep watchdog happy
+                    time.sleep(NETWORK_DOWN_SLEEP)
+                    continue
+
                 # Refresh poll client if it was closed by watchdog
                 if self._poll_http.is_closed:
                     self._refresh_poll_client()
