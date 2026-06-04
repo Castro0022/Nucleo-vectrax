@@ -461,13 +461,32 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         symbols = DEFAULT_WATCHLIST
 
     t0 = time.time()
-    logger.info("[LEARN] Starting cycle for symbols: %s", symbols)
 
-    r1 = _observe_and_record(symbols)
+    # Determine which symbols have open markets right now
+    try:
+        from connectors.etoro.market_mode import get_open_symbols, get_active_mode
+        open_syms = get_open_symbols(symbols)
+        mode = get_active_mode(symbols)
+    except Exception:
+        open_syms = symbols  # fallback: treat all as open
+        mode = "market"
+
+    logger.info("[LEARN] Starting cycle | mode=%s | open=%s/%s %s",
+                mode, len(open_syms), len(symbols),
+                open_syms if open_syms else "(all closed)")
+
+    # Step 1: Observe only open markets (no noise from closed markets)
+    r1 = _observe_and_record(open_syms) if open_syms else {"signals_recorded": 0}
+
+    # Steps 2-3: Always run (resolve outcomes + rebuild patterns from history)
     r2 = _resolve_outcomes()
     r3 = _update_patterns()
-    proposals = _generate_proposals(symbols)
-    gravity_fed = _feed_gravity(symbols)
+
+    # Step 4: Only generate proposals for open markets
+    proposals = _generate_proposals(open_syms) if open_syms else []
+
+    # Step 5: Only feed gravity for open markets
+    gravity_fed = _feed_gravity(open_syms) if open_syms else 0
 
     # Step 6: check for critical convergences and alert
     alerts_sent = 0
@@ -488,6 +507,8 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     elapsed = round(time.time() - t0, 1)
 
     summary = {
+        "mode":            mode,
+        "open_symbols":    len(open_syms),
         "elapsed_s":       elapsed,
         "signals_recorded": r1["signals_recorded"],
         "outcomes_resolved": r2.get("resolved", 0),

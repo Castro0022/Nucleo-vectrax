@@ -33,6 +33,8 @@ logger = logging.getLogger("vectrax.autonomous_observer")
 # Previous snapshot (module-level, survives across calls)
 _prev_snapshot: Optional[Dict[str, Any]] = None
 _prev_gravity: Optional[Dict[str, Any]] = None
+_prev_mode: str = ""            # last active mode (market/memory)
+_daily_reflection_date: str = ""  # date of last daily reflection (YYYY-MM-DD)
 
 
 def observe_and_record() -> int:
@@ -68,7 +70,15 @@ def observe_and_record() -> int:
         _prev_gravity = current_gravity
         return recorded
 
+    # Determine active mode
+    try:
+        from connectors.etoro.market_mode import get_active_mode
+        mode = get_active_mode()
+    except Exception:
+        mode = "memory"
+
     # Compare and detect changes
+    # -- Always active (both modes) --
     try:
         recorded += _detect_operator_changes(prev, current, record)
     except Exception as exc:
@@ -94,10 +104,25 @@ def observe_and_record() -> int:
     except Exception as exc:
         logger.debug("user detector failed: %s", exc)
 
+    # -- Market Mode only (silenced when markets closed) --
+    if mode == "market":
+        try:
+            recorded += _detect_market_changes(prev_grav, current_gravity, record)
+        except Exception as exc:
+            logger.debug("market detector failed: %s", exc)
+
+    # -- Mode transition detection --
     try:
-        recorded += _detect_market_changes(prev_grav, current_gravity, record)
+        recorded += _detect_mode_transition(mode, current, current_gravity, record)
     except Exception as exc:
-        logger.debug("market detector failed: %s", exc)
+        logger.debug("mode transition detector failed: %s", exc)
+
+    # -- Memory Mode: daily reflection --
+    if mode == "memory":
+        try:
+            recorded += _daily_memory_reflection(current, current_gravity, record)
+        except Exception as exc:
+            logger.debug("daily reflection failed: %s", exc)
 
     # Update previous state
     _prev_snapshot = current
@@ -308,11 +333,17 @@ def _detect_user_changes(prev: dict, curr: dict, record) -> int:
 
 
 def _detect_market_changes(prev_grav: Optional[dict], curr_grav: dict, record) -> int:
+    """Only runs in Market Mode (gated by caller)."""
     if not prev_grav:
         return 0
     n = 0
 
-    # Check market domain stars specifically
+    # Only observe symbols with open markets
+    try:
+        from connectors.etoro.market_mode import is_market_open
+    except ImportError:
+        is_market_open = lambda s: True  # fallback: always open
+
     prev_market = {k: v for k, v in prev_grav.get("stars", {}).items()
                    if v.get("domain") == "market"}
     curr_market = {k: v for k, v in curr_grav.get("stars", {}).items()
@@ -321,22 +352,137 @@ def _detect_market_changes(prev_grav: Optional[dict], curr_grav: dict, record) -
     new_market = set(curr_market.keys()) - set(prev_market.keys())
     for sid in new_market:
         star = curr_market[sid]
+        sym = star.get("intent", sid.replace("market:", ""))
+        if not is_market_open(sym):
+            continue
         record("market", "new_market_star",
-               f"Nuevo símbolo de mercado observado: {star.get('intent', sid[:20])}",
+               f"Nuevo símbolo de mercado observado: {sym}",
                star_id=sid,
-               evidence={"intent": star.get("intent"), "hits": star.get("hits")})
+               evidence={"intent": sym, "hits": star.get("hits"), "mode": "market"})
         n += 1
 
-    # Market star activity (hits growth)
+    # Market star activity (only for open markets)
     for sid in set(curr_market.keys()) & set(prev_market.keys()):
+        star = curr_market[sid]
+        sym = star.get("intent", sid.replace("market:", ""))
+        if not is_market_open(sym):
+            continue
         prev_hits = prev_market[sid].get("hits", 0)
-        curr_hits = curr_market[sid].get("hits", 0)
+        curr_hits = star.get("hits", 0)
         if curr_hits > prev_hits:
             record("market", "market_activity",
-                   f"Actividad de mercado: {curr_market[sid].get('intent', sid[:20])} "
+                   f"Actividad de mercado: {sym} "
                    f"hits {prev_hits} → {curr_hits}",
                    star_id=sid,
-                   evidence={"prev_hits": prev_hits, "now_hits": curr_hits})
+                   evidence={"prev_hits": prev_hits, "now_hits": curr_hits, "mode": "market"})
             n += 1
 
+    return n
+
+
+# ---------------------------------------------------------------------------
+# Mode transition + Daily memory reflection
+# ---------------------------------------------------------------------------
+
+def _detect_mode_transition(mode: str, current: dict, grav: dict, record) -> int:
+    """Detect and record transitions between Market and Memory mode."""
+    global _prev_mode
+    n = 0
+    if _prev_mode and mode != _prev_mode:
+        if mode == "memory":
+            record("memory", "mode_transition",
+                   "Mercados cerrados → Modo Memoria activado. "
+                   "Reflexionando sobre lo observado.",
+                   evidence={"from": _prev_mode, "to": mode},
+                   severity="info")
+        else:
+            record("market", "mode_transition",
+                   "Mercados abiertos → Modo Mercado activado. "
+                   "Observando precios, volumen, señales.",
+                   evidence={"from": _prev_mode, "to": mode},
+                   severity="info")
+        n += 1
+        logger.info("MODE TRANSITION: %s → %s", _prev_mode, mode)
+    _prev_mode = mode
+    return n
+
+
+def _daily_memory_reflection(current: dict, grav: dict, record) -> int:
+    """Generate a daily summary of what was observed. Runs once per day in Memory Mode."""
+    global _daily_reflection_date
+    import datetime
+    today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+    if _daily_reflection_date == today:
+        return 0  # already reflected today
+
+    _daily_reflection_date = today
+    n = 0
+
+    # Gather day's stats
+    total_stars = grav.get("total", 0)
+    domains = grav.get("domains", {})
+    convergences = len(current.get("gravity_convergences", []))
+    errors_24h = current.get("recent_error_count_24h", 0)
+    user_stars = current.get("star_count", 0)
+
+    # Count today's observations from ledger
+    day_obs = 0
+    market_obs = 0
+    try:
+        from core.self_observation.observation_ledger import get_recent
+        recent = get_recent(limit=200)
+        for o in recent:
+            ts = o.get("timestamp", "")
+            if ts.startswith(today) or ts.startswith(today.replace("-", "")):
+                day_obs += 1
+                if o.get("domain") == "market":
+                    market_obs += 1
+    except Exception:
+        pass
+
+    # Count patterns
+    patterns_total = 0
+    patterns_usable = 0
+    try:
+        from connectors.etoro.pattern_memory import get_patterns
+        all_p = get_patterns()
+        patterns_total = len(all_p)
+        patterns_usable = sum(1 for p in all_p if p.is_usable)
+    except Exception:
+        pass
+
+    # Domain mass summary
+    domain_summary = []
+    for d, info in domains.items():
+        count = info.get("count", 0) if isinstance(info, dict) else info
+        domain_summary.append(f"{d}:{count}")
+
+    summary = (
+        f"Reflexión diaria ({today}): "
+        f"{total_stars} estrellas gravitacionales, "
+        f"{convergences} convergencias, "
+        f"{user_stars} usuarios, "
+        f"{patterns_total} patrones ({patterns_usable} usables), "
+        f"{day_obs} observaciones hoy ({market_obs} de mercado), "
+        f"{errors_24h} errores 24h"
+    )
+
+    record(
+        "memory", "daily_reflection",
+        summary[:200],
+        evidence={
+            "date": today,
+            "total_stars": total_stars,
+            "convergences": convergences,
+            "user_stars": user_stars,
+            "patterns_total": patterns_total,
+            "patterns_usable": patterns_usable,
+            "observations_today": day_obs,
+            "market_observations": market_obs,
+            "errors_24h": errors_24h,
+            "domains": domain_summary,
+        },
+    )
+    n += 1
+    logger.info("DAILY REFLECTION recorded for %s", today)
     return n
