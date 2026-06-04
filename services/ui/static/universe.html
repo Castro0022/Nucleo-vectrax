@@ -239,8 +239,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       s._y = s._baseY;
       // Z-depth: 0 (near/front) to 1 (far/back). Core stars stay near front.
       const zRaw = (Math.abs(h3) % 1000) / 1000;
-      s._z = s.layer === 'core' ? zRaw * 0.3 : s.layer === 'mid' ? 0.2 + zRaw * 0.4 : 0.4 + zRaw * 0.6;
-      const depthScale = 1 / (1 + s._z * 0.5); // perspective: 1.0 (front) → 0.67 (back)
+      s._z = s.layer === 'core' ? zRaw * 0.25 : s.layer === 'mid' ? 0.2 + zRaw * 0.45 : 0.5 + zRaw * 0.5;
+      const depthScale = 1 / (1 + s._z * 1.2); // perspective: 1.0 (front) → 0.45 (back) — dramatic
       s._r = (3 + s.mass * 17) * depthScale;
       s._depthScale = depthScale;
       s._visible = true;
@@ -571,13 +571,14 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         gravStarsByDomain[s._domain].push(s);
       }
     }
-    // Cross-domain convergence zones: connect market + user_interest stars
+    // Cross-domain convergence zones: connect market + user_interest + unknown stars
     const convDomains = [['market', 'user_interest'], ['market', 'unknown'], ['user_interest', 'unknown']];
+    let totalConvArcs = 0;
     for (const [dA, dB] of convDomains) {
       const groupA = gravStarsByDomain[dA] || [];
       const groupB = gravStarsByDomain[dB] || [];
       if (groupA.length === 0 || groupB.length === 0) continue;
-      // Draw energy arcs between closest pairs (max 4)
+      // Draw energy arcs between closest pairs (max 6 per domain pair)
       let pairs = [];
       for (const a of groupA) {
         for (const b of groupB) {
@@ -586,45 +587,71 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         }
       }
       pairs.sort((x, y) => x.dist - y.dist);
-      for (let pi = 0; pi < Math.min(pairs.length, 4); pi++) {
+      const maxPairs = Math.min(pairs.length, 6);
+      for (let pi = 0; pi < maxPairs; pi++) {
         const { a, b } = pairs[pi];
         const [ax, ay] = toScreen(a._x, a._y);
         const [bx, by] = toScreen(b._x, b._y);
         const mx = (ax+bx)/2, my = (ay+by)/2;
         const dist = Math.sqrt((bx-ax)**2 + (by-ay)**2);
-        if (dist > W) continue; // skip if too far on screen
+        if (dist > W * 1.5) continue;
+        totalConvArcs++;
 
-        // Pulsing convergence arc
-        const pulse = 0.5 + 0.5 * Math.sin(t * 1.5 + pi * 1.7);
-        const arcBend = 20 * cam.zoom * Math.sin(t * 0.8 + pi);
+        // Pulsing convergence arc — MUCH more visible
+        const pulse = 0.5 + 0.5 * Math.sin(t * 1.2 + pi * 1.7);
+        const arcBend = 30 * cam.zoom * Math.sin(t * 0.6 + pi * 0.9);
         const cx2 = mx + arcBend, cy2 = my - arcBend;
 
-        // Outer glow arc
-        ctx.strokeStyle = `rgba(167,139,250,${0.06 * pulse})`;
-        ctx.lineWidth = (6 + pulse * 4) * cam.zoom;
+        // Wide diffuse glow (visible halo)
+        ctx.strokeStyle = `rgba(167,139,250,${0.08 + 0.06 * pulse})`;
+        ctx.lineWidth = (10 + pulse * 8) * cam.zoom;
         ctx.beginPath(); ctx.moveTo(ax,ay); ctx.quadraticCurveTo(cx2,cy2,bx,by); ctx.stroke();
 
-        // Inner energy arc
-        ctx.strokeStyle = `rgba(167,139,250,${0.12 * pulse})`;
-        ctx.lineWidth = (1.5 + pulse * 1.5) * cam.zoom;
+        // Core energy arc (bright, sharp)
+        ctx.strokeStyle = `rgba(180,160,255,${0.25 + 0.15 * pulse})`;
+        ctx.lineWidth = (2 + pulse * 2) * cam.zoom;
         ctx.beginPath(); ctx.moveTo(ax,ay); ctx.quadraticCurveTo(cx2,cy2,bx,by); ctx.stroke();
 
-        // Energy node at midpoint
-        const nodeR = (3 + pulse * 3) * cam.zoom;
-        const nodeGlow = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, nodeR * 3);
-        nodeGlow.addColorStop(0, `rgba(167,139,250,${0.15 * pulse})`);
+        // Energy node at midpoint — glowing orb
+        const nodeR = (4 + pulse * 4) * cam.zoom;
+        const nodeGlow = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, nodeR * 4);
+        nodeGlow.addColorStop(0, `rgba(167,139,250,${0.25 * pulse})`);
+        nodeGlow.addColorStop(0.4, `rgba(167,139,250,${0.08 * pulse})`);
         nodeGlow.addColorStop(1, 'transparent');
         ctx.fillStyle = nodeGlow;
-        ctx.beginPath(); ctx.arc(cx2, cy2, nodeR * 3, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = `rgba(167,139,250,${0.35 * pulse})`;
+        ctx.beginPath(); ctx.arc(cx2, cy2, nodeR * 4, 0, Math.PI * 2); ctx.fill();
+        // Solid core of node
+        ctx.fillStyle = `rgba(200,180,255,${0.5 * pulse})`;
         ctx.beginPath(); ctx.arc(cx2, cy2, nodeR, 0, Math.PI * 2); ctx.fill();
+        // White hot center
+        ctx.fillStyle = `rgba(255,250,255,${0.3 * pulse})`;
+        ctx.beginPath(); ctx.arc(cx2, cy2, nodeR * 0.4, 0, Math.PI * 2); ctx.fill();
 
-        // Traveling energy particle
-        const pp = ((t * 0.5 + pi * 2.3) % 1), ip = 1 - pp;
-        const epx = ip*ip*ax + 2*ip*pp*cx2 + pp*pp*bx;
-        const epy = ip*ip*ay + 2*ip*pp*cy2 + pp*pp*by;
-        ctx.fillStyle = `rgba(200,180,255,${0.3 * (1 - pp * 0.7)})`;
-        ctx.beginPath(); ctx.arc(epx, epy, (1.5 + pulse) * cam.zoom, 0, Math.PI * 2); ctx.fill();
+        // TWO traveling energy particles (opposite directions)
+        for (let pd = 0; pd < 2; pd++) {
+          const pp = ((t * 0.4 + pi * 2.3 + pd * 0.5) % 1), ip = 1 - pp;
+          const epx = ip*ip*ax + 2*ip*pp*cx2 + pp*pp*bx;
+          const epy = ip*ip*ay + 2*ip*pp*cy2 + pp*pp*by;
+          const pAlpha = 0.5 * (1 - pp * 0.6);
+          // Particle glow
+          const pGlow = ctx.createRadialGradient(epx, epy, 0, epx, epy, (4 + pulse * 2) * cam.zoom);
+          pGlow.addColorStop(0, `rgba(220,200,255,${pAlpha})`);
+          pGlow.addColorStop(1, 'transparent');
+          ctx.fillStyle = pGlow;
+          ctx.beginPath(); ctx.arc(epx, epy, (4 + pulse * 2) * cam.zoom, 0, Math.PI * 2); ctx.fill();
+          // Particle core
+          ctx.fillStyle = `rgba(255,240,255,${pAlpha * 0.8})`;
+          ctx.beginPath(); ctx.arc(epx, epy, (1.5 + pulse) * cam.zoom, 0, Math.PI * 2); ctx.fill();
+        }
+
+        // Label at midpoint for zoomed views
+        if (cam.zoom > 0.8 && pi < 3) {
+          ctx.fillStyle = `rgba(167,139,250,${0.4 + 0.2 * pulse})`;
+          ctx.font = `${Math.max(9, 10 * cam.zoom)}px ${getComputedStyle(document.body).fontFamily}`;
+          ctx.textAlign = 'center';
+          ctx.fillText('✧ convergencia', cx2, cy2 - nodeR * 4 - 4);
+          ctx.textAlign = 'start';
+        }
       }
     }
 
@@ -833,6 +860,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     if (gen !== _loadGen) return; // stale fetch
 
     // 2. Gravity engine stars (cognitive + market)
+    let _gravConvCount = 0;
     try {
       const gRes = await fetch('/v1/universe');
       if (gRes.ok) {
@@ -867,6 +895,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
             _domain: gs.domain,
           });
         }
+        _gravConvCount = gConvergences.length;
         for (const c of gConvergences) {
           newEdges.push({
             source: c.star_a, target: c.star_b,
@@ -893,12 +922,14 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     const nGravity = stars.filter(s => s._domain).length;
     const nMarket = stars.filter(s => s._domain === 'market').length;
     const nUser = stars.filter(s => s._domain === 'user_interest').length;
+    const nConv = _gravConvCount || 0;
     let statsHtml =
       `<b>${stars.length}</b> estrellas · ` +
       `<b>${edges.length}</b> conexiones`;
     if (nGravity) statsHtml += ` · <b>${nGravity}</b> gravitacionales`;
     if (nMarket) statsHtml += ` · <b>${nMarket}</b> mercado`;
     if (nUser) statsHtml += ` · <b>${nUser}</b> interés`;
+    if (nConv) statsHtml += ` · <span style="color:#a78bfa"><b>${nConv}</b> convergencias</span>`;
     statsEl.innerHTML = statsHtml;
   }
 
