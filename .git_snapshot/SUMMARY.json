@@ -1,7 +1,21 @@
 {
-  "head": "1b733c2",
+  "head": "2b9aa3b",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "2b9aa3b9",
+      "subject": "feat: Market Mode vs Memory Mode — smart observation gating",
+      "author": "Mario Bravo Castro",
+      "ts": 1780611149,
+      "files_changed": 3
+    },
+    {
+      "sha": "23593dac",
+      "subject": "docs: complete CHANGELOG with TCP probe, alert system, and universe controls",
+      "author": "Mario Bravo Castro",
+      "ts": 1780609457,
+      "files_changed": 2
+    },
     {
       "sha": "1b733c2d",
       "subject": "fix: TCP pre-poll probe + pre-poll heartbeat to mitigate Telegram SSL hangs",
@@ -43,31 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1780534721,
       "files_changed": 2
-    },
-    {
-      "sha": "d164a792",
-      "subject": "feat: 3D depth + visible convergence phenomena in universe visualizer",
-      "author": "Mario Bravo Castro",
-      "ts": 1780534367,
-      "files_changed": 2
-    },
-    {
-      "sha": "72131492",
-      "subject": "feat: controlled market auto-execution mode with strict safety limits",
-      "author": "Mario Bravo Castro",
-      "ts": 1780507963,
-      "files_changed": 6
     }
   ],
   "modified_modules": [
     "vectrax/telegram_gateway.py",
-    "services/ui/static/universe.html",
     ".git_snapshot/SUMMARY.json",
+    "services/ui/static/universe.html",
     "core/learn/gravity_engine.py",
     "connectors/etoro/learning_engine.py",
+    "CHANGELOG.md",
     "vectrax/self_context.py",
-    "README.md",
-    "CHANGELOG.md"
+    "README.md"
   ],
-  "generated_at": 1780609053
+  "generated_at": 1780611176
 }

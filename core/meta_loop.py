@@ -181,6 +181,8 @@ _ALERT_OBS_TYPES = {
     "convergence_detected",
     # new stars (only on significant growth)
     "universe_growth",
+    # mode transitions and daily reflection
+    "mode_transition", "daily_reflection",
 }
 
 def _send_observation_alerts() -> int:

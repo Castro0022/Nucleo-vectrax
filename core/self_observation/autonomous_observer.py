@@ -117,12 +117,11 @@ def observe_and_record() -> int:
     except Exception as exc:
         logger.debug("mode transition detector failed: %s", exc)
 
-    # -- Memory Mode: daily reflection --
-    if mode == "memory":
-        try:
-            recorded += _daily_memory_reflection(current, current_gravity, record)
-        except Exception as exc:
-            logger.debug("daily reflection failed: %s", exc)
+    # -- Daily reflection (runs once per day after 22:00 UTC, regardless of crypto) --
+    try:
+        recorded += _daily_memory_reflection(current, current_gravity, record)
+    except Exception as exc:
+        logger.debug("daily reflection failed: %s", exc)
 
     # Update previous state
     _prev_snapshot = current
@@ -408,12 +407,20 @@ def _detect_mode_transition(mode: str, current: dict, grav: dict, record) -> int
 
 
 def _daily_memory_reflection(current: dict, grav: dict, record) -> int:
-    """Generate a daily summary of what was observed. Runs once per day in Memory Mode."""
+    """Generate a daily summary of what was observed.
+
+    Runs once per day after 22:00 UTC (US market close).
+    Crypto being 24/7 doesn't block the reflection — Wall Street
+    closing is the trigger for daily memory consolidation.
+    """
     global _daily_reflection_date
     import datetime
-    today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
+    now = datetime.datetime.utcnow()
+    today = now.strftime("%Y-%m-%d")
     if _daily_reflection_date == today:
         return 0  # already reflected today
+    if now.hour < 22:
+        return 0  # wait until after 22:00 UTC (US market close)
 
     _daily_reflection_date = today
     n = 0
