@@ -1095,6 +1095,96 @@ File: `core/meta_loop.py` — `_send_observation_alerts()` (Layer 6)
 
 ---
 
+## 🛩 WorkerBlackBox — Forensic Diagnosis Engine
+
+When a worker or gateway hangs (heartbeat stale), the BlackBox captures a complete forensic snapshot BEFORE killing the process, then generates a root cause diagnosis with positive and negative evidence.
+
+### Capture (pre-kill)
+
+Every incident records:
+- timestamp, worker PID, heartbeat age
+- Last 100 log lines
+- Active task (msg_id, user_id, content, duration)
+- CPU/RAM/disk from `/proc` (threads, process state R/S/D/Z)
+- Message queue state (pending/processing/error)
+- External API calls detected in logs (OpenAI, Telegram, eToro, Gemini)
+- Recent errors (last 10 ERROR/CRITICAL lines)
+- Traceback extraction if present
+
+### Diagnosis (post-kill)
+
+Rule-based engine with 8 cause detection rules:
+
+```
+tarea_bloqueada     — active task > 15s
+timeout_externo     — API calls pending or timeout in errors
+memoria_alta        — RAM > 500MB
+error_db            — SQLite/database/locked errors
+cola_saturada       — queue pending > 10
+fallo_red           — connect/network/SSL errors
+excepcion_no_capturada — traceback found in logs
+loop_infinito       — heartbeat > 60s with no other indicators
+proceso_muerto      — no indicators (low confidence fallback)
+```
+
+### Evidence Scoring
+
+Each diagnosis includes both supporting and contradicting evidence:
+
+```
+✅ Evidencia positiva:
+  • APIs externas en logs: ['OpenAI', 'Telegram', 'eToro']
+  • Palabra 'timeout' en errores recientes
+
+❌ Evidencia negativa:
+  • Sin tarea activa bloqueada
+  • RAM normal: 45MB
+  • Cola limpia: 0 pendientes
+  • Sin traceback en logs
+```
+
+Confidence is adjusted by the balance: more negative than positive evidence = lower confidence. This prevents overconfident diagnoses when most indicators are clean.
+
+### Creator Feedback
+
+The creator validates or rejects each diagnosis to track accuracy:
+
+```
+/vx incident list                        → view recent diagnoses + accuracy %
+/vx incident confirm <INC-ID>            → diagnosis was correct
+/vx incident reject <INC-ID> [real cause] → diagnosis was wrong
+/vx incident partial <INC-ID> [notes]    → partially correct
+```
+
+Feedback is also available via API:
+
+```
+POST /v1/dashboard/incidents/feedback
+{"incident_id": "INC-xxx", "verdict": "confirmed|rejected|partial", "creator_cause": "", "notes": ""}
+```
+
+Accuracy stats tracked: `confirmed / (confirmed + rejected + partial) * 100`
+
+### Dashboard
+
+```
+GET /v1/dashboard/incidents      → snapshots, diagnoses, feedbacks, accuracy stats
+POST /v1/dashboard/incidents/feedback → submit creator validation
+```
+
+### Persistence
+
+- File: `vault/worker_incidents.jsonl` (last 200 entries)
+- Observation ledger: `worker_incident` + `worker_diagnosis` + `diagnosis_feedback`
+- Telegram alert with full snapshot + evidence sent on every incident
+
+Files:
+- `core/observability/worker_blackbox.py` — capture, diagnose, feedback, persistence
+- `vectrax_supervisor.py` — integration in heartbeat checks
+- `tests/observability/test_worker_blackbox.py` — 28 unit tests
+
+---
+
 ## 🔧 Maintenance Procedures
 
 ### Server Access
