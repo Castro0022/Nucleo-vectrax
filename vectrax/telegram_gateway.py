@@ -1529,7 +1529,8 @@ class TelegramGateway:
                     "/vx users — usuarios activos\n"
                     "/vx flush — limpiar cache de sesión\n"
                     "/vx sql <query> — consulta SQL directa (solo lectura)\n"
-                    "/vx presencia [on|off] — modo Presencia Pura (zero tokens)"
+                    "/vx presencia [on|off] — modo Presencia Pura (zero tokens)\n"
+                    "/vx incident [list|confirm|reject|partial] — BlackBox feedback"
                 ))
 
             elif cmd == "lang":
@@ -1602,6 +1603,9 @@ class TelegramGateway:
                     self._send(cid, json.dumps(result["data"], indent=2, ensure_ascii=False)[:4000])
                 else:
                     self._send(cid, f"Error de mercado: {result.get('error', 'sin datos')}")
+
+            elif cmd == "incident":
+                self._handle_incident_cmd(cid, arg)
 
             elif cmd == "universe":
                 from core.learn.gravity_engine import universe_report
@@ -2854,6 +2858,58 @@ class TelegramGateway:
         ]
 
         return "\n".join(lines)
+
+    # == Incident feedback (/vx incident) ====================================
+
+    def _handle_incident_cmd(self, cid: int, arg: str) -> None:
+        """Handle /vx incident <subcommand>."""
+        parts = arg.split(None, 2) if arg else []
+        sub = parts[0].lower() if parts else "list"
+        sub_arg = parts[1].strip() if len(parts) > 1 else ""
+        extra = parts[2].strip() if len(parts) > 2 else ""
+
+        try:
+            if sub == "list" or not arg:
+                from core.observability.worker_blackbox import get_incidents, get_feedback_stats
+                incidents = get_incidents(limit=10)
+                diags = [i for i in incidents if "causa_probable" in i]
+                stats = get_feedback_stats()
+                if not diags:
+                    self._send(cid, "Sin incidentes registrados.")
+                    return
+                lines = [f"\U0001f4cb {len(diags)} diagn\u00f3sticos | accuracy: {stats['accuracy_pct']}%\n"]
+                for d in diags[-5:]:
+                    conf = d.get('confianza', 0)
+                    lines.append(
+                        f"  {d.get('incident_id','?')} | {d['causa_probable']} ({conf:.0%})\n"
+                        f"    {'; '.join(d.get('evidencia_positiva', d.get('evidencia', []))[:1])}"
+                    )
+                lines.append(f"\nPendientes de review: {stats['pending_review']}")
+                lines.append("\nComandos:")
+                lines.append("/vx incident confirm <ID>")
+                lines.append("/vx incident reject <ID> [causa_real]")
+                lines.append("/vx incident partial <ID> [notas]")
+                self._send(cid, "\n".join(lines))
+
+            elif sub in ("confirm", "reject", "partial"):
+                if not sub_arg:
+                    self._send(cid, f"Uso: /vx incident {sub} <INC-ID> [causa/notas]")
+                    return
+                from core.observability.worker_blackbox import submit_feedback
+                result = submit_feedback(
+                    incident_id=sub_arg,
+                    verdict={"confirm": "confirmed", "reject": "rejected", "partial": "partial"}[sub],
+                    creator_cause=extra if sub == "reject" else "",
+                    notes=extra if sub != "reject" else "",
+                )
+                icons = {"confirmed": "\u2705", "rejected": "\u274c", "partial": "\u26a0\ufe0f"}
+                self._send(cid, f"{icons.get(result['verdict'], '?')} Feedback registrado: {sub_arg} \u2192 {result['verdict']}")
+
+            else:
+                self._send(cid, "Uso: /vx incident [list|confirm|reject|partial] <ID>")
+
+        except Exception as e:
+            self._send(cid, f"Error incident: {e}")
 
     # == Market auto-execution commands (/vx market) =========================
 

@@ -1,7 +1,28 @@
 {
-  "head": "33c82b1",
+  "head": "560012a",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "560012a1",
+      "subject": "feat: positive/negative evidence scoring + feedback mechanism for BlackBox",
+      "author": "Mario Bravo Castro",
+      "ts": 1780693485,
+      "files_changed": 4
+    },
+    {
+      "sha": "dfb59fdc",
+      "subject": "feat: WorkerBlackBox — forensic snapshot + root cause diagnosis on worker hang",
+      "author": "Mario Bravo Castro",
+      "ts": 1780692777,
+      "files_changed": 5
+    },
+    {
+      "sha": "a7dae53a",
+      "subject": "feat: rate limiter for observation alerts — max 5/min, 3/cycle",
+      "author": "Mario Bravo Castro",
+      "ts": 1780612219,
+      "files_changed": 2
+    },
     {
       "sha": "33c82b1b",
       "subject": "fix: process observation alerts in ASC order to prevent skipping entries",
@@ -36,38 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1780609040,
       "files_changed": 2
-    },
-    {
-      "sha": "dda49481",
-      "subject": "fix: rewire universe controls to reflect actual data",
-      "author": "Mario Bravo Castro",
-      "ts": 1780536589,
-      "files_changed": 1
-    },
-    {
-      "sha": "a74f7440",
-      "subject": "docs: add Autonomous Observations, Market Auto-Execution, and Alert System to README",
-      "author": "Mario Bravo Castro",
-      "ts": 1780536396,
-      "files_changed": 2
-    },
-    {
-      "sha": "5b6133a3",
-      "subject": "feat: Layer 6 — Telegram alerts for critical observations and trade events",
-      "author": "Mario Bravo Castro",
-      "ts": 1780535429,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
-    "vectrax/telegram_gateway.py",
     ".git_snapshot/SUMMARY.json",
+    "vectrax/telegram_gateway.py",
     "services/ui/static/universe.html",
     "core/learn/gravity_engine.py",
+    "core/meta_loop.py",
     "connectors/etoro/learning_engine.py",
     "CHANGELOG.md",
-    "vectrax/self_context.py",
-    "core/meta_loop.py"
+    "README.md"
   ],
-  "generated_at": 1780611874
+  "generated_at": 1780693501
 }
