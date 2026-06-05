@@ -1,7 +1,14 @@
 {
-  "head": "dfb59fd",
+  "head": "560012a",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "560012a1",
+      "subject": "feat: positive/negative evidence scoring + feedback mechanism for BlackBox",
+      "author": "Mario Bravo Castro",
+      "ts": 1780693485,
+      "files_changed": 4
+    },
     {
       "sha": "dfb59fdc",
       "subject": "feat: WorkerBlackBox — forensic snapshot + root cause diagnosis on worker hang",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1780609040,
       "files_changed": 2
-    },
-    {
-      "sha": "dda49481",
-      "subject": "fix: rewire universe controls to reflect actual data",
-      "author": "Mario Bravo Castro",
-      "ts": 1780536589,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
@@ -69,5 +69,5 @@
     "CHANGELOG.md",
     "README.md"
   ],
-  "generated_at": 1780692792
+  "generated_at": 1780693501
 }
