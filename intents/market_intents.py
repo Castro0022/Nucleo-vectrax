@@ -105,19 +105,20 @@ MARKET_PATTERNS = {
         r")",
         re.IGNORECASE,
     ),
-    # Price queries: "precio de bitcoin", "price of ETH", "BTC price"
-    "market_price": re.compile(
-        rf"(?:"
-        rf"(?:{_STATUS_VERBS})\s*(?:el\s+|the\s+|der\s+|le\s+|il\s+|o\s+)?(?:{_ALL_TICKERS})"
-        rf"|(?:{_ALL_TICKERS})\s+(?:precio|price|preis|prix|prezzo|pre[cç]o|cours|koers)"
-        rf")",
-        re.IGNORECASE,
-    ),
-    # Stock queries: "cómo está NVDA", "how is Apple"
+    # Stock queries: checked BEFORE market_price so "how is TSLA" routes
+    # to stock_status (with volume/range) instead of generic market_price.
     "stock_status": re.compile(
         rf"(?:"
         rf"(?:{_STATUS_VERBS})\s*(?:el\s+|the\s+|der\s+|la\s+)?(?:{_STOCK_TICKERS})"
         rf"|(?:{_STOCK_TICKERS})\s+(?:hoy|today|now|ahora|status|price|precio)"
+        rf")",
+        re.IGNORECASE,
+    ),
+    # Price queries (catch-all for any ticker): "precio de bitcoin", "BTC price"
+    "market_price": re.compile(
+        rf"(?:"
+        rf"(?:{_STATUS_VERBS})\s*(?:el\s+|the\s+|der\s+|le\s+|il\s+|o\s+)?(?:{_ALL_TICKERS})"
+        rf"|(?:{_ALL_TICKERS})\s+(?:precio|price|preis|prix|prezzo|pre[cç]o|cours|koers)"
         rf")",
         re.IGNORECASE,
     ),
