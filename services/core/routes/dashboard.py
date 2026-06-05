@@ -414,18 +414,47 @@ async def dashboard_incidents(
 ) -> Dict[str, Any]:
     """Worker incidents captured by the BlackBox."""
     try:
-        from core.observability.worker_blackbox import get_incidents
+        from core.observability.worker_blackbox import get_incidents, get_feedback_stats
         incidents = get_incidents(limit=limit)
-        # Separate snapshots from diagnoses
         snapshots = [i for i in incidents if "worker_pid" in i]
         diagnoses = [i for i in incidents if "causa_probable" in i]
+        feedbacks = [i for i in incidents if i.get("type") == "feedback"]
         return {
             "incidents": snapshots,
             "diagnoses": diagnoses,
+            "feedbacks": feedbacks,
+            "stats": get_feedback_stats(),
             "total": len(incidents),
         }
     except Exception as exc:
         return {"incidents": [], "diagnoses": [], "total": 0, "error": str(exc)}
+
+
+from pydantic import BaseModel
+
+class DiagnosisFeedback(BaseModel):
+    incident_id: str
+    verdict: str  # confirmed | rejected | partial
+    creator_cause: str = ""
+    notes: str = ""
+
+
+@router.post("/incidents/feedback")
+async def submit_diagnosis_feedback(fb: DiagnosisFeedback) -> Dict[str, Any]:
+    """Creator validates or rejects a BlackBox diagnosis."""
+    if fb.verdict not in ("confirmed", "rejected", "partial"):
+        return {"error": "verdict must be confirmed|rejected|partial"}
+    try:
+        from core.observability.worker_blackbox import submit_feedback
+        result = submit_feedback(
+            incident_id=fb.incident_id,
+            verdict=fb.verdict,
+            creator_cause=fb.creator_cause,
+            notes=fb.notes,
+        )
+        return {"success": True, **result}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 # ---------------------------------------------------------------------------

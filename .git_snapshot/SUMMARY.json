@@ -1,7 +1,14 @@
 {
-  "head": "a7dae53",
+  "head": "dfb59fd",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "dfb59fdc",
+      "subject": "feat: WorkerBlackBox — forensic snapshot + root cause diagnosis on worker hang",
+      "author": "Mario Bravo Castro",
+      "ts": 1780692777,
+      "files_changed": 5
+    },
     {
       "sha": "a7dae53a",
       "subject": "feat: rate limiter for observation alerts — max 5/min, 3/cycle",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1780536589,
       "files_changed": 1
-    },
-    {
-      "sha": "a74f7440",
-      "subject": "docs: add Autonomous Observations, Market Auto-Execution, and Alert System to README",
-      "author": "Mario Bravo Castro",
-      "ts": 1780536396,
-      "files_changed": 2
     }
   ],
   "modified_modules": [
@@ -64,10 +64,10 @@
     "vectrax/telegram_gateway.py",
     "services/ui/static/universe.html",
     "core/learn/gravity_engine.py",
-    "connectors/etoro/learning_engine.py",
     "core/meta_loop.py",
+    "connectors/etoro/learning_engine.py",
     "CHANGELOG.md",
-    "vectrax/self_context.py"
+    "README.md"
   ],
-  "generated_at": 1780612242
+  "generated_at": 1780692792
 }

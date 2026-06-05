@@ -132,9 +132,10 @@ def diagnose_incident(incident: Dict[str, Any]) -> Dict[str, Any]:
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
-    evidence: List[str] = []
+    pos_evidence: List[str] = []  # supports the diagnosis
+    neg_evidence: List[str] = []  # contradicts or weakens it
     cause = "desconocido"
-    confidence = 0.3
+    confidence = 0.5  # start neutral
     action = "monitorear"
     solution = ""
 
@@ -145,98 +146,129 @@ def diagnose_incident(incident: Dict[str, Any]) -> Dict[str, Any]:
     ext_calls = incident.get("external_calls", {})
     tb = incident.get("traceback", "")
     hb_age = incident.get("heartbeat_age_s", 0)
-
-    # --- Rule-based diagnosis ---
-
-    # 1. Task blocked (active task running too long)
+    ram_mb = res.get("ram_mb", 0)
+    pending_q = queue.get("pending", 0)
     task_duration = task.get("duration_s", 0)
+    has_net_errors = any("connect" in e.lower() or "network" in e.lower() or "ssl" in e.lower() for e in errors)
+    db_errors = [e for e in errors if "sqlite" in e.lower() or "database" in e.lower() or "locked" in e.lower()]
+
+    # --- Rule-based diagnosis with positive/negative evidence ---
+
+    # 1. Task blocked
     if task_duration and task_duration > 15:
         cause = "tarea_bloqueada"
         confidence = 0.8
-        evidence.append(f"Tarea activa por {task_duration:.0f}s (límite 20s)")
+        pos_evidence.append(f"Tarea activa por {task_duration:.0f}s (límite 20s)")
         action = "verificar contenido del mensaje que causó el bloqueo"
         solution = "Agregar timeout más estricto en _process_one() o investigar qué módulo se cuelga"
+    else:
+        neg_evidence.append("Sin tarea activa bloqueada")
 
     # 2. External API timeout
-    if ext_calls.get("pending_count", 0) > 0 or "timeout" in " ".join(errors).lower():
+    has_ext = ext_calls.get("pending_count", 0) > 0
+    has_timeout_err = "timeout" in " ".join(errors).lower()
+    if has_ext or has_timeout_err:
         if cause == "desconocido":
             cause = "timeout_externo"
             confidence = 0.75
         else:
             confidence = min(confidence + 0.1, 0.95)
-        pending = ext_calls.get("pending_apis", [])
-        evidence.append(f"APIs externas pendientes: {pending}")
+        pending_apis = ext_calls.get("pending_apis", [])
+        pos_evidence.append(f"APIs externas en logs: {pending_apis}")
+        if has_timeout_err:
+            pos_evidence.append("Palabra 'timeout' en errores recientes")
         action = "verificar conectividad a APIs externas (OpenAI, Telegram, eToro)"
         solution = "Reducir timeouts de httpx o agregar circuit breaker para API problemática"
+    else:
+        neg_evidence.append("Sin APIs externas pendientes ni timeouts")
 
     # 3. High memory
-    ram_mb = res.get("ram_mb", 0)
     if ram_mb > 500:
         if cause == "desconocido":
             cause = "memoria_alta"
             confidence = 0.7
-        evidence.append(f"RAM: {ram_mb}MB (alto para un worker)")
+        pos_evidence.append(f"RAM: {ram_mb}MB (alto para un worker)")
         action = "investigar memory leak"
-        solution = "Analizar objetos grandes en heap con tracemalloc o reiniciar worker periódicamente"
+        solution = "Analizar objetos en heap con tracemalloc o reiniciar worker periódicamente"
+    elif ram_mb > 0:
+        neg_evidence.append(f"RAM normal: {ram_mb}MB")
 
     # 4. Database error
-    db_errors = [e for e in errors if "sqlite" in e.lower() or "database" in e.lower() or "locked" in e.lower()]
     if db_errors:
         if cause == "desconocido":
             cause = "error_db"
             confidence = 0.8
-        evidence.append(f"Errores de DB: {db_errors[:2]}")
+        pos_evidence.append(f"Errores de DB: {db_errors[:2]}")
         action = "verificar integridad de SQLite y locks"
         solution = "Ejecutar PRAGMA integrity_check en las DBs del vault"
+    else:
+        neg_evidence.append("Sin errores de base de datos")
 
     # 5. Queue saturated
-    pending = queue.get("pending", 0)
-    if pending > 10:
+    if pending_q > 10:
         if cause == "desconocido":
             cause = "cola_saturada"
             confidence = 0.6
-        evidence.append(f"Cola con {pending} mensajes pendientes")
+        pos_evidence.append(f"Cola con {pending_q} mensajes pendientes")
         action = "verificar por qué se acumulan mensajes"
-        solution = "Aumentar CONCURRENT workers o investigar tarea lenta que bloquea"
+        solution = "Aumentar CONCURRENT workers o investigar tarea lenta"
+    else:
+        neg_evidence.append(f"Cola limpia: {pending_q} pendientes")
 
     # 6. Network failure
-    net_errors = [e for e in errors if "connect" in e.lower() or "network" in e.lower() or "ssl" in e.lower()]
-    if net_errors:
+    if has_net_errors:
+        net_err_lines = [e for e in errors if "connect" in e.lower() or "network" in e.lower() or "ssl" in e.lower()]
         if cause == "desconocido":
             cause = "fallo_red"
             confidence = 0.7
-        evidence.append(f"Errores de red: {net_errors[:2]}")
+        pos_evidence.append(f"Errores de red: {net_err_lines[:2]}")
         action = "verificar conectividad del servidor"
         solution = "Revisar DNS, firewall, y estabilidad de red Vultr"
+    else:
+        neg_evidence.append("Sin errores de red confirmados")
 
-    # 7. Traceback present
+    # 7. Traceback
     if tb:
         if cause == "desconocido":
             cause = "excepcion_no_capturada"
             confidence = 0.85
-        evidence.append(f"Traceback encontrado: {tb[:100]}")
+        pos_evidence.append(f"Traceback encontrado: {tb[:100]}")
         action = "corregir la excepción en el código"
         solution = f"Revisar: {tb[:200]}"
+    else:
+        neg_evidence.append("Sin traceback en logs")
 
-    # 8. Heartbeat very stale (possible dead process or infinite loop)
+    # 8. Heartbeat very stale
     if hb_age > 60 and cause == "desconocido":
         cause = "loop_infinito"
         confidence = 0.5
-        evidence.append(f"Heartbeat sin actualizar por {hb_age:.0f}s")
+        pos_evidence.append(f"Heartbeat sin actualizar por {hb_age:.0f}s")
         action = "agregar watchdog interno en el worker"
         solution = "Añadir alarma SIGALRM o timeout por tarea en pipeline_worker"
 
-    # 9. Process just died (no specific indicators)
+    # 9. No indicators
     if cause == "desconocido":
         cause = "proceso_muerto"
         confidence = 0.3
-        evidence.append("Sin indicadores claros de causa raíz")
+        pos_evidence.append("Sin indicadores claros de causa raíz")
         action = "monitorear si se repite"
         solution = "Si recurre, habilitar profiling y analizar patrón"
 
+    # --- Adjust confidence by evidence balance ---
+    # More negative evidence = less certain about the diagnosis
+    n_pos = len(pos_evidence)
+    n_neg = len(neg_evidence)
+    if n_neg > n_pos and confidence > 0.4:
+        confidence -= 0.1 * min(n_neg - n_pos, 3)  # max -0.3 penalty
+        confidence = max(confidence, 0.2)
+    elif n_pos > n_neg + 2:
+        confidence = min(confidence + 0.05, 0.95)  # slight boost
+
     diag["causa_probable"] = cause
     diag["confianza"] = round(confidence, 2)
-    diag["evidencia"] = evidence
+    diag["evidencia_positiva"] = pos_evidence
+    diag["evidencia_negativa"] = neg_evidence
+    diag["evidencia"] = pos_evidence  # backward compat
     diag["accion_recomendada"] = action
     diag["solucion_propuesta"] = solution
     diag["tiempo_recuperacion_s"] = 0  # filled by caller after restart
@@ -447,6 +479,77 @@ def get_incidents(limit: int = 20) -> List[Dict[str, Any]]:
     return incidents[-limit:]
 
 
+def submit_feedback(
+    incident_id: str,
+    verdict: str,
+    creator_cause: str = "",
+    notes: str = "",
+) -> Dict[str, Any]:
+    """Creator validates or rejects a BlackBox diagnosis.
+
+    Args:
+        incident_id: e.g. 'INC-1780693107-PIP'
+        verdict: 'confirmed' | 'rejected' | 'partial'
+        creator_cause: the real cause if different from BlackBox diagnosis
+        notes: free-text notes from the creator
+
+    The feedback is saved alongside the incident and used to improve
+    future diagnosis accuracy.
+    """
+    feedback = {
+        "incident_id": incident_id,
+        "type": "feedback",
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "verdict": verdict,
+        "creator_cause": creator_cause,
+        "notes": notes,
+    }
+    _save_incident(feedback)
+
+    # Log to observation ledger
+    try:
+        from core.self_observation.observation_ledger import record
+        icon = {"confirmed": "\u2705", "rejected": "\u274c", "partial": "\u26a0\ufe0f"}.get(verdict, "?")
+        record(
+            domain="operator",
+            obs_type="diagnosis_feedback",
+            summary=(
+                f"{icon} Feedback {incident_id}: {verdict}"
+                + (f" — causa real: {creator_cause}" if creator_cause else "")
+                + (f" — {notes[:60]}" if notes else "")
+            )[:200],
+            evidence=feedback,
+        )
+    except Exception:
+        pass
+
+    logger.info(
+        "BLACKBOX FEEDBACK | %s | verdict=%s | creator_cause=%s",
+        incident_id, verdict, creator_cause or "(same)",
+    )
+    return feedback
+
+
+def get_feedback_stats() -> Dict[str, Any]:
+    """Aggregate feedback stats for diagnosis accuracy tracking."""
+    incidents = get_incidents(limit=200)
+    feedbacks = [i for i in incidents if i.get("type") == "feedback"]
+    diagnoses = [i for i in incidents if "causa_probable" in i]
+    confirmed = sum(1 for f in feedbacks if f.get("verdict") == "confirmed")
+    rejected = sum(1 for f in feedbacks if f.get("verdict") == "rejected")
+    partial = sum(1 for f in feedbacks if f.get("verdict") == "partial")
+    total = confirmed + rejected + partial
+    return {
+        "total_diagnoses": len(diagnoses),
+        "total_feedback": total,
+        "confirmed": confirmed,
+        "rejected": rejected,
+        "partial": partial,
+        "accuracy_pct": round(confirmed / max(total, 1) * 100, 1),
+        "pending_review": len(diagnoses) - total,
+    }
+
+
 # ── Observation ledger + Telegram ─────────────────────────────────────
 
 def _log_to_observation_ledger(incident: Dict) -> None:
@@ -507,7 +610,8 @@ def _alert_creator(incident: Dict, diag: Dict) -> None:
         task = incident.get("active_task", {})
         res = incident.get("resources", {})
         q = incident.get("queue", {})
-        ev = diag.get("evidencia", [])
+        pos = diag.get("evidencia_positiva", diag.get("evidencia", []))
+        neg = diag.get("evidencia_negativa", [])
 
         msg = (
             f"🔴 <b>Worker Incident — {incident['incident_id']}</b>\n"
@@ -517,11 +621,18 @@ def _alert_creator(incident: Dict, diag: Dict) -> None:
             f"• RAM: {res.get('ram_mb', '?')}MB\n"
             f"• Cola: {q.get('pending', 0)} pend / {q.get('processing', 0)} proc\n"
             f"• Tarea: {task.get('msg_id', 'none')} ({task.get('duration_s', 0):.0f}s)\n\n"
-            f"🔍 <b>Diagnóstico</b>\n"
-            f"• Causa: <b>{diag['causa_probable']}</b> ({diag['confianza']:.0%})\n"
-            f"• Evidencia: {'; '.join(ev[:2])}\n"
-            f"• Acción: {diag['accion_recomendada']}\n"
-            f"• Solución: {diag.get('solucion_propuesta', '')[:80]}"
+            f"🔍 <b>Causa: {diag['causa_probable']}</b> ({diag['confianza']:.0%})\n\n"
+            f"✅ <b>Evidencia positiva:</b>\n"
+        )
+        for e in pos[:3]:
+            msg += f"  • {e[:80]}\n"
+        if neg:
+            msg += f"\n❌ <b>Evidencia negativa:</b>\n"
+            for e in neg[:3]:
+                msg += f"  • {e[:80]}\n"
+        msg += (
+            f"\n🔧 <b>Acción:</b> {diag['accion_recomendada']}\n"
+            f"💡 <b>Solución:</b> {diag.get('solucion_propuesta', '')[:80]}"
         )
 
         import urllib.request
