@@ -188,6 +188,8 @@ _ALERT_OBS_TYPES = {
     "universe_growth",
     # mode transitions and daily reflection
     "mode_transition", "daily_reflection",
+    # worker incidents (blackbox)
+    "worker_incident", "worker_diagnosis",
 }
 
 def _is_rate_limited() -> bool:

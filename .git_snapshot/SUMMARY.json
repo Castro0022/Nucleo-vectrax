@@ -1,7 +1,14 @@
 {
-  "head": "33c82b1",
+  "head": "a7dae53",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "a7dae53a",
+      "subject": "feat: rate limiter for observation alerts — max 5/min, 3/cycle",
+      "author": "Mario Bravo Castro",
+      "ts": 1780612219,
+      "files_changed": 2
+    },
     {
       "sha": "33c82b1b",
       "subject": "fix: process observation alerts in ASC order to prevent skipping entries",
@@ -50,24 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1780536396,
       "files_changed": 2
-    },
-    {
-      "sha": "5b6133a3",
-      "subject": "feat: Layer 6 — Telegram alerts for critical observations and trade events",
-      "author": "Mario Bravo Castro",
-      "ts": 1780535429,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
-    "vectrax/telegram_gateway.py",
     ".git_snapshot/SUMMARY.json",
+    "vectrax/telegram_gateway.py",
     "services/ui/static/universe.html",
     "core/learn/gravity_engine.py",
     "connectors/etoro/learning_engine.py",
+    "core/meta_loop.py",
     "CHANGELOG.md",
-    "vectrax/self_context.py",
-    "core/meta_loop.py"
+    "vectrax/self_context.py"
   ],
-  "generated_at": 1780611874
+  "generated_at": 1780612242
 }

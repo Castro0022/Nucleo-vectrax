@@ -405,6 +405,30 @@ async def dashboard_audit(
 
 
 # ---------------------------------------------------------------------------
+# GET /v1/dashboard/incidents
+# ---------------------------------------------------------------------------
+
+@router.get("/incidents")
+async def dashboard_incidents(
+    limit: int = Query(20, ge=1, le=100),
+) -> Dict[str, Any]:
+    """Worker incidents captured by the BlackBox."""
+    try:
+        from core.observability.worker_blackbox import get_incidents
+        incidents = get_incidents(limit=limit)
+        # Separate snapshots from diagnoses
+        snapshots = [i for i in incidents if "worker_pid" in i]
+        diagnoses = [i for i in incidents if "causa_probable" in i]
+        return {
+            "incidents": snapshots,
+            "diagnoses": diagnoses,
+            "total": len(incidents),
+        }
+    except Exception as exc:
+        return {"incidents": [], "diagnoses": [], "total": 0, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # GET /v1/dashboard/observatory
 # ---------------------------------------------------------------------------
 

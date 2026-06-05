@@ -411,6 +411,21 @@ class VectraxSupervisor:
                     "[pipeline_worker] HEARTBEAT STALE (%.0fs > %ds) — killing hung worker (PID %d)",
                     age, WORKER_HEARTBEAT_MAX_AGE, svc.process.pid,
                 )
+                # === BLACKBOX: capture forensic snapshot BEFORE kill ===
+                _incident = None
+                try:
+                    from core.observability.worker_blackbox import (
+                        capture_incident, diagnose_incident,
+                    )
+                    _incident = capture_incident(
+                        worker_name="pipeline_worker",
+                        pid=svc.process.pid,
+                        heartbeat_age=age,
+                        trigger="heartbeat_stale",
+                    )
+                except Exception as _bb_exc:
+                    logger.debug("BlackBox capture failed: %s", _bb_exc)
+
                 # Record failure for immunity
                 try:
                     from core.operator.failure_immunity import record_failure
@@ -419,6 +434,7 @@ class VectraxSupervisor:
                 except Exception:
                     pass
                 # Force kill
+                t_kill = time.time()
                 svc.process.kill()
                 try:
                     svc.process.wait(timeout=5)
@@ -430,6 +446,15 @@ class VectraxSupervisor:
                     WORKER_HEARTBEAT_PATH.unlink()
                 except Exception:
                     pass
+
+                # === BLACKBOX: diagnose root cause AFTER kill ===
+                if _incident:
+                    try:
+                        _incident["recovery_time_s"] = round(time.time() - t_kill, 1)
+                        diag = diagnose_incident(_incident)
+                        diag["tiempo_recuperacion_s"] = _incident["recovery_time_s"]
+                    except Exception as _dd_exc:
+                        logger.debug("BlackBox diagnosis failed: %s", _dd_exc)
                 # Will be restarted by main loop on next cycle
         except Exception as exc:
             logger.debug("Worker heartbeat check error: %s", exc)
@@ -455,6 +480,20 @@ class VectraxSupervisor:
                     "[telegram_gateway] HEARTBEAT STALE (%.0fs > %ds) — killing hung gateway (PID %d)",
                     age, GATEWAY_HEARTBEAT_MAX_AGE, svc.process.pid,
                 )
+                # === BLACKBOX: capture + diagnose ===
+                try:
+                    from core.observability.worker_blackbox import (
+                        capture_incident, diagnose_incident,
+                    )
+                    _gw_inc = capture_incident(
+                        worker_name="telegram_gateway",
+                        pid=svc.process.pid,
+                        heartbeat_age=age,
+                        trigger="heartbeat_stale",
+                    )
+                except Exception:
+                    _gw_inc = None
+
                 # Record failure for immunity
                 try:
                     from core.operator.failure_immunity import record_failure
@@ -462,6 +501,7 @@ class VectraxSupervisor:
                                    f"age={age:.0f}s pid={svc.process.pid}")
                 except Exception:
                     pass
+                t_kill = time.time()
                 svc.process.kill()
                 try:
                     svc.process.wait(timeout=5)
@@ -472,6 +512,13 @@ class VectraxSupervisor:
                     GATEWAY_HEARTBEAT_PATH.unlink()
                 except Exception:
                     pass
+
+                if _gw_inc:
+                    try:
+                        _gw_inc["recovery_time_s"] = round(time.time() - t_kill, 1)
+                        diagnose_incident(_gw_inc)
+                    except Exception:
+                        pass
         except Exception as exc:
             logger.debug("Gateway heartbeat check error: %s", exc)
 
