@@ -30,7 +30,10 @@ from typing import List, Tuple
 logger = logging.getLogger("vectrax.scalability")
 
 # Thresholds
-WORKER_RAM_MAX_MB = int(os.environ.get("VX_WORKER_RAM_MAX_MB", "300"))
+# 200MB threshold: catches leaks early. Worker restarts in <5s.
+# The embeddings model + LLM buffers leak ~100MB per message batch.
+# At 200MB the worker is still responsive; at 500MB+ it's sluggish.
+WORKER_RAM_MAX_MB = int(os.environ.get("VX_WORKER_RAM_MAX_MB", "200"))
 QUEUE_TTL_SECONDS = int(os.environ.get("VX_QUEUE_TTL_S", "3600"))  # 1 hour
 
 _VAULT = os.environ.get(
@@ -127,22 +130,19 @@ def get_optimal_concurrency() -> int:
     if override:
         return int(override)
 
-    # Each worker thread loads embeddings model (~45MB) + LLM buffers.
-    # 15 threads × 45MB = 675MB → triggers memory watchdog at 300MB.
-    # Cap at 6 to stay under 300MB with safety margin.
+    # Embeddings model leaks ~100MB per message batch regardless of threads.
+    # Keep concurrency at 3 until the leak root cause is fixed.
     try:
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemTotal:"):
                     total_kb = int(line.split()[1])
                     total_gb = total_kb / (1024 * 1024)
-                    if total_gb >= 8:
-                        return 6
                     if total_gb >= 4:
-                        return 6
+                        return 3
                     if total_gb >= 2:
-                        return 4
-                    return 3
+                        return 3
+                    return 2
     except Exception:
         pass
     return 3

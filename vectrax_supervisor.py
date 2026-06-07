@@ -420,36 +420,42 @@ class VectraxSupervisor:
             age = time.time() - heartbeat_ts
 
             # Memory watchdog: restart worker if RAM exceeds threshold
+            # Cooldown: max 1 restart per 5 minutes to avoid restart loops
             try:
-                from core.scalability_guard import check_worker_memory
+                from core.scalability_guard import check_worker_memory, WORKER_RAM_MAX_MB
                 ram_mb, should_restart = check_worker_memory(svc.process.pid)
                 if should_restart:
-                    logger.warning(
-                        "[pipeline_worker] MEMORY WATCHDOG: %.0fMB > %dMB — restarting",
-                        ram_mb, 300,
-                    )
-                    # BlackBox capture before kill
-                    try:
-                        from core.observability.worker_blackbox import (
-                            capture_incident, diagnose_incident,
+                    _now = time.time()
+                    _last_mem_restart = getattr(self, '_last_mem_restart', 0)
+                    if _now - _last_mem_restart < 300:  # 5 min cooldown
+                        pass  # let it run, will restart on next window
+                    else:
+                        self._last_mem_restart = _now
+                        logger.warning(
+                            "[pipeline_worker] MEMORY WATCHDOG: %.0fMB > %dMB — restarting",
+                            ram_mb, WORKER_RAM_MAX_MB,
                         )
-                        _mem_inc = capture_incident(
-                            worker_name="pipeline_worker",
-                            pid=svc.process.pid,
-                            heartbeat_age=age,
-                            trigger="memory_watchdog",
-                        )
-                        svc.process.kill()
-                        try: svc.process.wait(timeout=5)
-                        except Exception: pass
-                        svc.healthy = False
-                        diagnose_incident(_mem_inc)
-                    except Exception:
-                        svc.process.kill()
-                        try: svc.process.wait(timeout=5)
-                        except Exception: pass
-                        svc.healthy = False
-                    return  # will be restarted by main loop
+                        try:
+                            from core.observability.worker_blackbox import (
+                                capture_incident, diagnose_incident,
+                            )
+                            _mem_inc = capture_incident(
+                                worker_name="pipeline_worker",
+                                pid=svc.process.pid,
+                                heartbeat_age=age,
+                                trigger="memory_watchdog",
+                            )
+                            svc.process.kill()
+                            try: svc.process.wait(timeout=5)
+                            except Exception: pass
+                            svc.healthy = False
+                            diagnose_incident(_mem_inc)
+                        except Exception:
+                            svc.process.kill()
+                            try: svc.process.wait(timeout=5)
+                            except Exception: pass
+                            svc.healthy = False
+                        return  # will be restarted by main loop
             except Exception:
                 pass
 
