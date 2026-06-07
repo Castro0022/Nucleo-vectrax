@@ -42,6 +42,8 @@ _last_obs_alert_id: int = 0     # track last observation alerted
 _OBS_ALERT_MAX_PER_MIN = 5      # max alerts per minute (Telegram rate limit ~30/s)
 _OBS_ALERT_MAX_PER_CYCLE = 3    # max alerts per meta_loop cycle
 _obs_alert_timestamps: list = []  # timestamps of recent alerts for rate limiting
+_last_ram_snapshot: float = 0.0   # last hourly RAM recording
+_RAM_SNAPSHOT_INTERVAL = 3600     # 1 hour
 
 
 def _now_iso():
@@ -352,8 +354,75 @@ def reflect(ingested_count=0):
     if obs_alerts > 0:
         reflection["observation_alerts_sent"] = obs_alerts
 
+    # --- Layer 7: Hourly RAM snapshot ---
+    obs_ram = _record_ram_snapshot()
+    if obs_ram:
+        reflection["ram_snapshot"] = obs_ram
+
     # Persist reflection into state
     state["last_reflection"] = reflection
     state_manager.save(state)
 
     return reflection
+
+
+def _record_ram_snapshot() -> dict | None:
+    """Record worker RAM to observation ledger every hour.
+
+    After 24 samples, generates a stability report.
+    """
+    global _last_ram_snapshot
+    now = time.time()
+    if now - _last_ram_snapshot < _RAM_SNAPSHOT_INTERVAL:
+        return None
+    _last_ram_snapshot = now
+
+    try:
+        import os
+        from pathlib import Path
+
+        # Find worker PID and RAM
+        worker_ram = 0.0
+        worker_pid = 0
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace")
+                if "pipeline_worker" not in cmdline:
+                    continue
+                for line in Path(f"/proc/{pid}/status").read_text().split("\n"):
+                    if line.startswith("VmRSS:"):
+                        worker_ram = int(line.split()[1]) / 1024
+                        worker_pid = int(pid)
+                        break
+            except Exception:
+                continue
+            if worker_ram > 0:
+                break
+
+        if worker_ram == 0:
+            return None
+
+        snapshot = {
+            "pid": worker_pid,
+            "ram_mb": round(worker_ram, 1),
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        }
+
+        # Record to observation ledger
+        from core.self_observation.observation_ledger import record
+        record(
+            domain="operator",
+            obs_type="ram_snapshot",
+            summary=f"Worker RAM: {worker_ram:.0f}MB (PID {worker_pid})",
+            star_id=f"worker:pipeline_worker",
+            evidence=snapshot,
+        )
+
+        logger.info("RAM_SNAPSHOT | worker PID %d: %.0fMB", worker_pid, worker_ram)
+        return snapshot
+
+    except Exception as exc:
+        logger.debug("RAM snapshot failed: %s", exc)
+        return None
