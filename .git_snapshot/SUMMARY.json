@@ -1,7 +1,21 @@
 {
-  "head": "8a86db6",
+  "head": "2058128",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "2058128e",
+      "subject": "fix: prevent creator name leak to other users in self_context",
+      "author": "Mario Bravo Castro",
+      "ts": 1780871414,
+      "files_changed": 2
+    },
+    {
+      "sha": "3775a0e5",
+      "subject": "docs: add Scalability Guard and RAM Monitoring to README",
+      "author": "Mario Bravo Castro",
+      "ts": 1780815409,
+      "files_changed": 2
+    },
     {
       "sha": "8a86db6c",
       "subject": "feat: Layer 7 — hourly RAM snapshots recorded to observation ledger",
@@ -43,20 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1780814274,
       "files_changed": 2
-    },
-    {
-      "sha": "143b06fd",
-      "subject": "feat: memory pre-check — always consult memory before any routing",
-      "author": "Mario Bravo Castro",
-      "ts": 1780813990,
-      "files_changed": 2
-    },
-    {
-      "sha": "f1d3e73e",
-      "subject": "fix: IDEA-7A0B846D — resolve semantic vs regex conflict (18 occurrences)",
-      "author": "Mario Bravo Castro",
-      "ts": 1780813758,
-      "files_changed": 2
     }
   ],
   "modified_modules": [
@@ -65,9 +65,9 @@
     "services/ui/static/universe.html",
     "core/meta_loop.py",
     "core/learn/gravity_engine.py",
-    "CHANGELOG.md",
-    "connectors/etoro/learning_engine.py",
-    "README.md"
+    "vectrax/self_context.py",
+    "README.md",
+    "CHANGELOG.md"
   ],
-  "generated_at": 1780815214
+  "generated_at": 1780871416
 }

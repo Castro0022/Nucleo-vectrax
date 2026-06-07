@@ -2,7 +2,40 @@
 
 All notable changes to Vectrax are documented in this file.
 
-## [2026-06-07] — Market Routing + Universe-First Responses
+## [2026-06-07] — Market Routing + Memory Pre-Check + Scalability + Name Leak Fix
+
+### Memory pre-check (pipeline priority)
+- Personal queries ("háblame de mi memoria", "quién soy") now checked BEFORE any routing
+- If message contains personal pronouns + memory has data → respond from memory immediately
+- Never goes to web search for personal questions
+- Pipeline order: Memory Pre-Check → Market Intercept → SmartRouter → Strategy
+
+### Semantic classifier fix (IDEA-7A0B846D)
+- 18 conflicts where sem=online vs regex=memory. ASK_MEMORY patterns expanded:
+  "háblame/cuéntame de mi memoria/datos/perfil", "tell me about my memory"
+- ASK_MEMORY weight: 1.35 → 1.45, frame weight: 0.9 → 0.93
+- MEMORY_LOOKUP score 1.35 vs WEB_SEARCH 1.05 = +0.30 margin
+
+### Creator name leak fix
+- Bug: Vectrax responded "Dale, Mario" to non-creator user tg:5828154404
+- Cause: self_context injected "Mi creador es Mario Bravo Castro" for ALL users
+- Fix: `build_self_context(user_id=)` only includes creator name for creator
+- Other users see "NUNCA uses el nombre del creador" instead
+- Propagated user_id through: external_gateway → resolve_self_aware → build_self_context
+
+### Scalability guard
+- WAL mode enforced on all 20 databases at startup
+- Worker memory watchdog: 1.2GB threshold, 5-min cooldown between restarts
+- Dynamic concurrency: capped at 3 (embeddings model loads ~45MB/thread)
+- Queue TTL: auto-purge done/error messages >1h
+
+### Worker warm-up behavior (documented)
+- First complex message loads sentence_transformers + torch: 45MB → ~900MB in 12s
+- This is STABLE loaded state, not a leak: subsequent messages add 0-1MB
+- Warm-up blocks heartbeat → supervisor detects stale → kill → restart <5s
+- Per-message RAM profiling: `DONE ... RAM 905→906MB (+1)`
+- MEM_LEAK warning triggers if single message adds >50MB
+- Hourly RAM snapshots recorded to observation_ledger (Layer 7)
 
 ### Pre-router market intercept
 - `detect_market_intent()` runs BEFORE SmartRouter in `external_gateway._resolve_via_pipeline()`
