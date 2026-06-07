@@ -490,14 +490,20 @@ def _process_one(msg):
             )
 
         # === EXPLICIT MESSAGE LIFECYCLE END ============================
-        # Liberamos referencias al objeto `msg` y a `response` para que
-        # el GC pueda recoger los buffers de inmediato. Evita cualquier
-        # ilusión de "audio del mensaje anterior arrastrado" causada
-        # por buffers viejos en memoria del thread del worker.
+        # Force garbage collection to free embeddings, LLM buffers,
+        # convergence objects. Without this, Python accumulates ~100MB
+        # per message batch (circular refs from sentence_transformers,
+        # httpx responses, torch tensors).
         msg_id_for_log = msg.id
         try:
             del msg
             del response
+            del result
+        except Exception:
+            pass
+        try:
+            import gc
+            gc.collect()
         except Exception:
             pass
         return True
