@@ -1,7 +1,14 @@
 {
-  "head": "c93bc69",
+  "head": "1a40e00",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "1a40e002",
+      "subject": "fix: stabilize worker memory — threshold 200MB, concurrency 3, cooldown 5min",
+      "author": "Mario Bravo Castro",
+      "ts": 1780814549,
+      "files_changed": 3
+    },
     {
       "sha": "c93bc692",
       "subject": "fix: cap worker concurrency at 6 to prevent memory leak from embeddings",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1780702218,
       "files_changed": 2
-    },
-    {
-      "sha": "2eb9caa6",
-      "subject": "feat: universe-first market responses — Vectrax speaks from its own observations",
-      "author": "Mario Bravo Castro",
-      "ts": 1780702016,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
@@ -69,5 +69,5 @@
     "connectors/etoro/learning_engine.py",
     "README.md"
   ],
-  "generated_at": 1780814277
+  "generated_at": 1780814551
 }

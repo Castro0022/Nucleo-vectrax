@@ -302,6 +302,18 @@ def _scale_governor_preflight(msg):
         return None, None
 
 
+def _get_rss_mb() -> float:
+    """Get current process RSS in MB. Fast, no imports."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024
+    except Exception:
+        pass
+    return 0.0
+
+
 def _process_one(msg):
     """Process a single queued message: pipeline → send to Telegram."""
     from core.transport.message_queue import mark_done, mark_error
@@ -312,6 +324,7 @@ def _process_one(msg):
     gw = _process_one._gw
 
     t0 = time.time()
+    ram_before = _get_rss_mb()
     try:
         # === SCALE GOVERNOR PREFLIGHT (opt-in) ===
         decision, sg = _scale_governor_preflight(msg)
@@ -462,10 +475,19 @@ def _process_one(msg):
 
         mark_done(msg.id, response)
 
+        ram_after = _get_rss_mb()
+        ram_delta = ram_after - ram_before
         logger.info(
-            "DONE %s | %.1fs | %d ch | sent=%s | %s",
-            msg.id, elapsed, len(response), sent, msg.content[:30],
+            "DONE %s | %.1fs | %d ch | sent=%s | RAM %.0f→%.0fMB (%+.0f) | %s",
+            msg.id, elapsed, len(response), sent,
+            ram_before, ram_after, ram_delta,
+            msg.content[:30],
         )
+        if ram_delta > 50:
+            logger.warning(
+                "MEM_LEAK %s | +%.0fMB in single message | %s",
+                msg.id, ram_delta, msg.content[:60],
+            )
 
         # === EXPLICIT MESSAGE LIFECYCLE END ============================
         # Liberamos referencias al objeto `msg` y a `response` para que
