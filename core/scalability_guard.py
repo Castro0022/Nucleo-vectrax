@@ -30,10 +30,11 @@ from typing import List, Tuple
 logger = logging.getLogger("vectrax.scalability")
 
 # Thresholds
-# 200MB threshold: catches leaks early. Worker restarts in <5s.
-# The embeddings model + LLM buffers leak ~100MB per message batch.
-# At 200MB the worker is still responsive; at 500MB+ it's sluggish.
-WORKER_RAM_MAX_MB = int(os.environ.get("VX_WORKER_RAM_MAX_MB", "200"))
+# 1GB threshold: the worker loads ~900MB on first complex message
+# (embeddings model + sentence_transformers + torch + gravity engine).
+# This is STABLE loaded state, not a growing leak — subsequent messages
+# add 0-1MB. Only restart if RAM grows BEYOND the loaded baseline.
+WORKER_RAM_MAX_MB = int(os.environ.get("VX_WORKER_RAM_MAX_MB", "1200"))
 QUEUE_TTL_SECONDS = int(os.environ.get("VX_QUEUE_TTL_S", "3600"))  # 1 hour
 
 _VAULT = os.environ.get(

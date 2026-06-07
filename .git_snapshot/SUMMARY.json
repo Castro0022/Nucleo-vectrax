@@ -1,7 +1,14 @@
 {
-  "head": "c997b58",
+  "head": "b55c808",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "b55c8082",
+      "subject": "fix: force gc.collect() after each message to stop memory leak",
+      "author": "Mario Bravo Castro",
+      "ts": 1780814833,
+      "files_changed": 2
+    },
     {
       "sha": "c997b58e",
       "subject": "feat: per-message memory profiling in pipeline_worker",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1780800718,
       "files_changed": 2
-    },
-    {
-      "sha": "0cfb0db4",
-      "subject": "fix: pre-router market intercept catches ticker queries before web search",
-      "author": "Mario Bravo Castro",
-      "ts": 1780797704,
-      "files_changed": 2
     }
   ],
   "modified_modules": [
@@ -69,5 +69,5 @@
     "connectors/etoro/learning_engine.py",
     "README.md"
   ],
-  "generated_at": 1780814681
+  "generated_at": 1780814835
 }
