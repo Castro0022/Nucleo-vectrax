@@ -1,7 +1,21 @@
 {
-  "head": "0cfb0db",
+  "head": "d51be9a",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "d51be9a3",
+      "subject": "feat: scalability guard — WAL enforcement, memory watchdog, dynamic concurrency, queue TTL",
+      "author": "Mario Bravo Castro",
+      "ts": 1780813406,
+      "files_changed": 3
+    },
+    {
+      "sha": "4dfb6fca",
+      "subject": "docs: finalize CHANGELOG with 2026-06-05 and 2026-06-07 entries",
+      "author": "Mario Bravo Castro",
+      "ts": 1780800718,
+      "files_changed": 2
+    },
     {
       "sha": "0cfb0db4",
       "subject": "fix: pre-router market intercept catches ticker queries before web search",
@@ -43,20 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1780693485,
       "files_changed": 4
-    },
-    {
-      "sha": "dfb59fdc",
-      "subject": "feat: WorkerBlackBox — forensic snapshot + root cause diagnosis on worker hang",
-      "author": "Mario Bravo Castro",
-      "ts": 1780692777,
-      "files_changed": 5
-    },
-    {
-      "sha": "a7dae53a",
-      "subject": "feat: rate limiter for observation alerts — max 5/min, 3/cycle",
-      "author": "Mario Bravo Castro",
-      "ts": 1780612219,
-      "files_changed": 2
     }
   ],
   "modified_modules": [
@@ -64,10 +64,10 @@
     "vectrax/telegram_gateway.py",
     "services/ui/static/universe.html",
     "core/learn/gravity_engine.py",
+    "CHANGELOG.md",
     "core/meta_loop.py",
     "connectors/etoro/learning_engine.py",
-    "README.md",
-    "CHANGELOG.md"
+    "README.md"
   ],
-  "generated_at": 1780797723
+  "generated_at": 1780813425
 }

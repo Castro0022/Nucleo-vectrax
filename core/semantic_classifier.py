@@ -273,21 +273,28 @@ _FRAME_PATTERNS: List[Tuple[re.Pattern, _Frame, float]] = [
     ), _Frame.ASK_IDENTITY, 0.95),
 
     # === MEMORIA (preguntas sobre lo que Vectrax recuerda) ===
-    # Cubre: "qué sabes de mí", "qué recuerdas", "qué dije", "qué te dije",
-    #        "qué hablamos", "lo que te conté", "mi historial", etc.
+    # Cubre: "qué sabes de mí", "qué recuerdas", "háblame de mi memoria",
+    #        "qué dije", "qué hablamos", "lo que te conté", "mi historial", etc.
+    # FIX IDEA-7A0B846D: añadidos patrones de "háblame/cuéntame de mi memoria"
+    # y "tell me about my memory" que antes caían a SEARCH_INFO.
+    # Peso subido de 0.9 a 0.93 para mayor margen sobre SEARCH_INFO (0.75).
     (re.compile(
         r"\b(?:qu[eé]\s+sabes\s+(?:de|sobre)\s+m[ií]|"
         r"qu[eé]\s+recuerdas|recuerdas\s+(?:lo\s+que|cuando|que)|"
         r"qu[eé]\s+(?:te\s+)?dije|qu[eé]\s+hablamos|"
         r"qu[eé]\s+(?:te\s+)?cont[eé]|qu[eé]\s+escrib[ií]|"
         r"lo\s+que\s+(?:te\s+)?(?:dije|cont[eé]|escrib[ií])|"
-        r"mi\s+(?:historial|memoria|notas|conversaci[oó]n|datos)|"
-        r"mis\s+(?:preferencias|intereses|mensajes)|"
+        r"mi\s+(?:historial|memoria|notas|conversaci[oó]n|datos|perfil|informaci[oó]n)|"
+        r"mis\s+(?:preferencias|intereses|mensajes|recuerdos|datos)|"
+        r"(?:h[aá]blame|cu[eé]ntame|dime|hablame|cuentame)\s+(?:de|sobre)\s+mi\s+(?:memoria|historial|datos|perfil|informaci[oó]n)|"
+        r"(?:h[aá]blame|cu[eé]ntame|hablame|cuentame)\s+(?:de|sobre)\s+m[ií]|"
+        r"(?:h[aá]blame|cu[eé]ntame|hablame|cuentame)\s+(?:de|sobre)\s+lo\s+que\s+(?:sabes|recuerdas|tienes)|"
         r"what\s+(?:did\s+i\s+(?:say|write|tell)|i\s+said|i\s+wrote)|"
         r"what\s+do\s+you\s+(?:know|remember)\s+about\s+me|"
-        r"my\s+(?:history|memory|notes|data|messages))\b",
+        r"tell\s+me\s+about\s+my\s+(?:memory|history|data|profile)|"
+        r"my\s+(?:history|memory|notes|data|messages|profile))\b",
         re.I,
-    ), _Frame.ASK_MEMORY, 0.9),
+    ), _Frame.ASK_MEMORY, 0.93),
 
     # === MEMORIA — preguntas personales contextuales ===
     # Cubre los 78 casos de conflicto sem=memory→regex=online donde el
@@ -586,10 +593,11 @@ _FRAME_INTENT_MAP: Dict[_Frame, List[Tuple[SemanticIntent, float]]] = {
     # Supera WEB_SEARCH (0.75*1.4=1.05 → conf 0.525) cuando ambos matchean.
     _Frame.MARKET_DATA:    [(SemanticIntent.MARKET_QUERY, 1.3)],
     _Frame.ASK_IDENTITY:   [(SemanticIntent.IDENTITY_QUERY, 1.0)],
-    # ASK_MEMORY weight subido de 1.2 → 1.35 para garantizar que gane sobre
-    # SEARCH_INFO (0.70*1.40=0.98) cuando ambos frames se detectan simultáneamente
-    # (ej: pregunta personal con interrogativo + referencia a memoria).
-    _Frame.ASK_MEMORY:     [(SemanticIntent.MEMORY_LOOKUP, 1.35), (SemanticIntent.IDENTITY_QUERY, 0.3)],
+    # ASK_MEMORY weight subido de 1.35 → 1.45 (FIX IDEA-7A0B846D: 18 conflictos).
+    # Garantiza que MEMORY_LOOKUP gane sobre WEB_SEARCH cuando ambos frames
+    # se detectan. Con frame=0.93 * weight=1.45 = 1.3485 vs
+    # SEARCH_INFO frame=0.75 * weight=1.40 = 1.05. Margen: +0.30.
+    _Frame.ASK_MEMORY:     [(SemanticIntent.MEMORY_LOOKUP, 1.45), (SemanticIntent.IDENTITY_QUERY, 0.3)],
     _Frame.STORE_DATA:     [(SemanticIntent.MEMORY_LOOKUP, 0.7), (SemanticIntent.GENERAL_CHAT, 0.3)],
     _Frame.COMMAND:        [(SemanticIntent.SYSTEM_ACTION, 1.0)],
     _Frame.GREETING:       [(SemanticIntent.GENERAL_CHAT, 1.0)],
