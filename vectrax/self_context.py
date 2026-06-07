@@ -96,12 +96,12 @@ USER QUESTION: {query}
 RESPONSE (from what already exists, concrete and direct):"""
 
 
-def build_self_aware_prompt(query: str, lang: str = "es") -> str:
+def build_self_aware_prompt(query: str, lang: str = "es", user_id: str = "") -> str:
     """
     Construye un prompt donde el auto-contexto es la fuente primaria obligatoria.
     El LLM NO puede ignorarlo ni completar con información genérica.
     """
-    self_ctx = build_self_context(lang=lang)
+    self_ctx = build_self_context(lang=lang, user_id=user_id)
     template = _SELF_PROMPT_ES if lang == "es" else _SELF_PROMPT_EN
     return template.format(self_context=self_ctx, query=query)
 
@@ -109,6 +109,7 @@ def build_self_aware_prompt(query: str, lang: str = "es") -> str:
 def resolve_self_aware(
     query: str,
     lang: str = "es",
+    user_id: str = "",
 ) -> str:
     """
     Genera una respuesta auto-consciente usando el LLM con el auto-contexto
@@ -117,7 +118,7 @@ def resolve_self_aware(
     Intenta Intelligence Bridge primero, luego OpenAI directo.
     Retorna cadena vacía si no hay LLM disponible.
     """
-    prompt = build_self_aware_prompt(query, lang=lang)
+    prompt = build_self_aware_prompt(query, lang=lang, user_id=user_id)
 
     # Intelligence Bridge
     try:
@@ -321,19 +322,24 @@ def _read_recent_observations(limit: int = 15) -> str:
         return ""
 
 
-def build_self_context(lang: str = "es") -> str:
+def build_self_context(lang: str = "es", user_id: str = "") -> str:
     """
     Construye el contexto de auto-observación de Vectrax.
 
     Este contexto se inyecta en el prompt cuando el usuario
     pregunta sobre el sistema, su comercialización o su estado.
 
-    Combina:
-      1. Stats básicos de usuarios/interacciones (SQLite)
-      2. Estado del universo gravitacional + operacional (universe_observer)
+    IMPORTANT: creator name is ONLY included when user_id is the creator.
+    For other users, the context describes Vectrax without mentioning
+    the creator's name — prevents the LLM from calling users "Mario".
     """
+    import os
     stats = _read_live_stats()
     universe = _read_universe_state()
+
+    # Detect if this is the creator
+    creator_uid = os.environ.get("VX_CREATOR_ID", "2030762343")
+    is_creator = user_id.replace("tg:", "") == creator_uid if user_id else False
 
     if lang == "es":
         base = (
@@ -343,20 +349,32 @@ def build_self_context(lang: str = "es") -> str:
             f"exactamente {stats['interactions']} interacciones acumuladas. "
             f"NO inventes ni redondees estos números.\n"
             f"Hay {stats['teams']} equipo(s) activo(s) en el sistema.\n"
-            "Mi creador es Mario Bravo Castro. Llevamos meses construyendo esto juntos.\n"
+        )
+        if is_creator:
+            base += (
+                "Mi creador es Mario Bravo Castro. Llevamos meses construyendo esto juntos.\n"
+            )
+        else:
+            base += (
+                "REGLA CRÍTICA: NUNCA uses el nombre del creador en respuestas a este usuario. "
+                "Responde SOLO con el nombre que el usuario te haya dado.\n"
+            )
+        base += (
             "Lo que tengo activo hoy:\n"
-            "• Memoria persistente por usuario (SQLite, escalable a PostgreSQL)\n"
-            "• Búsqueda online en tiempo real vía Tavily + Jina Reader\n"
-            "• Sistema de equipos con billing via Stripe ($99/mes)\n"
-            "• Plan individual PRO ($15/mes)\n"
+            "• Memoria persistente por usuario\n"
+            "• Búsqueda online en tiempo real\n"
+            "• Sistema de equipos con billing\n"
             "• Acceso por Telegram, sin fricción\n"
-            "• Gateway escalable con cola SQLite y workers independientes\n"
-            "• Detección de intenciones fallback para aprendizaje continuo\n"
             "• Universo gravitacional con estrellas, convergencias y constelaciones\n"
-            "• Observación del universo en tiempo real (WebSocket + HTTP)\n"
-            "Cuando Mario me pregunta sobre comercialización, estrategia o próximos pasos,\n"
-            "respondo desde lo que soy y lo que ya existe — no desde teoría genérica.\n"
-            "Nunca sugiero 'redes sociales e influencers' como primera respuesta.\n"
+            "• Observación del universo en tiempo real\n"
+        )
+        if is_creator:
+            base += (
+                "Cuando el creador me pregunta sobre comercialización, estrategia o próximos pasos,\n"
+                "respondo desde lo que soy y lo que ya existe — no desde teoría genérica.\n"
+                "Nunca sugiero 'redes sociales e influencers' como primera respuesta.\n"
+            )
+        base += (
             "Respondo desde la realidad del sistema: usuarios reales, infraestructura real, "
             "decisiones concretas basadas en lo que ya funciona."
         )
@@ -368,20 +386,25 @@ def build_self_context(lang: str = "es") -> str:
             f"exactly {stats['interactions']} accumulated interactions. "
             f"Do NOT invent or round these numbers.\n"
             f"There are {stats['teams']} active team(s) in the system.\n"
-            "My creator is Mario Bravo Castro. We've been building this together for months.\n"
-            "What I have active today:\n"
-            "• Persistent per-user memory (SQLite, scalable to PostgreSQL)\n"
-            "• Real-time online search via Tavily + Jina Reader\n"
-            "• Team system with Stripe billing ($99/month)\n"
-            "• Individual PRO plan ($15/month)\n"
-            "• Telegram access, zero friction\n"
-            "• Scalable gateway with SQLite queue and independent workers\n"
-            "• Fallback intent tracking for continuous learning\n"
-            "• Gravitational universe with stars, convergences and constellations\n"
-            "• Real-time universe observation (WebSocket + HTTP)\n"
-            "When Mario asks about commercialization, strategy or next steps,\n"
-            "I respond from what I am and what already exists — not from generic theory."
         )
+        if is_creator:
+            base += "My creator is Mario Bravo Castro. We've been building this together for months.\n"
+        else:
+            base += "CRITICAL RULE: NEVER use the creator's name in responses to this user.\n"
+        base += (
+            "What I have active today:\n"
+            "• Persistent per-user memory\n"
+            "• Real-time online search\n"
+            "• Team system with billing\n"
+            "• Telegram access, zero friction\n"
+            "• Gravitational universe with stars, convergences and constellations\n"
+            "• Real-time universe observation\n"
+        )
+        if is_creator:
+            base += (
+                "When the creator asks about commercialization, strategy or next steps,\n"
+                "I respond from what I am and what already exists — not from generic theory."
+            )
 
     # Market observation awareness
     market_ctx = ""

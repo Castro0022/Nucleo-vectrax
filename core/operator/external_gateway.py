@@ -663,7 +663,7 @@ class ExternalGateway:
                 if is_self_referential(content):
                     from core.language_gate import get_user_language
                     _lang = get_user_language(user_id, content)
-                    _self_answer = resolve_self_aware(content, lang=_lang)
+                    _self_answer = resolve_self_aware(content, lang=_lang, user_id=user_id)
                     if _self_answer:
                         response_text = _self_answer
                         _self_resolved = True
