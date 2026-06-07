@@ -127,6 +127,9 @@ def get_optimal_concurrency() -> int:
     if override:
         return int(override)
 
+    # Each worker thread loads embeddings model (~45MB) + LLM buffers.
+    # 15 threads × 45MB = 675MB → triggers memory watchdog at 300MB.
+    # Cap at 6 to stay under 300MB with safety margin.
     try:
         with open("/proc/meminfo") as f:
             for line in f:
@@ -134,11 +137,11 @@ def get_optimal_concurrency() -> int:
                     total_kb = int(line.split()[1])
                     total_gb = total_kb / (1024 * 1024)
                     if total_gb >= 8:
-                        return 15
-                    if total_gb >= 4:
-                        return 10
-                    if total_gb >= 2:
                         return 6
+                    if total_gb >= 4:
+                        return 6
+                    if total_gb >= 2:
+                        return 4
                     return 3
     except Exception:
         pass
