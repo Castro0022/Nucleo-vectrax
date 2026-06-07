@@ -78,8 +78,14 @@ except Exception as _e:
 POLL_INTERVAL = 0.3
 CLEANUP_INTERVAL = 60
 MSG_TIMEOUT = 20
-CONCURRENT = 3
 HEARTBEAT_INTERVAL = 10
+
+# Dynamic concurrency: scale with available RAM
+try:
+    from core.scalability_guard import get_optimal_concurrency
+    CONCURRENT = get_optimal_concurrency()
+except Exception:
+    CONCURRENT = int(os.environ.get("VX_WORKER_CONCURRENT", "3"))
 
 _HEARTBEAT_PATH = os.path.join(
     os.path.expanduser("~"), ".vectrax", "worker_heartbeat",

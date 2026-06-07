@@ -337,6 +337,19 @@ class VectraxSupervisor:
         logger.info("  VECTRAX SUPERVISOR — Starting all services")
         logger.info("=" * 55)
 
+        # Scalability guard: WAL mode + queue cleanup at startup
+        try:
+            from core.scalability_guard import run_startup_checks
+            sg = run_startup_checks()
+            logger.info(
+                "Scalability guard: WAL=%d, concurrency=%d, queue=%d",
+                len(sg.get("wal_changed", [])),
+                sg.get("optimal_concurrency", 3),
+                sg.get("queue_cleaned", 0),
+            )
+        except Exception as exc:
+            logger.debug("Scalability guard startup failed: %s", exc)
+
         # Kill any orphan telegram gateways first
         self._kill_orphans()
 
@@ -405,6 +418,47 @@ class VectraxSupervisor:
 
             heartbeat_ts = float(WORKER_HEARTBEAT_PATH.read_text().strip())
             age = time.time() - heartbeat_ts
+
+            # Memory watchdog: restart worker if RAM exceeds threshold
+            try:
+                from core.scalability_guard import check_worker_memory
+                ram_mb, should_restart = check_worker_memory(svc.process.pid)
+                if should_restart:
+                    logger.warning(
+                        "[pipeline_worker] MEMORY WATCHDOG: %.0fMB > %dMB — restarting",
+                        ram_mb, 300,
+                    )
+                    # BlackBox capture before kill
+                    try:
+                        from core.observability.worker_blackbox import (
+                            capture_incident, diagnose_incident,
+                        )
+                        _mem_inc = capture_incident(
+                            worker_name="pipeline_worker",
+                            pid=svc.process.pid,
+                            heartbeat_age=age,
+                            trigger="memory_watchdog",
+                        )
+                        svc.process.kill()
+                        try: svc.process.wait(timeout=5)
+                        except Exception: pass
+                        svc.healthy = False
+                        diagnose_incident(_mem_inc)
+                    except Exception:
+                        svc.process.kill()
+                        try: svc.process.wait(timeout=5)
+                        except Exception: pass
+                        svc.healthy = False
+                    return  # will be restarted by main loop
+            except Exception:
+                pass
+
+            # Periodic queue cleanup (every health check)
+            try:
+                from core.scalability_guard import cleanup_stale_queue
+                cleanup_stale_queue()
+            except Exception:
+                pass
 
             if age > WORKER_HEARTBEAT_MAX_AGE:
                 logger.warning(
