@@ -1,7 +1,14 @@
 {
-  "head": "071fc02",
+  "head": "8a86db6",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "8a86db6c",
+      "subject": "feat: Layer 7 — hourly RAM snapshots recorded to observation ledger",
+      "author": "Mario Bravo Castro",
+      "ts": 1780815212,
+      "files_changed": 2
+    },
     {
       "sha": "071fc021",
       "subject": "fix: raise watchdog to 1.2GB — 900MB is stable loaded state, not a leak",
@@ -50,24 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1780813758,
       "files_changed": 2
-    },
-    {
-      "sha": "d51be9a3",
-      "subject": "feat: scalability guard — WAL enforcement, memory watchdog, dynamic concurrency, queue TTL",
-      "author": "Mario Bravo Castro",
-      "ts": 1780813406,
-      "files_changed": 3
     }
   ],
   "modified_modules": [
     ".git_snapshot/SUMMARY.json",
     "vectrax/telegram_gateway.py",
     "services/ui/static/universe.html",
+    "core/meta_loop.py",
     "core/learn/gravity_engine.py",
     "CHANGELOG.md",
-    "core/meta_loop.py",
     "connectors/etoro/learning_engine.py",
     "README.md"
   ],
-  "generated_at": 1780815007
+  "generated_at": 1780815214
 }

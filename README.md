@@ -1274,6 +1274,69 @@ The Dockerfile sets `ENV VECTRAX_VAULT_DIR=/app/vault` and creates a symlink `/r
 docker exec vectrax-core python -m observability.audit_cron --weekly
 ```
 
+## 🛡 Scalability Guard
+
+Automatic protections for 1000+ concurrent users. Runs at supervisor startup and continuously.
+
+### WAL Mode Enforcement
+Forces `PRAGMA journal_mode=WAL` on all 20 SQLite databases at startup. Prevents `database is locked` errors during concurrent access. Without WAL, two users writing simultaneously would lock the DB.
+
+### Worker Memory Watchdog
+Checks worker RSS every 15s. If RAM exceeds 1.2GB (`VX_WORKER_RAM_MAX_MB`), captures BlackBox snapshot and restarts. Cooldown: max 1 restart per 5 minutes.
+
+The worker loads ~900MB on first complex message (sentence_transformers + torch + embeddings). This is stable loaded state — subsequent messages add 0-1MB. The watchdog only triggers on genuine growth beyond the warm-up baseline.
+
+### Dynamic Concurrency
+Worker threads set to 3 (`VX_WORKER_CONCURRENT`). Each thread loads ~45MB of embeddings. Configurable via environment variable.
+
+### Queue TTL Cleanup
+Deletes `done`/`error` messages older than 1 hour (`VX_QUEUE_TTL_S`) every health cycle. Prevents `message_queue.db` from growing infinitely.
+
+File: `core/scalability_guard.py`
+
+---
+
+## 📊 RAM Monitoring
+
+Layer 7 of the meta_loop records worker RAM to the observation ledger every hour.
+
+### Hourly Snapshots
+Every hour, the meta_loop reads `/proc/<worker_pid>/status` and records:
+- PID, RAM in MB, timestamp
+- Stored as `obs_type=ram_snapshot` in `observation_ledger.db`
+
+### Query RAM History
+
+```bash
+# Last 24 hourly snapshots:
+/vx sql SELECT summary FROM autonomous_observations WHERE obs_type='ram_snapshot' ORDER BY id DESC LIMIT 24
+
+# Or via API:
+curl http://140.82.28.181:8900/v1/dashboard/observatory | python3 -c "..."
+```
+
+### Expected Stability Pattern
+```
+Hour 0:  45MB   (cold start)
+Hour 1:  905MB  (warm — embeddings loaded)
+Hour 2:  906MB  (stable)
+...
+Hour 24: 910MB  (no growth = no leak)
+```
+
+If RAM grows steadily (+10MB/hour), there is a slow leak. If it stays flat after warm-up, the system is healthy.
+
+### Per-Message Profiling
+Every processed message logs RAM before→after:
+```
+DONE abc123 | 1.2s | 150 ch | sent=True | RAM 905→906MB (+1) | hola
+```
+If delta > 50MB, a `MEM_LEAK` warning is logged with the message content.
+
+File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-message)
+
+---
+
 ## 📋 Changelog
 
 ### 2026-05-31
