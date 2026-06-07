@@ -2,6 +2,65 @@
 
 All notable changes to Vectrax are documented in this file.
 
+## [2026-06-07] — Market Routing + Universe-First Responses
+
+### Pre-router market intercept
+- `detect_market_intent()` runs BEFORE SmartRouter in `external_gateway._resolve_via_pipeline()`
+- "Precio de Apple" now routes to AAPL stock_status instead of web search for MacBook
+- "Háblame del market" now returns gravity engine view instead of Morgan Stanley news
+- Prevents semantic classifier from misrouting ticker queries to RESOLVE_ONLINE
+
+### Universe-first market responses
+- New `_build_universe_market_view()` constructs market response from gravity engine stars, convergences, observations, and patterns BEFORE external prices
+- Market snapshot shows internal universe data first, external prices second
+
+### Intent pattern routing fix
+- Order: `bitcoin_status → market_snapshot → stock_status → market_price → market_trend`
+- Prevents "market" matching MA (Mastercard), ensures stock queries get volume/range
+- Widened snapshot pattern: "háblame del market", "cómo está el mercado", "how is the market", etc.
+- 27/27 intent routing tests pass, 0 false positives
+
+### Memory routing verified
+- SmartRouter correctly routes "háblame de mi memoria" → `resolve_local` (conf=0.92)
+- "quién soy" → `resolve_identity` (conf=0.95)
+- No code change needed — `_LOCAL_KEYWORDS` already covers these patterns
+
+### PRs
+- PR #12: market-intent intercept + universe-first responses
+
+---
+
+## [2026-06-05] — WorkerBlackBox + Market/Memory Mode + Rate Limiter
+
+### WorkerBlackBox — forensic diagnosis engine
+- Captures complete forensic snapshot BEFORE killing hung workers: 100 logs, active task, CPU/RAM, queue, APIs, traceback
+- 8 diagnosis rules: tarea_bloqueada, timeout_externo, memoria_alta, error_db, cola_saturada, fallo_red, excepcion_no_capturada, loop_infinito
+- Positive/negative evidence scoring with confidence adjustment
+- Creator feedback via Telegram (`/vx incident confirm|reject|partial`) and API
+- Dashboard: `GET /v1/dashboard/incidents`, `POST /v1/dashboard/incidents/feedback`
+- 28 unit tests (0.06s)
+- PR #11: WorkerBlackBox feature set
+
+### Market Mode vs Memory Mode
+- `market_mode.py`: determines mode based on trading hours per symbol
+- Market observations silenced when symbol’s market is closed (no "AAPL hits 96→97" at midnight)
+- Daily memory reflection at 22:00 UTC (Wall Street close): summarizes stars, convergences, patterns, observations
+- Mode transitions recorded in observation ledger
+
+### Rate limiter for alerts
+- Max 5 alerts/minute (sliding window), max 3 per cycle
+- severity=critical bypasses per-cycle limit
+- Excess alerts deferred to next cycle (ID tracking ensures no loss)
+- Stress tested: 12/12 delivered across 13 cycles
+
+### TCP pre-poll probe
+- Raw socket connect to api.telegram.org:443 with 3s timeout before each poll
+- Network down detected in 3s instead of 32s SIGALRM
+- DNS cached, invalidated on failure
+- Heartbeat written pre-poll (reduces stale window to <5s)
+
+---
+
 ## [2026-06-04] — Observatory + Memoria de Observaciones + Auto-Execution + Universo 3D
 
 ### Dashboard Observatory integrado en panel principal
