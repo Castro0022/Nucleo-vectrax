@@ -1559,6 +1559,27 @@ class ExternalGateway:
             internal_channel = _INTERNAL_CHANNEL_MAP.get(channel, "user")
 
         # ══════════════════════════════════════════════════════════════
+        # PRE-ROUTER MARKET INTERCEPT
+        # ══════════════════════════════════════════════════════════════
+        # Check market intents BEFORE the SmartRouter. The semantic
+        # classifier sometimes routes "Precio de Apple" to RESOLVE_ONLINE
+        # because it doesn't recognize company names as tickers.
+        # The market intent detector handles this correctly.
+        try:
+            from intents.market_intents import detect_market_intent
+            _mkt = detect_market_intent(content)
+            if _mkt:
+                _mkt_answer = self._try_market_resolve(content)
+                if _mkt_answer:
+                    logger.info(
+                        "Pipeline: PRE-ROUTER MARKET intercept | intent=%s",
+                        _mkt[0],
+                    )
+                    return _mkt_answer, "market"
+        except Exception as _me:
+            logger.debug("Pre-router market intercept failed: %s", _me)
+
+        # ══════════════════════════════════════════════════════════════
         # SMART ROUTER — clasificación semántica unificada
         # ══════════════════════════════════════════════════════════════
         smart_route = None

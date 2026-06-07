@@ -93,15 +93,20 @@ MARKET_PATTERNS = {
         rf")",
         re.IGNORECASE,
     ),
-    # Price queries: "precio de bitcoin", "price of ETH", "BTC price"
-    "market_price": re.compile(
-        rf"(?:"
-        rf"(?:{_STATUS_VERBS})\s*(?:el\s+|the\s+|der\s+|le\s+|il\s+|o\s+)?(?:{_ALL_TICKERS})"
-        rf"|(?:{_ALL_TICKERS})\s+(?:precio|price|preis|prix|prezzo|pre[cç]o|cours|koers)"
-        rf")",
+    # IMPORTANT: market_snapshot MUST be checked BEFORE market_price.
+    # Otherwise "how is the market" matches MA (Mastercard) via market_price.
+    "market_snapshot": re.compile(
+        r"(?:"
+        r"(?:resumen|snapshot|summary|overview|[uü]bersicht|r[eé]sum[eé]|riepilogo|resumo)\s*(?:del?\s+|du\s+|des?\s+|di\s+|do\s+)?(?:mercado|market|markt|march[eé]|mercato)?"
+        r"|(?:h[aá]blame|cu[eé]ntame|dime|tell\s+me|talk\s+to\s+me)\s+(?:del?\s+|about\s+the\s+|about\s+)?(?:mercado|market)"
+        r"|(?:c[oó]mo\s+(?:est[aá]|va)|how\s+(?:is|are)\s*)\s*(?:el\s+|the\s+|los\s+)?(?:mercado|market|mercados|markets)"
+        r"|(?:mercado|market)\s+(?:hoy|today|ahora|now|general)"
+        r"|(?:qu[eé]\s+(?:pasa|hay|tal))\s+(?:en\s+|con\s+)?(?:el\s+)?(?:mercado|market)"
+        r")",
         re.IGNORECASE,
     ),
-    # Stock queries: "cómo está NVDA", "how is Apple"
+    # Stock queries: checked BEFORE market_price so "how is TSLA" routes
+    # to stock_status (with volume/range) instead of generic market_price.
     "stock_status": re.compile(
         rf"(?:"
         rf"(?:{_STATUS_VERBS})\s*(?:el\s+|the\s+|der\s+|la\s+)?(?:{_STOCK_TICKERS})"
@@ -109,12 +114,16 @@ MARKET_PATTERNS = {
         rf")",
         re.IGNORECASE,
     ),
-    "market_trend": re.compile(
-        r"(?:tendencia|trend|direcci[oó]n|richtung|tendance|andamento|tend.ncia)\s+(?:de[l]?\s+|of\s+|von\s+|de\s+|di\s+)?(\w+)\s*(\d+[mhd])?",
+    # Price queries (catch-all for any ticker): "precio de bitcoin", "BTC price"
+    "market_price": re.compile(
+        rf"(?:"
+        rf"(?:{_STATUS_VERBS})\s*(?:el\s+|the\s+|der\s+|le\s+|il\s+|o\s+)?(?:{_ALL_TICKERS})"
+        rf"|(?:{_ALL_TICKERS})\s+(?:precio|price|preis|prix|prezzo|pre[cç]o|cours|koers)"
+        rf")",
         re.IGNORECASE,
     ),
-    "market_snapshot": re.compile(
-        r"(?:resumen|snapshot|summary|overview|[uü]bersicht|r[eé]sum[eé]|riepilogo|resumo)\s*(?:del?\s+|du\s+|des?\s+|di\s+|do\s+)?(?:mercado|market|markt|march[eé]|mercato|mercado)?",
+    "market_trend": re.compile(
+        r"(?:tendencia|trend|direcci[oó]n|richtung|tendance|andamento|tend.ncia)\s+(?:de[l]?\s+|of\s+|von\s+|de\s+|di\s+)?(\w+)\s*(\d+[mhd])?",
         re.IGNORECASE,
     ),
     "watchlist_review": re.compile(
@@ -381,40 +390,134 @@ def _handle_trend(params: Dict[str, Any]) -> Dict[str, Any]:
     return trend
 
 
+def _build_universe_market_view() -> str:
+    """Build market response from Vectrax's own gravitational universe.
+
+    This is the INTERNAL perspective — what Vectrax has observed, not
+    what a search engine found. Convergences, hit patterns, gravitational
+    mass, observation trends. Exclusive to Vectrax.
+    """
+    lines = []
+    try:
+        from core.learn.gravity_engine import get_gravity_index
+        gi = get_gravity_index()
+
+        # Market stars from gravity engine
+        market_stars = []
+        for rec in gi.all_records():
+            if rec.domain == "market":
+                weight = round(rec.hits * max(rec.cc_score, 0.01) * max(rec.freq, 0.01) * rec.decay_factor, 2)
+                market_stars.append({
+                    "symbol": rec.intent,
+                    "hits": rec.hits,
+                    "cc": rec.cc_score,
+                    "weight": weight,
+                    "tier": rec.tier,
+                })
+        market_stars.sort(key=lambda s: -s["weight"])
+
+        if not market_stars:
+            return ""
+
+        lines.append("🌌 Observación desde mi universo:\n")
+        for s in market_stars:
+            intensity = "🔵" if s["hits"] > 50 else "🟢" if s["hits"] > 20 else "⚪"
+            lines.append(
+                f"{intensity} {s['symbol']}: {s['hits']} activaciones, "
+                f"peso {s['weight']}, tier {s['tier']}"
+            )
+
+        # Convergences
+        convs = gi.cross_domain_convergences()
+        market_convs = [c for c in convs if "market" in str(c.get("domains", []))]
+        if market_convs:
+            lines.append("")
+            lines.append("🔗 Convergencias activas:")
+            for c in market_convs[:5]:
+                lines.append(
+                    f"  {c.get('intent', '?')} — "
+                    f"hits:{c.get('combined_hits', 0)} "
+                    f"dominios:{c.get('domains', [])}"
+                )
+
+        # Recent observations from ledger
+        try:
+            from core.self_observation.observation_ledger import get_by_domain
+            market_obs = get_by_domain("market", limit=5)
+            if market_obs:
+                lines.append("")
+                lines.append("📝 Últimas observaciones:")
+                for o in market_obs[:3]:
+                    lines.append(f"  {o['timestamp'][:16]} — {o['summary'][:60]}")
+        except Exception:
+            pass
+
+        # Pattern status
+        try:
+            from connectors.etoro.pattern_memory import get_patterns
+            patterns = get_patterns()
+            market_patterns = [p for p in patterns if p.n_total >= 5]
+            if market_patterns:
+                lines.append("")
+                lines.append("🧠 Patrones con historia:")
+                for p in sorted(market_patterns, key=lambda x: -x.win_rate)[:3]:
+                    lines.append(
+                        f"  {p.symbol} {p.direction}: "
+                        f"WR {p.win_rate:.0f}% ({p.n_total} señales, "
+                        f"conf {p.confidence})"
+                    )
+        except Exception:
+            pass
+
+    except Exception as exc:
+        logger.debug("universe market view failed: %s", exc)
+        return ""
+
+    return "\n".join(lines)
+
+
 def _handle_snapshot(params: Dict[str, Any]) -> Dict[str, Any]:
-    """Handle: 'resumen del mercado'"""
-    snapshot = market_router.get_market_snapshot()
-    if not snapshot.get("success"):
-        return snapshot
+    """Handle: 'resumen del mercado'
 
-    lines = ["📊 Resumen del mercado", ""]
+    Universe-first: responds from Vectrax's own observations before
+    falling back to external market data.
+    """
+    # 1. Internal universe perspective (exclusive to Vectrax)
+    universe_view = _build_universe_market_view()
 
-    # Crypto
-    lines.append("Crypto:")
-    for c in snapshot.get("crypto", []):
-        if "error" in c:
-            lines.append(f"  {c.get('symbol', '?')}: no disponible")
-        else:
-            change = c.get("change_pct", 0)
-            d = "↑" if change >= 0 else "↓"
-            lines.append(f"  {c.get('symbol', '?')}: ${c.get('price', 0):,.2f} ({d} {change:+.2f}%)")
+    # 2. External market data (prices from Binance/etc)
+    lines = []
+    try:
+        snapshot = market_router.get_market_snapshot()
+        if snapshot.get("success"):
+            lines.append("📊 Precios en tiempo real:\n")
+            for c in snapshot.get("crypto", []):
+                if "error" not in c:
+                    change = c.get("change_pct", 0)
+                    d = "↑" if change >= 0 else "↓"
+                    lines.append(f"  {c.get('symbol', '?')}: ${c.get('price', 0):,.2f} ({d} {change:+.2f}%)")
+            for s in snapshot.get("stocks", []):
+                if "error" not in s:
+                    change = s.get("change_pct", 0)
+                    d = "↑" if change >= 0 else "↓"
+                    lines.append(f"  {s.get('symbol', '?')}: ${s.get('price', 0):,.2f} ({d} {change:+.2f}%)")
+    except Exception:
+        pass
 
-    # Stocks
-    lines.append("")
-    lines.append("Stocks:")
-    for s in snapshot.get("stocks", []):
-        if "error" in s:
-            lines.append(f"  {s.get('symbol', '?')}: no disponible")
-        else:
-            change = s.get("change_pct", 0)
-            d = "↑" if change >= 0 else "↓"
-            lines.append(f"  {s.get('symbol', '?')}: ${s.get('price', 0):,.2f} ({d} {change:+.2f}%)")
+    # Combine: universe first, then prices
+    parts = []
+    if universe_view:
+        parts.append(universe_view)
+    if lines:
+        parts.append("\n".join(lines))
+    if not parts:
+        parts.append("Sin datos de mercado disponibles.")
 
     return {
         "success": True,
         "intent": "market_snapshot",
-        "response": "\n".join(lines),
-        "data": snapshot,
+        "response": "\n\n".join(parts),
+        "data": {},
     }
 
 
