@@ -1559,6 +1559,42 @@ class ExternalGateway:
             internal_channel = _INTERNAL_CHANNEL_MAP.get(channel, "user")
 
         # ══════════════════════════════════════════════════════════════
+        # MEMORY PRE-CHECK — always consult memory first
+        # ══════════════════════════════════════════════════════════════
+        # Before ANY routing decision, check if the message is a personal
+        # query that should be answered from memory. This prevents queries
+        # like "háblame de mi memoria" from ever reaching web search.
+        #
+        # Rule: if the message contains personal pronouns (mi, yo, mí,
+        # recuerdas, memoria, quién soy, qué sabes de mí) AND memory
+        # has relevant data, respond from memory immediately.
+        try:
+            _personal = _re.search(
+                r"\b(?:mi\s+(?:memoria|historial|datos|perfil|nombre|informaci[oó]n)"
+                r"|mis\s+(?:preferencias|recuerdos|datos|mensajes|intereses)"
+                r"|h[aá]blame\s+(?:de|sobre)\s+m[ií]"
+                r"|cu[eé]ntame\s+(?:de|sobre)\s+m[ií]"
+                r"|qu[eé]\s+(?:sabes|recuerdas|tienes)\s+(?:de|sobre)\s+m[ií]"
+                r"|qu[eé]\s+recuerdas"
+                r"|qui[eé]n\s+soy"
+                r"|c[oó]mo\s+me\s+llamo"
+                r"|what\s+(?:do\s+you\s+)?(?:know|remember)\s+about\s+me"
+                r"|my\s+(?:memory|history|data|profile|name)"
+                r"|who\s+am\s+i)\b",
+                content, _re.IGNORECASE,
+            )
+            if _personal:
+                from vectrax.user_memory import resolve_with_memory
+                _mem = resolve_with_memory(user_id, content)
+                if _mem and isinstance(_mem, dict) and _mem.get("text"):
+                    logger.info(
+                        "Pipeline: MEMORY PRE-CHECK resolved | personal query",
+                    )
+                    return _mem["text"], "memory"
+        except Exception as _mpc_exc:
+            logger.debug("Memory pre-check failed: %s", _mpc_exc)
+
+        # ══════════════════════════════════════════════════════════════
         # PRE-ROUTER MARKET INTERCEPT
         # ══════════════════════════════════════════════════════════════
         # Check market intents BEFORE the SmartRouter. The semantic
