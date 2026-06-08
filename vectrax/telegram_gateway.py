@@ -1290,22 +1290,11 @@ class TelegramGateway:
             except Exception:
                 pass
 
-            # === FAST-PATH: respuesta instantánea ===
-            fast = self._fast(text, tg_uid)
-            if fast:
-                # Aplicar language gate al fast-path
-                try:
-                    from core.language_gate import enforce_language, get_user_language
-                    _fast_lang = get_user_language(tg_uid, text)
-                    fast = enforce_language(fast, _fast_lang, tg_uid)
-                except Exception:
-                    pass
-                self._send(cid, fast)
-                self._processed += 1
-                # Places map pins (non-blocking, best-effort)
-                self._places(cid, tg_uid, text)
-                logger.info("FAST %s | %s → %d ch", uid, text[:30], len(fast))
-                return
+            # === FAST-PATH: delegado al ExternalGateway ===
+            # Antes se detectaba aquí Y en ExternalGateway (duplicación F4).
+            # El fast-path del gateway ignoraba el creator bypass: el creador
+            # podía recibir respuestas hardcoded en vez de ir al LLM.
+            # Ahora solo ExternalGateway decide fast-path (respeta creator bypass).
 
             # === MARKET OPINION: inject eToro observations into LLM context ===
             # Detects questions like "qué opinas de NVIDIA", "cómo ves el BTC",
@@ -1343,28 +1332,11 @@ class TelegramGateway:
             except Exception as _mo:
                 logger.debug("market opinion swallowed: %s", _mo)
 
-            # === MARKET DATA: precios para todos los usuarios, todas las lenguas ===
-            # Usa Binance (sin auth). eToro es solo para cuenta personal del creador.
-            try:
-                from intents.market_intents import detect_market_intent, handle_market_intent
-                _market = detect_market_intent(text)
-                if _market:
-                    _intent, _mparams = _market
-                    _mresult = handle_market_intent(_intent, _mparams)
-                    if _mresult.get("success") and _mresult.get("response"):
-                        try:
-                            from core.language_gate import enforce_language, get_user_language
-                            _mlang = get_user_language(tg_uid, text)
-                            _mresponse = enforce_language(_mresult["response"], _mlang, tg_uid)
-                        except Exception:
-                            _mresponse = _mresult["response"]
-                        self._send(cid, _mresponse)
-                        self._processed += 1
-                        logger.info("MARKET %s | %s %s → %d ch",
-                                    uid, _intent, _mparams, len(_mresponse))
-                        return
-            except Exception as _me:
-                logger.debug("market intent swallowed: %s", _me)
+            # === MARKET DATA: delegado al SmartRouter via queue ===
+            # Antes se detectaba aquí Y en SmartRouter (duplicación F3).
+            # Ahora solo el SmartRouter maneja market via pipeline worker.
+            # Esto garantiza que market pase por identity layer, language
+            # gate, anti-repetition y todos los filtros post-LLM.
 
             # === SCHEDULING: recordatorios y tareas programadas ===
             if self._detect_schedule(cid, tg_uid, text):

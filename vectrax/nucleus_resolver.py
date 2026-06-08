@@ -213,11 +213,21 @@ def _build_synthesis_prompt(
 
 def _call_synthesis_llm(prompt: str) -> str:
     """Call the LLM with the synthesis prompt. Returns answer or empty string."""
-    # Try OpenAI first
+    # Try OpenAI first (with API gate check)
     import os
     import httpx
 
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if api_key:
+        # Check API gate before calling
+        try:
+            from core.api_gate import check_gate, record_429, record_success
+            if not check_gate("openai"):
+                logger.debug("Nucleus synthesis: OpenAI gate closed, skipping")
+                api_key = ""  # skip OpenAI, fall through to Ollama
+        except Exception:
+            pass
+
     if api_key:
         try:
             r = httpx.post(
@@ -231,7 +241,16 @@ def _call_synthesis_llm(prompt: str) -> str:
                 },
                 timeout=15.0,
             )
-            if r.status_code == 200:
+            if r.status_code == 429:
+                try:
+                    record_429("openai")
+                except Exception:
+                    pass
+            elif r.status_code == 200:
+                try:
+                    record_success("openai")
+                except Exception:
+                    pass
                 data = r.json()
                 choices = data.get("choices", [])
                 if choices:

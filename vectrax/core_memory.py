@@ -96,6 +96,36 @@ class CoreExtraction:
     source: str = "conversation"
 
 
+# ---------------------------------------------------------------------------
+# Blacklist — frases que NUNCA deben entrar a core_memory
+# Capturadas de conversaciones reales donde los extractores absorbieron basura.
+# ---------------------------------------------------------------------------
+_EXTRACTION_BLACKLIST = re.compile(
+    r"(?:"
+    # Peticiones al sistema (no son datos del usuario)
+    r"quieres?\s+que\s+(?:me|te|le|yo|tú|vectrax)"
+    r"|quieres?\s+(?:ver|observar|saber|detectar|verificar|compartir|recibir)"
+    r"|quieres?\s+(?:un|una|el|la|los|las)\s+(?:reporte|análisis|mensaje|isotipo|interpretación)"
+    r"|quieres?\s+(?:hablar|llamar|enviar|establecer|hacer|seguir|ser)"
+    # Instrucciones al sistema confundidas con profesión
+    r"|trabaja(?:s|r)?\s+como\s+(?:yo|tu|tú|el|mi|su|muy|la|un|una)"
+    r"|trabaja(?:s|r)?\s+como\s+(?:usuario|el vendedor|el observador|el hombre)"
+    # Frases que suenan a identidad pero son conversacionales
+    r"|soy\s+(?:el que|la que|quien|tu|yo tu|el creador de (?:avertrax|vertrax))"
+    r"|no\s+jodas"
+    # Fragmentos rotos / sin sentido
+    r"|imagino\s+y\.?$"
+    r"|por\s+aquí\s+no\.?$"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_blacklisted(text: str) -> bool:
+    """True if the extracted content matches a known garbage pattern."""
+    return bool(_EXTRACTION_BLACKLIST.search(text))
+
+
 # Patrones que detectan información digna de core_memory
 _EXTRACTORS: list = [
     # Identidad: "me llamo X", "mi nombre es X", "my name is X"
@@ -109,7 +139,8 @@ _EXTRACTORS: list = [
         lambda m: f"Se llama {m.group(1)}.",
         1.0,
     ),
-    # "soy X" donde X es nombre propio (mayúscula)
+    # "soy X" donde X es nombre propio (mayúscula) — SOLO nombre,
+    # NUNCA "soy el que...", "soy tu...", "soy yo tu..."
     (
         re.compile(
             r"\b[Ss]oy\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)?)"
@@ -120,18 +151,24 @@ _EXTRACTORS: list = [
         lambda m: f"Se llama {m.group(1)}.",
         1.0,
     ),
-    # Profesión / trabajo: "soy desarrollador", "soy un ingeniero",
-    # "trabajo como/en X", "me dedico a X"
+    # Profesión / trabajo — ENDURECIDO:
+    # Solo matchea "trabajo como/en/de <profesión>" y "me dedico a <X>".
+    # Ya NO matchea "soy" + cualquier cosa (causaba "soy tu diseñador",
+    # "soy el creador de Avertrax", etc.).
+    # "soy un <profesión>" requiere que la profesión sea una palabra
+    # conocida de oficio, no cualquier frase.
     (
         re.compile(
-            r"(?:\b[Ss]oy\s+(?:un\s+)?([a-záéíóúñ]\w+(?:\s+\w+){0,4}))"
-            r"|(?:(?:[Tt]rabajo\s+(?:como|de|en)|[Mm]e\s+dedico\s+a)\s+(.{3,80}?)(?:[.,;]|$))"
-            r"|(?:[Mm]i\s+(?:profesi[oó]n|trabajo|empresa|negocio)\s+(?:es|se\s+llama)\s+(.{3,80}?)(?:[.,;]|$))"
-            r"|(?:[Ii]\s+(?:work\s+(?:as|at|in)|am\s+a)\s+(.{3,80}?)(?:[.,;]|$))",
+            r"(?:(?:[Tt]rabajo\s+(?:como|de|en)|[Mm]e\s+dedico\s+a)\s+(.{3,60}?)(?:[.,;]|$))"
+            r"|(?:[Mm]i\s+(?:profesi[oó]n|trabajo|empresa|negocio)\s+(?:es|se\s+llama)\s+(.{3,60}?)(?:[.,;]|$))"
+            r"|(?:[Ii]\s+(?:work\s+(?:as|at|in)|am\s+a)\s+(.{3,60}?)(?:[.,;]|$))"
+            r"|(?:\b[Ss]oy\s+(?:un\s+)?(?:desarrollador|ingeniero|diseñador|arquitecto|médico|abogado|"
+            r"profesor|programador|freelancer|consultor|contador|vendedor|emprendedor|"
+            r"developer|engineer|designer|architect|doctor|lawyer|teacher|programmer|freelancer|consultant)\b)",
             re.UNICODE,
         ),
         "work",
-        lambda m: f"Trabaja como {(m.group(1) or m.group(2) or m.group(3) or m.group(4) or '').strip().rstrip('.')}.",
+        lambda m: f"Trabaja como {(m.group(1) or m.group(2) or m.group(3) or m.group(0).split('soy ')[-1] if 'soy' in (m.group(0) or '').lower() else m.group(1) or m.group(2) or m.group(3) or '').strip().rstrip('.')}.",
         0.85,
     ),
     # Relaciones personales
@@ -147,16 +184,22 @@ _EXTRACTORS: list = [
         lambda m: f"{m.group(1)} es su {m.group(2)}.",
         0.9,
     ),
-    # Metas / objetivos / proyectos
+    # Metas / objetivos — ENDURECIDO:
+    # Solo captura cuando el usuario declara SU meta/objetivo real.
+    # Excluye peticiones conversacionales ("quiero que me hagas X",
+    # "quiero ver X", "necesito que me digas X").
+    # Requiere "mi meta es", "estoy construyendo", "my goal is", etc.
+    # "quiero/necesito" SOLO si NO sigue "que" (petición al sistema).
     (
         re.compile(
-            r"(?:quiero|necesito|mi\s+(?:meta|objetivo|plan)\s+es|"
-            r"estoy\s+(?:buscando|intentando|trabajando\s+en|construyendo|desarrollando|creando)|"
-            r"i\s+(?:want|need)\s+to|my\s+goal\s+is|i'?m\s+(?:building|creating|developing|working\s+on))\s+(.{5,120})",
+            r"(?:mi\s+(?:meta|objetivo|plan|sueño)\s+es\s+(.{5,100}))"
+            r"|(?:estoy\s+(?:construyendo|desarrollando|creando|lanzando)\s+(.{5,100}))"
+            r"|(?:my\s+goal\s+is\s+(.{5,100}))"
+            r"|(?:i'?m\s+(?:building|creating|developing|launching)\s+(.{5,100}))",
             re.IGNORECASE,
         ),
         "goal",
-        lambda m: f"Quiere {m.group(1).strip().rstrip('.')}.",
+        lambda m: f"Quiere {(m.group(1) or m.group(2) or m.group(3) or m.group(4) or '').strip().rstrip('.')}.",
         0.8,
     ),
     # "X es mi proyecto/negocio/app"
@@ -185,7 +228,7 @@ _EXTRACTORS: list = [
     (
         re.compile(
             r"(?:vivo\s+en|soy\s+de|nací\s+en|i\s+live\s+in|i'?m\s+from)\s+"
-            r"(.{3,60})",
+            r"([A-ZÁÉÍÓÚÑ][\w\s,]{2,40})",
             re.IGNORECASE,
         ),
         "identity",
@@ -196,18 +239,29 @@ _EXTRACTORS: list = [
 
 
 def extract_core(text: str) -> List[CoreExtraction]:
-    """Extrae fragmentos importantes del texto para core_memory."""
+    """Extrae fragmentos importantes del texto para core_memory.
+
+    Includes blacklist filtering to reject garbage extractions.
+    """
     results = []
     for pattern, category, formatter, weight in _EXTRACTORS:
         m = pattern.search(text)
         if m:
             content = formatter(m)
-            if content and len(content) >= 5:
-                results.append(CoreExtraction(
-                    category=category,
-                    content=content,
-                    weight=weight,
-                ))
+            if not content or len(content) < 5:
+                continue
+            # Blacklist: reject known garbage patterns
+            if _is_blacklisted(content) or _is_blacklisted(text):
+                logger.debug(
+                    "core_memory: blacklisted extraction | cat=%s | %r",
+                    category, content[:60],
+                )
+                continue
+            results.append(CoreExtraction(
+                category=category,
+                content=content,
+                weight=weight,
+            ))
     return results
 
 
