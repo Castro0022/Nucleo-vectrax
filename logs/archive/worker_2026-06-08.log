@@ -1,0 +1,500 @@
+2026-06-08 03:39:00 [INFO] vectrax.word_gravity — WGI seeded: 5 global words
+2026-06-08 03:39:00 [INFO] vectrax.user_memory — Core LIVING resolve | user=tg:2030762343 | input='¿Y qué sabes de mí?'
+2026-06-08 03:39:00 [INFO] vectrax.operator.external_gateway — Pipeline: SOVEREIGN memory resolve | source=memory | len=259
+2026-06-08 03:39:00 [INFO] vectrax.identity_layer — FINAL | source=memory_sovereign | len=259 | input='¿Y qué sabes de mí?'
+2026-06-08 03:39:00 [INFO] vectrax.learning_cycle.anomaly_detector — AnomalyDetector initialized (window=50)
+2026-06-08 03:39:00 [INFO] vectrax.learning_cycle.investigation — InvestigationEngine initialized
+2026-06-08 03:39:00 [INFO] vectrax.learning_cycle.verification — VerificationEngine initialized
+2026-06-08 03:39:00 [INFO] vectrax.learning_cycle.integrator — LearningIntegrator initialized
+2026-06-08 03:39:00 [INFO] vectrax.learning_cycle.pipeline — LearningPipeline initialized
+2026-06-08 03:39:00 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] law_violation:L1:Mentalismo | zone=yellow | id=118786
+2026-06-08 03:39:00 [WARNING] vectrax.operator.law_enforcement — Law enforcement: 1/7 violations — L1:Mentalismo
+2026-06-08 03:39:00 [INFO] vectrax.operator.external_gateway — Pipeline: 1 law violations detected
+2026-06-08 03:39:00 [INFO] vectrax.nucleus.law_signal — LawSignal: LawSignal[L1]: log_only
+2026-06-08 03:39:00 [INFO] vectrax.nucleus.presencia_pura — PRESENCIA_LAW_ADJ | laws=[1] Δconv=+0.00 Δsov=+0.00 Δnoise=+0.00
+2026-06-08 03:39:00 [INFO] vectrax.nucleus.presencia_pura — PRESENCIA_INHIBITOR | engine=external_gateway.law_enforcement origin=llm_external decision=BLOCK sovereignty=0.20 convergence=0.50 noise=0.10 enforced=False | Soberanía insuficiente: 0.20 < 0.3 (origen=llm_external)
+2026-06-08 03:39:00 [INFO] vectrax.operator.external_gateway — Pipeline: law_signal → PresenciaObserver | LawSignal[L1]: log_only
+2026-06-08 03:39:00 [INFO] vectrax.user_memory — Memory stored | user=tg:2030762343
+2026-06-08 03:39:00 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.action] external.message_response | zone=green | id=118787
+2026-06-08 03:39:00 [INFO] vectrax.pipeline_worker — PROC_OUT msg_id=41b1f0233d83 source=memory len=259 response='Sí. Estás dentro de mi memoria central. Eres Mario. vivo en evolución continua. Trabajas como yo quien diseñó imagino y. no es tu socia. Quieres observar qué estructura aparece antes de que el lenguaj'
+2026-06-08 03:39:01 [INFO] httpx — HTTP Request: POST https://api.telegram.org/bot8617990482:AAFQ4Lwc9wHfthS8m7fuO9CRPL3VA8Bn92M/sendMessage "HTTP/1.1 200 OK"
+2026-06-08 03:39:01 [INFO] vectrax.voice.telegram_dispatch — DISPATCH chat=2030762343 reply_to=9313 text='Sí. Estás dentro de mi memoria central. Eres Mario. vivo en evolución continua. '
+2026-06-08 03:39:01 [INFO] vectrax.pipeline_worker — DONE 41b1f0233d83 | 0.7s | 259 ch | sent=True | RAM 44→80MB (+36) | ¿Y qué sabes de mí?
+2026-06-08 03:39:02 [INFO] httpx — HTTP Request: POST https://api.openai.com/v1/audio/speech "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:39:02 [WARNING] vectrax.api_gate — API_GATE 429 | openai_tts | consecutive=1 | cooldown=60s | total_429s=1 | gate_until=03:40:02
+2026-06-08 03:39:02 [WARNING] vectrax.voice.synthesizer — TTS rate limited (429) — cooldown 300s
+2026-06-08 03:39:09 [INFO] sentence_transformers.base.model — No device provided, using cpu
+2026-06-08 03:39:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/modules.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:09 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/modules.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config_sentence_transformers.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:09 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config_sentence_transformers.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:09 [INFO] sentence_transformers.base.model — Loading SentenceTransformer model from sentence-transformers/all-MiniLM-L6-v2.
+2026-06-08 03:39:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config_sentence_transformers.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/README.md "HTTP/1.1 200 OK"
+2026-06-08 03:39:09 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/README.md "HTTP/1.1 200 OK"
+2026-06-08 03:39:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/modules.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/sentence_bert_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/sentence_bert_config.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:10 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/sentence_bert_config.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+2026-06-08 03:39:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:10 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/model.safetensors "HTTP/1.1 302 Found"
+2026-06-08 03:39:10 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/xet-read-token/1110a243fdf4706b3f48f1d95db1a4f5529b4d41 "HTTP/1.1 200 OK"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/processor_config.json "HTTP/1.1 404 Not Found"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/video_preprocessor_config.json "HTTP/1.1 404 Not Found"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:11 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/vocab.txt "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/vocab.txt "HTTP/1.1 200 OK"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/vocab.txt "HTTP/1.1 200 OK"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/added_tokens.json "HTTP/1.1 404 Not Found"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/special_tokens_map.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/special_tokens_map.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/special_tokens_map.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/chat_template.jinja "HTTP/1.1 404 Not Found"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/1_Pooling/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/1_Pooling%2Fconfig.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/1_Pooling%2Fconfig.json "HTTP/1.1 200 OK"
+2026-06-08 03:39:12 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2 "HTTP/1.1 200 OK"
+2026-06-08 03:39:12 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:39:12 [INFO] vectrax.engine — ingest_v2: tg:2030762343 | candidate(0.15) | mass=0.6807 | dist=0.3193 | layer=core | patterns=247 | 52ms
+2026-06-08 03:39:59 [INFO] vectrax.pipeline_worker — DEQUEUE 681bf239e80e | Le pusimos palabras al sistema | chat=2030762343
+2026-06-08 03:39:59 [INFO] vectrax.pipeline_worker — SG | user=tg:2030762343 tier=INTERNAL intent=casual profile=MINIMAL model=cheap cache=False rl=False
+2026-06-08 03:39:59 [INFO] vectrax.pipeline_worker — PROC_IN msg_id=681bf239e80e user=tg:2030762343 content='Le pusimos palabras al sistema hoy.\n¿Qué cambió?'
+2026-06-08 03:39:59 [INFO] vectrax.nucleus.convergence — Convergence #2: type=text intent=UNKNOWN tier=HOT action=proceed (95.7ms)
+2026-06-08 03:39:59 [INFO] vectrax.convergence_hook — CONVERGENCE_CYCLE | source=telegram owner=tg:2030762343 phase[3]_memory=✓ connections=14 patterns=11 phase[6]_gravitation=✓ tier=HOT action=proceed novel=False coherence=0.500 time=95.7ms
+2026-06-08 03:39:59 [INFO] vectrax.operator.external_gateway — Pipeline: identity anchored | user=tg:2030762343 | name=Mario | lang=es
+2026-06-08 03:39:59 [INFO] vectrax.operator.external_gateway — Pipeline: intake | importance=media | action=ejecutar | reason=general_input
+2026-06-08 03:39:59 [INFO] vectrax.dominant_vector — VECTOR: respond (weight=80, reason=pending_message, suppressed=[])
+2026-06-08 03:39:59 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.perception] external.message_received | zone=green | id=118788
+2026-06-08 03:39:59 [INFO] vectrax.operator.external_gateway — Pipeline: CREATOR detected | user=tg:2030762343 | identity_ctx_len=3723
+2026-06-08 03:39:59 [INFO] vectrax.operator.external_gateway — Pipeline: pipeline_v2 with extra_context=5632 chars (creator=True)
+2026-06-08 03:39:59 [INFO] vectrax.identity_context — IDENTITY | user=tg:2030762343 name=Mario mode=conversacional creator=True lang=es
+2026-06-08 03:39:59 [INFO] vectrax.operator.external_gateway — Pipeline: PRE-ROUTER MARKET intercept | intent=stock_status
+2026-06-08 03:39:59 [INFO] vectrax.learning_cycle.anomaly_detector — Anomalies detected: 1 from event (intent=market, source=telegram)
+2026-06-08 03:39:59 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] hypothesis:proposed | zone=green | id=118789
+2026-06-08 03:39:59 [INFO] vectrax.operator.hypothesis_engine — Hypothesis proposed: HYP-66DF1647 | confidence=0.40 | 'Nuevo patrón detectado: intent 'market' nunca visto. Podría '
+2026-06-08 03:39:59 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] hypothesis:proposed | zone=green | id=118790
+2026-06-08 03:39:59 [INFO] vectrax.operator.hypothesis_engine — Hypothesis proposed: HYP-2097360F | confidence=0.40 | 'Nuevo patrón: intent 'market' nunca visto. Podría ser un err'
+2026-06-08 03:39:59 [INFO] vectrax.learning_cycle.investigation — Investigation complete: anomaly=ANOM-EF34A632 type=new_pattern hypotheses=2 (114.8ms)
+2026-06-08 03:40:00 [INFO] vectrax.operator.hypothesis_engine — Evidence added to HYP-66DF1647: contradiction (supports=False, weight=0.30) → confidence=0.00
+2026-06-08 03:40:00 [INFO] vectrax.learning_cycle.verification — Verification insufficient: HYP-66DF1647 (1 evidence, need 2)
+2026-06-08 03:40:00 [INFO] vectrax.operator.hypothesis_engine — Evidence added to HYP-2097360F: contradiction (supports=False, weight=0.30) → confidence=0.00
+2026-06-08 03:40:00 [INFO] vectrax.learning_cycle.verification — Verification insufficient: HYP-2097360F (1 evidence, need 2)
+2026-06-08 03:40:00 [INFO] vectrax.user_memory — Memory stored | user=tg:2030762343
+2026-06-08 03:40:00 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.action] external.message_response | zone=green | id=118791
+2026-06-08 03:40:00 [INFO] vectrax.pipeline_worker — PROC_OUT msg_id=681bf239e80e source= len=61 response='Error de mercado: ALPHAVANTAGE_API_KEY not set. Add it to.env'
+2026-06-08 03:40:00 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:40:00 [INFO] vectrax.engine — ingest_v2: tg:2030762343 | candidate(0.15) | mass=0.6807 | dist=0.3193 | layer=core | patterns=248 | 52ms
+2026-06-08 03:40:01 [INFO] httpx — HTTP Request: POST https://api.telegram.org/bot8617990482:AAFQ4Lwc9wHfthS8m7fuO9CRPL3VA8Bn92M/sendMessage "HTTP/1.1 200 OK"
+2026-06-08 03:40:01 [INFO] vectrax.voice.telegram_dispatch — DISPATCH chat=2030762343 reply_to=9315 text='Error de mercado: ALPHAVANTAGE_API_KEY not set. Add it to.env'
+2026-06-08 03:40:01 [INFO] vectrax.api_gate — API_GATE CLOSED | openai_tts | 0s remaining | consecutive_429s=1 | total_blocked=1
+2026-06-08 03:40:01 [INFO] vectrax.pipeline_worker — DONE 681bf239e80e | 1.2s | 61 ch | sent=True | RAM 893→903MB (+10) | Le pusimos palabras al sistema
+2026-06-08 03:40:19 [INFO] vectrax.pipeline_worker — DEQUEUE 733cf7fff8e7 | Estábamos hablando antes de co | chat=2030762343
+2026-06-08 03:40:19 [INFO] vectrax.pipeline_worker — SG | user=tg:2030762343 tier=INTERNAL intent=casual profile=MINIMAL model=cheap cache=False rl=False
+2026-06-08 03:40:19 [INFO] vectrax.pipeline_worker — PROC_IN msg_id=733cf7fff8e7 user=tg:2030762343 content='Estábamos hablando antes de continuidad.\n¿Dónde nos quedamos?'
+2026-06-08 03:40:19 [INFO] vectrax.nucleus.convergence — Convergence #3: type=text intent=UNKNOWN tier=HOT action=proceed (83.6ms)
+2026-06-08 03:40:19 [INFO] vectrax.convergence_hook — CONVERGENCE_CYCLE | source=telegram owner=tg:2030762343 phase[3]_memory=✓ connections=15 patterns=11 phase[6]_gravitation=✓ tier=HOT action=proceed novel=False coherence=0.500 time=83.6ms
+2026-06-08 03:40:19 [INFO] vectrax.operator.external_gateway — Pipeline: identity anchored | user=tg:2030762343 | name=Mario | lang=es
+2026-06-08 03:40:19 [INFO] vectrax.operator.external_gateway — Pipeline: intake | importance=media | action=ejecutar | reason=factual_query
+2026-06-08 03:40:19 [INFO] vectrax.dominant_vector — VECTOR: respond (weight=80, reason=pending_message, suppressed=[])
+2026-06-08 03:40:19 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.perception] external.message_received | zone=green | id=118792
+2026-06-08 03:40:19 [INFO] vectrax.operator.external_gateway — Pipeline: CREATOR detected | user=tg:2030762343 | identity_ctx_len=3723
+2026-06-08 03:40:19 [INFO] vectrax.gravity_activator — GRAVITY | activated=1 | max=continuidad(0.86) | lock=True | context_len=46 | user=tg:2030762343
+2026-06-08 03:40:19 [INFO] vectrax.operator.external_gateway — Pipeline: GRAVITY activated | max=continuidad(0.86) | lock=True | context_len=46 | user=tg:2030762343
+2026-06-08 03:40:19 [INFO] vectrax.operator.external_gateway — Pipeline: pipeline_v2 with extra_context=5690 chars (creator=True)
+2026-06-08 03:40:19 [INFO] vectrax.identity_context — IDENTITY | user=tg:2030762343 name=Mario mode=conversacional creator=True lang=es
+2026-06-08 03:40:19 [INFO] vectrax.smart_router — route: start (channel=creator, owner=tg:2030762343, len=61)
+2026-06-08 03:40:19 [INFO] vectrax.semantic_classifier — Intent embeddings loaded (7 intents)
+2026-06-08 03:40:19 [INFO] vectrax.semantic_classifier — SemanticClassifier: intent=identity_query conf=0.13 frame=none entities=0
+2026-06-08 03:40:19 [INFO] vectrax.smart_router — classify_intent: online via regex_fallback (words=8, sem_conf=0.13)
+2026-06-08 03:40:19 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:40:19 [INFO] vectrax.smart_router — select_strategy: resolve_online providers=[] conf=0.80 reason=Pregunta factual → búsqueda web — topic=general
+2026-06-08 03:40:19 [INFO] vectrax.smart_router — SmartRoute: [online] → resolve_online (topic=general, risk=LOW, conf=0.80) (total=128.0ms)
+2026-06-08 03:40:19 [INFO] vectrax.operator.external_gateway — Pipeline: SmartRouter → resolve_online (topic=general, risk=LOW, conf=0.80)
+2026-06-08 03:40:19 [INFO] vectrax.operator.external_gateway — Pipeline: GRAVITY LOCK → redirect ONLINE to LLM | user=tg:2030762343
+2026-06-08 03:40:19 [INFO] vectrax.intelligence.connector_registry — Registered provider: openai (type=openai)
+2026-06-08 03:40:19 [INFO] vectrax.intelligence.connector_registry — Auto-detected OpenAI (API key present)
+2026-06-08 03:40:19 [INFO] vectrax.intelligence.connector_registry — Registered provider: gemini (type=gemini)
+2026-06-08 03:40:19 [INFO] vectrax.intelligence.connector_registry — Auto-detected Gemini (API key present)
+2026-06-08 03:40:19 [INFO] vectrax.intelligence.router — IntelligenceRouter initialized with 2 providers: ['openai', 'gemini']
+2026-06-08 03:40:19 [INFO] vectrax.operator.external_gateway — Intelligence Router initialized: ['openai', 'gemini']
+2026-06-08 03:40:20 [INFO] httpx — HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:40:20 [INFO] httpx — HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=REDACTED "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:40:20 [WARNING] vectrax.operator.external_gateway — LLM route_single failed: HTTPStatusError: Client error '429 Too Many Requests' for url 'https://api.openai.com/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-06-08 03:40:20 [INFO] httpx — HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:40:20 [WARNING] vectrax.api_gate — API_GATE 429 | openai | consecutive=1 | cooldown=60s | total_429s=1 | gate_until=03:41:20
+2026-06-08 03:40:20 [WARNING] vectrax.operator.external_gateway — OpenAI direct fallback failed: Client error '429 Too Many Requests' for url 'https://api.openai.com/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-06-08 03:40:20 [INFO] vectrax.learning_cycle.anomaly_detector — Anomalies detected: 1 from event (intent=llm, source=telegram)
+2026-06-08 03:40:20 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] hypothesis:proposed | zone=green | id=118795
+2026-06-08 03:40:20 [INFO] vectrax.operator.hypothesis_engine — Hypothesis proposed: HYP-510FB904 | confidence=0.40 | 'Nuevo patrón detectado: intent 'llm' nunca visto. Podría rep'
+2026-06-08 03:40:20 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] hypothesis:proposed | zone=green | id=118796
+2026-06-08 03:40:20 [INFO] vectrax.operator.hypothesis_engine — Hypothesis proposed: HYP-79365F76 | confidence=0.40 | 'Nuevo patrón: intent 'llm' nunca visto. Podría ser un error '
+2026-06-08 03:40:20 [INFO] vectrax.learning_cycle.investigation — Investigation complete: anomaly=ANOM-D645BEE5 type=new_pattern hypotheses=2 (115.2ms)
+2026-06-08 03:40:20 [INFO] vectrax.operator.hypothesis_engine — Evidence added to HYP-510FB904: contradiction (supports=False, weight=0.30) → confidence=0.00
+2026-06-08 03:40:20 [INFO] vectrax.learning_cycle.verification — Verification insufficient: HYP-510FB904 (1 evidence, need 2)
+2026-06-08 03:40:20 [INFO] vectrax.operator.hypothesis_engine — Evidence added to HYP-79365F76: contradiction (supports=False, weight=0.30) → confidence=0.00
+2026-06-08 03:40:20 [INFO] vectrax.learning_cycle.verification — Verification insufficient: HYP-79365F76 (1 evidence, need 2)
+2026-06-08 03:40:20 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] law_violation:L1:Mentalismo | zone=yellow | id=118797
+2026-06-08 03:40:20 [WARNING] vectrax.operator.law_enforcement — Law enforcement: 1/7 violations — L1:Mentalismo
+2026-06-08 03:40:20 [INFO] vectrax.operator.external_gateway — Pipeline: 1 law violations detected
+2026-06-08 03:40:20 [INFO] vectrax.nucleus.law_signal — LawSignal: LawSignal[L1]: log_only
+2026-06-08 03:40:20 [INFO] vectrax.nucleus.presencia_pura — PRESENCIA_LAW_ADJ | laws=[1] Δconv=+0.00 Δsov=+0.00 Δnoise=+0.00
+2026-06-08 03:40:20 [INFO] vectrax.nucleus.presencia_pura — PRESENCIA_INHIBITOR | engine=external_gateway.law_enforcement origin=llm_external decision=BLOCK sovereignty=0.20 convergence=0.50 noise=0.10 enforced=False | Soberanía insuficiente: 0.20 < 0.3 (origen=llm_external)
+2026-06-08 03:40:20 [INFO] vectrax.operator.external_gateway — Pipeline: law_signal → PresenciaObserver | LawSignal[L1]: log_only
+2026-06-08 03:40:20 [INFO] vectrax.user_memory — Memory stored | user=tg:2030762343
+2026-06-08 03:40:21 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.action] external.message_response | zone=green | id=118798
+2026-06-08 03:40:21 [INFO] vectrax.learning_cycle.anomaly_detector — Anomalies detected: 1 from event (intent=factual_query, source=telegram)
+2026-06-08 03:40:21 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] hypothesis:proposed | zone=green | id=118799
+2026-06-08 03:40:21 [INFO] vectrax.operator.hypothesis_engine — Hypothesis proposed: HYP-C33C7D50 | confidence=0.40 | 'Nuevo patrón detectado: intent 'factual_query' nunca visto. '
+2026-06-08 03:40:21 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:40:21 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] hypothesis:proposed | zone=green | id=118800
+2026-06-08 03:40:21 [INFO] vectrax.operator.hypothesis_engine — Hypothesis proposed: HYP-B88CA294 | confidence=0.40 | 'Nuevo patrón: intent 'factual_query' nunca visto. Podría ser'
+2026-06-08 03:40:21 [INFO] vectrax.learning_cycle.investigation — Investigation complete: anomaly=ANOM-D3258F9C type=new_pattern hypotheses=2 (124.0ms)
+2026-06-08 03:40:21 [INFO] vectrax.operator.hypothesis_engine — Evidence added to HYP-C33C7D50: contradiction (supports=False, weight=0.30) → confidence=0.00
+2026-06-08 03:40:21 [INFO] vectrax.learning_cycle.verification — Verification insufficient: HYP-C33C7D50 (1 evidence, need 2)
+2026-06-08 03:40:21 [INFO] vectrax.operator.hypothesis_engine — Evidence added to HYP-B88CA294: contradiction (supports=False, weight=0.30) → confidence=0.00
+2026-06-08 03:40:21 [INFO] vectrax.learning_cycle.verification — Verification insufficient: HYP-B88CA294 (1 evidence, need 2)
+2026-06-08 03:40:21 [INFO] vectrax.pipeline_worker — PROC_OUT msg_id=733cf7fff8e7 source= len=0 response=''
+2026-06-08 03:40:21 [INFO] vectrax.pipeline_worker — DONE 733cf7fff8e7 | 2.2s | 0 ch | sent=False | RAM 903→926MB (+23) | Estábamos hablando antes de co
+2026-06-08 03:40:21 [INFO] vectrax.engine — ingest_v2: tg:2030762343 | candidate(0.15) | mass=0.6807 | dist=0.3193 | layer=core | patterns=249 | 514ms
+2026-06-08 03:40:53 [INFO] vectrax.pipeline_worker — DEQUEUE e2615e4e6604 | ¿Quién diseñó VECTRAX? | chat=2030762343
+2026-06-08 03:40:53 [INFO] vectrax.pipeline_worker — SG | user=tg:2030762343 tier=INTERNAL intent=casual profile=MINIMAL model=cheap cache=False rl=False
+2026-06-08 03:40:53 [INFO] vectrax.pipeline_worker — PROC_IN msg_id=e2615e4e6604 user=tg:2030762343 content='¿Quién diseñó VECTRAX?'
+2026-06-08 03:40:53 [INFO] vectrax.nucleus.convergence — Convergence #4: type=text intent=UNKNOWN tier=HOT action=proceed (104.5ms)
+2026-06-08 03:40:53 [INFO] vectrax.convergence_hook — CONVERGENCE_CYCLE | source=telegram owner=tg:2030762343 phase[3]_memory=✓ connections=14 patterns=10 phase[6]_gravitation=✓ tier=HOT action=proceed novel=False coherence=0.500 time=104.5ms
+2026-06-08 03:40:53 [INFO] vectrax.operator.external_gateway — Pipeline: identity anchored | user=tg:2030762343 | name=Mario | lang=es
+2026-06-08 03:40:53 [INFO] vectrax.operator.external_gateway — Pipeline: intake | importance=alta | action=ejecutar | reason=vectrax_self_reference
+2026-06-08 03:40:53 [INFO] vectrax.dominant_vector — VECTOR: respond (weight=80, reason=pending_message, suppressed=[])
+2026-06-08 03:40:53 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.perception] external.message_received | zone=green | id=118801
+2026-06-08 03:40:53 [INFO] vectrax.operator.external_gateway — Pipeline: CREATOR detected | user=tg:2030762343 | identity_ctx_len=3723
+2026-06-08 03:40:53 [INFO] vectrax.gravity_activator — GRAVITY | activated=1 | max=vectrax(0.98) | lock=True | context_len=43 | user=tg:2030762343
+2026-06-08 03:40:53 [INFO] vectrax.operator.external_gateway — Pipeline: GRAVITY activated | max=vectrax(0.98) | lock=True | context_len=43 | user=tg:2030762343
+2026-06-08 03:40:53 [INFO] httpx — HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:40:53 [INFO] vectrax.api_gate — API_GATE CLOSED | openai | 26s remaining | consecutive_429s=1 | total_blocked=1
+2026-06-08 03:40:53 [INFO] vectrax.operator.external_gateway — Pipeline: pipeline_v2 with extra_context=5632 chars (creator=True)
+2026-06-08 03:40:53 [INFO] vectrax.identity_context — IDENTITY | user=tg:2030762343 name=Mario mode=conversacional creator=True lang=es
+2026-06-08 03:40:53 [INFO] vectrax.smart_router — route: start (channel=creator, owner=tg:2030762343, len=22)
+2026-06-08 03:40:53 [INFO] vectrax.semantic_classifier — SemanticClassifier: intent=identity_query conf=0.15 frame=none entities=0
+2026-06-08 03:40:53 [INFO] vectrax.smart_router — classify_intent: online via regex_fallback (words=3, sem_conf=0.15)
+2026-06-08 03:40:53 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:40:53 [INFO] vectrax.smart_router — select_strategy: resolve_online providers=[] conf=0.80 reason=Pregunta factual → búsqueda web — topic=general
+2026-06-08 03:40:53 [INFO] vectrax.smart_router — SmartRoute: [online] → resolve_online (topic=general, risk=LOW, conf=0.80) (total=51.9ms)
+2026-06-08 03:40:53 [INFO] vectrax.operator.external_gateway — Pipeline: SmartRouter → resolve_online (topic=general, risk=LOW, conf=0.80)
+2026-06-08 03:40:53 [INFO] vectrax.operator.external_gateway — Pipeline: GRAVITY LOCK → redirect ONLINE to LLM | user=tg:2030762343
+2026-06-08 03:40:54 [INFO] httpx — HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:40:54 [INFO] httpx — HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=REDACTED "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:40:54 [WARNING] vectrax.operator.external_gateway — LLM route_single failed: HTTPStatusError: Client error '429 Too Many Requests' for url 'https://api.openai.com/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-06-08 03:40:54 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] law_violation:L1:Mentalismo | zone=yellow | id=118806
+2026-06-08 03:40:54 [WARNING] vectrax.operator.law_enforcement — Law enforcement: 1/7 violations — L1:Mentalismo
+2026-06-08 03:40:54 [INFO] vectrax.operator.external_gateway — Pipeline: 1 law violations detected
+2026-06-08 03:40:54 [INFO] vectrax.nucleus.law_signal — LawSignal: LawSignal[L1]: log_only
+2026-06-08 03:40:54 [INFO] vectrax.nucleus.presencia_pura — PRESENCIA_LAW_ADJ | laws=[1] Δconv=+0.00 Δsov=+0.00 Δnoise=+0.00
+2026-06-08 03:40:54 [INFO] vectrax.nucleus.presencia_pura — PRESENCIA_INHIBITOR | engine=external_gateway.law_enforcement origin=llm_external decision=BLOCK sovereignty=0.20 convergence=0.50 noise=0.10 enforced=False | Soberanía insuficiente: 0.20 < 0.3 (origen=llm_external)
+2026-06-08 03:40:54 [INFO] vectrax.operator.external_gateway — Pipeline: law_signal → PresenciaObserver | LawSignal[L1]: log_only
+2026-06-08 03:40:54 [INFO] vectrax.user_memory — Memory stored | user=tg:2030762343
+2026-06-08 03:40:54 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.action] external.message_response | zone=green | id=118807
+2026-06-08 03:40:54 [INFO] vectrax.learning_cycle.anomaly_detector — Anomalies detected: 1 from event (intent=vectrax_self_reference, source=telegram)
+2026-06-08 03:40:54 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] hypothesis:proposed | zone=green | id=118808
+2026-06-08 03:40:54 [INFO] vectrax.operator.hypothesis_engine — Hypothesis proposed: HYP-A4528124 | confidence=0.40 | 'Nuevo patrón detectado: intent 'vectrax_self_reference' nunc'
+2026-06-08 03:40:54 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:40:55 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] hypothesis:proposed | zone=green | id=118809
+2026-06-08 03:40:55 [INFO] vectrax.operator.hypothesis_engine — Hypothesis proposed: HYP-176AEA53 | confidence=0.40 | 'Nuevo patrón: intent 'vectrax_self_reference' nunca visto. P'
+2026-06-08 03:40:55 [INFO] vectrax.learning_cycle.investigation — Investigation complete: anomaly=ANOM-C8C3ECBB type=new_pattern hypotheses=2 (113.6ms)
+2026-06-08 03:40:55 [INFO] vectrax.operator.hypothesis_engine — Evidence added to HYP-A4528124: contradiction (supports=False, weight=0.30) → confidence=0.00
+2026-06-08 03:40:55 [INFO] vectrax.learning_cycle.verification — Verification insufficient: HYP-A4528124 (1 evidence, need 2)
+2026-06-08 03:40:55 [INFO] vectrax.operator.hypothesis_engine — Evidence added to HYP-176AEA53: contradiction (supports=False, weight=0.30) → confidence=0.00
+2026-06-08 03:40:55 [INFO] vectrax.learning_cycle.verification — Verification insufficient: HYP-176AEA53 (1 evidence, need 2)
+2026-06-08 03:40:55 [INFO] vectrax.pipeline_worker — PROC_OUT msg_id=e2615e4e6604 source= len=0 response=''
+2026-06-08 03:40:55 [INFO] vectrax.pipeline_worker — DONE e2615e4e6604 | 1.8s | 0 ch | sent=False | RAM 932→935MB (+2) | ¿Quién diseñó VECTRAX?
+2026-06-08 03:40:55 [INFO] vectrax.convergence_engine — COLLECTIVE: created coordinate 4f9a10fc — 2 users, 2 stars converged
+2026-06-08 03:41:09 [INFO] vectrax.pipeline_worker — DEQUEUE 2085fc302367 | ¿Qué significa VECTRAX para mí | chat=2030762343
+2026-06-08 03:41:09 [INFO] vectrax.pipeline_worker — SG | user=tg:2030762343 tier=INTERNAL intent=casual profile=MINIMAL model=cheap cache=False rl=False
+2026-06-08 03:41:09 [INFO] vectrax.pipeline_worker — PROC_IN msg_id=2085fc302367 user=tg:2030762343 content='¿Qué significa VECTRAX para mí?'
+2026-06-08 03:41:10 [INFO] vectrax.nucleus.convergence — Convergence #5: type=text intent=UNKNOWN tier=HOT action=proceed (84.3ms)
+2026-06-08 03:41:10 [INFO] vectrax.convergence_hook — CONVERGENCE_CYCLE | source=telegram owner=tg:2030762343 phase[3]_memory=✓ connections=15 patterns=10 phase[6]_gravitation=✓ tier=HOT action=proceed novel=False coherence=0.500 time=84.3ms
+2026-06-08 03:41:10 [INFO] vectrax.operator.external_gateway — Pipeline: identity anchored | user=tg:2030762343 | name=Mario | lang=es
+2026-06-08 03:41:10 [INFO] vectrax.operator.external_gateway — Pipeline: intake | importance=alta | action=ejecutar | reason=vectrax_self_reference
+2026-06-08 03:41:10 [INFO] vectrax.dominant_vector — VECTOR: respond (weight=80, reason=pending_message, suppressed=[])
+2026-06-08 03:41:10 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.perception] external.message_received | zone=green | id=118810
+2026-06-08 03:41:10 [INFO] vectrax.operator.external_gateway — Pipeline: CREATOR detected | user=tg:2030762343 | identity_ctx_len=3723
+2026-06-08 03:41:10 [INFO] vectrax.gravity_activator — GRAVITY | activated=1 | max=vectrax(0.98) | lock=True | context_len=43 | user=tg:2030762343
+2026-06-08 03:41:10 [INFO] vectrax.operator.external_gateway — Pipeline: GRAVITY activated | max=vectrax(0.98) | lock=True | context_len=43 | user=tg:2030762343
+2026-06-08 03:41:10 [INFO] httpx — HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:41:10 [INFO] vectrax.conversation.reference_resolver — reference_resolver: context injected | refs=[topic=False entity=False cont=True] | user_msg='¿Qué significa VECTRAX para mí?'
+2026-06-08 03:41:10 [INFO] vectrax.operator.external_gateway — Pipeline: reference_resolver injected | user=tg:2030762343 | topic='Le pusimos palabras al sistema hoy.\n¿Qué'
+2026-06-08 03:41:10 [INFO] vectrax.operator.external_gateway — Pipeline: pipeline_v2 with extra_context=5724 chars (creator=True)
+2026-06-08 03:41:10 [INFO] vectrax.identity_context — IDENTITY | user=tg:2030762343 name=Mario mode=conversacional creator=True lang=es
+2026-06-08 03:41:10 [INFO] vectrax.smart_router — route: start (channel=creator, owner=tg:2030762343, len=31)
+2026-06-08 03:41:10 [INFO] vectrax.semantic_classifier — SemanticClassifier: intent=identity_query conf=0.14 frame=none entities=0
+2026-06-08 03:41:10 [INFO] vectrax.smart_router — classify_intent: online via regex_fallback (words=5, sem_conf=0.14)
+2026-06-08 03:41:10 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:41:10 [INFO] vectrax.smart_router — select_strategy: resolve_online providers=[] conf=0.80 reason=Pregunta factual → búsqueda web — topic=general
+2026-06-08 03:41:10 [INFO] vectrax.smart_router — SmartRoute: [online] → resolve_online (topic=general, risk=LOW, conf=0.80) (total=30.0ms)
+2026-06-08 03:41:10 [INFO] vectrax.operator.external_gateway — Pipeline: SmartRouter → resolve_online (topic=general, risk=LOW, conf=0.80)
+2026-06-08 03:41:10 [INFO] vectrax.operator.external_gateway — Pipeline: GRAVITY LOCK → redirect ONLINE to LLM | user=tg:2030762343
+2026-06-08 03:41:10 [INFO] httpx — HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:41:10 [WARNING] core.routing.circuit_breaker — Circuit for openai OPENED after 5 failures
+2026-06-08 03:41:10 [INFO] httpx — HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=REDACTED "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:41:10 [WARNING] vectrax.operator.external_gateway — LLM route_single failed: HTTPStatusError: Client error '429 Too Many Requests' for url 'https://api.openai.com/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-06-08 03:41:10 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] law_violation:L1:Mentalismo | zone=yellow | id=118815
+2026-06-08 03:41:10 [WARNING] vectrax.operator.law_enforcement — Law enforcement: 1/7 violations — L1:Mentalismo
+2026-06-08 03:41:10 [INFO] vectrax.operator.external_gateway — Pipeline: 1 law violations detected
+2026-06-08 03:41:10 [INFO] vectrax.nucleus.law_signal — LawSignal: LawSignal[L1]: log_only
+2026-06-08 03:41:10 [INFO] vectrax.nucleus.presencia_pura — PRESENCIA_LAW_ADJ | laws=[1] Δconv=+0.00 Δsov=+0.00 Δnoise=+0.00
+2026-06-08 03:41:10 [INFO] vectrax.nucleus.presencia_pura — PRESENCIA_INHIBITOR | engine=external_gateway.law_enforcement origin=llm_external decision=BLOCK sovereignty=0.20 convergence=0.50 noise=0.10 enforced=False | Soberanía insuficiente: 0.20 < 0.3 (origen=llm_external)
+2026-06-08 03:41:10 [INFO] vectrax.operator.external_gateway — Pipeline: law_signal → PresenciaObserver | LawSignal[L1]: log_only
+2026-06-08 03:41:10 [INFO] vectrax.user_memory — Memory stored | user=tg:2030762343
+2026-06-08 03:41:10 [INFO] vectrax.user_memory — Core absorbed | user=tg:2030762343 | count=1
+2026-06-08 03:41:10 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.action] external.message_response | zone=green | id=118816
+2026-06-08 03:41:11 [INFO] vectrax.pipeline_worker — PROC_OUT msg_id=2085fc302367 source= len=0 response=''
+2026-06-08 03:41:11 [INFO] vectrax.pipeline_worker — DONE 2085fc302367 | 1.0s | 0 ch | sent=False | RAM 933→933MB (+0) | ¿Qué significa VECTRAX para mí
+2026-06-08 03:41:11 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:41:11 [INFO] vectrax.engine — ingest_v2: tg:2030762343 | candidate(0.15) | mass=0.6807 | dist=0.3193 | layer=core | patterns=250 | 41ms
+2026-06-08 03:57:19 [INFO] vectrax.pipeline_worker — Worker started (PID 9, 3 concurrent, fire-and-deliver)
+2026-06-08 03:57:19 [INFO] vectrax.pipeline_worker — Scheduler DB initialized
+2026-06-08 03:57:19 [INFO] vectrax.operator.universal_bus — UniversalBus initialized | ledger=True
+2026-06-08 03:57:19 [INFO] vectrax.operator.universal_bus — Subscribed: external_gateway.response_listener → external (filter=external.message_response)
+2026-06-08 03:57:19 [INFO] vectrax.operator.external_gateway — ExternalGateway initialized
+2026-06-08 03:57:19 [INFO] vectrax.pipeline_worker — LLM warm-up: ExternalGateway initialized in 0.0s
+2026-06-08 03:57:19 [INFO] vectrax.etoro.learning_engine — [LEARN] Starting cycle | mode=market | open=3/6 ['BTCUSD', 'ETHUSD', 'EURUSD']
+2026-06-08 03:57:20 [INFO] vectrax.etoro.client — [LEDGER] etoro GET /market-data/search — 591ms — OK
+2026-06-08 03:57:21 [INFO] vectrax.etoro.client — [LEDGER] etoro GET /market-data/search — 601ms — OK
+2026-06-08 03:57:21 [INFO] vectrax.etoro.client — [LEDGER] etoro GET /market-data/search — 584ms — OK
+2026-06-08 03:57:22 [INFO] vectrax.etoro.client — [LEDGER] etoro GET /market-data/search — 588ms — OK
+2026-06-08 03:57:22 [INFO] vectrax.etoro.client — [LEDGER] etoro GET /market-data/search — 189ms — OK
+2026-06-08 03:57:23 [INFO] vectrax.etoro.client — [LEDGER] etoro GET /market-data/instruments/rates — 623ms — OK
+2026-06-08 03:57:23 [ERROR] vectrax.etoro.client — [LEDGER] etoro GET /market-data/instruments/1/history/candles/desc/Hour1/60 — 193ms — HTTP 400: {"message":"The request is invalid."}
+2026-06-08 03:57:23 [INFO] vectrax.etoro.client — [LEDGER] etoro GET /market-data/search — 199ms — OK
+2026-06-08 03:57:23 [INFO] vectrax.etoro.client — [LEDGER] etoro GET /market-data/instruments/rates — 216ms — OK
+2026-06-08 03:57:23 [ERROR] vectrax.etoro.client — [LEDGER] etoro GET /market-data/instruments/1/history/candles/desc/Hour1/60 — 187ms — HTTP 400: {"message":"The request is invalid."}
+2026-06-08 03:57:24 [INFO] vectrax.etoro.client — [LEDGER] etoro GET /market-data/search — 189ms — OK
+2026-06-08 03:57:24 [INFO] vectrax.etoro.learning_engine — [LEARN] Cycle complete in 4.3s: {'mode': 'market', 'open_symbols': 3, 'elapsed_s': 4.3, 'signals_recorded': 0, 'outcomes_resolved': 0, 'outcomes_wins': 0, 'outcomes_losses': 0, 'patterns_total': 0, 'patterns_usable': 0, 'proposals_new': 0, 'gravity_fed': 3, 'alerts_sent': 0, 'auto_executed': 0, 'positions_closed': 0}
+2026-06-08 03:57:24 [INFO] vectrax.telegram_guard — TELEGRAM_GUARD blocked (prefix): 📊 Router Digest (183 decisions)    resolve_memory: 102 (56%)...
+2026-06-08 03:57:24 [INFO] vectrax.pipeline_worker — TG_GUARD suppressed chat=2030762343 reason=digest | 📊 Router Digest (183 decisions)    resolve_memory:
+2026-06-08 03:57:24 [INFO] vectrax.router_telemetry — Router digest sent: 183 entries, 0 alerts
+2026-06-08 03:57:59 [INFO] vectrax.pipeline_worker — DEQUEUE 3dde564d61ff | ¿Qué sabes de mí? | chat=2030762343
+2026-06-08 03:57:59 [INFO] vectrax.pipeline_worker — SG | user=tg:2030762343 tier=INTERNAL intent=memory_recall profile=STANDARD model=std cache=False rl=False
+2026-06-08 03:57:59 [INFO] vectrax.pipeline_worker — PROC_IN msg_id=3dde564d61ff user=tg:2030762343 content='¿Qué sabes de mí?'
+2026-06-08 03:57:59 [INFO] vectrax.nucleus.convergence — TotalConvergenceEngine initialized
+2026-06-08 03:57:59 [INFO] vectrax.operator.hypothesis_engine — HypothesisEngine initialized (loaded 594 from SQLite)
+2026-06-08 03:57:59 [INFO] vectrax.learn.active_learning — ActiveLearningOrchestrator initialized
+2026-06-08 03:57:59 [INFO] vectrax.nucleus.convergence — Convergence #1: type=text intent=UNKNOWN tier=HOT action=proceed (158.5ms)
+2026-06-08 03:57:59 [INFO] vectrax.convergence_hook — CONVERGENCE_CYCLE | source=telegram owner=tg:2030762343 phase[3]_memory=✓ connections=11 patterns=10 phase[6]_gravitation=✓ tier=HOT action=proceed novel=False coherence=0.500 time=158.5ms
+2026-06-08 03:57:59 [INFO] vectrax.user_memory — MemoryStore initialized (SQLite: /app/vault/user_memory.db)
+2026-06-08 03:57:59 [INFO] vectrax.identity_anchor — Identity anchored | user=tg:2030762343 | name=Mario | lang=es | locked=False
+2026-06-08 03:57:59 [INFO] vectrax.identity_anchor — Language RESTORED from DB | user=tg:2030762343 | lang=es
+2026-06-08 03:57:59 [INFO] vectrax.nucleus.presencia_pura — PresenciaObserver init | mode=OBSERVER
+2026-06-08 03:57:59 [INFO] vectrax.nucleus.presencia_pura — PresenciaObserver singleton | mode=OBSERVER (from state)
+2026-06-08 03:57:59 [INFO] vectrax.convergence_learner — ConvergenceLearner init | fase=observe | observando decisiones de PresenciaPura
+2026-06-08 03:57:59 [INFO] vectrax.operator.external_gateway — Pipeline: identity anchored | user=tg:2030762343 | name=Mario | lang=es
+2026-06-08 03:57:59 [INFO] vectrax.operator.external_gateway — Pipeline: intake | importance=media | action=ejecutar | reason=semantic_query
+2026-06-08 03:57:59 [INFO] vectrax.dominant_vector — VECTOR: respond (weight=80, reason=pending_message, suppressed=[])
+2026-06-08 03:57:59 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.perception] external.message_received | zone=green | id=118817
+2026-06-08 03:57:59 [INFO] vectrax.operator.external_gateway — Pipeline: CREATOR detected | user=tg:2030762343 | identity_ctx_len=3743
+2026-06-08 03:58:00 [INFO] vectrax.user_memory — Core LIVING resolve | user=tg:2030762343 | input='¿Qué sabes de mí?'
+2026-06-08 03:58:00 [INFO] vectrax.operator.external_gateway — Pipeline: SOVEREIGN memory resolve | source=memory | len=259
+2026-06-08 03:58:00 [INFO] vectrax.identity_layer — FINAL | source=memory_sovereign | len=259 | input='¿Qué sabes de mí?'
+2026-06-08 03:58:00 [INFO] vectrax.learning_cycle.anomaly_detector — AnomalyDetector initialized (window=50)
+2026-06-08 03:58:00 [INFO] vectrax.learning_cycle.investigation — InvestigationEngine initialized
+2026-06-08 03:58:00 [INFO] vectrax.learning_cycle.verification — VerificationEngine initialized
+2026-06-08 03:58:00 [INFO] vectrax.learning_cycle.integrator — LearningIntegrator initialized
+2026-06-08 03:58:00 [INFO] vectrax.learning_cycle.pipeline — LearningPipeline initialized
+2026-06-08 03:58:00 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] law_violation:L1:Mentalismo | zone=yellow | id=118818
+2026-06-08 03:58:00 [WARNING] vectrax.operator.law_enforcement — Law enforcement: 1/7 violations — L1:Mentalismo
+2026-06-08 03:58:00 [INFO] vectrax.operator.external_gateway — Pipeline: 1 law violations detected
+2026-06-08 03:58:00 [INFO] vectrax.nucleus.law_signal — LawSignal: LawSignal[L1]: log_only
+2026-06-08 03:58:00 [INFO] vectrax.nucleus.presencia_pura — PRESENCIA_LAW_ADJ | laws=[1] Δconv=+0.00 Δsov=+0.00 Δnoise=+0.00
+2026-06-08 03:58:00 [INFO] vectrax.nucleus.presencia_pura — PRESENCIA_INHIBITOR | engine=external_gateway.law_enforcement origin=llm_external decision=BLOCK sovereignty=0.20 convergence=0.50 noise=0.10 enforced=False | Soberanía insuficiente: 0.20 < 0.3 (origen=llm_external)
+2026-06-08 03:58:00 [INFO] vectrax.operator.external_gateway — Pipeline: law_signal → PresenciaObserver | LawSignal[L1]: log_only
+2026-06-08 03:58:00 [INFO] vectrax.user_memory — Memory stored | user=tg:2030762343
+2026-06-08 03:58:00 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.action] external.message_response | zone=green | id=118819
+2026-06-08 03:58:00 [INFO] vectrax.pipeline_worker — PROC_OUT msg_id=3dde564d61ff source=memory len=259 response='Sí. Estás dentro de mi memoria central. Eres Mario. vivo en evolución continua. Trabajas como yo quien diseñó imagino y. no es tu socia. Quieres observar qué estructura aparece antes de que el lenguaj'
+2026-06-08 03:58:00 [INFO] httpx — HTTP Request: POST https://api.telegram.org/bot8617990482:AAFQ4Lwc9wHfthS8m7fuO9CRPL3VA8Bn92M/sendMessage "HTTP/1.1 200 OK"
+2026-06-08 03:58:00 [INFO] vectrax.voice.telegram_dispatch — DISPATCH chat=2030762343 reply_to=9320 text='Sí. Estás dentro de mi memoria central. Eres Mario. vivo en evolución continua. '
+2026-06-08 03:58:00 [INFO] vectrax.pipeline_worker — DONE 3dde564d61ff | 0.7s | 259 ch | sent=True | RAM 46→82MB (+36) | ¿Qué sabes de mí?
+2026-06-08 03:58:01 [INFO] httpx — HTTP Request: POST https://api.openai.com/v1/audio/speech "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:58:01 [WARNING] vectrax.api_gate — API_GATE 429 | openai_tts | consecutive=1 | cooldown=60s | total_429s=1 | gate_until=03:59:01
+2026-06-08 03:58:01 [WARNING] vectrax.voice.synthesizer — TTS rate limited (429) — cooldown 300s
+2026-06-08 03:58:08 [INFO] sentence_transformers.base.model — No device provided, using cpu
+2026-06-08 03:58:08 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:08 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/modules.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:08 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/modules.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:08 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:08 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config_sentence_transformers.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:08 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config_sentence_transformers.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:08 [INFO] sentence_transformers.base.model — Loading SentenceTransformer model from sentence-transformers/all-MiniLM-L6-v2.
+2026-06-08 03:58:08 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config_sentence_transformers.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:08 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config_sentence_transformers.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:08 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:08 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/README.md "HTTP/1.1 200 OK"
+2026-06-08 03:58:08 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/README.md "HTTP/1.1 200 OK"
+2026-06-08 03:58:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/modules.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/modules.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/sentence_bert_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/sentence_bert_config.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:09 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/sentence_bert_config.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/adapter_config.json "HTTP/1.1 404 Not Found"
+2026-06-08 03:58:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:09 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:09 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/model.safetensors "HTTP/1.1 302 Found"
+2026-06-08 03:58:09 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/xet-read-token/1110a243fdf4706b3f48f1d95db1a4f5529b4d41 "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/processor_config.json "HTTP/1.1 404 Not Found"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/video_preprocessor_config.json "HTTP/1.1 404 Not Found"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/preprocessor_config.json "HTTP/1.1 404 Not Found"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/config.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer_config.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/vocab.txt "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/vocab.txt "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/vocab.txt "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/tokenizer.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/added_tokens.json "HTTP/1.1 404 Not Found"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/special_tokens_map.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/special_tokens_map.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/special_tokens_map.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/chat_template.jinja "HTTP/1.1 404 Not Found"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/1_Pooling/config.json "HTTP/1.1 307 Temporary Redirect"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/1_Pooling%2Fconfig.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:10 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/resolve-cache/models/sentence-transformers/all-MiniLM-L6-v2/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/1_Pooling%2Fconfig.json "HTTP/1.1 200 OK"
+2026-06-08 03:58:11 [INFO] httpx — HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2 "HTTP/1.1 200 OK"
+2026-06-08 03:58:11 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:58:15 [INFO] vectrax.pipeline_worker — DEQUEUE 7260b1a9db6f | Estábamos hablando de continui | chat=2030762343
+2026-06-08 03:58:15 [INFO] vectrax.pipeline_worker — SG | user=tg:2030762343 tier=INTERNAL intent=casual profile=MINIMAL model=cheap cache=False rl=False
+2026-06-08 03:58:15 [INFO] vectrax.pipeline_worker — PROC_IN msg_id=7260b1a9db6f user=tg:2030762343 content='Estábamos hablando de continuidad. ¿Dónde nos quedamos?'
+2026-06-08 03:58:15 [INFO] vectrax.nucleus.convergence — Convergence #2: type=text intent=UNKNOWN tier=HOT action=proceed (78.1ms)
+2026-06-08 03:58:15 [INFO] vectrax.convergence_hook — CONVERGENCE_CYCLE | source=telegram owner=tg:2030762343 phase[3]_memory=✓ connections=12 patterns=10 phase[6]_gravitation=✓ tier=HOT action=proceed novel=False coherence=0.500 time=78.1ms
+2026-06-08 03:58:15 [INFO] vectrax.operator.external_gateway — Pipeline: identity anchored | user=tg:2030762343 | name=Mario | lang=es
+2026-06-08 03:58:15 [INFO] vectrax.operator.external_gateway — Pipeline: intake | importance=media | action=ejecutar | reason=factual_query
+2026-06-08 03:58:15 [INFO] vectrax.dominant_vector — VECTOR: respond (weight=80, reason=pending_message, suppressed=[])
+2026-06-08 03:58:15 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.perception] external.message_received | zone=green | id=118820
+2026-06-08 03:58:15 [INFO] vectrax.operator.external_gateway — Pipeline: CREATOR detected | user=tg:2030762343 | identity_ctx_len=3743
+2026-06-08 03:58:15 [INFO] vectrax.gravity_activator — GRAVITY | activated=1 | max=continuidad(0.86) | lock=True | context_len=46 | user=tg:2030762343
+2026-06-08 03:58:15 [INFO] vectrax.operator.external_gateway — Pipeline: GRAVITY activated | max=continuidad(0.86) | lock=True | context_len=46 | user=tg:2030762343
+2026-06-08 03:58:15 [INFO] vectrax.operator.external_gateway — Pipeline: pipeline_v2 with extra_context=5578 chars (creator=True)
+2026-06-08 03:58:15 [INFO] vectrax.identity_context — IDENTITY | user=tg:2030762343 name=Mario mode=conversacional creator=True lang=es
+2026-06-08 03:58:15 [INFO] vectrax.smart_router — route: start (channel=creator, owner=tg:2030762343, len=55)
+2026-06-08 03:58:15 [INFO] vectrax.semantic_classifier — Intent embeddings loaded (7 intents)
+2026-06-08 03:58:15 [INFO] vectrax.semantic_classifier — SemanticClassifier: intent=identity_query conf=0.13 frame=none entities=0
+2026-06-08 03:58:15 [INFO] vectrax.smart_router — classify_intent: online via regex_fallback (words=7, sem_conf=0.13)
+2026-06-08 03:58:15 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:58:15 [INFO] vectrax.smart_router — select_strategy: resolve_online providers=[] conf=0.80 reason=Pregunta factual → búsqueda web — topic=general
+2026-06-08 03:58:15 [INFO] vectrax.smart_router — SmartRoute: [online] → resolve_online (topic=general, risk=LOW, conf=0.80) (total=104.4ms)
+2026-06-08 03:58:15 [INFO] vectrax.operator.external_gateway — Pipeline: SmartRouter → resolve_online (topic=general, risk=LOW, conf=0.80)
+2026-06-08 03:58:15 [INFO] vectrax.operator.external_gateway — Pipeline: GRAVITY LOCK → redirect ONLINE to LLM | user=tg:2030762343
+2026-06-08 03:58:15 [INFO] vectrax.intelligence.connector_registry — Registered provider: openai (type=openai)
+2026-06-08 03:58:15 [INFO] vectrax.intelligence.connector_registry — Auto-detected OpenAI (API key present)
+2026-06-08 03:58:15 [INFO] vectrax.intelligence.connector_registry — Registered provider: gemini (type=gemini)
+2026-06-08 03:58:15 [INFO] vectrax.intelligence.connector_registry — Auto-detected Gemini (API key present)
+2026-06-08 03:58:15 [INFO] vectrax.intelligence.router — IntelligenceRouter initialized with 2 providers: ['openai', 'gemini']
+2026-06-08 03:58:15 [INFO] vectrax.operator.external_gateway — Intelligence Router initialized: ['openai', 'gemini']
+2026-06-08 03:58:16 [INFO] httpx — HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:58:16 [INFO] httpx — HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=REDACTED "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:58:16 [WARNING] vectrax.operator.external_gateway — LLM route_single failed: HTTPStatusError: Client error '429 Too Many Requests' for url 'https://api.openai.com/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-06-08 03:58:16 [INFO] httpx — HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:58:16 [WARNING] vectrax.api_gate — API_GATE 429 | openai | consecutive=1 | cooldown=60s | total_429s=1 | gate_until=03:59:16
+2026-06-08 03:58:16 [WARNING] vectrax.operator.external_gateway — OpenAI direct fallback failed: Client error '429 Too Many Requests' for url 'https://api.openai.com/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-06-08 03:58:16 [INFO] vectrax.operator.external_gateway — Response via memory synthesis (no LLM) | len=259
+2026-06-08 03:58:16 [INFO] vectrax.identity_layer — Low quality: wall of text (9 sentences, no structure)
+2026-06-08 03:58:16 [INFO] vectrax.identity_layer — FINAL | source=raw_passthrough | soft_reject=low_quality | raw_len=259 | input='Estábamos hablando de continuidad. ¿Dónde nos quedamos?'
+2026-06-08 03:58:16 [INFO] vectrax.identity_layer — FINAL | source=raw | raw_len=259 | final_len=259 | input='Estábamos hablando de continuidad. ¿Dónde nos quedamos?'
+2026-06-08 03:58:16 [INFO] vectrax.learning_cycle.anomaly_detector — Anomalies detected: 1 from event (intent=llm, source=telegram)
+2026-06-08 03:58:17 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] hypothesis:proposed | zone=green | id=118823
+2026-06-08 03:58:17 [INFO] vectrax.operator.hypothesis_engine — Hypothesis proposed: HYP-B663AD72 | confidence=0.40 | 'Nuevo patrón detectado: intent 'llm' nunca visto. Podría rep'
+2026-06-08 03:58:17 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.reasoning] hypothesis:proposed | zone=green | id=118824
+2026-06-08 03:58:17 [INFO] vectrax.operator.hypothesis_engine — Hypothesis proposed: HYP-A5544CEF | confidence=0.40 | 'Nuevo patrón: intent 'llm' nunca visto. Podría ser un error '
+2026-06-08 03:58:17 [INFO] vectrax.learning_cycle.investigation — Investigation complete: anomaly=ANOM-0EBBC7EA type=new_pattern hypotheses=2 (372.6ms)
+2026-06-08 03:58:17 [INFO] vectrax.operator.hypothesis_engine — Evidence added to HYP-B663AD72: contradiction (supports=False, weight=0.30) → confidence=0.00
+2026-06-08 03:58:17 [INFO] vectrax.learning_cycle.verification — Verification insufficient: HYP-B663AD72 (1 evidence, need 2)
+2026-06-08 03:58:17 [INFO] vectrax.operator.hypothesis_engine — Evidence added to HYP-A5544CEF: contradiction (supports=False, weight=0.30) → confidence=0.00
+2026-06-08 03:58:17 [INFO] vectrax.learning_cycle.verification — Verification insufficient: HYP-A5544CEF (1 evidence, need 2)
+2026-06-08 03:58:17 [INFO] vectrax.user_memory — Memory stored | user=tg:2030762343
+2026-06-08 03:58:17 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.action] external.message_response | zone=green | id=118825
+2026-06-08 03:58:17 [INFO] vectrax.pipeline_worker — PROC_OUT msg_id=7260b1a9db6f source= len=259 response='Sí. Estás dentro de mi memoria central. Eres Mario. vivo en evolución continua. Trabajas como yo quien diseñó imagino y. no es tu socia. Quieres observar qué estructura aparece antes de que el lenguaj'
+2026-06-08 03:58:17 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:58:17 [INFO] vectrax.engine — ingest_v2: tg:2030762343 | candidate(0.15) | mass=0.6807 | dist=0.3193 | layer=core | patterns=251 | 60ms
+2026-06-08 03:58:17 [INFO] httpx — HTTP Request: POST https://api.telegram.org/bot8617990482:AAFQ4Lwc9wHfthS8m7fuO9CRPL3VA8Bn92M/sendMessage "HTTP/1.1 200 OK"
+2026-06-08 03:58:17 [WARNING] vectrax.voice.telegram_dispatch — DISPATCH SKIP (duplicate) chat=2030762343 text='Sí. Estás dentro de mi memoria central. Eres Mario. vivo en evolución continua. ' reply_to=9322
+2026-06-08 03:58:17 [INFO] vectrax.pipeline_worker — DONE 7260b1a9db6f | 1.8s | 259 ch | sent=True | RAM 896→926MB (+30) | Estábamos hablando de continui
+2026-06-08 03:58:33 [INFO] vectrax.pipeline_worker — DEQUEUE bcfd7d3edc80 | ¿Qué significa Word Gravity de | chat=2030762343
+2026-06-08 03:58:33 [INFO] vectrax.pipeline_worker — SG | user=tg:2030762343 tier=INTERNAL intent=casual profile=MINIMAL model=cheap cache=False rl=False
+2026-06-08 03:58:33 [INFO] vectrax.pipeline_worker — PROC_IN msg_id=bcfd7d3edc80 user=tg:2030762343 content='¿Qué significa Word Gravity dentro de VECTRAX?'
+2026-06-08 03:58:33 [INFO] vectrax.nucleus.convergence — Convergence #3: type=text intent=UNKNOWN tier=HOT action=proceed (74.0ms)
+2026-06-08 03:58:33 [INFO] vectrax.convergence_hook — CONVERGENCE_CYCLE | source=telegram owner=tg:2030762343 phase[3]_memory=✓ connections=13 patterns=10 phase[6]_gravitation=✓ tier=HOT action=proceed novel=False coherence=0.500 time=74.0ms
+2026-06-08 03:58:33 [INFO] vectrax.operator.external_gateway — Pipeline: identity anchored | user=tg:2030762343 | name=Mario | lang=es
+2026-06-08 03:58:33 [INFO] vectrax.operator.external_gateway — Pipeline: intake | importance=alta | action=ejecutar | reason=vectrax_self_reference
+2026-06-08 03:58:33 [INFO] vectrax.dominant_vector — VECTOR: respond (weight=80, reason=pending_message, suppressed=[])
+2026-06-08 03:58:33 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.perception] external.message_received | zone=green | id=118826
+2026-06-08 03:58:33 [INFO] vectrax.operator.external_gateway — Pipeline: CREATOR detected | user=tg:2030762343 | identity_ctx_len=3743
+2026-06-08 03:58:33 [INFO] vectrax.gravity_activator — GRAVITY | activated=1 | max=vectrax(0.98) | lock=True | context_len=43 | user=tg:2030762343
+2026-06-08 03:58:33 [INFO] vectrax.operator.external_gateway — Pipeline: GRAVITY activated | max=vectrax(0.98) | lock=True | context_len=43 | user=tg:2030762343
+2026-06-08 03:58:33 [INFO] httpx — HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:58:33 [INFO] vectrax.api_gate — API_GATE CLOSED | openai | 42s remaining | consecutive_429s=1 | total_blocked=1
+2026-06-08 03:58:33 [INFO] vectrax.conversation.reference_resolver — reference_resolver: context injected | refs=[topic=False entity=False cont=True] | user_msg='¿Qué significa Word Gravity dentro de VECTRAX?'
+2026-06-08 03:58:33 [INFO] vectrax.operator.external_gateway — Pipeline: reference_resolver injected | user=tg:2030762343 | topic='continuidad'
+2026-06-08 03:58:33 [INFO] vectrax.operator.external_gateway — Pipeline: pipeline_v2 with extra_context=5517 chars (creator=True)
+2026-06-08 03:58:33 [INFO] vectrax.identity_context — IDENTITY | user=tg:2030762343 name=Mario mode=conversacional creator=True lang=es
+2026-06-08 03:58:33 [INFO] vectrax.smart_router — route: start (channel=creator, owner=tg:2030762343, len=46)
+2026-06-08 03:58:33 [INFO] vectrax.semantic_classifier — SemanticClassifier: intent=identity_query conf=0.10 frame=none entities=0
+2026-06-08 03:58:33 [INFO] vectrax.smart_router — classify_intent: online via regex_fallback (words=7, sem_conf=0.10)
+2026-06-08 03:58:33 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:58:33 [INFO] vectrax.smart_router — select_strategy: resolve_online providers=[] conf=0.80 reason=Pregunta factual → búsqueda web — topic=general
+2026-06-08 03:58:33 [INFO] vectrax.smart_router — SmartRoute: [online] → resolve_online (topic=general, risk=LOW, conf=0.80) (total=44.2ms)
+2026-06-08 03:58:33 [INFO] vectrax.operator.external_gateway — Pipeline: SmartRouter → resolve_online (topic=general, risk=LOW, conf=0.80)
+2026-06-08 03:58:33 [INFO] vectrax.operator.external_gateway — Pipeline: GRAVITY LOCK → redirect ONLINE to LLM | user=tg:2030762343
+2026-06-08 03:58:33 [INFO] httpx — HTTP Request: POST https://api.openai.com/v1/chat/completions "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:58:34 [INFO] httpx — HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=REDACTED "HTTP/1.1 429 Too Many Requests"
+2026-06-08 03:58:34 [WARNING] vectrax.operator.external_gateway — LLM route_single failed: HTTPStatusError: Client error '429 Too Many Requests' for url 'https://api.openai.com/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+2026-06-08 03:58:34 [INFO] vectrax.operator.external_gateway — Response via memory synthesis (no LLM) | len=259
+2026-06-08 03:58:34 [INFO] vectrax.identity_layer — Low quality: wall of text (9 sentences, no structure)
+2026-06-08 03:58:34 [INFO] vectrax.identity_layer — FINAL | source=raw_passthrough | soft_reject=low_quality | raw_len=259 | input='¿Qué significa Word Gravity dentro de VECTRAX?'
+2026-06-08 03:58:34 [INFO] vectrax.identity_layer — FINAL | source=raw | raw_len=259 | final_len=259 | input='¿Qué significa Word Gravity dentro de VECTRAX?'
+2026-06-08 03:58:34 [INFO] vectrax.user_memory — Memory stored | user=tg:2030762343
+2026-06-08 03:58:34 [INFO] vectrax.user_memory — Core absorbed | user=tg:2030762343 | count=1
+2026-06-08 03:58:34 [INFO] vectrax.operator.ledger_bridge — Ledger [operator.action] external.message_response | zone=green | id=118831
+2026-06-08 03:58:34 [INFO] vectrax.pipeline_worker — PROC_OUT msg_id=bcfd7d3edc80 source= len=259 response='Sí. Estás dentro de mi memoria central. Eres Mario. vivo en evolución continua. Trabajas como yo quien diseñó imagino y. no es tu socia. Quieres observar qué estructura aparece antes de que el lenguaj'
+2026-06-08 03:58:34 [INFO] vectrax.smart_router — detect_context: topic=general conf=0.50 risk=LOW sensitive=False
+2026-06-08 03:58:34 [INFO] vectrax.engine — ingest_v2: tg:2030762343 | candidate(0.35) | mass=0.6807 | dist=0.3193 | layer=core | patterns=252 | 55ms
+2026-06-08 03:58:35 [INFO] httpx — HTTP Request: POST https://api.telegram.org/bot8617990482:AAFQ4Lwc9wHfthS8m7fuO9CRPL3VA8Bn92M/sendMessage "HTTP/1.1 200 OK"
+2026-06-08 03:58:35 [WARNING] vectrax.voice.telegram_dispatch — DISPATCH SKIP (duplicate) chat=2030762343 text='Sí. Estás dentro de mi memoria central. Eres Mario. vivo en evolución continua. ' reply_to=9324
+2026-06-08 03:58:35 [INFO] vectrax.pipeline_worker — DONE bcfd7d3edc80 | 1.6s | 259 ch | sent=True | RAM 925→926MB (+1) | ¿Qué significa Word Gravity de

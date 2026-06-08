@@ -1,0 +1,40 @@
+{
+  "session": "2026-06-08",
+  "closed_at": "2026-06-08T04:05:44Z",
+  "production_commit": "08eca4d",
+  "server": "140.82.28.181",
+  "services": {
+    "gateway": {"alive": true, "heartbeat": "04:05:39"},
+    "worker": {"alive": true, "heartbeat": "04:05:41"},
+    "queue": {"pending": 0, "processing": 0, "done_24h": 0}
+  },
+  "wgi": {"total_words": 92, "global_words": 32, "user_scopes": 4},
+  "core_memory": {
+    "entries": 200,
+    "categories": {"identity": 2, "relationship": 1, "work": 1, "goal": 1, "preference": 2, "fact": 193},
+    "top_weight": 1.0,
+    "avg_weight": 0.208,
+    "garbage_cleaned": 125
+  },
+  "storage": {"vault_mb": 85, "logs_mb": 7.2, "worker_lines": 21082, "gateway_lines": 9153},
+  "tests": {"new": 128, "total_passed": 2292, "regressions": 0},
+  "stress_test": {
+    "gravity_lock": "5/5",
+    "living_response": "PASS",
+    "telegram_guard": "7/7",
+    "concurrent_fallback": "5/5",
+    "overall": "ALL PASS"
+  },
+  "changes_deployed": [
+    "lead_intent_resolution",
+    "living_response_synthesis",
+    "extractor_hardening_blacklist",
+    "api_gate_pipeline_integration",
+    "duplicate_market_removal",
+    "duplicate_fastpath_removal",
+    "continuidad_gravity_seed",
+    "metaloop_guard_integration",
+    "3tier_llm_fallback",
+    "production_db_cleanup"
+  ]
+}
