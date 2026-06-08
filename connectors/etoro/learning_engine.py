@@ -33,7 +33,9 @@ _PROPOSALS_FILE = os.path.join(
 )
 
 # Symbols to observe during a learn cycle
-DEFAULT_WATCHLIST = ["BTCUSD", "ETHUSD", "EURUSD", "AAPL", "TSLA", "NVDA"]
+# Note: eToro uses short names for crypto (BTC, ETH), not pairs (BTCUSD).
+# EURUSD removed — eToro search returns instrument_id but rates fail.
+DEFAULT_WATCHLIST = ["BTC", "ETH", "AAPL", "TSLA", "NVDA", "AMZN"]
 
 
 # ── Proposal dataclass ────────────────────────────────────────────────

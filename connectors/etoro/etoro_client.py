@@ -254,27 +254,62 @@ def get_price(instrument_id: int) -> Dict[str, Any]:
     }
 
 
+# Interval name mapping: legacy names → eToro API names
+_INTERVAL_MAP = {
+    "Minute1": "OneMinute",   "OneMinute": "OneMinute",
+    "Minute5": "FiveMinutes", "FiveMinutes": "FiveMinutes",
+    "Minute15": "FifteenMinutes", "FifteenMinutes": "FifteenMinutes",
+    "Minute30": "ThirtyMinutes",  "ThirtyMinutes": "ThirtyMinutes",
+    "Hour1": "OneHour",      "OneHour": "OneHour",
+    "Hour4": "FourHours",    "FourHours": "FourHours",
+    "Day1": "OneDay",        "OneDay": "OneDay",
+    "Week1": "OneWeek",      "OneWeek": "OneWeek",
+}
+
+
 def get_candles(
     instrument_id: int,
-    interval: str = "Hour1",
+    interval: str = "OneHour",
     count: int = 100,
     direction: str = "desc",
 ) -> Dict[str, Any]:
     """
     Get OHLCV candles for an instrument.
-    Supported intervals: Minute1, Minute5, Minute15, Minute30,
-                         Hour1, Hour4, Day1, Week1, Month1
+    Supported intervals: OneMinute, FiveMinutes, FifteenMinutes,
+        ThirtyMinutes, OneHour, FourHours, OneDay, OneWeek
+    Legacy names (Hour1, Day1, etc.) are auto-mapped.
     """
+    api_interval = _INTERVAL_MAP.get(interval, interval)
     result = _request(
         "GET",
-        f"/market-data/instruments/{instrument_id}/history/candles/{direction}/{interval}/{count}",
+        f"/market-data/instruments/{instrument_id}/history/candles/{direction}/{api_interval}/{count}",
     )
     if not result["success"]:
         return result
 
-    raw_candles = result["data"].get("candles", result["data"])
+    # eToro response: {"interval": ..., "candles": [{"instrumentId": ..., "candles": [...OHLCV...]}]}
+    # Double-nested: data.candles[0].candles contains the actual OHLCV bars.
+    raw = result["data"]
+    raw_candles = []
+    if isinstance(raw, dict):
+        outer = raw.get("candles", [])
+        if isinstance(outer, list) and outer:
+            first = outer[0]
+            if isinstance(first, dict) and "candles" in first:
+                raw_candles = first["candles"]  # inner candles = actual OHLCV
+            else:
+                raw_candles = outer
+        else:
+            raw_candles = outer
+    elif isinstance(raw, list) and raw:
+        first = raw[0]
+        if isinstance(first, dict) and "candles" in first:
+            raw_candles = first["candles"]
+        else:
+            raw_candles = raw
+
     candles = []
-    for c in (raw_candles if isinstance(raw_candles, list) else []):
+    for c in raw_candles:
         candles.append({
             "open":   c.get("open",   c.get("o", 0)),
             "high":   c.get("high",   c.get("h", 0)),
@@ -287,7 +322,7 @@ def get_candles(
     return {
         "success":       True,
         "instrument_id": instrument_id,
-        "interval":      interval,
+        "interval":      api_interval,
         "candles":       candles,
         "count":         len(candles),
         "latency_ms":    result["latency_ms"],

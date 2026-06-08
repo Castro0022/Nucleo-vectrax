@@ -96,6 +96,15 @@ class GeminiProvider(BaseLLMProvider):
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         self._ensure_client()
+
+        # API Gate: skip call entirely if rate-limited (exponential backoff)
+        try:
+            from core.api_gate import check_gate, record_429, record_success
+            if not check_gate("gemini"):
+                raise RuntimeError("Gemini gate closed (429 backoff active)")
+        except ImportError:
+            pass
+
         start = time.time()
 
         url = (
@@ -105,10 +114,20 @@ class GeminiProvider(BaseLLMProvider):
         payload = self._build_payload(request)
 
         resp = await self._client.post(url, json=payload)
+        if resp.status_code == 429:
+            try:
+                record_429("gemini")
+            except Exception:
+                pass
+            raise RuntimeError(f"Gemini 429: {self._extract_error(resp)}")
         if resp.status_code != 200:
             raise RuntimeError(
                 f"Gemini API error ({resp.status_code}): {self._extract_error(resp)}"
             )
+        try:
+            record_success("gemini")
+        except Exception:
+            pass
         data = resp.json()
 
         text = self._extract_text(data)

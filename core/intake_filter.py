@@ -382,7 +382,7 @@ def evaluate_intake(
             context_hint="empathy",
         )
 
-    # ── Filtro 7: mensaje corto sin pregunta → guardar ───────
+    # ── Filtro 7: mensaje corto sin pregunta ───────────────────────
     word_count = len(text.split())
     has_question = (
         "?" in text or "¿" in text
@@ -393,7 +393,27 @@ def evaluate_intake(
         ))
     )
     if word_count <= 5 and not has_question:
-        # Antes de almacenar, verificar si hay hechos que responder
+        # Word Gravity check: if any word has high gravitational mass,
+        # it's significant — don't discard. "Despierta", "mercado",
+        # "convergencia" etc. carry meaning even as single words.
+        try:
+            from core.word_gravity import get_effective_mass
+            max_mass = 0.0
+            for token in text_lower.split():
+                m, _ = get_effective_mass(token, user_id)
+                if m > max_mass:
+                    max_mass = m
+            if max_mass >= 0.5:
+                return IntakeResult(
+                    importance=Importance.HIGH,
+                    action=Action.EXECUTE,
+                    reason="gravity_word",
+                    context_hint="self_aware" if max_mass >= 0.8 else "full_pipeline",
+                )
+        except Exception:
+            pass
+
+        # Fact memory check before discarding
         try:
             from vectrax.fact_memory import query_facts
             fact_result = query_facts(user_id, text)

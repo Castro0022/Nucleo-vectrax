@@ -406,6 +406,45 @@ _SEED_WORDS: List[Tuple[str, float, str]] = [
     ("worker", 0.70, "domain"),
     ("pipeline", 0.70, "domain"),
     ("telegram", 0.68, "domain"),
+    # --- Activation (multi-language) ---
+    # ES
+    ("despierta", 0.90, "identity"),
+    ("activa", 0.85, "identity"),
+    ("observa", 0.82, "concept"),
+    ("percibe", 0.80, "concept"),
+    ("detecta", 0.80, "concept"),
+    ("siente", 0.78, "concept"),
+    ("estado", 0.75, "concept"),
+    ("operar", 0.75, "concept"),
+    ("trading", 0.75, "domain"),
+    # EN
+    ("wake", 0.88, "identity"),
+    ("awake", 0.88, "identity"),
+    ("alive", 0.85, "identity"),
+    ("activate", 0.85, "identity"),
+    ("observe", 0.82, "concept"),
+    ("detect", 0.80, "concept"),
+    ("perceive", 0.80, "concept"),
+    ("status", 0.75, "concept"),
+    ("universe", 0.83, "concept"),
+    ("stars", 0.80, "concept"),
+    ("market", 0.85, "domain"),
+    ("signal", 0.75, "concept"),
+    ("gravity", 0.82, "concept"),
+    ("creator", 0.90, "identity"),
+    ("conscious", 0.82, "identity"),
+    # FR
+    ("reveille", 0.88, "identity"),
+    ("etoiles", 0.80, "concept"),
+    ("marche", 0.82, "domain"),
+    # PT
+    ("desperta", 0.88, "identity"),
+    ("acorda", 0.88, "identity"),
+    ("estrelas", 0.80, "concept"),
+    # IT
+    ("sveglia", 0.88, "identity"),
+    # DE
+    ("aufwachen", 0.88, "identity"),
 ]
 
 
