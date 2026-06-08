@@ -371,11 +371,16 @@ def apply_decay() -> int:
 
 _SEED_WORDS: List[Tuple[str, float, str]] = [
     # (word, mass, category)
+    # --- Identity (never decay) ---
     ("vectrax", 0.98, "identity"),
+    ("creador", 0.90, "identity"),
+    ("mario", 0.92, "identity"),
+    # --- Core concepts (system vocabulary) ---
     ("mercado", 0.88, "domain"),
     ("memoria", 0.85, "concept"),
     ("convergencia", 0.87, "concept"),
     ("convergencias", 0.87, "concept"),
+    ("continuidad", 0.86, "concept"),   # prevents "BBC Radio" / electrical searches
     ("estrella", 0.83, "concept"),
     ("estrellas", 0.83, "concept"),
     ("constelacion", 0.83, "concept"),
@@ -384,8 +389,6 @@ _SEED_WORDS: List[Tuple[str, float, str]] = [
     ("gravitacional", 0.82, "concept"),
     ("identidad", 0.84, "concept"),
     ("observador", 0.80, "concept"),
-    ("creador", 0.90, "identity"),
-    ("mario", 0.92, "identity"),
     ("universo", 0.80, "concept"),
     ("gravedad", 0.80, "concept"),
     ("patron", 0.75, "concept"),
@@ -394,6 +397,11 @@ _SEED_WORDS: List[Tuple[str, float, str]] = [
     ("motores", 0.72, "concept"),
     ("soberania", 0.78, "concept"),
     ("presencia", 0.76, "concept"),
+    ("coherencia", 0.78, "concept"),     # system coherence, not generic
+    ("conciencia", 0.76, "concept"),     # system consciousness, not philosophy
+    ("aprendizaje", 0.74, "concept"),    # system learning, not generic
+    ("router", 0.72, "domain"),
+    # --- Infrastructure ---
     ("dashboard", 0.70, "domain"),
     ("worker", 0.70, "domain"),
     ("pipeline", 0.70, "domain"),

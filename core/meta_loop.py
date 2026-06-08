@@ -75,11 +75,32 @@ def _send_telegram(chat_id: str, text: str) -> bool:
     Envía un mensaje Telegram directamente al creador via Bot API.
     Usa TELEGRAM_BOT_TOKEN del entorno. Retorna True si tuvo éxito.
     Solo se usa para alertas proactivas de meta_loop.
+
+    IMPORTANT: pasa por telegram_guard para respetar silent mode.
+    Antes enviaba directo sin filtro — causaba que eventos internos
+    (gravity/universe_growth, observaciones INFO) llegaran al chat.
     """
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     if not token or not chat_id:
         logger.debug("_send_telegram: sin token o chat_id, skip.")
         return False
+
+    # Strip HTML tags for guard evaluation (guard checks plain text)
+    import re as _re
+    plain = _re.sub(r"<[^>]+>", "", text)
+
+    # Telegram Guard — block telemetry/metrics/observations
+    try:
+        from core.telegram_guard import should_send_to_user
+        if not should_send_to_user(plain, reason="observation"):
+            logger.info(
+                "meta_loop: GUARD blocked alert to %s | %s",
+                chat_id, plain[:60].replace("\n", " "),
+            )
+            return True  # pretend sent — observation is logged, just not sent
+    except Exception:
+        pass
+
     try:
         import httpx
         url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -184,14 +205,14 @@ _ALERT_OBS_TYPES = {
     "worker_state",  "error_spike",  "snapshot_failure",
     # trade events
     "trade_executed", "trade_validation", "position_closed",
-    # convergence events
-    "convergence_detected",
-    # new stars (only on significant growth)
-    "universe_growth",
-    # mode transitions and daily reflection
-    "mode_transition", "daily_reflection",
-    # worker incidents (blackbox)
+    # mode transitions and worker incidents (operational)
+    "mode_transition",
     "worker_incident", "worker_diagnosis",
+    # REMOVED: universe_growth, convergence_detected, daily_reflection
+    # These are informational, not actionable. They were flooding the
+    # creator's chat with internal telemetry ("Universo gravitacional
+    # creció +1 estrellas"). Observations are still recorded in the
+    # ledger and visible on the dashboard.
 }
 
 def _is_rate_limited() -> bool:
