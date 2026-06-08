@@ -303,6 +303,35 @@ class ExternalGateway:
             logger.debug("active_state load failed: %s", _exc)
 
         # ══════════════════════════════════════════════════════════════
+        # STEP 0.4: GREETING INTERCEPT — antes del intake filter
+        # Saludos simples NUNCA deben ser ingestados, descartados, ni
+        # enviados al LLM. Respuesta instantánea para TODOS los usuarios
+        # (incluyendo el creador, que tiene fast-path desactivado).
+        # ══════════════════════════════════════════════════════════════
+        if self._GREETING_RE.match(content.strip()):
+            _name = ""
+            try:
+                if anchor and anchor.has_name:
+                    _name = anchor.name.split()[0]
+            except Exception:
+                pass
+            _lang = (anchor.language if anchor and anchor.language else "es")
+            if _lang == "en":
+                _greeting = f"Hey{f' {_name}' if _name else ''}. What do you need?"
+            else:
+                _greeting = f"Hola{f' {_name}' if _name else ''}. ¿En qué trabajamos?"
+            logger.info("Pipeline: GREETING intercept | user=%s", user_id[:20])
+            return GatewayResult(
+                event_id=correlation_id,
+                user_id=user_id,
+                channel=channel,
+                response=_greeting,
+                source="greeting",
+                timestamp=ts,
+                processed=True,
+            )
+
+        # ══════════════════════════════════════════════════════════════
         # STEP 0.5: INTAKE FILTER — triage antes de todo
         # ══════════════════════════════════════════════════════════════
         _intake_t0 = time.perf_counter()
