@@ -464,19 +464,40 @@ def _process_one(msg):
                 _dl = get_user_language(msg.user_id, msg.content)
             except Exception:
                 _dl = "es"
-            if _dl == "en":
-                response = (
-                    "Processing capacity is limited right now. "
-                    "Your message has been recorded. Try again shortly."
-                )
+
+            # Detect greeting — don't show "capacity limited" for "Hola"
+            import re as _gd_re
+            _is_greeting = bool(_gd_re.match(
+                r"^\s*(?:hola|hey|hi|hello|buenos?\s+d[ií]as?|buenas?"
+                r"|buen d[ií]a|good\s+(?:morning|afternoon|evening)"
+                r"|que\s+tal|qu[eé]\s+tal|saludos|yo|ey)\s*[.!?]*\s*$",
+                msg.content.strip(), _gd_re.IGNORECASE,
+            ))
+            if _is_greeting:
+                try:
+                    from vectrax.identity_anchor import get_anchored_identity
+                    _anch = get_anchored_identity(msg.user_id)
+                    _gn = _anch.name.split()[0] if _anch and _anch.has_name else ""
+                except Exception:
+                    _gn = ""
+                if _dl == "en":
+                    response = f"Hey{f' {_gn}' if _gn else ''}. What do you need?"
+                else:
+                    response = f"Hola{f' {_gn}' if _gn else ''}. ¿En qué trabajamos?"
             else:
-                response = (
-                    "Capacidad de procesamiento limitada en este momento. "
-                    "Tu mensaje quedó registrado. Intenta de nuevo en unos minutos."
-                )
+                if _dl == "en":
+                    response = (
+                        "Processing capacity is limited right now. "
+                        "Your message has been recorded. Try again shortly."
+                    )
+                else:
+                    response = (
+                        "Capacidad de procesamiento limitada en este momento. "
+                        "Tu mensaje quedó registrado. Intenta de nuevo en unos minutos."
+                    )
             logger.info(
-                "GRACEFUL_DEGRADATION %s | all providers unavailable | user=%s",
-                msg.id, msg.user_id,
+                "GRACEFUL_DEGRADATION %s | greeting=%s | user=%s",
+                msg.id, _is_greeting, msg.user_id,
             )
 
         # === ENVIAR DIRECTO A TELEGRAM ===

@@ -2290,8 +2290,31 @@ class ExternalGateway:
 
     # -- Memory synthesis fallback (no LLM) ---------------------------------
 
-    @staticmethod
+    # Greeting patterns — these NEVER need an LLM
+    _GREETING_RE = _re_store.compile(
+        r"^\s*(?:"
+        r"hola|hey|hi|hello|buenos?\s+d[ií]as?|buenas?\s+(?:tardes?|noches?)"
+        r"|buen d[ií]a|good\s+(?:morning|afternoon|evening)"
+        r"|que\s+tal|qu[eé]\s+tal|saludos|yo|ey"
+        r")\s*[.!?]*\s*$",
+        _re_store.IGNORECASE,
+    )
+
+    # Identity query patterns
+    _IDENTITY_QUERY_RE = _re_store.compile(
+        r"(?:"
+        r"qu[eé]\s+sabes\s+(?:de|sobre)\s+m[ií]"
+        r"|me\s+conoces"
+        r"|qui[eé]n\s+soy"
+        r"|what\s+(?:do\s+you\s+)?know\s+about\s+me"
+        r"|who\s+am\s+i"
+        r")",
+        _re_store.IGNORECASE,
+    )
+
+    @classmethod
     def _synthesize_from_context(
+        cls,
         content: str,
         user_id: str,
         extra_context: str = "",
@@ -2300,58 +2323,72 @@ class ExternalGateway:
         """
         Build a response from available context WITHOUT any LLM call.
 
+        Intent-aware: differentiates greetings, identity queries,
+        system questions, and general messages.
+
         Used as last resort when all providers are rate-limited.
-        Extracts relevant fragments from gravity context, memory,
-        and conversation state to form a basic but useful answer.
-
-        Returns empty string if no useful context is available.
+        Returns empty string if no useful response can be built.
         """
-        fragments = []
-
-        # 1. Try core_memory living response (already synthesized)
-        try:
-            from vectrax.core_memory import get_living_response
-            living = get_living_response(user_id)
-            if living and len(living) > 30:
-                fragments.append(living)
-        except Exception:
-            pass
-
-        # 2. Try local star search (pattern matching, no LLM)
-        if not fragments:
-            try:
-                from vectrax.resolver import resolve_local
-                local = resolve_local(content, channel="user", owner=user_id, top_k=3)
-                if local.context_stars > 0 and local.sovereign_answer:
-                    fragments.append(local.sovereign_answer)
-            except Exception:
-                pass
-
-        # 3. Extract gravity context if available
-        if not fragments and extra_context:
-            # Gravity context has [GRAVITY — "word" (mass=X)] headers
-            import re as _re
-            gravity_lines = [
-                line.strip() for line in extra_context.split("\n")
-                if line.strip().startswith("• ")
-            ]
-            if gravity_lines:
-                fragments.append("\n".join(gravity_lines[:3]))
-
-        if not fragments:
-            return ""
-
-        # Build response with degradation notice
-        body = " ".join(fragments)[:400]
         try:
             from core.language_gate import get_user_language
             lang = get_user_language(user_id, content)
         except Exception:
             lang = "es"
 
-        if lang == "es":
-            return body
-        return body
+        # ── GREETINGS: simple response, no memory needed ──
+        if cls._GREETING_RE.match(content.strip()):
+            try:
+                from vectrax.identity_anchor import get_anchored_identity
+                anchor = get_anchored_identity(user_id)
+                name = anchor.name.split()[0] if anchor and anchor.has_name else ""
+            except Exception:
+                name = ""
+            if lang == "en":
+                return f"Hey{f' {name}' if name else ''}. What do you need?"
+            return f"Hola{f' {name}' if name else ''}. ¿En qué trabajamos?"
+
+        # ── IDENTITY QUERIES: living response from core_memory ──
+        if cls._IDENTITY_QUERY_RE.search(content):
+            try:
+                from vectrax.core_memory import get_living_response
+                living = get_living_response(user_id, lang)
+                if living and len(living) > 30:
+                    return living
+            except Exception:
+                pass
+
+        # ── SYSTEM QUESTIONS (vectrax, nucleo, etc.): self-context ──
+        try:
+            from vectrax.self_context import is_self_referential
+            if is_self_referential(content):
+                from vectrax.self_context import build_self_context
+                ctx = build_self_context(lang=lang, user_id=user_id)
+                if ctx and len(ctx) > 50:
+                    # Return first 400 chars of self-context as direct answer
+                    return ctx[:400].strip()
+        except Exception:
+            pass
+
+        # ── GENERAL: try local star search (pattern matching, no LLM) ──
+        try:
+            from vectrax.resolver import resolve_local
+            local = resolve_local(content, channel="user", owner=user_id, top_k=3)
+            if local.context_stars > 0 and local.sovereign_answer:
+                return local.sovereign_answer[:400]
+        except Exception:
+            pass
+
+        # ── GRAVITY CONTEXT: extract relevant fragments ──
+        if extra_context:
+            import re as _re
+            gravity_lines = [
+                line.strip() for line in extra_context.split("\n")
+                if line.strip().startswith("• ")
+            ]
+            if gravity_lines:
+                return "\n".join(gravity_lines[:3])
+
+        return ""
 
     # -- Estadísticas -------------------------------------------------------
 
