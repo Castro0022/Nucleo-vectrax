@@ -2175,9 +2175,31 @@ class ExternalGateway:
 
         # Fallback: OpenAI directo si el bridge falla
         try:
-            return self._generate_openai_direct(prompt)
+            answer = self._generate_openai_direct(prompt)
+            if answer:
+                return answer
         except Exception as exc:
             logger.warning("OpenAI direct fallback failed: %s", exc)
+
+        # Fallback: Ollama local (no rate limits, no billing)
+        try:
+            answer = self._generate_ollama_local(prompt)
+            if answer:
+                logger.info("LLM response via Ollama local")
+                return answer
+        except Exception as exc:
+            logger.debug("Ollama local fallback failed: %s", exc)
+
+        # Fallback: synthesize from memory/gravity without any LLM
+        try:
+            answer = self._synthesize_from_context(
+                content, user_id, extra_context, memory_context,
+            )
+            if answer:
+                logger.info("Response via memory synthesis (no LLM) | len=%d", len(answer))
+                return answer
+        except Exception as exc:
+            logger.debug("Memory synthesis fallback failed: %s", exc)
 
         return ""
 
@@ -2236,6 +2258,100 @@ class ExternalGateway:
         content = data["choices"][0]["message"]["content"]
         logger.info("OpenAI direct fallback: response generated")
         return content.strip()
+
+    # -- Ollama local fallback ------------------------------------------------
+
+    @staticmethod
+    def _generate_ollama_local(prompt: str) -> str:
+        """
+        Fallback to local Ollama instance (no rate limits, no billing).
+        Requires Ollama running on the server with a model pulled.
+        Returns empty string if Ollama is not available.
+        """
+        try:
+            import httpx
+            resp = httpx.post(
+                "http://localhost:11434/api/generate",
+                json={
+                    "model": "llama3.2:3b",
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.4, "num_predict": 300},
+                },
+                timeout=20.0,
+            )
+            if resp.status_code == 200:
+                text = resp.json().get("response", "").strip()
+                if text and len(text) > 10:
+                    return text
+        except Exception:
+            pass
+        return ""
+
+    # -- Memory synthesis fallback (no LLM) ---------------------------------
+
+    @staticmethod
+    def _synthesize_from_context(
+        content: str,
+        user_id: str,
+        extra_context: str = "",
+        memory_context: str = "",
+    ) -> str:
+        """
+        Build a response from available context WITHOUT any LLM call.
+
+        Used as last resort when all providers are rate-limited.
+        Extracts relevant fragments from gravity context, memory,
+        and conversation state to form a basic but useful answer.
+
+        Returns empty string if no useful context is available.
+        """
+        fragments = []
+
+        # 1. Try core_memory living response (already synthesized)
+        try:
+            from vectrax.core_memory import get_living_response
+            living = get_living_response(user_id)
+            if living and len(living) > 30:
+                fragments.append(living)
+        except Exception:
+            pass
+
+        # 2. Try local star search (pattern matching, no LLM)
+        if not fragments:
+            try:
+                from vectrax.resolver import resolve_local
+                local = resolve_local(content, channel="user", owner=user_id, top_k=3)
+                if local.context_stars > 0 and local.sovereign_answer:
+                    fragments.append(local.sovereign_answer)
+            except Exception:
+                pass
+
+        # 3. Extract gravity context if available
+        if not fragments and extra_context:
+            # Gravity context has [GRAVITY — "word" (mass=X)] headers
+            import re as _re
+            gravity_lines = [
+                line.strip() for line in extra_context.split("\n")
+                if line.strip().startswith("• ")
+            ]
+            if gravity_lines:
+                fragments.append("\n".join(gravity_lines[:3]))
+
+        if not fragments:
+            return ""
+
+        # Build response with degradation notice
+        body = " ".join(fragments)[:400]
+        try:
+            from core.language_gate import get_user_language
+            lang = get_user_language(user_id, content)
+        except Exception:
+            lang = "es"
+
+        if lang == "es":
+            return body
+        return body
 
     # -- Estadísticas -------------------------------------------------------
 

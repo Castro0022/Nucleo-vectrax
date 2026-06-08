@@ -457,6 +457,28 @@ def _process_one(msg):
             except Exception:
                 pass
 
+        # === GRACEFUL DEGRADATION: never leave user with silence ===
+        if not response:
+            try:
+                from core.language_gate import get_user_language
+                _dl = get_user_language(msg.user_id, msg.content)
+            except Exception:
+                _dl = "es"
+            if _dl == "en":
+                response = (
+                    "Processing capacity is limited right now. "
+                    "Your message has been recorded. Try again shortly."
+                )
+            else:
+                response = (
+                    "Capacidad de procesamiento limitada en este momento. "
+                    "Tu mensaje quedó registrado. Intenta de nuevo en unos minutos."
+                )
+            logger.info(
+                "GRACEFUL_DEGRADATION %s | all providers unavailable | user=%s",
+                msg.id, msg.user_id,
+            )
+
         # === ENVIAR DIRECTO A TELEGRAM ===
         sent = _tg_send(msg.chat_id, response, _is_user_reply=True)
 
