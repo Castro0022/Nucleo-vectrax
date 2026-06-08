@@ -1374,10 +1374,11 @@ class TelegramGateway:
                 pass
 
             # === QUEUE-PATH: fire-and-forget (worker envía directo) ===
-            from core.transport.message_queue import enqueue
-            msg_id = enqueue(tg_uid, cid, text, "telegram")
+            from core.transport.message_queue import enqueue, PRIORITY_CRITICAL, PRIORITY_HIGH
+            _q_priority = PRIORITY_CRITICAL if self._is_creator(tg_uid) else PRIORITY_HIGH
+            msg_id = enqueue(tg_uid, cid, text, "telegram", priority=_q_priority)
             self._processed += 1
-            logger.info("QUEUED %s | %s → %s", uid, text[:30], msg_id)
+            logger.info("QUEUED %s | p=%d | %s → %s", uid, _q_priority, text[:30], msg_id)
 
         except Exception as e:
             self._handler_errors += 1

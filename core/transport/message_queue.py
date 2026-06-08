@@ -33,6 +33,12 @@ _QUEUE_DB = os.path.join(
     "vault", "message_queue.db",
 )
 
+# Priority levels (lower number = higher priority)
+PRIORITY_CRITICAL = 0  # creator messages, identity resolution
+PRIORITY_HIGH = 1      # user conversation (default for Telegram)
+PRIORITY_NORMAL = 2    # scheduled tasks, reminders
+PRIORITY_LOW = 3       # telemetry, digests, background learning
+
 _CREATE = """
 CREATE TABLE IF NOT EXISTS queue (
     id          TEXT PRIMARY KEY,
@@ -40,6 +46,7 @@ CREATE TABLE IF NOT EXISTS queue (
     chat_id     INTEGER NOT NULL,
     content     TEXT NOT NULL,
     channel     TEXT NOT NULL DEFAULT 'telegram',
+    priority    INTEGER NOT NULL DEFAULT 1,
     status      TEXT NOT NULL DEFAULT 'pending',
     response    TEXT DEFAULT '',
     created_at  REAL NOT NULL,
@@ -48,6 +55,11 @@ CREATE TABLE IF NOT EXISTS queue (
     error       TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
+"""
+
+# Migration: add priority column to existing databases
+_MIGRATE_PRIORITY = """
+ALTER TABLE queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 1;
 """
 
 # Max age before a "processing" message is considered stuck (seconds).
@@ -75,6 +87,23 @@ def _conn() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=3000")
     conn.executescript(_CREATE)
+    # Migrate: add priority column if missing (existing databases)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(queue)").fetchall()}
+        if "priority" not in cols:
+            conn.execute(_MIGRATE_PRIORITY)
+            conn.commit()
+    except Exception:
+        pass  # column already exists or table just created with it
+    # Priority index — created AFTER migration so column always exists
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_queue_priority "
+            "ON queue(priority, created_at)"
+        )
+        conn.commit()
+    except Exception:
+        pass
     return conn
 
 
@@ -89,7 +118,8 @@ class QueueMessage:
     chat_id: int
     content: str
     channel: str = "telegram"
-    status: str = "pending"      # pending → processing → done | error
+    priority: int = PRIORITY_HIGH  # default: user conversation
+    status: str = "pending"        # pending → processing → done | error
     response: str = ""
     created_at: float = 0.0
     started_at: float = 0.0
@@ -106,15 +136,23 @@ def enqueue(
     chat_id: int,
     content: str,
     channel: str = "telegram",
+    priority: int = PRIORITY_HIGH,
 ) -> str:
-    """Add a message to the queue. Returns message ID."""
+    """Add a message to the queue. Returns message ID.
+
+    Priority levels:
+        0 = CRITICAL (creator, identity)
+        1 = HIGH (user conversation, default)
+        2 = NORMAL (scheduled tasks)
+        3 = LOW (telemetry, background)
+    """
     msg_id = uuid.uuid4().hex[:12]
     conn = _conn()
     try:
         conn.execute(
-            "INSERT INTO queue (id, user_id, chat_id, content, channel, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (msg_id, user_id, chat_id, content, channel, time.time()),
+            "INSERT INTO queue (id, user_id, chat_id, content, channel, priority, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (msg_id, user_id, chat_id, content, channel, priority, time.time()),
         )
         conn.commit()
     finally:
@@ -171,9 +209,9 @@ def dequeue() -> Optional[QueueMessage]:
         )
 
         row = conn.execute(
-            "SELECT id, user_id, chat_id, content, channel, created_at "
+            "SELECT id, user_id, chat_id, content, channel, priority, created_at "
             "FROM queue WHERE status = 'pending' "
-            "ORDER BY created_at ASC LIMIT 1",
+            "ORDER BY priority ASC, created_at ASC LIMIT 1",
         ).fetchone()
 
         if row is None:
@@ -195,8 +233,9 @@ def dequeue() -> Optional[QueueMessage]:
             chat_id=row[2],
             content=row[3],
             channel=row[4],
+            priority=row[5],
             status="processing",
-            created_at=row[5],
+            created_at=row[6],
             started_at=now,
         )
     finally:

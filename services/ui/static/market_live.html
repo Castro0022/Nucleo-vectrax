@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vectrax — Market Cycle</title>
+<style>
+:root {
+  --bg: #060a10; --surface: #0e1420; --border: #1a2235;
+  --text: #d1d5db; --dim: #5a6374; --accent: #4f8ff7;
+  --green: #10b981; --red: #ef4444; --yellow: #fbbf24;
+  --cyan: #22d3ee; --purple: #a78bfa;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'SF Mono', Menlo, Consolas, monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; }
+
+.header {
+  padding: 16px 24px; display: flex; align-items: center; gap: 16px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(14,20,32,0.95) 0%, var(--bg) 100%);
+}
+.header .logo { font-size: 18px; font-weight: 800; color: var(--cyan); }
+.header .mode { margin-left: auto; font-family: var(--mono); font-size: 12px; padding: 4px 10px; border-radius: 6px; }
+.mode-paper { background: rgba(251,191,36,0.15); color: var(--yellow); border: 1px solid rgba(251,191,36,0.3); }
+.mode-live { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
+.mode-off { background: rgba(90,99,116,0.15); color: var(--dim); border: 1px solid var(--border); }
+
+.cycle-flow {
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  padding: 12px 24px; font-size: 11px; font-family: var(--mono); color: var(--dim);
+  border-bottom: 1px solid var(--border);
+}
+.cycle-flow .step { padding: 3px 8px; border-radius: 4px; }
+.cycle-flow .step.active { background: rgba(16,185,129,0.15); color: var(--green); }
+.cycle-flow .step.waiting { color: var(--dim); }
+.cycle-flow .arrow { color: var(--border); }
+
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 16px 24px; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+.full { grid-column: 1 / -1; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; overflow: hidden;
+}
+.card-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--dim); margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+}
+.card-title .icon { font-size: 14px; }
+.card-title .count { margin-left: auto; color: var(--accent); font-family: var(--mono); }
+
+.sym-row {
+  display: flex; align-items: center; padding: 6px 0; border-bottom: 1px solid rgba(26,34,53,0.4);
+  font-size: 13px;
+}
+.sym-row:last-child { border-bottom: none; }
+.sym-dot { width: 6px; height: 6px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
+.sym-dot.activo { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.sym-dot.error, .sym-dot.no-resuelto { background: var(--red); }
+.sym-dot.observando, .sym-dot.sin-precio { background: var(--yellow); }
+.sym-name { font-weight: 600; width: 70px; }
+.sym-price { font-family: var(--mono); margin-left: auto; color: var(--accent); }
+.sym-status { font-size: 11px; color: var(--dim); margin-left: 8px; }
+
+.signal-row {
+  display: flex; align-items: flex-start; gap: 10px; padding: 8px 0;
+  border-bottom: 1px solid rgba(26,34,53,0.3); font-size: 12px;
+}
+.signal-row:last-child { border-bottom: none; }
+.signal-time { font-family: var(--mono); color: var(--dim); font-size: 11px; min-width: 50px; }
+.signal-sym { font-weight: 700; color: var(--cyan); min-width: 50px; }
+.signal-dir { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; }
+.signal-dir.buy { background: rgba(16,185,129,0.15); color: var(--green); }
+.signal-dir.sell { background: rgba(239,68,68,0.15); color: var(--red); }
+.signal-detail { color: var(--dim); flex: 1; }
+.signal-cond { font-family: var(--mono); color: var(--accent); }
+
+.pattern-row { padding: 6px 0; border-bottom: 1px solid rgba(26,34,53,0.3); font-size: 12px; }
+.pattern-row:last-child { border-bottom: none; }
+.pattern-head { display: flex; align-items: center; gap: 6px; }
+.pattern-sym { font-weight: 700; }
+.pattern-conf { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-family: var(--mono); }
+.pattern-conf.HIGH { background: rgba(16,185,129,0.2); color: var(--green); }
+.pattern-conf.MEDIUM { background: rgba(251,191,36,0.2); color: var(--yellow); }
+.pattern-conf.LOW { background: rgba(90,99,116,0.2); color: var(--dim); }
+.pattern-stats { font-family: var(--mono); color: var(--dim); font-size: 11px; margin-top: 2px; }
+.wr-good { color: var(--green); }
+.wr-bad { color: var(--red); }
+
+.proposal-row {
+  padding: 8px 10px; margin-bottom: 6px; border-radius: 6px;
+  background: rgba(79,143,247,0.06); border: 1px solid rgba(79,143,247,0.15);
+  font-size: 12px;
+}
+.proposal-head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.proposal-reason { color: var(--dim); font-size: 11px; margin-top: 4px; }
+
+.pos-row {
+  padding: 8px 10px; margin-bottom: 6px; border-radius: 6px;
+  border: 1px solid var(--border); font-size: 12px;
+}
+.pos-head { display: flex; align-items: center; gap: 8px; }
+.pos-pnl { font-family: var(--mono); font-weight: 700; margin-left: auto; }
+.pos-pnl.win { color: var(--green); }
+.pos-pnl.loss { color: var(--red); }
+.pos-detail { color: var(--dim); font-family: var(--mono); font-size: 11px; margin-top: 3px; }
+
+.learn-row { padding: 6px 0; border-bottom: 1px solid rgba(26,34,53,0.3); font-size: 12px; display: flex; gap: 8px; }
+.learn-icon { font-size: 14px; }
+
+.empty { color: var(--dim); font-style: italic; font-size: 12px; padding: 8px 0; }
+.refresh-bar { text-align: center; padding: 6px; font-size: 10px; color: var(--dim); font-family: var(--mono); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="logo">📈 VECTRAX MARKET</span>
+  <span>Ciclo completo en tiempo real</span>
+  <span class="mode mode-off" id="mode-badge">—</span>
+</div>
+
+<div class="cycle-flow" id="cycle-flow">
+  <span class="step" id="s-obs">Observación</span><span class="arrow">→</span>
+  <span class="step" id="s-sig">Señales</span><span class="arrow">→</span>
+  <span class="step" id="s-pat">Patrones</span><span class="arrow">→</span>
+  <span class="step" id="s-prop">Propuestas</span><span class="arrow">→</span>
+  <span class="step" id="s-exec">Ejecución</span><span class="arrow">→</span>
+  <span class="step" id="s-mon">Monitoreo</span><span class="arrow">→</span>
+  <span class="step" id="s-learn">Aprendizaje</span>
+</div>
+
+<div class="grid" id="main"></div>
+<div class="refresh-bar" id="refresh">Cargando...</div>
+
+<script>
+(function() {
+  'use strict';
+  const main = document.getElementById('main');
+  const refreshEl = document.getElementById('refresh');
+  const modeBadge = document.getElementById('mode-badge');
+
+  function ts2time(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString('es', {hour:'2-digit', minute:'2-digit'});
+  }
+  function fmt(n, dec) { return typeof n === 'number' ? n.toFixed(dec||0) : '—'; }
+
+  function setStep(id, on) {
+    document.getElementById(id).className = 'step ' + (on ? 'active' : 'waiting');
+  }
+
+  async function load() {
+    try {
+      const res = await fetch('/v1/market/live');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const d = await res.json();
+      render(d);
+      refreshEl.textContent = 'Actualizado: ' + new Date().toLocaleTimeString();
+    } catch(e) {
+      refreshEl.textContent = 'Error: ' + e.message;
+    }
+  }
+
+  function render(d) {
+    const syms = d.symbols || [];
+    const sigs = d.signals || [];
+    const pats = d.patterns || [];
+    const props = d.proposals || [];
+    const pos = d.positions || [];
+    const learns = d.learning || [];
+    const exec = d.executor || {};
+
+    // Mode badge
+    const mode = exec.mode || 'off';
+    modeBadge.textContent = mode.toUpperCase();
+    modeBadge.className = 'mode mode-' + mode;
+
+    // Cycle flow highlights
+    setStep('s-obs', syms.some(s => s.status === 'activo'));
+    setStep('s-sig', sigs.length > 0);
+    setStep('s-pat', pats.length > 0);
+    setStep('s-prop', props.length > 0);
+    setStep('s-exec', pos.length > 0 || exec.paper_trades > 0);
+    setStep('s-mon', pos.length > 0);
+    setStep('s-learn', learns.length > 0 || pats.length > 0);
+
+    let html = '';
+
+    // === MERCADO ===
+    let symHtml = '';
+    for (const s of syms) {
+      const cls = s.status.replace(/ /g, '-');
+      const price = s.price ? '$' + fmt(s.price, 2) : '';
+      symHtml += `<div class="sym-row">
+        <span class="sym-dot ${cls}"></span>
+        <span class="sym-name">${s.symbol}</span>
+        <span class="sym-status">${s.status}</span>
+        <span class="sym-price">${price}</span>
+      </div>`;
+    }
+    html += `<div class="card"><div class="card-title"><span class="icon">🔭</span>Mercado<span class="count">${syms.filter(s=>s.status==='activo').length}/${syms.length}</span></div>${symHtml||'<div class="empty">Sin símbolos</div>'}</div>`;
+
+    // === SEÑALES ===
+    let sigHtml = '';
+    for (const s of sigs.slice(0, 8)) {
+      sigHtml += `<div class="signal-row">
+        <span class="signal-time">${ts2time(s.ts)}</span>
+        <span class="signal-sym">${s.symbol}</span>
+        <span class="signal-dir ${s.direction}">${s.direction.toUpperCase()}</span>
+        <span class="signal-cond">${s.conditions_met}/4</span>
+        <span class="signal-detail">${s.scenario} @ $${fmt(s.price,2)}</span>
+      </div>`;
+    }
+    html += `<div class="card"><div class="card-title"><span class="icon">⚡</span>Señales Detectadas<span class="count">${sigs.length}</span></div>${sigHtml||'<div class="empty">Sin señales aún — acumulando...</div>'}</div>`;
+
+    // === PATRONES ===
+    let patHtml = '';
+    for (const p of pats) {
+      const wrCls = p.win_rate >= 55 ? 'wr-good' : 'wr-bad';
+      patHtml += `<div class="pattern-row">
+        <div class="pattern-head">
+          <span class="pattern-sym">${p.symbol} ${p.direction.toUpperCase()}</span>
+          <span class="pattern-conf ${p.confidence}">${p.confidence}</span>
+          ${p.usable ? '<span style="color:var(--green);font-size:10px">✓ USABLE</span>' : ''}
+        </div>
+        <div class="pattern-stats">${p.n_total} obs · WR <span class="${wrCls}">${fmt(p.win_rate,1)}%</span> · E: ${fmt(p.expectancy,3)}%</div>
+      </div>`;
+    }
+    html += `<div class="card"><div class="card-title"><span class="icon">🧠</span>Patrones Aprendidos<span class="count">${pats.length}</span></div>${patHtml||'<div class="empty">Sin patrones — necesita señales resueltas</div>'}</div>`;
+
+    // === PROPUESTAS ===
+    let propHtml = '';
+    for (const p of props) {
+      propHtml += `<div class="proposal-row">
+        <div class="proposal-head">
+          <span class="signal-dir ${p.direction}">${p.direction.toUpperCase()}</span>
+          <span>${p.symbol}</span>
+          <span style="color:var(--dim)">@ $${fmt(p.entry_price,2)}</span>
+          <span class="pattern-conf ${p.confidence}">${p.confidence}</span>
+        </div>
+        <div class="proposal-reason">${p.reasoning}</div>
+      </div>`;
+    }
+    html += `<div class="card"><div class="card-title"><span class="icon">📋</span>Propuestas PAPER<span class="count">${props.length}</span></div>${propHtml||'<div class="empty">Sin propuestas — esperando patrones usables</div>'}</div>`;
+
+    // === POSICIONES ABIERTAS ===
+    let posHtml = '';
+    for (const p of pos) {
+      const pnlCls = p.pnl_pct > 0 ? 'win' : p.pnl_pct < 0 ? 'loss' : '';
+      posHtml += `<div class="pos-row">
+        <div class="pos-head">
+          <span class="signal-dir ${p.direction}">${p.direction.toUpperCase()}</span>
+          <span style="font-weight:700">${p.symbol}</span>
+          <span style="color:var(--dim)">$${fmt(p.amount_usd,0)}</span>
+          <span class="pos-pnl ${pnlCls}">${p.pnl_pct > 0 ? '+' : ''}${fmt(p.pnl_pct,2)}% ($${fmt(p.pnl_usd,2)})</span>
+        </div>
+        <div class="pos-detail">Entrada: $${fmt(p.entry_price,2)} → Actual: $${fmt(p.current_price,2)} · SL: $${fmt(p.stop_loss,2)} · TP: $${fmt(p.take_profit,2)} · ${fmt(p.hours_open,1)}h</div>
+      </div>`;
+    }
+    html += `<div class="card"><div class="card-title"><span class="icon">📊</span>Posiciones Abiertas<span class="count">${pos.length}</span></div>${posHtml||'<div class="empty">Sin posiciones abiertas</div>'}</div>`;
+
+    // === APRENDIZAJE ===
+    let learnHtml = '';
+    for (const l of learns) {
+      const icon = l.result === 'ganadora' ? '✅' : l.result === 'perdedora' ? '❌' : '➖';
+      learnHtml += `<div class="learn-row">
+        <span class="learn-icon">${icon}</span>
+        <span>${l.direction.toUpperCase()} ${l.symbol} — ${l.result}</span>
+        <span style="font-family:var(--mono);margin-left:auto;color:${l.pnl_usd>0?'var(--green)':'var(--red)'}">$${fmt(l.pnl_usd,2)}</span>
+      </div>`;
+    }
+    // Add executor summary
+    learnHtml += `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--dim)">
+      Paper trades: ${exec.paper_trades||0} · Wins: ${exec.paper_wins||0} · Pérdidas consec: ${exec.consecutive_losses||0}
+    </div>`;
+    html += `<div class="card"><div class="card-title"><span class="icon">🔄</span>Aprendizaje<span class="count">${learns.length}</span></div>${learnHtml}</div>`;
+
+    main.innerHTML = html;
+  }
+
+  load();
+  setInterval(load, 10000);
+})();
+</script>
+</body>
+</html>

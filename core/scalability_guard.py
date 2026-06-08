@@ -92,18 +92,11 @@ def check_worker_memory(pid: int) -> Tuple[float, bool]:
     """Check worker RSS memory and determine if restart is needed.
 
     Returns (ram_mb, should_restart).
-    Prevents the 923MB memory leak from causing OOM.
+    Prevents memory leaks from causing OOM.
+
+    Works on Linux (/proc) and macOS (resource.getrusage).
     """
-    ram_mb = 0.0
-    try:
-        status_path = Path(f"/proc/{pid}/status")
-        if status_path.exists():
-            for line in status_path.read_text().split("\n"):
-                if line.startswith("VmRSS:"):
-                    ram_mb = int(line.split()[1]) / 1024
-                    break
-    except Exception:
-        return 0.0, False
+    ram_mb = _get_process_rss_mb(pid)
 
     should_restart = ram_mb > WORKER_RAM_MAX_MB
     if should_restart:
@@ -112,6 +105,40 @@ def check_worker_memory(pid: int) -> Tuple[float, bool]:
             pid, ram_mb, WORKER_RAM_MAX_MB,
         )
     return ram_mb, should_restart
+
+
+def _get_process_rss_mb(pid: int) -> float:
+    """Get RSS memory for a process in MB. Cross-platform.
+
+    Strategy:
+      1. /proc/{pid}/status (Linux)
+      2. resource.getrusage (macOS/Unix — only for current process)
+      3. 0.0 if nothing works
+    """
+    # 1. Linux: /proc
+    try:
+        status_path = Path(f"/proc/{pid}/status")
+        if status_path.exists():
+            for line in status_path.read_text().split("\n"):
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024  # kB → MB
+    except Exception:
+        pass
+
+    # 2. macOS/Unix: resource (only works for current process)
+    if pid == os.getpid():
+        try:
+            import resource
+            ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            import platform
+            if platform.system() == "Darwin":
+                return ru / (1024 * 1024)  # bytes → MB on macOS
+            else:
+                return ru / 1024  # kB → MB on Linux
+        except Exception:
+            pass
+
+    return 0.0
 
 
 # ── 3. Dynamic Concurrency ───────────────────────────────────────────

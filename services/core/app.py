@@ -18,6 +18,15 @@ _project_root = str(Path(__file__).resolve().parents[2])
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+# Load .env for API keys (eToro, OpenAI, Telegram, etc.)
+try:
+    from dotenv import load_dotenv
+    _env_path = Path(_project_root) / ".env"
+    if _env_path.exists():
+        load_dotenv(_env_path, override=True)
+except ImportError:
+    pass
+
 import logging
 import time as _time
 
@@ -26,7 +35,7 @@ from services.core.routes import (
     health, auth, connectors, events, actions,
     chat, memory, proposals, status, gravitational,
     comm, gateway, billing, universe, webhook, recovery,
-    monitor, ideas, dashboard,
+    monitor, ideas, dashboard, market_live,
 )
 
 logger = logging.getLogger("vectrax.core.app")
@@ -84,6 +93,7 @@ def create_app() -> FastAPI:
     app.include_router(monitor.router, prefix="/v1")
     app.include_router(ideas.router,   prefix="/v1")
     app.include_router(dashboard.router, prefix="/v1")
+    app.include_router(market_live.router, prefix="/v1")
 
     # --- Lifecycle events ---
 

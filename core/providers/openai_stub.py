@@ -62,6 +62,15 @@ class OpenAIProvider(BaseLLMProvider):
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         self._ensure_client()
+
+        # API Gate: skip call entirely if rate-limited (exponential backoff)
+        try:
+            from core.api_gate import check_gate, record_429, record_success
+            if not check_gate("openai"):
+                raise RuntimeError("OpenAI gate closed (429 backoff active)")
+        except ImportError:
+            pass
+
         start = time.time()
 
         # Strict identity: VECTRAX_SYSTEM_PROMPT is the ONLY system message.
@@ -81,6 +90,19 @@ class OpenAIProvider(BaseLLMProvider):
         resp = await self._client.post(
             f"{self.endpoint}/chat/completions", json=payload
         )
+
+        if resp.status_code == 429:
+            try:
+                record_429("openai")
+            except Exception:
+                pass
+            resp.raise_for_status()
+
+        try:
+            record_success("openai")
+        except Exception:
+            pass
+
         resp.raise_for_status()
         data = resp.json()
 
