@@ -1559,6 +1559,23 @@ class ExternalGateway:
             internal_channel = _INTERNAL_CHANNEL_MAP.get(channel, "user")
 
         # ══════════════════════════════════════════════════════════════
+        # IDENTITY CONTEXT — built once, travels through all layers
+        # ══════════════════════════════════════════════════════════════
+        try:
+            from core.identity_context import build_identity_context
+            _identity = build_identity_context(user_id, content)
+            # Inject mode tone into extra_context so the LLM knows
+            # HOW to respond before seeing the user's message
+            if _identity.tone:
+                _id_block = _identity.to_prompt_block()
+                extra_context = (
+                    _id_block + "\n\n" + extra_context
+                    if extra_context else _id_block
+                )
+        except Exception as _ic_exc:
+            logger.debug("Identity context build failed: %s", _ic_exc)
+
+        # ══════════════════════════════════════════════════════════════
         # MEMORY PRE-CHECK — always consult memory first
         # ══════════════════════════════════════════════════════════════
         # Before ANY routing decision, check if the message is a personal
