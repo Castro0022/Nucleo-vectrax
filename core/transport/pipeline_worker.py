@@ -133,6 +133,20 @@ def _tg_send(chat_id: int, text: str, **kwargs) -> bool:
     if len(text) > 4096:
         text = text[:4093] + "..."
 
+    # === Telegram Guard — block telemetry/metrics from reaching chat ======
+    _is_user_reply = kwargs.pop("_is_user_reply", False)
+    _guard_reason = kwargs.pop("_guard_reason", "user_reply" if _is_user_reply else "")
+    try:
+        from core.telegram_guard import should_send_to_user
+        if not should_send_to_user(text, is_user_reply=_is_user_reply, reason=_guard_reason):
+            logger.info(
+                "TG_GUARD suppressed chat=%s reason=%s | %s",
+                chat_id, _guard_reason, text[:50].replace("\n", " "),
+            )
+            return True  # pretend sent — caller doesn't need to know
+    except Exception:
+        pass
+
     # === User Sovereignty Engine — gate de salida =========================
     try:
         from core.sovereignty import require_authorization, SendReason
@@ -331,7 +345,7 @@ def _process_one(msg):
 
         # Cache hit → responde y termina sin tocar el pipeline
         if decision is not None and decision.cache_hit and decision.cached_response:
-            _tg_send(msg.chat_id, decision.cached_response)
+            _tg_send(msg.chat_id, decision.cached_response, _is_user_reply=True)
             mark_done(msg.id, decision.cached_response)
             elapsed = time.time() - t0
             logger.info(
@@ -343,7 +357,7 @@ def _process_one(msg):
 
         # Rate limited → responde con mensaje de límite y termina
         if decision is not None and decision.rate_limited:
-            _tg_send(msg.chat_id, decision.rate_limit_message)
+            _tg_send(msg.chat_id, decision.rate_limit_message, _is_user_reply=True)
             mark_done(msg.id, decision.rate_limit_message)
             elapsed = time.time() - t0
             logger.info(
@@ -444,7 +458,7 @@ def _process_one(msg):
                 pass
 
         # === ENVIAR DIRECTO A TELEGRAM ===
-        sent = _tg_send(msg.chat_id, response)
+        sent = _tg_send(msg.chat_id, response, _is_user_reply=True)
 
         # === REGISTRAR EN ANTI-REPETITION RING BUFFER =================
         # Tras un envío exitoso, grabamos la salida en el ring buffer
@@ -654,6 +668,7 @@ def run_worker() -> None:
                             cid, text,
                             _sovereignty_reason=_SR.PROACTIVE_INSIGHT,
                             _sovereignty_user_id=f"tg:{cid}",
+                            _guard_reason="proactive",
                         )
                     n = run_proactive_scan(_proactive_send)
                     if n:
@@ -692,6 +707,7 @@ def run_worker() -> None:
                             cid, text,
                             _sovereignty_reason=_SR3.PROACTIVE_INSIGHT,
                             _sovereignty_user_id=f"tg:{cid}",
+                            _guard_reason="reentry",
                         )
                     n = check_reentry(_reentry_send)
                     if n:
@@ -701,11 +717,13 @@ def run_worker() -> None:
                 logger.debug("Reentry check error (passthrough): %s", _re)
                 last_reentry = time.time()
 
-            # Router telemetry digest — sends summary to creator every 6h
+            # Router telemetry digest — stored in logs/dashboard only (silent mode)
             try:
                 from core.observability.router_telemetry import run_digest, _DIGEST_INTERVAL
                 if time.time() - last_digest > _DIGEST_INTERVAL:
-                    run_digest(_tg_send)
+                    def _digest_send(cid, text):
+                        return _tg_send(cid, text, _guard_reason="digest")
+                    run_digest(_digest_send)
                     last_digest = time.time()
             except Exception as _de:
                 logger.debug("Router digest error (passthrough): %s", _de)
@@ -721,6 +739,7 @@ def run_worker() -> None:
                             cid, text,
                             _sovereignty_reason=_SR2.SCHEDULED_REMINDER,
                             _sovereignty_user_id=f"tg:{cid}",
+                            _guard_reason="scheduled",
                         )
                     n = run_scheduler_tick(_scheduler_send)
                     if n:
