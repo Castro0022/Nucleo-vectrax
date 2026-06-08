@@ -117,7 +117,20 @@ Vectrax is a universal AI infrastructure layer that:
 - **Presencia Pura** - Nucleus mode that blocks all external LLMs and web searches while keeping the full internal cognitive cycle active
 - **PresenciaObserver** - Inhibitor layer that observes all system motors, scores each emission by origin sovereignty and convergence, and decides: `PERMIT` / `PAUSE` / `SILENCE` / `BLOCK` — without replacing any motor
 - **ConvergenceLearner** - Closes the operational awareness cycle: observes PresenciaObserver decisions, detects degradation patterns per motor, and proposes threshold adjustments with evidence — never applies changes without creator authorization
-- **LawSignal** - Connects the 7 Fundamental Laws (Kybalion-inspired) as active score weights: violations reduce sovereignty/convergence or raise noise before PresenciaObserver decides. The principles don’t respond. They weigh.
+- **LawSignal** - Connects the 7 Fundamental Laws (Kybalion-inspired) as active score weights: violations reduce sovereignty/convergence or raise noise before PresenciaObserver decides. The principles don't respond. They weigh.
+
+### ✦ Word Gravity Index (WGI)
+Conversational continuity driven by word mass instead of context windows. Each significant word accumulates gravitational mass based on frequency, convergences, and semantic connections. When a high-mass word appears in a message, it activates its entire associated constellation — not just recent messages, but the full network of linked concepts.
+
+- **Dual scope** — `global` (system words: vectrax=0.98, núcleo=0.85) + per-user (polysemy: "mercado" means trading for one user, groceries for another)
+- **Gravity Activator** — Pre-router layer that detects high-mass words, loads constellations, injects context, and emits `gravity_lock` when mass ≥ 0.85 (blocks web search for internal terms)
+- **Automatic feeding** — `ingest_v2` feeds the WGI on every pattern store; convergences multiply word mass
+- **Natural decay** — Inactive words lose mass over time; identity words (vectrax, mario) never decay
+- **Universe visualization** — Words orbit the nucleus in the canvas at `/v1/universe/view` with mass-proportional size and category-based colors
+- **Multi-user isolation** — Scope `UNIQUE(word, scope)` guarantees zero cross-user data leakage. 37 tests verify isolation including concurrent upserts, exclusive words, and independent lock thresholds
+
+Files: `core/word_gravity.py`, `core/gravity_activator.py`, `tests/test_word_gravity.py`
+API: `GET /v1/dashboard/word_gravity?scope=global&limit=30`
 
 ## 🚀 Quick Start
 
