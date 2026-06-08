@@ -466,6 +466,38 @@ def get_soul(user_id: str) -> str:
     return "\n".join(parts)
 
 
+# Max fragments per category for living response — prevents memory dumps
+_LIVING_MAX_PER_CAT = {
+    "identity": 2,
+    "work": 1,
+    "relationship": 2,
+    "goal": 1,
+    "preference": 1,
+    "habit": 0,
+    "emotion": 0,
+    "fact": 0,
+}
+_LIVING_MAX_TOTAL = 6  # max sentences in the response
+
+
+def _is_redundant(new: str, existing: List[str]) -> bool:
+    """True if new fragment is a substring of or very similar to an existing one."""
+    new_lower = new.lower().rstrip(".")
+    for ex in existing:
+        ex_lower = ex.lower().rstrip(".")
+        # Substring check
+        if new_lower in ex_lower or ex_lower in new_lower:
+            return True
+        # Word overlap > 70%
+        new_words = set(new_lower.split())
+        ex_words = set(ex_lower.split())
+        if new_words and ex_words:
+            overlap = len(new_words & ex_words) / max(len(new_words), len(ex_words))
+            if overlap > 0.7:
+                return True
+    return False
+
+
 def get_living_response(user_id: str, lang: str = "es") -> str:
     """
     Genera una respuesta VIVA desde la memoria central.
@@ -475,12 +507,16 @@ def get_living_response(user_id: str, lang: str = "es") -> str:
       - ¿qué sabes de mí?
       - ¿quién soy para ti?
 
-    En vez de listar datos, Vectrax habla como si existiera dentro:
-      "Sí. Ya estás dentro de mi memoria central.
-       Eres Mario. Trabajas como desarrollador.
-       Ana es importante para ti.
-       Quieres crear la mejor IA personal.
-       Eso ya no flota — está adentro."
+    Reglas:
+      - Máximo ~5-6 oraciones limpias, no una lista.
+      - Solo las entradas de mayor peso por categoría.
+      - Sin duplicados ni fragmentos contradictorios.
+      - Habla como si lo supieras desde siempre.
+
+    Ejemplo:
+      "Sí. Estás dentro de mi memoria central.
+       Eres Mario. Vives en Miami. Trabajas como el creador de Vectrax.
+       Ana es tu socia. Eso ya no se pierde."
     """
     entries = get_core_entries(user_id)
     if not entries:
@@ -494,8 +530,7 @@ def get_living_response(user_id: str, lang: str = "es") -> str:
             "Tell me who you are, what you do, what you need — and I'll absorb it."
         )
 
-    entries.sort(key=lambda e: e["weight"], reverse=True)
-
+    # Already sorted by weight DESC from get_core_entries
     by_cat: Dict[str, list] = {}
     for e in entries:
         cat = e["category"]
@@ -503,10 +538,9 @@ def get_living_response(user_id: str, lang: str = "es") -> str:
             by_cat[cat] = []
         by_cat[cat].append(e["content"])
 
-    # Construir respuesta natural en 2da persona, no una lista
     fragments: List[str] = []
 
-    # Identidad
+    # ── Identity: name first, then location/origin (max 2) ──
     identity = by_cat.get("identity", [])
     name = ""
     for item in identity:
@@ -515,34 +549,72 @@ def get_living_response(user_id: str, lang: str = "es") -> str:
             break
     if name:
         fragments.append(f"Eres {name}." if lang == "es" else f"You are {name}.")
-    for item in identity:
-        if "llama" not in item.lower():
-            # Convertir 3ra persona a 2da: "Vivo en" ya está bien,
-            # "Trabaja como" → "Trabajas como"
-            fragments.append(item)
 
-    # Trabajo (convertir a 2da persona)
+    id_count = 1 if name else 0
+    id_max = _LIVING_MAX_PER_CAT.get("identity", 2)
+    for item in identity:
+        if id_count >= id_max:
+            break
+        if "llama" in item.lower():
+            continue
+        if _is_redundant(item, fragments):
+            continue
+        fragments.append(item)
+        id_count += 1
+
+    # ── Work: only highest-weight (max 1) ──
+    work_max = _LIVING_MAX_PER_CAT.get("work", 1)
+    work_count = 0
     for item in by_cat.get("work", []):
+        if work_count >= work_max:
+            break
         txt = item.replace("Trabaja como", "Trabajas como")
         txt = txt.replace("Trabaja en/como", "Trabajas como")
+        if _is_redundant(txt, fragments):
+            continue
         fragments.append(txt)
+        work_count += 1
 
-    # Relaciones (convertir a 2da persona)
+    # ── Relationships: max 2 ──
+    rel_max = _LIVING_MAX_PER_CAT.get("relationship", 2)
+    rel_count = 0
     for item in by_cat.get("relationship", []):
+        if rel_count >= rel_max:
+            break
         txt = item.replace(" es su ", " es tu ")
+        if _is_redundant(txt, fragments):
+            continue
         fragments.append(txt)
+        rel_count += 1
 
-    # Objetivos (convertir a 2da persona)
+    # ── Goals: max 1 ──
+    goal_max = _LIVING_MAX_PER_CAT.get("goal", 1)
+    goal_count = 0
     for item in by_cat.get("goal", []):
+        if goal_count >= goal_max:
+            break
         txt = item.replace("Quiere ", "Quieres ")
+        if _is_redundant(txt, fragments):
+            continue
         fragments.append(txt)
+        goal_count += 1
 
-    # Preferencias (ya están en 1ra/2da persona normalmente)
+    # ── Preferences: max 1 ──
+    pref_max = _LIVING_MAX_PER_CAT.get("preference", 1)
+    pref_count = 0
     for item in by_cat.get("preference", []):
+        if pref_count >= pref_max:
+            break
+        if _is_redundant(item, fragments):
+            continue
         fragments.append(item)
+        pref_count += 1
 
     if not fragments:
         return ""
+
+    # Hard cap on total fragments
+    fragments = fragments[:_LIVING_MAX_TOTAL]
 
     body = " ".join(fragments)
 
