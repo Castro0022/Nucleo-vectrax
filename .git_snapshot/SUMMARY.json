@@ -1,7 +1,14 @@
 {
-  "head": "16324e3",
+  "head": "3015542",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "30155428",
+      "subject": "feat: Identity Layer + MODE_SELECTOR — persistent identity through pipeline",
+      "author": "Mario Bravo Castro",
+      "ts": 1780878777,
+      "files_changed": 4
+    },
     {
       "sha": "16324e36",
       "subject": "fix: TTS rate limit cooldown — stop hammering OpenAI after 429",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1780814833,
       "files_changed": 2
-    },
-    {
-      "sha": "c997b58e",
-      "subject": "feat: per-message memory profiling in pipeline_worker",
-      "author": "Mario Bravo Castro",
-      "ts": 1780814679,
-      "files_changed": 2
     }
   ],
   "modified_modules": [
@@ -69,5 +69,5 @@
     "vectrax/self_context.py",
     "connectors/etoro/learning_engine.py"
   ],
-  "generated_at": 1780878319
+  "generated_at": 1780878779
 }
