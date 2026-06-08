@@ -1290,22 +1290,11 @@ class TelegramGateway:
             except Exception:
                 pass
 
-            # === FAST-PATH: respuesta instantánea ===
-            fast = self._fast(text, tg_uid)
-            if fast:
-                # Aplicar language gate al fast-path
-                try:
-                    from core.language_gate import enforce_language, get_user_language
-                    _fast_lang = get_user_language(tg_uid, text)
-                    fast = enforce_language(fast, _fast_lang, tg_uid)
-                except Exception:
-                    pass
-                self._send(cid, fast)
-                self._processed += 1
-                # Places map pins (non-blocking, best-effort)
-                self._places(cid, tg_uid, text)
-                logger.info("FAST %s | %s → %d ch", uid, text[:30], len(fast))
-                return
+            # === FAST-PATH: delegado al ExternalGateway ===
+            # Antes se detectaba aquí Y en ExternalGateway (duplicación F4).
+            # El fast-path del gateway ignoraba el creator bypass: el creador
+            # podía recibir respuestas hardcoded en vez de ir al LLM.
+            # Ahora solo ExternalGateway decide fast-path (respeta creator bypass).
 
             # === MARKET OPINION: inject eToro observations into LLM context ===
             # Detects questions like "qué opinas de NVIDIA", "cómo ves el BTC",
@@ -1343,28 +1332,11 @@ class TelegramGateway:
             except Exception as _mo:
                 logger.debug("market opinion swallowed: %s", _mo)
 
-            # === MARKET DATA: precios para todos los usuarios, todas las lenguas ===
-            # Usa Binance (sin auth). eToro es solo para cuenta personal del creador.
-            try:
-                from intents.market_intents import detect_market_intent, handle_market_intent
-                _market = detect_market_intent(text)
-                if _market:
-                    _intent, _mparams = _market
-                    _mresult = handle_market_intent(_intent, _mparams)
-                    if _mresult.get("success") and _mresult.get("response"):
-                        try:
-                            from core.language_gate import enforce_language, get_user_language
-                            _mlang = get_user_language(tg_uid, text)
-                            _mresponse = enforce_language(_mresult["response"], _mlang, tg_uid)
-                        except Exception:
-                            _mresponse = _mresult["response"]
-                        self._send(cid, _mresponse)
-                        self._processed += 1
-                        logger.info("MARKET %s | %s %s → %d ch",
-                                    uid, _intent, _mparams, len(_mresponse))
-                        return
-            except Exception as _me:
-                logger.debug("market intent swallowed: %s", _me)
+            # === MARKET DATA: delegado al SmartRouter via queue ===
+            # Antes se detectaba aquí Y en SmartRouter (duplicación F3).
+            # Ahora solo el SmartRouter maneja market via pipeline worker.
+            # Esto garantiza que market pase por identity layer, language
+            # gate, anti-repetition y todos los filtros post-LLM.
 
             # === SCHEDULING: recordatorios y tareas programadas ===
             if self._detect_schedule(cid, tg_uid, text):
@@ -2008,7 +1980,8 @@ class TelegramGateway:
                 )
                 self._send(cid, f"💬 Mensaje sugerido para {lead['name']}:\n\n“{msg}”")
 
-            else:
+            elif sub in ("help", "ayuda", "?"):
+                # Help explícito — único camino para ver la lista de comandos
                 self._send(cid, (
                     "Comandos:\n"
                     "  /lead add <nombre> [contexto]\n"
@@ -2017,8 +1990,66 @@ class TelegramGateway:
                     "  /lead contact <nombre>\n"
                     "  /lead proposal <nombre>\n"
                     "  /lead follow <nombre>\n"
-                    "  /lead won / lost <nombre>"
+                    "  /lead won / lost <nombre>\n\n"
+                    "También puedes escribir solo:\n"
+                    "  /lead <nombre>  → buscar lead"
                 ))
+
+            else:
+                # ── INTENT RESOLUTION: interpretar como nombre de lead ──
+                # "/lead joy" → buscar lead "joy"
+                # "/lead María López" → buscar lead "María López"
+                # Prioridad: 1) buscar, 2) ofrecer crear, 3) nunca dump de ayuda
+                lead_name = clean  # full text after "/lead " (preserva mayúsculas/espacios)
+                leads = get_leads(tg_uid)
+                lead = next(
+                    (l for l in leads if l["name"].lower() == lead_name.lower()),
+                    None,
+                )
+                if lead:
+                    # Found → show view (same logic as "view" subcommand)
+                    try:
+                        from core.preference_tracker import build_contact_context
+                        pref = build_contact_context(tg_uid, lead["name"])
+                    except Exception:
+                        pref = ""
+                    status_labels = {
+                        "contacted": "Contactado",
+                        "proposal_sent": "Propuesta enviada",
+                        "negotiating": "En negociación",
+                        "silent": "Sin respuesta",
+                    }
+                    days = lead["days_silent"]
+                    time_str = "hoy" if days < 0.5 else f"hace {days:.0f}d"
+                    next_action = (
+                        "Hacer seguimiento" if days >= 2
+                        else "Esperar respuesta" if lead["status"] == "proposal_sent"
+                        else "Mantener contacto"
+                    )
+                    lines = [
+                        f"👤 {lead['name']}",
+                        f"   Estado: {status_labels.get(lead['status'], lead['status'])}",
+                        f"   Último movimiento: {time_str}",
+                    ]
+                    if lead.get("context"):
+                        lines.append(f"   Contexto: {lead['context'][:60]}")
+                    if pref:
+                        lines.append(f"   Preferencia: {pref}")
+                    lines.append(f"   Siguiente acción: {next_action}")
+                    self._send(cid, "\n".join(lines))
+                else:
+                    # Not found → offer to create (never show help dump)
+                    display_name = lead_name.title()
+                    if lang == "en":
+                        self._send(cid, (
+                            f"No lead named '{display_name}' found.\n"
+                            f"Create it?\n/lead add {display_name}"
+                        ))
+                    else:
+                        self._send(cid, (
+                            f"No encontré un lead llamado '{display_name}'.\n"
+                            f"¿Quieres crearlo?\n/lead add {display_name}"
+                        ))
 
         except Exception as e:
             self._send(cid, f"Error: {e}")

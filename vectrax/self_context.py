@@ -131,12 +131,20 @@ def resolve_self_aware(
     except Exception as exc:
         logger.debug("Intelligence Bridge unavailable for self-aware: %s", exc)
 
-    # OpenAI directo
+    # OpenAI directo (with API gate check)
     try:
         import os, httpx
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
             return ""
+        # Check API gate before calling
+        try:
+            from core.api_gate import check_gate, record_429, record_success
+            if not check_gate("openai"):
+                logger.debug("Self-aware: OpenAI gate closed, skipping")
+                return ""
+        except Exception:
+            pass
         from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT
         resp = httpx.post(
             "https://api.openai.com/v1/chat/completions",
@@ -152,6 +160,16 @@ def resolve_self_aware(
             },
             timeout=15.0,
         )
+        if resp.status_code == 429:
+            try:
+                record_429("openai")
+            except Exception:
+                pass
+            return ""
+        try:
+            record_success("openai")
+        except Exception:
+            pass
         resp.raise_for_status()
         content = resp.json()["choices"][0]["message"]["content"]
         logger.info("Self-aware response via OpenAI direct")
