@@ -1274,6 +1274,58 @@ The Dockerfile sets `ENV VECTRAX_VAULT_DIR=/app/vault` and creates a symlink `/r
 docker exec vectrax-core python -m observability.audit_cron --weekly
 ```
 
+## 🧠 Identity Layer + MODE_SELECTOR
+
+Every message builds an `IdentityContext` at the start of the pipeline. This context travels through all layers, telling each one WHO is talking, WHAT mode to use, and HOW to respond.
+
+### Modes
+
+Not 4 personalities — 4 perspectives of one identity:
+
+- **técnico** — code, errors, server, deploy → direct, structured, exact data
+- **observador** — market, trends, convergences → reflexive, accompanies thinking
+- **identidad** — who am I, memory, remember → responds from accumulated experience
+- **conversacional** — default → natural, human, no formalism
+
+Priority: identidad > técnico > observador > conversacional
+
+### Pipeline Flow
+
+```
+Message → build_identity_context(user_id, content)
+              │
+              ├─ 1. IDENTITY CONTEXT (mode + tone + memory summary)
+              ├─ 2. MEMORY PRE-CHECK (personal queries)
+              ├─ 3. MARKET INTERCEPT (tickers)
+              ├─ 4. SMART ROUTER (strategy selection)
+              ├─ 5. LLM (with [IDENTIDAD ACTIVA] block injected)
+              ├─ 6. IDENTITY FILTER (existing post-filter)
+              └─ 7. GRAVITATIONAL MEMORY (always learns)
+```
+
+### Prompt Block Example
+
+The LLM receives this BEFORE the user's message:
+
+```
+[IDENTIDAD ACTIVA]
+Usuario: Mario
+Relación: CREADOR del sistema
+Modo: observador
+Tono: Responde como quien observa junto al usuario. Sé reflexivo...
+Contexto de memoria: Joycelyn: mujer; sistema: healthy
+```
+
+For non-creator users, the creator name is never included.
+
+Files:
+- `core/mode_selector.py` — detect_mode(), get_tone(), keyword patterns
+- `core/identity_context.py` — IdentityContext dataclass, build_identity_context()
+- `core/operator/external_gateway.py` — injection at pipeline start
+- `tests/core/test_identity_mode.py` — 35 unit tests
+
+---
+
 ## 🛡 Scalability Guard
 
 Automatic protections for 1000+ concurrent users. Runs at supervisor startup and continuously.
