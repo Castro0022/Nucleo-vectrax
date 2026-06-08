@@ -68,6 +68,11 @@ if DEFAULT_FORMAT not in _VALID_FORMATS:
 # Caracter limit antes de cortar (ahorro de costo en respuestas largas)
 MAX_TTS_CHARS = 1000
 
+# Rate limit cooldown: after a 429, skip TTS for this many seconds
+# to let the OpenAI rate limit window reset. Prevents wasting requests.
+_tts_cooldown_until: float = 0.0
+_TTS_COOLDOWN_SECONDS = 300  # 5 minutes after a 429
+
 
 def is_tts_enabled() -> bool:
     """True si el TTS está habilitado por env y la API key existe."""
@@ -101,6 +106,11 @@ def synthesize(
         return None
     if not is_tts_enabled():
         logger.debug("TTS disabled (no API key or disabled flag)")
+        return None
+    # Rate limit cooldown: skip if we recently got a 429
+    if time.time() < _tts_cooldown_until:
+        logger.debug("TTS cooldown active (%.0fs remaining)",
+                     _tts_cooldown_until - time.time())
         return None
 
     # Truncado defensivo
@@ -161,6 +171,14 @@ def _call_openai_tts(
     try:
         with httpx.Client(timeout=30.0) as client:
             r = client.post(url, headers=headers, json=payload)
+            if r.status_code == 429:
+                global _tts_cooldown_until
+                _tts_cooldown_until = time.time() + _TTS_COOLDOWN_SECONDS
+                logger.warning(
+                    "TTS rate limited (429) — cooldown %ds",
+                    _TTS_COOLDOWN_SECONDS,
+                )
+                return None
             if r.status_code != 200:
                 logger.warning(
                     "TTS HTTP %d: %s", r.status_code, r.text[:200],
