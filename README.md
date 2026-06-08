@@ -132,6 +132,36 @@ Conversational continuity driven by word mass instead of context windows. Each s
 Files: `core/word_gravity.py`, `core/gravity_activator.py`, `tests/test_word_gravity.py`
 API: `GET /v1/dashboard/word_gravity?scope=global&limit=30`
 
+### 🔇 Telegram Silent Mode
+The user's Telegram chat behaves as a conversation, not a monitoring console. All internal telemetry is blocked from reaching the chat by a global output guard (`should_send_to_user`).
+
+**Blocked automatically** (stored in logs/dashboard/audit only):
+- Router Digest, ideas (HIGH/MEDIUM/LOW), gravity/universe growth
+- Memory/latency stats, router metrics, observations (INFO/DEBUG)
+- Scheduled reports, proactive insights, continuity reentry
+- Any event matching categories: `idea/*`, `gravity/*`, `router/*`, `telemetry/*`, `metrics/*`, `digest/*`, `observability/*`, `info/*`, `debug/*`
+
+**Always allowed:**
+- Direct replies to user messages (`_is_user_reply=True`)
+- Critical alerts (CRITICAL, system down, data loss)
+- Actions requiring explicit creator approval
+- Market alerts: ESCENARIO OPERABLE DETECTADO
+
+To see telemetry on demand, users request it explicitly via Telegram commands.
+
+File: `core/telegram_guard.py`
+
+### 🚦 API Rate Limit Gate
+Centralized 429 protection with exponential backoff across all OpenAI/Gemini call sites. One 429 from any call site closes the gate for all of them.
+
+- Backoff schedule: 60s → 120s → 300s → 600s → 900s (15 min max)
+- Success resets the counter immediately
+- Separate gates for `openai` (chat) and `openai_tts` (audio)
+- Eliminates ~95% of wasted 429 requests vs independent retries
+
+File: `core/api_gate.py`
+API: `GET /v1/dashboard/api_gates`
+
 ## 🚀 Quick Start
 
 ### Prerequisites
