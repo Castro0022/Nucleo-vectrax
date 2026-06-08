@@ -802,13 +802,16 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       const maxR = Math.min(W, H) * 0.42;
       for (let i = 0; i < wordGravity.length; i++) {
         const w = wordGravity[i];
-        // Position: orbit near nucleus, distance inversely proportional to mass
-        const orbitR = maxR * (0.08 + (1 - w.mass) * 0.25);
+        // Position: orbit around nucleus — high mass = closer, low mass = farther
+        // Wider dispersion so words don't cluster on top of each other
+        const orbitR = maxR * (0.12 + (1 - w.mass) * 0.55);
         const baseAngle = (i / wordGravity.length) * Math.PI * 2;
-        const drift = Math.sin(t * 0.15 + i * 1.7) * 0.08;
-        const angle = baseAngle + t * 0.02 * (0.5 + w.mass * 0.5) + drift;
-        const wx = Math.cos(angle) * orbitR;
-        const wy = Math.sin(angle) * orbitR;
+        // Stagger radially so adjacent words don't overlap
+        const radialJitter = ((i % 3) - 1) * maxR * 0.06;
+        const drift = Math.sin(t * 0.15 + i * 1.7) * 0.12;
+        const angle = baseAngle + t * 0.015 * (0.3 + w.mass * 0.4) + drift;
+        const wx = Math.cos(angle) * (orbitR + radialJitter);
+        const wy = Math.sin(angle) * (orbitR + radialJitter);
         const [sx, sy] = toScreen(wx, wy);
         if (sx < -100 || sx > W + 100 || sy < -100 || sy > H + 100) continue;
 
@@ -963,6 +966,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         const gData = await gRes.json();
         const gStars = (gData.gravity && gData.gravity.stars) || [];
         const gConvergences = (gData.gravity && gData.gravity.convergences) || [];
+        // Word Gravity — extract from same response (no second fetch)
+        if (gData.word_gravity && gData.word_gravity.words) {
+          wordGravity = gData.word_gravity.words;
+        }
         const seen = new Set(newStars.map(s => s.id));
 
         const maxWeight = Math.max(...gStars.map(s => s.weight), 1);
@@ -1004,21 +1011,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     }
     if (gen !== _loadGen) return;
 
-    // 3. Load Word Gravity words
-    try {
-      const gRes2 = await fetch('/v1/universe');
-      if (gRes2.ok) {
-        const gData2 = await gRes2.json();
-        if (gData2.word_gravity && gData2.word_gravity.words) {
-          wordGravity = gData2.word_gravity.words;
-        }
-      }
-    } catch (wgErr) {
-      console.warn('word gravity load error:', wgErr.message);
-    }
-    if (gen !== _loadGen) return;
-
-    // 4. Atomic swap — no intermediate empty state
+    // 3. Atomic swap
     stars = newStars;
     edges = newEdges;
     constellations = newConst;
