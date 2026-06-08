@@ -205,36 +205,9 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
       ].join(''));
     }
 
-    // === MERCADO ===
-    html += sectionTitle('📈 Market Observatory');
-
-    let marketSummary = [
-      metric('Señales totales', fmt(m.total_signals)),
-      metric('Patrones', fmt(m.total_patterns)),
-      metric('Win rate global', pct(m.global_win_rate)),
-    ].join('');
-    html += card('📡', 'Resumen Mercado', marketSummary);
-
-    const symbols = m.symbols || [];
-    if (symbols.length) {
-      let rows = '';
-      for (const s of symbols) {
-        const wrCls = s.win_rate >= 55 ? 'success' : s.win_rate > 0 ? 'warn' : '';
-        const grav = s.gravity_star || {};
-        rows += `<tr>
-          <td>${domainDot('market')}${s.symbol}</td>
-          <td>${s.signals}</td>
-          <td>${s.patterns}</td>
-          <td>${s.wins}/${s.losses}</td>
-          <td class="${wrCls}">${pct(s.win_rate)}</td>
-          <td>${fmt(s.best_expectancy, 3)}</td>
-          <td>${grav.tier || '—'}</td>
-          <td>${s.last_signal ? ago(s.last_signal) : '—'}</td>
-        </tr>`;
-      }
-      html += `<div class="card" style="grid-column:1/-1"><div class="card-title"><span class="icon">📊</span>Símbolos Observados</div>
-        <table><tr><th>Símbolo</th><th>Señales</th><th>Patrones</th><th>W/L</th><th>WR</th><th>Expect.</th><th>Tier</th><th>Última</th></tr>${rows}</table></div>`;
-    }
+    // === MERCADO (live cycle from /v1/market/live) ===
+    html += sectionTitle('📈 Market — Ciclo en Vivo');
+    html += '<div id="market-live"><div class="card"><div class="card-title">Cargando mercado...</div></div></div>';
 
     // === CONVERGENCIAS ===
     html += sectionTitle('🔗 Convergencias');
@@ -304,8 +277,113 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
     grid.innerHTML = html;
   }
 
+  // === MARKET LIVE RENDERER ===
+  function ts2time(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString('es', {hour:'2-digit', minute:'2-digit'});
+  }
+
+  async function loadMarket() {
+    try {
+      const res = await fetch('/v1/market/live');
+      if (!res.ok) return;
+      const d = await res.json();
+      renderMarket(d);
+    } catch(e) { /* silent */ }
+  }
+
+  function renderMarket(d) {
+    const el = document.getElementById('market-live');
+    if (!el) return;
+    const syms = d.symbols || [];
+    const sigs = d.signals || [];
+    const pats = d.patterns || [];
+    const props = d.proposals || [];
+    const pos = d.positions || [];
+    const learns = d.learning || [];
+    const exec = d.executor || {};
+
+    // Cycle flow bar
+    const mode = exec.mode || 'off';
+    const modeColors = {paper:'color:var(--warn)',live:'color:var(--danger)',off:'color:var(--dim)'};
+    function step(name, on) { return `<span style="padding:2px 6px;border-radius:3px;font-size:11px;font-family:var(--mono);${on?'background:rgba(16,185,129,0.15);color:var(--success)':'color:var(--dim)'}">${name}</span>`; }
+    let flow = '<div style="display:flex;align-items:center;justify-content:center;gap:3px;padding:8px 0;margin-bottom:10px;border-bottom:1px solid var(--border)">';
+    flow += step('Observación', syms.some(s=>s.status==='activo'));
+    flow += '<span style="color:var(--border)">→</span>';
+    flow += step('Señales', sigs.length>0);
+    flow += '<span style="color:var(--border)">→</span>';
+    flow += step('Patrones', pats.length>0);
+    flow += '<span style="color:var(--border)">→</span>';
+    flow += step('Propuestas', props.length>0);
+    flow += '<span style="color:var(--border)">→</span>';
+    flow += step('Ejecución', pos.length>0||exec.paper_trades>0);
+    flow += '<span style="color:var(--border)">→</span>';
+    flow += step('Aprendizaje', learns.length>0||pats.length>0);
+    flow += `<span style="margin-left:12px;padding:3px 8px;border-radius:4px;font-size:10px;font-family:var(--mono);border:1px solid var(--border);${modeColors[mode]||''}">${mode.toUpperCase()}</span>`;
+    flow += '</div>';
+
+    let html = flow;
+
+    // Symbols with live prices
+    let symHtml = '';
+    for (const s of syms) {
+      const dot = s.status==='activo'?'var(--success)':s.status==='error'||s.status==='no resuelto'?'var(--danger)':'var(--warn)';
+      const price = s.price ? '$'+fmt(s.price,2) : '';
+      symHtml += `<div style="display:flex;align-items:center;padding:4px 0;border-bottom:1px solid rgba(26,34,53,0.3);font-size:13px"><span style="width:6px;height:6px;border-radius:50%;background:${dot};margin-right:8px;flex-shrink:0;${s.status==='activo'?'box-shadow:0 0 6px '+dot:''}"></span><span style="font-weight:600;width:65px">${s.symbol}</span><span style="font-size:11px;color:var(--dim)">${s.status}</span><span style="margin-left:auto;font-family:var(--mono);color:var(--accent)">${price}</span></div>`;
+    }
+    html += card('🔭', 'Mercado', symHtml || '<div class="empty">Sin símbolos</div>');
+
+    // Recent signals
+    let sigHtml = '';
+    for (const s of sigs.slice(0,6)) {
+      const dirCls = s.direction==='buy'?'color:var(--success)':'color:var(--danger)';
+      sigHtml += `<div style="display:flex;gap:8px;padding:5px 0;border-bottom:1px solid rgba(26,34,53,0.3);font-size:12px"><span style="font-family:var(--mono);color:var(--dim);min-width:42px">${ts2time(s.ts)}</span><span style="font-weight:700;color:var(--accent);min-width:45px">${s.symbol}</span><span style="font-size:10px;${dirCls};font-weight:600">${s.direction.toUpperCase()}</span><span style="font-family:var(--mono);color:var(--accent)">${s.conditions_met}/4</span><span style="color:var(--dim);flex:1">$${fmt(s.price,2)}</span></div>`;
+    }
+    html += card('⚡', `Señales<span class="count">${sigs.length}</span>`, sigHtml || '<div class="empty">Acumulando...</div>');
+
+    // Patterns
+    let patHtml = '';
+    for (const p of pats.slice(0,5)) {
+      const wrCls = p.win_rate>=55?'color:var(--success)':'color:var(--danger)';
+      const confCls = p.confidence==='HIGH'?'color:var(--success)':p.confidence==='MEDIUM'?'color:var(--warn)':'color:var(--dim)';
+      patHtml += `<div style="padding:4px 0;border-bottom:1px solid rgba(26,34,53,0.3);font-size:12px"><div style="display:flex;gap:6px;align-items:center"><span style="font-weight:700">${p.symbol} ${p.direction.toUpperCase()}</span><span style="font-size:10px;${confCls}">${p.confidence}</span>${p.usable?'<span style="color:var(--success);font-size:10px">✓</span>':''}</div><div style="font-family:var(--mono);color:var(--dim);font-size:11px">${p.n_total} obs · WR <span style="${wrCls}">${fmt(p.win_rate,1)}%</span> · E: ${fmt(p.expectancy,3)}%</div></div>`;
+    }
+    html += card('🧠', `Patrones<span class="count">${pats.length}</span>`, patHtml || '<div class="empty">Necesita señales resueltas</div>');
+
+    // Proposals
+    let propHtml = '';
+    for (const p of props.slice(0,3)) {
+      const dirCls = p.direction==='buy'?'color:var(--success)':'color:var(--danger)';
+      propHtml += `<div style="padding:6px 8px;margin-bottom:4px;border-radius:5px;background:rgba(79,143,247,0.06);border:1px solid rgba(79,143,247,0.15);font-size:12px"><div style="display:flex;gap:6px;font-weight:600"><span style="${dirCls}">${p.direction.toUpperCase()}</span> ${p.symbol} <span style="color:var(--dim)">@ $${fmt(p.entry_price,2)}</span></div><div style="color:var(--dim);font-size:11px;margin-top:3px">${p.reasoning}</div></div>`;
+    }
+    html += card('📋', `Propuestas<span class="count">${props.length}</span>`, propHtml || '<div class="empty">Esperando patrones usables</div>');
+
+    // Positions
+    let posHtml = '';
+    for (const p of pos) {
+      const pnlCls = p.pnl_pct>0?'color:var(--success)':p.pnl_pct<0?'color:var(--danger)':'';
+      const posDirCls = p.direction==='buy'?'color:var(--success);font-weight:600':'color:var(--danger);font-weight:600';
+      posHtml += `<div style="padding:6px 8px;margin-bottom:4px;border-radius:5px;border:1px solid var(--border);font-size:12px"><div style="display:flex;gap:6px;align-items:center"><span style="${posDirCls}">${p.direction.toUpperCase()}</span><span style="font-weight:700">${p.symbol}</span><span style="color:var(--dim)">$${fmt(p.amount_usd,0)}</span><span style="font-family:var(--mono);font-weight:700;margin-left:auto;${pnlCls}">${p.pnl_pct>0?'+':''}${fmt(p.pnl_pct,2)}%</span></div><div style="color:var(--dim);font-family:var(--mono);font-size:11px;margin-top:2px">$${fmt(p.entry_price,2)} → $${fmt(p.current_price,2)} · ${fmt(p.hours_open,1)}h</div></div>`;
+    }
+    html += card('📊', `Posiciones<span class="count">${pos.length}</span>`, posHtml || '<div class="empty">Sin posiciones</div>');
+
+    // Learning
+    let learnHtml = '';
+    for (const l of learns) {
+      const icon = l.result==='ganadora'?'✅':l.result==='perdedora'?'❌':'➖';
+      learnHtml += `<div style="display:flex;gap:6px;padding:4px 0;border-bottom:1px solid rgba(26,34,53,0.3);font-size:12px">${icon} <span>${l.direction.toUpperCase()} ${l.symbol} — ${l.result}</span><span style="font-family:var(--mono);margin-left:auto;${l.pnl_usd>0?'color:var(--success)':'color:var(--danger)'}">$${fmt(l.pnl_usd,2)}</span></div>`;
+    }
+    learnHtml += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--dim)">Paper: ${exec.paper_trades||0} · Wins: ${exec.paper_wins||0} · Pérdidas consec: ${exec.consecutive_losses||0}</div>`;
+    html += card('🔄', 'Aprendizaje', learnHtml);
+
+    el.innerHTML = html;
+  }
+
   load();
+  loadMarket();
   setInterval(load, 15000);
+  setInterval(loadMarket, 10000);
 })();
 </script>
 </body>
