@@ -655,6 +655,55 @@ class ExternalGateway:
                 "Pipeline: fast_path BYPASSED for creator (will go to LLM)",
             )
 
+        # ══════════════════════════════════════════════════════════════
+        # STEP 4.2a: WORD GRAVITY ACTIVATION
+        # Detecta palabras con masa gravitacional alta en el input.
+        # Si mass >= 0.85 → gravity_lock = True → SmartRouter NO va a ONLINE.
+        # Previene el caso "Vectrax Bandsaw" — palabras internas nunca
+        # se buscan en la web.
+        # ══════════════════════════════════════════════════════════════
+        _gravity_lock = False
+        try:
+            from core.gravity_activator import activate_gravity
+            _grav_t0 = time.perf_counter()
+            _grav_result = activate_gravity(content, user_id)
+            if _grav_result.activated:
+                if _grav_result.context:
+                    memory_context = (
+                        _grav_result.context + "\n\n" + memory_context
+                        if memory_context else _grav_result.context
+                    )
+                _gravity_lock = _grav_result.lock_internal
+                logger.info(
+                    "Pipeline: GRAVITY activated | max=%s(%.2f) | lock=%s | "
+                    "context_len=%d | user=%s",
+                    _grav_result.max_word,
+                    _grav_result.max_mass,
+                    _gravity_lock,
+                    len(_grav_result.context),
+                    user_id[:20],
+                )
+            try:
+                from core.observability.router_activation import (
+                    record_activate as _rec_g, record_skip as _skip_g,
+                )
+                if _act_log is not None:
+                    if _grav_result.activated:
+                        _rec_g(
+                            _act_log, "word_gravity",
+                            reason=f"max={_grav_result.max_word}({_grav_result.max_mass:.2f})",
+                            latency_ms=_grav_result.latency_ms,
+                        )
+                    else:
+                        _skip_g(
+                            _act_log, "word_gravity",
+                            reason="no high-mass words",
+                        )
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.debug("Gravity activation failed (passthrough): %s", exc)
+
         # 4.2b Auto-contexto — Vectrax se observa a sí mismo
         _self_resolved = False
         if not response_text:
@@ -840,6 +889,7 @@ class ExternalGateway:
                     user_id, content, channel,
                     extra_context=memory_context,
                     act_log=_act_log,
+                    gravity_lock=_gravity_lock,
                 )
                 try:
                     from core.observability.router_activation import (
@@ -865,20 +915,30 @@ class ExternalGateway:
                 except Exception as exc:
                     logger.debug("Response consolidator failed (passthrough): %s", exc)
 
-            # 7. Filtros según el camino — NO MEZCLAR
-            if source_path == "llm":
-                # Solo el camino LLM pasa por identity layer (filtros de calidad)
-                response_text = self._apply_identity_layer(
-                    response_text, content, memory_context,
-                    user_id=user_id,
-                )
-            elif source_path == "places":
-                # Places solo pasa por enforce_style (datos reales, no filtrar)
+            # 7. Identity Layer — TODAS las rutas pasan por filtros de calidad
+            # AC-1: Previene respuestas irrelevantes como "Vectrax Bandsaw"
+            # que antes se colaban por rutas sin filtro (online, local, etc.)
+            if source_path == "places":
+                # Places solo pasa por enforce_style (datos reales de API)
                 try:
                     from vectrax.identity_layer import enforce_style
                     response_text = enforce_style(response_text)
                 except Exception:
                     pass
+            elif source_path == "market":
+                # Market data es factual — solo enforce_style
+                try:
+                    from vectrax.identity_layer import enforce_style
+                    response_text = enforce_style(response_text)
+                except Exception:
+                    pass
+            elif response_text:
+                # Todas las demás rutas (llm, online, local, etc.)
+                # pasan por identity layer completo
+                response_text = self._apply_identity_layer(
+                    response_text, content, memory_context,
+                    user_id=user_id,
+                )
 
             # ══════════════════════════════════════════════════════════
             # IDENTITY GUARD — siempre activo si hay nombre anclado
@@ -1428,6 +1488,7 @@ class ExternalGateway:
         channel: str,
         extra_context: str = "",
         act_log=None,
+        gravity_lock: bool = False,
     ) -> Tuple[str, str]:
         """
         Pipeline cognitivo unificado con clasificación semántica.
@@ -1438,9 +1499,10 @@ class ExternalGateway:
         Args:
             extra_context: additional context (temporal, identity, language)
                            to inject into LLM prompts. PASSED EXPLICITLY —
-                           NO singleton mutable state (race-free).
+                           NO singleton mutable state (race-safe).
             act_log: opcional, router_activation.RouterActivationLog para
                      registrar el guard de follow-up si se dispara.
+            gravity_lock: if True, SmartRouter must NOT route to ONLINE.
 
         Returns:
             (response_text, source_path) donde source_path es "places",
@@ -1453,6 +1515,7 @@ class ExternalGateway:
         answer, source_path = self._resolve_via_pipeline(
             user_id, content, channel,
             extra_context=extra_context, act_log=act_log,
+            gravity_lock=gravity_lock,
         )
         if answer:
             return answer, source_path
@@ -1526,6 +1589,7 @@ class ExternalGateway:
         channel: str,
         extra_context: str = "",
         act_log=None,
+        gravity_lock: bool = False,
     ) -> Tuple[str, str]:
         """
         Pipeline cognitivo completo para mensajes externos.
@@ -1747,6 +1811,33 @@ class ExternalGateway:
                 logger.info("Pipeline: MARKET resolve empty, falling through")
 
             if smart_route.strategy == Strategy.RESOLVE_ONLINE:
+                # ── GRAVITY LOCK — palabras internas NUNCA van a web ────
+                # Si el Gravity Activator detectó una palabra con masa
+                # >= 0.85 (ej: "vectrax"=0.98), redirigir al LLM con
+                # el gravity_context ya inyectado en extra_context.
+                # Previene el caso "Vectrax Bandsaw".
+                if gravity_lock:
+                    logger.info(
+                        "Pipeline: GRAVITY LOCK → redirect ONLINE to LLM | "
+                        "user=%s",
+                        user_id[:20],
+                    )
+                    answer = self._generate_cognitive_response(
+                        content, user_id, internal_channel, "",
+                        extra_context=extra_context,
+                    )
+                    resolve_mode = "llm"
+                    if answer:
+                        sr.record_feedback(
+                            smart_route, success=True,
+                            used_fallback=True,
+                            fallback_strategy="gravity_lock",
+                            word_count=word_count,
+                        )
+                        return answer, resolve_mode
+                    # Si el LLM también falló, caer al fallback general
+                    # (pero NUNCA a Tavily/web)
+                    return "", "gravity_lock"
                 # ── PRESENCIA PURA — bloquear búsqueda online externa ────────
                 try:
                     from core.nucleus.presencia_pura import check_and_block_online

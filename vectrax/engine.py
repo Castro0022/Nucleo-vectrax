@@ -573,6 +573,22 @@ def ingest_v2(
     # ── 8. Graph: ensure node exists ──────────────────────────
     g.add_star(user_id, layer=star.layer, mass=star.mass)
 
+    # ── 8b. Feed Word Gravity Index ─────────────────────────
+    try:
+        from core.word_gravity import extract_keywords, upsert_word
+        _wgi_keywords = extract_keywords(text)
+        # Delta based on memory value score: higher value = more gravity
+        _wgi_delta = max(0.02, mem_score * 0.15)
+        _wgi_scope = user_id  # per-user scope
+        for _kw in _wgi_keywords:
+            upsert_word(
+                _kw, scope=_wgi_scope, delta=_wgi_delta,
+                category="concept",
+                constellation_id=pattern.id if hasattr(pattern, 'id') else None,
+            )
+    except Exception as _wgi_exc:
+        logger.debug("WGI feed failed: %s", _wgi_exc)
+
     # ── 9. Convergence with other user-stars ──────────────────
     _detect_user_convergence(star, user_id)
 
