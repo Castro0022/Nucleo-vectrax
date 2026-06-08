@@ -2008,7 +2008,8 @@ class TelegramGateway:
                 )
                 self._send(cid, f"💬 Mensaje sugerido para {lead['name']}:\n\n“{msg}”")
 
-            else:
+            elif sub in ("help", "ayuda", "?"):
+                # Help explícito — único camino para ver la lista de comandos
                 self._send(cid, (
                     "Comandos:\n"
                     "  /lead add <nombre> [contexto]\n"
@@ -2017,8 +2018,66 @@ class TelegramGateway:
                     "  /lead contact <nombre>\n"
                     "  /lead proposal <nombre>\n"
                     "  /lead follow <nombre>\n"
-                    "  /lead won / lost <nombre>"
+                    "  /lead won / lost <nombre>\n\n"
+                    "También puedes escribir solo:\n"
+                    "  /lead <nombre>  → buscar lead"
                 ))
+
+            else:
+                # ── INTENT RESOLUTION: interpretar como nombre de lead ──
+                # "/lead joy" → buscar lead "joy"
+                # "/lead María López" → buscar lead "María López"
+                # Prioridad: 1) buscar, 2) ofrecer crear, 3) nunca dump de ayuda
+                lead_name = clean  # full text after "/lead " (preserva mayúsculas/espacios)
+                leads = get_leads(tg_uid)
+                lead = next(
+                    (l for l in leads if l["name"].lower() == lead_name.lower()),
+                    None,
+                )
+                if lead:
+                    # Found → show view (same logic as "view" subcommand)
+                    try:
+                        from core.preference_tracker import build_contact_context
+                        pref = build_contact_context(tg_uid, lead["name"])
+                    except Exception:
+                        pref = ""
+                    status_labels = {
+                        "contacted": "Contactado",
+                        "proposal_sent": "Propuesta enviada",
+                        "negotiating": "En negociación",
+                        "silent": "Sin respuesta",
+                    }
+                    days = lead["days_silent"]
+                    time_str = "hoy" if days < 0.5 else f"hace {days:.0f}d"
+                    next_action = (
+                        "Hacer seguimiento" if days >= 2
+                        else "Esperar respuesta" if lead["status"] == "proposal_sent"
+                        else "Mantener contacto"
+                    )
+                    lines = [
+                        f"👤 {lead['name']}",
+                        f"   Estado: {status_labels.get(lead['status'], lead['status'])}",
+                        f"   Último movimiento: {time_str}",
+                    ]
+                    if lead.get("context"):
+                        lines.append(f"   Contexto: {lead['context'][:60]}")
+                    if pref:
+                        lines.append(f"   Preferencia: {pref}")
+                    lines.append(f"   Siguiente acción: {next_action}")
+                    self._send(cid, "\n".join(lines))
+                else:
+                    # Not found → offer to create (never show help dump)
+                    display_name = lead_name.title()
+                    if lang == "en":
+                        self._send(cid, (
+                            f"No lead named '{display_name}' found.\n"
+                            f"Create it?\n/lead add {display_name}"
+                        ))
+                    else:
+                        self._send(cid, (
+                            f"No encontré un lead llamado '{display_name}'.\n"
+                            f"¿Quieres crearlo?\n/lead add {display_name}"
+                        ))
 
         except Exception as e:
             self._send(cid, f"Error: {e}")
