@@ -77,8 +77,16 @@ except Exception as _e:
 
 POLL_INTERVAL = 0.3
 CLEANUP_INTERVAL = 60
-MSG_TIMEOUT = 20
+# Real-world worst case: vision+LLM+TTS takes 16-30s legitimately.
+# 20s caused premature timeouts; 45s is safe with stuck recovery at 180s.
+MSG_TIMEOUT = 45
 HEARTBEAT_INTERVAL = 10
+# Per-stage slow threshold (seconds) — logs STAGE_SLOW warning
+STAGE_SLOW_THRESHOLD = 15.0
+# Memory watchdog interval (seconds)
+MEMORY_WATCHDOG_INTERVAL = 30
+# Max drain wait before hard exit (seconds)
+MEMORY_DRAIN_TIMEOUT = 30
 
 # Dynamic concurrency: scale with available RAM
 try:
@@ -317,7 +325,8 @@ def _scale_governor_preflight(msg):
 
 
 def _get_rss_mb() -> float:
-    """Get current process RSS in MB. Fast, no imports."""
+    """Get current process RSS in MB. Cross-platform (Linux + macOS)."""
+    # Linux: /proc/self/status
     try:
         with open("/proc/self/status") as f:
             for line in f:
@@ -325,7 +334,36 @@ def _get_rss_mb() -> float:
                     return int(line.split()[1]) / 1024
     except Exception:
         pass
+    # macOS: resource.getrusage
+    try:
+        import resource
+        import platform
+        ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if platform.system() == "Darwin":
+            return ru / (1024 * 1024)  # bytes → MB
+        return ru / 1024  # kB → MB
+    except Exception:
+        pass
     return 0.0
+
+
+def _stage_timer(name: str, msg_id: str):
+    """Context manager that times a pipeline stage and logs it."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _timer():
+        t = time.time()
+        yield
+        elapsed = time.time() - t
+        if elapsed > STAGE_SLOW_THRESHOLD:
+            logger.warning(
+                "STAGE_SLOW %s | %s | %.1fs (>%.0fs)",
+                msg_id, name, elapsed, STAGE_SLOW_THRESHOLD,
+            )
+        else:
+            logger.info("STAGE %s | %s | %.2fs", msg_id, name, elapsed)
+    return _timer()
 
 
 def _process_one(msg):
@@ -341,7 +379,8 @@ def _process_one(msg):
     ram_before = _get_rss_mb()
     try:
         # === SCALE GOVERNOR PREFLIGHT (opt-in) ===
-        decision, sg = _scale_governor_preflight(msg)
+        with _stage_timer("scale_governor", msg.id):
+            decision, sg = _scale_governor_preflight(msg)
 
         # Cache hit → responde y termina sin tocar el pipeline
         if decision is not None and decision.cache_hit and decision.cached_response:
@@ -368,8 +407,9 @@ def _process_one(msg):
 
         # Diagnostic: log el input que llega al pipeline cognitivo
         logger.info(
-            "PROC_IN msg_id=%s user=%s content=%r",
-            msg.id, msg.user_id, (msg.content or "")[:120],
+            "PROC_IN msg_id=%s user=%s p=%d content=%r",
+            msg.id, msg.user_id, getattr(msg, 'priority', 1),
+            (msg.content or "")[:120],
         )
 
         # ── CICLO DE CONVERGENCIA TOTAL (7 fases obligatorias) ────────────────
@@ -377,14 +417,15 @@ def _process_one(msg):
         #   [3] Memoria Estructural → conecta con patrones previos
         #   [6] Gravitación         → almacena en núcleo según peso
         # Non-fatal: si el motor falla, el pipeline continúa normalmente.
-        from core.convergence_hook import run_convergence_cycle, should_block
-        _conv_record = run_convergence_cycle(
-            msg.content,
-            source="telegram",
-            channel=msg.channel or "telegram",
-            owner=msg.user_id,
-            metadata={"msg_id": msg.id},
-        )
+        with _stage_timer("convergence_cycle", msg.id):
+            from core.convergence_hook import run_convergence_cycle, should_block
+            _conv_record = run_convergence_cycle(
+                msg.content,
+                source="telegram",
+                channel=msg.channel or "telegram",
+                owner=msg.user_id,
+                metadata={"msg_id": msg.id},
+            )
         if should_block(_conv_record):
             logger.warning(
                 "CONV_BLOCK msg_id=%s user=%s — governor bloqueó el mensaje",
@@ -392,13 +433,14 @@ def _process_one(msg):
             )
             mark_done(msg.id, "blocked_by_convergence")
             return True
-        # ─────────────────────────────────────────────────────────────────────
+        # ───────────────────────────────────────────────────────────────────────
 
-        result = gw.receive_message(
-            user_id=msg.user_id,
-            content=msg.content,
-            channel=msg.channel,
-        )
+        with _stage_timer("external_gateway", msg.id):
+            result = gw.receive_message(
+                user_id=msg.user_id,
+                content=msg.content,
+                channel=msg.channel,
+            )
         elapsed = time.time() - t0
 
         response = ""
@@ -416,12 +458,13 @@ def _process_one(msg):
 
         # === LANGUAGE ENFORCEMENT (prevent language leaks) ===
         if response:
-            try:
-                from core.language_gate import enforce_language, get_user_language
-                user_lang = get_user_language(msg.user_id, msg.content)
-                response = enforce_language(response, user_lang, msg.user_id)
-            except Exception as _le:
-                logger.debug("Language enforce skipped: %s", _le)
+            with _stage_timer("language_enforce", msg.id):
+                try:
+                    from core.language_gate import enforce_language, get_user_language
+                    user_lang = get_user_language(msg.user_id, msg.content)
+                    response = enforce_language(response, user_lang, msg.user_id)
+                except Exception as _le:
+                    logger.debug("Language enforce skipped: %s", _le)
 
         # === ANTI-REPETITION FILTER ===================================
         # Strip de clichés prohibidos (redes sociales / community manager)
@@ -429,19 +472,20 @@ def _process_one(msg):
         # últimas 10 enviadas al user. Si el filter devuelve None la
         # respuesta era 100% cliché — silencio antes que ruido.
         if response:
-            try:
-                from core.voice.anti_repetition import filter_response
-                filtered = filter_response(response, msg.user_id)
-                if filtered:
-                    response = filtered
-                else:
-                    logger.info(
-                        "anti_repetition: blocked all-cliche response for %s",
-                        msg.user_id,
-                    )
-                    response = ""
-            except Exception as _ae:
-                logger.debug("anti_repetition skipped: %s", _ae)
+            with _stage_timer("anti_repetition", msg.id):
+                try:
+                    from core.voice.anti_repetition import filter_response
+                    filtered = filter_response(response, msg.user_id)
+                    if filtered:
+                        response = filtered
+                    else:
+                        logger.info(
+                            "anti_repetition: blocked all-cliche response for %s",
+                            msg.user_id,
+                        )
+                        response = ""
+                except Exception as _ae:
+                    logger.debug("anti_repetition skipped: %s", _ae)
 
         # === SCALE GOVERNOR: cache la respuesta para futuras idénticas ===
         if (
@@ -602,6 +646,7 @@ def run_worker() -> None:
     last_reentry = 0.0    # última ejecución del reentry check
     last_digest = 0.0     # última ejecución del router digest
     last_market_learn = 0.0  # ciclo de aprendizaje de mercado (cada 30 min)
+    last_mem_check = 0.0  # memory watchdog
 
     # Discard stale messages from previous sessions (>5 min old)
     _STALE_AGE = 300  # 5 minutes
@@ -791,6 +836,51 @@ def run_worker() -> None:
             except Exception as _se:
                 logger.debug("Scheduler error (passthrough): %s", _se)
                 last_scheduler = time.time()
+
+            # === MEMORY WATCHDOG (every 30s) ==============================
+            # check_worker_memory() existed in scalability_guard but was
+            # never called. Now we call it periodically and self-restart
+            # if RAM exceeds the threshold (default 1200MB).
+            if time.time() - last_mem_check > MEMORY_WATCHDOG_INTERVAL:
+                last_mem_check = time.time()
+                try:
+                    from core.scalability_guard import check_worker_memory
+                    ram_mb, should_restart = check_worker_memory(os.getpid())
+                    if should_restart:
+                        logger.warning(
+                            "MEMORY_WATCHDOG: %.0fMB — initiating graceful restart",
+                            ram_mb,
+                        )
+                        # 1. Stop accepting new messages
+                        running = False
+                        # 2. Drain active futures (max MEMORY_DRAIN_TIMEOUT)
+                        drain_start = time.time()
+                        while active and (time.time() - drain_start) < MEMORY_DRAIN_TIMEOUT:
+                            done_drain = []
+                            for mid, (fut, _t0) in list(active.items()):
+                                if fut.done():
+                                    done_drain.append(mid)
+                            for mid in done_drain:
+                                active.pop(mid, None)
+                            if active:
+                                time.sleep(0.5)
+                        if active:
+                            logger.warning(
+                                "MEMORY_WATCHDOG: %d messages still active after drain — hard exit",
+                                len(active),
+                            )
+                        pool.shutdown(wait=False)
+                        logger.info(
+                            "MEMORY_WATCHDOG: restarting process (PID %d, RAM %.0fMB)",
+                            os.getpid(), ram_mb,
+                        )
+                        # 3. Re-exec the process — Docker/supervisor will catch exit
+                        try:
+                            os.execv(sys.executable, [sys.executable] + sys.argv)
+                        except Exception:
+                            os._exit(1)
+                except Exception as _mw:
+                    logger.debug("Memory watchdog check failed: %s", _mw)
 
         except Exception as exc:
             logger.error("Worker loop: %s", exc)
