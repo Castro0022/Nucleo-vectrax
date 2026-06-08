@@ -82,11 +82,15 @@ class UniverseSnapshot:
     # ── Señales de percepción ─────────────────────────────────────────
     signals: List[str] = field(default_factory=list)
 
-    # ── Gravity Engine (estrellas cognitivas + mercado) ───────────────────
+    # ── Gravity Engine (estrellas cognitivas + mercado) ───────────────
     gravity_stars: List[Dict[str, Any]] = field(default_factory=list)
     gravity_domains: Dict[str, Any] = field(default_factory=dict)
     gravity_convergences: List[Dict[str, Any]] = field(default_factory=list)
     gravity_total: int = 0
+
+    # ── Word Gravity Index (WGI) ─────────────────────────────
+    word_gravity_words: List[Dict[str, Any]] = field(default_factory=list)
+    word_gravity_stats: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -150,6 +154,10 @@ class UniverseSnapshot:
                 "stars": self.gravity_stars,
                 "domains": self.gravity_domains,
                 "convergences": self.gravity_convergences,
+            },
+            "word_gravity": {
+                "words": self.word_gravity_words,
+                "stats": self.word_gravity_stats,
             },
         }
 
@@ -290,6 +298,24 @@ def _collect_gravity_engine(snap: UniverseSnapshot) -> None:
         snap.signals.append("gravity_engine_unavailable")
 
 
+def _collect_word_gravity(snap: UniverseSnapshot) -> None:
+    """Collect Word Gravity Index data for the universe visualization."""
+    try:
+        from core.word_gravity import get_top_words, get_index_stats, SCOPE_GLOBAL
+        # Global top words (for the universe view)
+        top = get_top_words(scope=SCOPE_GLOBAL, limit=30)
+        for word, mass, category in top:
+            snap.word_gravity_words.append({
+                "word": word,
+                "mass": round(mass, 4),
+                "category": category,
+                "scope": "global",
+            })
+        snap.word_gravity_stats = get_index_stats()
+    except Exception as exc:
+        logger.debug("word gravity collection failed: %s", exc)
+
+
 def _derive_signals(snap: UniverseSnapshot) -> None:
     """Genera señales de percepción a partir del estado recolectado."""
     if snap.queue_pending > 10:
@@ -331,6 +357,7 @@ def observe_universe() -> UniverseSnapshot:
     _collect_nucleus(snap)
     _collect_convergences(snap)
     _collect_gravity_engine(snap)
+    _collect_word_gravity(snap)
     _collect_operational(snap)
     _derive_signals(snap)
 

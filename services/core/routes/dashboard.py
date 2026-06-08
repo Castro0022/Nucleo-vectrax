@@ -339,6 +339,32 @@ async def dashboard_operator() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# GET /v1/dashboard/word_gravity
+# ---------------------------------------------------------------------------
+
+@router.get("/word_gravity")
+async def dashboard_word_gravity(
+    scope: str = Query("global", description="Scope: 'global' or user_id"),
+    limit: int = Query(30, ge=1, le=100),
+) -> Dict[str, Any]:
+    """Word Gravity Index — top words by gravitational mass."""
+    try:
+        from core.word_gravity import get_top_words, get_index_stats
+        words = get_top_words(scope=scope, limit=limit)
+        stats = get_index_stats()
+        return {
+            "words": [
+                {"word": w, "mass": round(m, 4), "category": c}
+                for w, m, c in words
+            ],
+            "stats": stats,
+            "scope": scope,
+        }
+    except Exception as exc:
+        return {"words": [], "stats": {}, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # GET /v1/dashboard/proposals
 # ---------------------------------------------------------------------------
 
