@@ -339,6 +339,20 @@ async def dashboard_operator() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# GET /v1/dashboard/api_gates
+# ---------------------------------------------------------------------------
+
+@router.get("/api_gates")
+async def dashboard_api_gates() -> Dict[str, Any]:
+    """API rate limit gates — current backoff state per provider."""
+    try:
+        from core.api_gate import get_all_gates
+        return {"gates": get_all_gates()}
+    except Exception as exc:
+        return {"gates": {}, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
 # GET /v1/dashboard/word_gravity
 # ---------------------------------------------------------------------------
 

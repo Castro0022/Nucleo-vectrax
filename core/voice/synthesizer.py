@@ -107,7 +107,15 @@ def synthesize(
     if not is_tts_enabled():
         logger.debug("TTS disabled (no API key or disabled flag)")
         return None
-    # Rate limit cooldown: skip if we recently got a 429
+    # Rate limit: check centralized API gate first
+    try:
+        from core.api_gate import check_gate
+        if not check_gate("openai_tts"):
+            logger.debug("TTS: API gate closed, skipping")
+            return None
+    except Exception:
+        pass
+    # Legacy cooldown (backup)
     if time.time() < _tts_cooldown_until:
         logger.debug("TTS cooldown active (%.0fs remaining)",
                      _tts_cooldown_until - time.time())
@@ -174,6 +182,12 @@ def _call_openai_tts(
             if r.status_code == 429:
                 global _tts_cooldown_until
                 _tts_cooldown_until = time.time() + _TTS_COOLDOWN_SECONDS
+                # Record in centralized gate (exponential backoff)
+                try:
+                    from core.api_gate import record_429
+                    record_429("openai_tts")
+                except Exception:
+                    pass
                 logger.warning(
                     "TTS rate limited (429) — cooldown %ds",
                     _TTS_COOLDOWN_SECONDS,

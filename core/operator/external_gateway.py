@@ -2186,11 +2186,21 @@ class ExternalGateway:
         """
         Fallback directo a OpenAI si el Intelligence Router no está disponible.
         Usa VECTRAX_SYSTEM_PROMPT como único system message (identidad estricta).
+        Checks API gate before calling to respect exponential backoff on 429.
         """
         import os
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
             return ""
+
+        # Check API gate — skip if rate limited
+        try:
+            from core.api_gate import check_gate, record_429, record_success
+            if not check_gate("openai"):
+                logger.debug("OpenAI direct: gate closed, skipping")
+                return ""
+        except Exception:
+            pass
 
         from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT
         import httpx
@@ -2211,6 +2221,16 @@ class ExternalGateway:
             },
             timeout=30.0,
         )
+        if resp.status_code == 429:
+            try:
+                record_429("openai")
+            except Exception:
+                pass
+            resp.raise_for_status()
+        try:
+            record_success("openai")
+        except Exception:
+            pass
         resp.raise_for_status()
         data = resp.json()
         content = data["choices"][0]["message"]["content"]

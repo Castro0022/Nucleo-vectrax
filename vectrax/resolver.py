@@ -1078,7 +1078,14 @@ def _interpret_with_llm(
     except Exception as exc:
         logger.debug("Intelligence Bridge unavailable for interpretation: %s", exc)
 
-    # Try direct OpenAI fallback
+    # Try direct OpenAI fallback (with API gate check)
+    try:
+        from core.api_gate import check_gate, record_429, record_success
+        if not check_gate("openai"):
+            logger.debug("Interpretation: OpenAI gate closed, skipping")
+            return ""
+    except Exception:
+        pass
     try:
         import os
         api_key = os.environ.get("OPENAI_API_KEY", "")
@@ -1095,13 +1102,24 @@ def _interpret_with_llm(
                     "model": "gpt-4o-mini",
                     "messages": [
                         {"role": "system", "content": VECTRAX_SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt},  # single user msg, no extra system
+                        {"role": "user", "content": prompt},
                     ],
                     "max_tokens": 400,
                     "temperature": 0.5,
                 },
                 timeout=10,
             )
+            if resp.status_code == 429:
+                try:
+                    record_429("openai")
+                except Exception:
+                    pass
+                logger.warning("Interpretation: OpenAI 429")
+                return ""
+            try:
+                record_success("openai")
+            except Exception:
+                pass
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
             logger.info("Intelligent interpretation via OpenAI direct | len=%d", len(content))
