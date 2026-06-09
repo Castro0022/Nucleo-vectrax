@@ -29,7 +29,7 @@ class GeminiProvider(BaseLLMProvider):
         self,
         api_key: Optional[str] = None,
         endpoint: str = "https://generativelanguage.googleapis.com/v1beta",
-        timeout: int = 60,
+        timeout: int = 25,
         **kwargs,
     ):
         self._api_key = api_key or os.environ.get("GEMINI_API_KEY")
@@ -50,7 +50,9 @@ class GeminiProvider(BaseLLMProvider):
             )
         if self._client is None:
             import httpx
-            self._client = httpx.AsyncClient(timeout=self.timeout)
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.timeout, connect=5, read=20),
+            )
 
     def get_provider_name(self) -> str:
         return "gemini"

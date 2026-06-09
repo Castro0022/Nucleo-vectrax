@@ -31,7 +31,7 @@ class OpenAIProvider(BaseLLMProvider):
         self,
         api_key: Optional[str] = None,
         endpoint: str = "https://api.openai.com/v1",
-        timeout: int = 60,
+        timeout: int = 25,
         **kwargs,
     ):
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
@@ -53,7 +53,7 @@ class OpenAIProvider(BaseLLMProvider):
         if self._client is None:
             import httpx
             self._client = httpx.AsyncClient(
-                timeout=self.timeout,
+                timeout=httpx.Timeout(self.timeout, connect=5, read=20),
                 headers={
                     "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json",
