@@ -83,6 +83,9 @@ MSG_TIMEOUT = 45
 HEARTBEAT_INTERVAL = 10
 # Per-stage slow threshold (seconds) — logs STAGE_SLOW warning
 STAGE_SLOW_THRESHOLD = 15.0
+# Hard timeout per stage (seconds) — kills the stage if exceeded
+CONVERGENCE_TIMEOUT = 10.0
+GATEWAY_TIMEOUT = 30.0
 # Memory watchdog interval (seconds)
 MEMORY_WATCHDOG_INTERVAL = 30
 # Max drain wait before hard exit (seconds)
@@ -412,48 +415,79 @@ def _process_one(msg):
             (msg.content or "")[:120],
         )
 
-        # ── CICLO DE CONVERGENCIA TOTAL (7 fases obligatorias) ────────────────
-        # Fases garantizadas ANTES de generar respuesta:
-        #   [3] Memoria Estructural → conecta con patrones previos
-        #   [6] Gravitación         → almacena en núcleo según peso
-        # Non-fatal: si el motor falla, el pipeline continúa normalmente.
+        # ── CICLO DE CONVERGENCIA TOTAL (hard timeout) ────────────────────
+        # Non-fatal: if convergence hangs or times out, pipeline continues.
+        _conv_record = None
         with _stage_timer("convergence_cycle", msg.id):
-            from core.convergence_hook import run_convergence_cycle, should_block
-            _conv_record = run_convergence_cycle(
-                msg.content,
-                source="telegram",
-                channel=msg.channel or "telegram",
-                owner=msg.user_id,
-                metadata={"msg_id": msg.id},
-            )
-        if should_block(_conv_record):
-            logger.warning(
-                "CONV_BLOCK msg_id=%s user=%s — governor bloqueó el mensaje",
-                msg.id, msg.user_id,
-            )
-            mark_done(msg.id, "blocked_by_convergence")
-            return True
+            try:
+                from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _TE
+                from core.convergence_hook import run_convergence_cycle, should_block
+                with _TPE(max_workers=1) as _conv_pool:
+                    _conv_future = _conv_pool.submit(
+                        run_convergence_cycle,
+                        msg.content,
+                        source="telegram",
+                        channel=msg.channel or "telegram",
+                        owner=msg.user_id,
+                        metadata={"msg_id": msg.id},
+                    )
+                    _conv_record = _conv_future.result(timeout=CONVERGENCE_TIMEOUT)
+            except _TE:
+                logger.warning(
+                    "CONV_TIMEOUT %s | convergence_cycle exceeded %.0fs",
+                    msg.id, CONVERGENCE_TIMEOUT,
+                )
+            except Exception as _ce:
+                logger.debug("convergence_cycle error (skipped): %s", _ce)
+        if _conv_record is not None:
+            try:
+                from core.convergence_hook import should_block
+                if should_block(_conv_record):
+                    logger.warning(
+                        "CONV_BLOCK msg_id=%s user=%s",
+                        msg.id, msg.user_id,
+                    )
+                    mark_done(msg.id, "blocked_by_convergence")
+                    return True
+            except Exception:
+                pass
         # ───────────────────────────────────────────────────────────────────────
 
+        # ── EXTERNAL GATEWAY (hard timeout) ────────────────────────────
+        result = None
         with _stage_timer("external_gateway", msg.id):
-            result = gw.receive_message(
-                user_id=msg.user_id,
-                content=msg.content,
-                channel=msg.channel,
-            )
+            try:
+                from concurrent.futures import ThreadPoolExecutor as _TPE2, TimeoutError as _TE2
+                with _TPE2(max_workers=1) as _gw_pool:
+                    _gw_future = _gw_pool.submit(
+                        gw.receive_message,
+                        user_id=msg.user_id,
+                        content=msg.content,
+                        channel=msg.channel,
+                    )
+                    result = _gw_future.result(timeout=GATEWAY_TIMEOUT)
+            except _TE2:
+                logger.warning(
+                    "GW_TIMEOUT %s | external_gateway exceeded %.0fs",
+                    msg.id, GATEWAY_TIMEOUT,
+                )
+            except Exception as _ge:
+                logger.warning("external_gateway error: %s", _ge)
         elapsed = time.time() - t0
 
         response = ""
-        if result.source == "memory":
-            response = result.response
-        else:
-            response = (result.response or "").strip()
+        if result is not None:
+            if result.source == "memory":
+                response = result.response
+            else:
+                response = (result.response or "").strip()
         # Respuesta vacía = silencio. No mandar ruido al usuario.
 
         # Diagnostic: log la respuesta cruda + source
         logger.info(
             "PROC_OUT msg_id=%s source=%s len=%d response=%r",
-            msg.id, result.source, len(response), response[:200],
+            msg.id, result.source if result else "timeout",
+            len(response), response[:200],
         )
 
         # === LANGUAGE ENFORCEMENT (prevent language leaks) ===
