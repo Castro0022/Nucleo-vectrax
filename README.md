@@ -1435,7 +1435,9 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 ## 📋 Changelog
 
 ### 2026-06-09
-- **fix: reentry messages blocked by telegram_guard** — `telegram_guard.py` was suppressing `reentry` and `scheduled` reasons along with internal telemetry. Users were not receiving continuity messages after 12-20h of silence. Removed both from blocked list.
+- **feat: evolution memory** — Daily snapshots of system state stored in `vault/evolution_snapshots.db`. `get_evolution_context()` compares today vs yesterday, 7d ago, 30d ago with deltas and percentages. Injected into self_context so Vectrax speaks from evolution, not isolated numbers. Meta_loop records one snapshot per day (Layer 8).
+- **fix: error count inflated by warnings** — `_error_count_window()` was counting `[WARNING]` as errors. Vectrax reported 240 errors when there were 0 real `[ERROR]`/`[CRITICAL]`. Now only counts actual errors.
+- **fix: reentry messages blocked by telegram_guard**
 - **feat: topic lock** — Short referential messages ("dale", "mañana", "perfecto", etc.) now inherit the active conversation thread instead of letting Gravity/SmartRouter switch domains. 66 unit tests (ES/EN). Prevents false context switches to market when closing a thread.
 - **feat: subprocess isolation for gateway** — `multiprocessing.Process` replaces `ThreadPoolExecutor` for the external gateway. Hung threads can now be killed for real via `process.kill()`. Eliminates frozen-thread worker incidents.
 - **feat: reentry monitor** — `scripts/check_reentry.sh` checks for blocked reentry messages. Cron job runs hourly, logs to `~/.vectrax/reentry_monitor.log`.
