@@ -1716,10 +1716,11 @@ class ExternalGateway:
             _TOPIC_LOCK_WORDS = _re.compile(
                 r"^\s*(?:"
                 r"no\s+ahora|ahora\s+no|ma[nñ]ana|despu[eé]s|luego|m[aá]s\s+tarde"
-                r"|dale|perfecto|exacto|entendido|listo|claro|ok[aáy]*"
+                r"|dale|perfecto|exacto|entendido|listo|claro|ok(?:e?y|a[yá])?" 
                 r"|s[ií]|no|ya|vale|va|vamos|bien|bueno|todo\s+bien"
                 r"|genial|de\s+acuerdo|as[ií]\s+es|correcto|seguro"
-                r"|lo\s+(?:dejamos|vemos|hablamos)|voy\s+a\s+(?:esperar|ver|pensar)"
+                r"|lo\s+(?:dejamos|vemos|hablamos)(?:\s+.{0,20})?"
+                r"|voy\s+a\s+(?:esperar|ver|pensar)"
                 r"|let'?s\s+(?:do|wait|see|talk)|sure|fine|alright|got\s+it"
                 r"|ok\s+.{0,20}$|y\s+(?:eso|ya)|nada\s+m[aá]s|eso\s+es\s+todo"
                 r")\s*[.!?]*\s*$",
