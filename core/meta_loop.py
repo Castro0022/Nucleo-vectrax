@@ -380,6 +380,15 @@ def reflect(ingested_count=0):
     if obs_ram:
         reflection["ram_snapshot"] = obs_ram
 
+    # --- Layer 8: Daily evolution snapshot (once per day) ---
+    try:
+        from core.self_observation.evolution_memory import record_daily_snapshot, get_snapshot
+        if not get_snapshot(0):  # no snapshot for today yet
+            snap = record_daily_snapshot()
+            reflection["evolution_snapshot"] = True
+    except Exception as _ev:
+        logger.debug("evolution snapshot failed: %s", _ev)
+
     # Persist reflection into state
     state["last_reflection"] = reflection
     state_manager.save(state)

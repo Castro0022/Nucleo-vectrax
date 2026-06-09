@@ -424,6 +424,15 @@ def build_self_context(lang: str = "es", user_id: str = "") -> str:
                 "I respond from what I am and what already exists — not from generic theory."
             )
 
+    # Evolution — longitudinal comparison (yesterday, 7d, 30d)
+    try:
+        from core.self_observation.evolution_memory import get_evolution_context
+        evolution = get_evolution_context()
+        if evolution:
+            base += "\n\n" + evolution
+    except Exception as _ev_exc:
+        logger.debug("Evolution context failed: %s", _ev_exc)
+
     # Market observation awareness
     market_ctx = ""
     try:
