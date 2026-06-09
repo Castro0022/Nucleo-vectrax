@@ -1435,7 +1435,8 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 ## 📋 Changelog
 
 ### 2026-06-09
-- **feat: evolution memory** — Daily snapshots of system state stored in `vault/evolution_snapshots.db`. `get_evolution_context()` compares today vs yesterday, 7d ago, 30d ago with deltas and percentages. Injected into self_context so Vectrax speaks from evolution, not isolated numbers. Meta_loop records one snapshot per day (Layer 8).
+- **fix: LLM timeout alignment** — OpenAI and Gemini reduced from 60s to 25s with granular httpx timeouts (connect=5s, read=20s). Both now fit inside GATEWAY_TIMEOUT (30s) with 5s margin. Eliminates the root cause of worker restarts: Gemini hanging 45s inside a subprocess killed at 30s.
+- **feat: evolution memory**
 - **fix: error count inflated by warnings** — `_error_count_window()` was counting `[WARNING]` as errors. Vectrax reported 240 errors when there were 0 real `[ERROR]`/`[CRITICAL]`. Now only counts actual errors.
 - **fix: reentry messages blocked by telegram_guard**
 - **feat: topic lock** — Short referential messages ("dale", "mañana", "perfecto", etc.) now inherit the active conversation thread instead of letting Gravity/SmartRouter switch domains. 66 unit tests (ES/EN). Prevents false context switches to market when closing a thread.
