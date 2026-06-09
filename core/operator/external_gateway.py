@@ -1705,25 +1705,74 @@ class ExternalGateway:
             logger.debug("Memory pre-check failed: %s", _mpc_exc)
 
         # ══════════════════════════════════════════════════════════════
+        # TOPIC LOCK — short referential messages stay in current thread
+        # ══════════════════════════════════════════════════════════════
+        # If the user sends a short/referential message ("no ahora",
+        # "mañana", "dale", "perfecto"), inherit the active conversation
+        # topic instead of letting Gravity/SmartRouter switch domains.
+        # This prevents "no ahora" from jumping to market analysis.
+        _topic_locked = False
+        try:
+            _TOPIC_LOCK_WORDS = _re.compile(
+                r"^\s*(?:"
+                r"no\s+ahora|ahora\s+no|ma[nñ]ana|despu[eé]s|luego|m[aá]s\s+tarde"
+                r"|dale|perfecto|exacto|entendido|listo|claro|ok[aáy]*"
+                r"|s[ií]|no|ya|vale|va|vamos|bien|bueno|todo\s+bien"
+                r"|genial|de\s+acuerdo|as[ií]\s+es|correcto|seguro"
+                r"|lo\s+(?:dejamos|vemos|hablamos)|voy\s+a\s+(?:esperar|ver|pensar)"
+                r"|let'?s\s+(?:do|wait|see|talk)|sure|fine|alright|got\s+it"
+                r"|ok\s+.{0,20}$|y\s+(?:eso|ya)|nada\s+m[aá]s|eso\s+es\s+todo"
+                r")\s*[.!?]*\s*$",
+                _re.IGNORECASE,
+            )
+            _content_stripped = content.strip()
+            _is_short_ref = (
+                len(_content_stripped.split()) <= 8
+                and _TOPIC_LOCK_WORDS.match(_content_stripped)
+            )
+            if _is_short_ref:
+                from core.conversation.active_state import get_state as _get_conv
+                _conv = _get_conv(user_id)
+                if _conv and _conv.is_alive() and _conv.active_topic:
+                    _topic_locked = True
+                    # Inject the active thread context so the LLM stays on topic
+                    _thread_hint = (
+                        f"[TOPIC LOCK — hilo activo]\n"
+                        f"El usuario está respondiendo al tema: {_conv.active_topic}\n"
+                        f"NO cambies de dominio. Responde dentro de este contexto."
+                    )
+                    if _conv.active_entity:
+                        _thread_hint += f"\nEntidad activa: {_conv.active_entity}"
+                    extra_context = (
+                        _thread_hint + "\n\n" + extra_context
+                        if extra_context else _thread_hint
+                    )
+                    logger.info(
+                        "Pipeline: TOPIC_LOCK | msg=%r | thread=%s",
+                        _content_stripped[:30], _conv.active_topic[:40],
+                    )
+        except Exception as _tl_exc:
+            logger.debug("Topic lock check failed: %s", _tl_exc)
+
+        # ══════════════════════════════════════════════════════════════
         # PRE-ROUTER MARKET INTERCEPT
         # ══════════════════════════════════════════════════════════════
-        # Check market intents BEFORE the SmartRouter. The semantic
-        # classifier sometimes routes "Precio de Apple" to RESOLVE_ONLINE
-        # because it doesn't recognize company names as tickers.
-        # The market intent detector handles this correctly.
-        try:
-            from intents.market_intents import detect_market_intent
-            _mkt = detect_market_intent(content)
-            if _mkt:
-                _mkt_answer = self._try_market_resolve(content)
-                if _mkt_answer:
-                    logger.info(
-                        "Pipeline: PRE-ROUTER MARKET intercept | intent=%s",
-                        _mkt[0],
-                    )
-                    return _mkt_answer, "market"
-        except Exception as _me:
-            logger.debug("Pre-router market intercept failed: %s", _me)
+        # BLOCKED by topic lock: if the user is closing a thread,
+        # do NOT intercept with market data.
+        if not _topic_locked:
+            try:
+                from intents.market_intents import detect_market_intent
+                _mkt = detect_market_intent(content)
+                if _mkt:
+                    _mkt_answer = self._try_market_resolve(content)
+                    if _mkt_answer:
+                        logger.info(
+                            "Pipeline: PRE-ROUTER MARKET intercept | intent=%s",
+                            _mkt[0],
+                        )
+                        return _mkt_answer, "market"
+            except Exception as _me:
+                logger.debug("Pre-router market intercept failed: %s", _me)
 
         # ══════════════════════════════════════════════════════════════
         # SMART ROUTER — clasificación semántica unificada
