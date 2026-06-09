@@ -246,16 +246,34 @@ def _continuity_counts() -> int:
         return 0
 
 
+# ERROR/CRITICAL only — real errors that need attention.
+# WARNING is tracked separately; it was inflating the error count
+# (e.g. "etoro search failed" or "TTS timeout" are warnings, not errors).
 _ERROR_PATTERN = re.compile(
+    r"\[(?:ERROR|CRITICAL)\]", re.IGNORECASE,
+)
+# Broader pattern for recent_errors display (includes warnings for context)
+_ERROR_OR_WARN_PATTERN = re.compile(
     r"\[(?:ERROR|CRITICAL|WARNING)\]", re.IGNORECASE,
 )
 
 
+def _parse_log_timestamp(line: str) -> float:
+    """Parse timestamp from log line. Returns 0.0 if unparseable."""
+    try:
+        import datetime
+        dt = datetime.datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+        return dt.timestamp()
+    except Exception:
+        return 0.0
+
+
 def _recent_errors(window_seconds: int = 86400, max_lines: int = 8) -> List[str]:
-    """Lee las últimas líneas de error del worker.log dentro de la ventana.
-    
-    Devuelve hasta `max_lines` mensajes (sin timestamp) para inyectar al
-    creator context.
+    """Last ERROR/CRITICAL/WARNING lines within the time window.
+
+    Returns up to `max_lines` messages for creator context injection.
+    Includes warnings for diagnostic context but the count uses
+    _error_count_window which only counts ERROR/CRITICAL.
     """
     if not os.path.exists(_WORKER_LOG):
         return []
@@ -263,20 +281,15 @@ def _recent_errors(window_seconds: int = 86400, max_lines: int = 8) -> List[str]
     try:
         with open(_WORKER_LOG, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
-        # Recorremos desde el final hacia atrás
         out: List[str] = []
         for line in reversed(lines[-2000:]):
-            if not _ERROR_PATTERN.search(line):
+            if not _ERROR_OR_WARN_PATTERN.search(line):
                 continue
-            # Parse timestamp at the start (format: '2026-05-09 04:30:00 ...')
-            try:
-                ts_str = line[:19]
-                import datetime
-                dt = datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-                if dt.timestamp() < cutoff:
-                    continue
-            except Exception:
-                pass  # if we can't parse, include it
+            ts = _parse_log_timestamp(line)
+            if ts > 0 and ts < cutoff:
+                continue
+            if ts == 0:
+                continue  # skip lines without valid timestamp
             out.append(line.strip()[:200])
             if len(out) >= max_lines:
                 break
@@ -287,7 +300,12 @@ def _recent_errors(window_seconds: int = 86400, max_lines: int = 8) -> List[str]
 
 
 def _error_count_window(window_seconds: int = 86400) -> int:
-    """Total de líneas con [ERROR|CRITICAL] en la ventana."""
+    """Count of [ERROR] and [CRITICAL] lines in the time window.
+
+    Does NOT count [WARNING] — warnings like 'etoro search failed' or
+    'TTS timeout' are operational noise, not real errors.
+    Lines without a parseable timestamp are skipped (not counted).
+    """
     if not os.path.exists(_WORKER_LOG):
         return 0
     cutoff = time.time() - window_seconds
@@ -297,15 +315,11 @@ def _error_count_window(window_seconds: int = 86400) -> int:
             for line in f:
                 if not _ERROR_PATTERN.search(line):
                     continue
-                try:
-                    import datetime
-                    dt = datetime.datetime.strptime(
-                        line[:19], "%Y-%m-%d %H:%M:%S",
-                    )
-                    if dt.timestamp() < cutoff:
-                        continue
-                except Exception:
-                    pass
+                ts = _parse_log_timestamp(line)
+                if ts > 0 and ts < cutoff:
+                    continue
+                if ts == 0:
+                    continue  # skip unparseable lines
                 n += 1
     except Exception:
         return 0
