@@ -1434,8 +1434,14 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 
 ## 📋 Changelog
 
+### 2026-06-09
+- **fix: reentry messages blocked by telegram_guard** — `telegram_guard.py` was suppressing `reentry` and `scheduled` reasons along with internal telemetry. Users were not receiving continuity messages after 12-20h of silence. Removed both from blocked list.
+- **feat: topic lock** — Short referential messages ("dale", "mañana", "perfecto", etc.) now inherit the active conversation thread instead of letting Gravity/SmartRouter switch domains. 66 unit tests (ES/EN). Prevents false context switches to market when closing a thread.
+- **feat: subprocess isolation for gateway** — `multiprocessing.Process` replaces `ThreadPoolExecutor` for the external gateway. Hung threads can now be killed for real via `process.kill()`. Eliminates frozen-thread worker incidents.
+- **feat: reentry monitor** — `scripts/check_reentry.sh` checks for blocked reentry messages. Cron job runs hourly, logs to `~/.vectrax/reentry_monitor.log`.
+
 ### 2026-06-08
-- **feat: worker hardening phase 1** — Priority queue (CRITICAL/HIGH/NORMAL/LOW), per-stage timing with STAGE_SLOW warnings, memory watchdog calling `check_worker_memory()` every 30s with auto-restart on threshold breach. Cross-platform (Linux + macOS).
+- **feat: worker hardening phase 1**
 - **feat: hard stage timeouts** — `convergence_cycle` max 10s, `external_gateway` max 30s. If exceeded, stage is killed and pipeline continues to graceful degradation. Eliminates frozen-thread incidents (INC-1780962804-PIP).
 - **feat: eToro market data live** — Fixed candle interval names (Hour1→OneHour), double-nested response parser, watchlist symbols (BTCUSD→BTC, ETHUSD→ETH). Live prices working for BTC, ETH, AAPL, TSLA, NVDA, AMZN.
 - **feat: market live panel** — `/v1/market/view` and `/v1/market/live` API. Complete cycle visualization: symbols with live prices, signals, patterns, proposals, positions, learning events. Integrated into Observatory panel with auto-refresh.
