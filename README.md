@@ -1434,6 +1434,18 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 
 ## 📋 Changelog
 
+### 2026-06-08
+- **feat: worker hardening phase 1** — Priority queue (CRITICAL/HIGH/NORMAL/LOW), per-stage timing with STAGE_SLOW warnings, memory watchdog calling `check_worker_memory()` every 30s with auto-restart on threshold breach. Cross-platform (Linux + macOS).
+- **feat: hard stage timeouts** — `convergence_cycle` max 10s, `external_gateway` max 30s. If exceeded, stage is killed and pipeline continues to graceful degradation. Eliminates frozen-thread incidents (INC-1780962804-PIP).
+- **feat: eToro market data live** — Fixed candle interval names (Hour1→OneHour), double-nested response parser, watchlist symbols (BTCUSD→BTC, ETHUSD→ETH). Live prices working for BTC, ETH, AAPL, TSLA, NVDA, AMZN.
+- **feat: market live panel** — `/v1/market/view` and `/v1/market/live` API. Complete cycle visualization: symbols with live prices, signals, patterns, proposals, positions, learning events. Integrated into Observatory panel with auto-refresh.
+- **feat: observer identity** — System prompt refactored: Vectrax speaks from perception, not as assistant. Uses real system data (router stats, stars, convergences) in responses.
+- **feat: Word Gravity multi-language** — 44 activation seeds across ES/EN/FR/PT/IT/DE. Intake filter integrates WGI: high-mass words bypass short_statement discard.
+- **feat: API gate backoff** — OpenAI and Gemini providers now check `api_gate` before calling. On 429: gate closes with exponential backoff (60s→900s).
+- **feat: Alpaca connector** — `connectors/alpaca/alpaca_client.py` ready for paper trading. $20 max per order, 5 positions, $100 exposure, kill switch. Pending API keys.
+- **fix: auto-executor stale state** — Cleaned `consecutive_losses: 3` and `daily_loss_usd: 60.0` left by test script. System was starting in auto-shutdown state.
+- **fix: .env auto-load** — App startup now loads `.env` via dotenv for API keys.
+
 ### 2026-05-31
 - **feat: precios de mercado multilingüe** — detección de consultas de precio en ES/EN/FR/DE/IT/PT/NL para 20+ criptos y stocks. Respuesta directa vía Binance REST (~100ms) sin pasar por el pipeline. 20/20 queries detectadas, 0 falsos positivos en smoke test de producción.
 - **feat: eToro Learning Engine** — motor de aprendizaje de mercado completo: `signal_recorder`, `outcome_tracker`, `pattern_memory`, `learning_engine`, `auto_executor`. Ciclo OFF→PAPER→LIVE con límites de riesgo obligatorios (stop-loss 1.5%, max $100/op, shutdown por 3 pérdidas consecutivas). Comandos: `/vx etoro learn` y `/vx etoro auto`.
