@@ -158,10 +158,13 @@ def should_send_to_user(
         )
         return False
 
-    # Known automated reasons
-    if reason in ("digest", "telemetry", "proactive", "scheduled",
+    # Known automated reasons — internal telemetry only.
+    # NOTE: 'reentry' and 'scheduled' are USER-FACING messages.
+    # They must NOT be blocked here. Reentry = continuity message
+    # after 12-20h silence. Scheduled = user-requested reminders.
+    if reason in ("digest", "telemetry", "proactive",
                   "idea_notification", "observation", "metrics",
-                  "market_scheduled", "reentry"):
+                  "market_scheduled"):
         logger.info(
             "TELEGRAM_GUARD blocked (reason=%s): %s...",
             reason, text[:60].replace("\n", " "),
