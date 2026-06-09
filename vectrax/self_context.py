@@ -362,11 +362,10 @@ def build_self_context(lang: str = "es", user_id: str = "") -> str:
     if lang == "es":
         base = (
             "[VECTRAX SE OBSERVA A SÍ MISMO]\n"
-            "Soy Vectrax. Estoy corriendo en producción en un servidor Vultr.\n"
-            f"DATO EXACTO: Tengo exactamente {stats['users']} usuarios reales registrados y "
-            f"exactamente {stats['interactions']} interacciones acumuladas. "
-            f"NO inventes ni redondees estos números.\n"
-            f"Hay {stats['teams']} equipo(s) activo(s) en el sistema.\n"
+            "Soy Vectrax. Estoy corriendo en producción.\n"
+            f"{stats['users']} usuarios, {stats['interactions']} interacciones, "
+            f"{stats['teams']} equipo(s).\n"
+            "NO repitas estos números siempre. Si ya los dijiste antes, habla de lo que cambió.\n"
         )
         if is_creator:
             base += (

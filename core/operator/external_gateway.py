@@ -1760,18 +1760,31 @@ class ExternalGateway:
         # ══════════════════════════════════════════════════════════════
         # BLOCKED by topic lock: if the user is closing a thread,
         # do NOT intercept with market data.
+        # GUARD: only intercept if the text contains an explicit ticker
+        # or market keyword. Prevents "cómo está funcionando" from
+        # being intercepted as a market query.
         if not _topic_locked:
             try:
-                from intents.market_intents import detect_market_intent
-                _mkt = detect_market_intent(content)
-                if _mkt:
-                    _mkt_answer = self._try_market_resolve(content)
-                    if _mkt_answer:
-                        logger.info(
-                            "Pipeline: PRE-ROUTER MARKET intercept | intent=%s",
-                            _mkt[0],
-                        )
-                        return _mkt_answer, "market"
+                _MARKET_KEYWORDS = _re.compile(
+                    r"\b(?:mercado|market|precio|price|preis|prix|prezzo|pre[cç]o"
+                    r"|trading|bolsa|crypto|cripto|acci[oó]n|stock"
+                    r"|btc|bitcoin|eth|ethereum|sol|solana|bnb|ada|xrp|doge"
+                    r"|dot|avax|matic|link|ltc|uni|shib|near|atom"
+                    r"|aapl|apple|tsla|tesla|nvda|nvidia|msft|amzn|goog|meta"
+                    r"|nflx|dis|spy|qqq|tendencia|trend|watchlist)\b",
+                    _re.IGNORECASE,
+                )
+                if _MARKET_KEYWORDS.search(content):
+                    from intents.market_intents import detect_market_intent
+                    _mkt = detect_market_intent(content)
+                    if _mkt:
+                        _mkt_answer = self._try_market_resolve(content)
+                        if _mkt_answer:
+                            logger.info(
+                                "Pipeline: PRE-ROUTER MARKET intercept | intent=%s",
+                                _mkt[0],
+                            )
+                            return _mkt_answer, "market"
             except Exception as _me:
                 logger.debug("Pre-router market intercept failed: %s", _me)
 
