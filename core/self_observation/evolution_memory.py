@@ -212,13 +212,14 @@ def get_evolution_context() -> str:
     Compares today vs yesterday, vs 7 days ago, vs 30 days ago.
     Returns empty string if no historical data exists.
     """
-    # Ensure today is recorded
-    try:
-        record_daily_snapshot()
-    except Exception:
-        pass
-
+    # Ensure today is recorded (only if missing — never overwrite)
     today = get_snapshot(0)
+    if not today:
+        try:
+            record_daily_snapshot()
+            today = get_snapshot(0)
+        except Exception:
+            pass
     if not today:
         return ""
 
