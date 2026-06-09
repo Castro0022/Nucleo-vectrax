@@ -453,26 +453,71 @@ def _process_one(msg):
                 pass
         # ───────────────────────────────────────────────────────────────────────
 
-        # ── EXTERNAL GATEWAY (hard timeout) ────────────────────────────
+        # ── EXTERNAL GATEWAY (subprocess isolation) ───────────────────
+        # Uses multiprocessing.Process so the gateway can be KILLED if it
+        # hangs. ThreadPoolExecutor.result(timeout) raises TimeoutError but
+        # the thread keeps running — Python can't kill threads.
+        # Process.kill() actually terminates the stuck code.
         result = None
         with _stage_timer("external_gateway", msg.id):
             try:
-                from concurrent.futures import ThreadPoolExecutor as _TPE2, TimeoutError as _TE2
-                with _TPE2(max_workers=1) as _gw_pool:
-                    _gw_future = _gw_pool.submit(
-                        gw.receive_message,
+                import multiprocessing as _mp
+                _result_q = _mp.Queue(maxsize=1)
+
+                def _gw_worker(_q, _uid, _content, _channel):
+                    """Run gateway in isolated process."""
+                    try:
+                        # Re-init gateway in this process (fresh state)
+                        from core.operator.external_gateway import ExternalGateway
+                        _gw = ExternalGateway()
+                        _r = _gw.receive_message(
+                            user_id=_uid,
+                            content=_content,
+                            channel=_channel,
+                        )
+                        _q.put({
+                            "response": _r.response,
+                            "source": _r.source,
+                            "processed": _r.processed,
+                            "event_id": _r.event_id,
+                        })
+                    except Exception as _e:
+                        _q.put({"response": "", "source": "error", "error": str(_e)})
+
+                _proc = _mp.Process(
+                    target=_gw_worker,
+                    args=(_result_q, msg.user_id, msg.content, msg.channel),
+                    daemon=True,
+                )
+                _proc.start()
+                _proc.join(timeout=GATEWAY_TIMEOUT)
+
+                if _proc.is_alive():
+                    # Process hung — kill it for real
+                    logger.warning(
+                        "GW_TIMEOUT %s | external_gateway exceeded %.0fs — killing subprocess PID %d",
+                        msg.id, GATEWAY_TIMEOUT, _proc.pid,
+                    )
+                    _proc.kill()
+                    _proc.join(timeout=5)
+                elif not _result_q.empty():
+                    _raw = _result_q.get_nowait()
+                    from core.operator.external_gateway import GatewayResult
+                    result = GatewayResult(
+                        response=_raw.get("response", ""),
+                        source=_raw.get("source", ""),
+                        processed=_raw.get("processed", False),
+                        event_id=_raw.get("event_id", ""),
                         user_id=msg.user_id,
-                        content=msg.content,
                         channel=msg.channel,
                     )
-                    result = _gw_future.result(timeout=GATEWAY_TIMEOUT)
-            except _TE2:
-                logger.warning(
-                    "GW_TIMEOUT %s | external_gateway exceeded %.0fs",
-                    msg.id, GATEWAY_TIMEOUT,
-                )
+                # Clean up
+                try:
+                    _result_q.close()
+                except Exception:
+                    pass
             except Exception as _ge:
-                logger.warning("external_gateway error: %s", _ge)
+                logger.warning("external_gateway subprocess error: %s", _ge)
         elapsed = time.time() - t0
 
         response = ""
