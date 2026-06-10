@@ -393,20 +393,31 @@ def evaluate_intake(
         ))
     )
     if word_count <= 5 and not has_question:
-        # Active conversation check: if there's a recent turn (<10 min),
-        # the user is continuing a thread. ALWAYS execute — never discard.
-        # This prevents "Fluyendo!", "Genial", "Vamos" from getting the
-        # "Capacidad limitada" response when they're conversational replies.
+        # Active conversation check: if there was a recent interaction
+        # (<10 min), the user is continuing a thread. ALWAYS execute.
+        # Uses the DB (interactions table), not in-memory state, because
+        # subprocess isolation loses ConversationState between messages.
         try:
-            from core.conversation.active_state import get_state as _get_cs
-            _cs = _get_cs(user_id)
-            if _cs and _cs.is_alive() and _cs.active_topic:
-                return IntakeResult(
-                    importance=Importance.MEDIUM,
-                    action=Action.EXECUTE,
-                    reason="active_conversation",
-                    context_hint="conversational",
-                )
+            import sqlite3 as _sq3
+            import os as _os
+            _mem_db = _os.path.join(
+                _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                "vault", "user_memory.db",
+            )
+            if _os.path.exists(_mem_db):
+                _c = _sq3.connect(_mem_db, timeout=2)
+                _row = _c.execute(
+                    "SELECT MAX(timestamp) FROM interactions WHERE user_id = ?",
+                    (user_id,),
+                ).fetchone()
+                _c.close()
+                if _row and _row[0] and (time.time() - float(_row[0])) < 600:
+                    return IntakeResult(
+                        importance=Importance.MEDIUM,
+                        action=Action.EXECUTE,
+                        reason="active_conversation",
+                        context_hint="conversational",
+                    )
         except Exception:
             pass
 
