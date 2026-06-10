@@ -393,9 +393,25 @@ def evaluate_intake(
         ))
     )
     if word_count <= 5 and not has_question:
+        # Active conversation check: if there's a recent turn (<10 min),
+        # the user is continuing a thread. ALWAYS execute — never discard.
+        # This prevents "Fluyendo!", "Genial", "Vamos" from getting the
+        # "Capacidad limitada" response when they're conversational replies.
+        try:
+            from core.conversation.active_state import get_state as _get_cs
+            _cs = _get_cs(user_id)
+            if _cs and _cs.is_alive() and _cs.active_topic:
+                return IntakeResult(
+                    importance=Importance.MEDIUM,
+                    action=Action.EXECUTE,
+                    reason="active_conversation",
+                    context_hint="conversational",
+                )
+        except Exception:
+            pass
+
         # Word Gravity check: if any word has high gravitational mass,
-        # it's significant — don't discard. "Despierta", "mercado",
-        # "convergencia" etc. carry meaning even as single words.
+        # it's significant — don't discard.
         try:
             from core.word_gravity import get_effective_mass
             max_mass = 0.0
