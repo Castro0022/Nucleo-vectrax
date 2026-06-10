@@ -846,19 +846,32 @@ def run_worker() -> None:
                 last_proactive = time.time()  # evitar loop de errores
 
             # Market learning cycle — observe, record, learn patterns (every 30 min)
+            # CRITICAL: runs in a thread with timeout. Before this fix,
+            # run_learning_cycle() ran directly in the main loop and blocked
+            # the heartbeat for up to 540s (36 HTTP calls × 15s timeout).
             try:
                 _MARKET_LEARN_INTERVAL = 1800  # 30 min
+                _MARKET_LEARN_TIMEOUT = 60     # max 60s for the whole cycle
                 if time.time() - last_market_learn > _MARKET_LEARN_INTERVAL:
+                    from concurrent.futures import ThreadPoolExecutor as _MLP, TimeoutError as _MLT
                     from connectors.etoro.learning_engine import run_learning_cycle
                     watchlist_env = os.environ.get("ETORO_WATCHLIST", "")
                     symbols = watchlist_env.split(",") if watchlist_env else None
-                    summary = run_learning_cycle(symbols)
-                    if summary.get("signals_recorded", 0) > 0:
-                        logger.info(
-                            "Market learn: %d signals, %d patterns",
-                            summary["signals_recorded"],
-                            summary.get("patterns_total", 0),
-                        )
+                    with _MLP(max_workers=1) as _ml_pool:
+                        _ml_future = _ml_pool.submit(run_learning_cycle, symbols)
+                        try:
+                            summary = _ml_future.result(timeout=_MARKET_LEARN_TIMEOUT)
+                            if summary.get("signals_recorded", 0) > 0:
+                                logger.info(
+                                    "Market learn: %d signals, %d patterns",
+                                    summary["signals_recorded"],
+                                    summary.get("patterns_total", 0),
+                                )
+                        except _MLT:
+                            logger.warning(
+                                "MARKET_LEARN_TIMEOUT | learning cycle exceeded %ds",
+                                _MARKET_LEARN_TIMEOUT,
+                            )
                     last_market_learn = time.time()
             except Exception as _ml:
                 logger.debug("Market learn error (passthrough): %s", _ml)
