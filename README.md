@@ -1434,8 +1434,13 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 
 ## 📋 Changelog
 
+### 2026-06-11
+- **feat: convergence history** — New `core/learn/convergence_history.py` tracks every convergence birth and dissolution with timestamp, stars, intent, score. Autonomous observer records snapshots each cycle. Self-context injects `[HISTORIAL DE CONVERGENCIAS]` so Vectrax can answer "which convergence was born last" with real data. Closes #16.
+- **fix: learning cycle blocking heartbeat** — `run_learning_cycle()` ran in the main loop, blocking heartbeat for up to 540s (36 HTTP calls × 15s). Moved to ThreadPoolExecutor with 60s timeout. Root cause of task=none/HB stale incidents.
+- **fix: short messages discarded during conversation** — "Fluyendo !" after a conversation turn got "Capacidad limitada" instead of a real response. Intake filter now checks `interactions` table for recent turn (<10 min) before discarding. DB-based, survives subprocess isolation.
+
 ### 2026-06-09
-- **fix: LLM timeout alignment** — OpenAI and Gemini reduced from 60s to 25s with granular httpx timeouts (connect=5s, read=20s). Both now fit inside GATEWAY_TIMEOUT (30s) with 5s margin. Eliminates the root cause of worker restarts: Gemini hanging 45s inside a subprocess killed at 30s.
+- **fix: LLM timeout alignment**
 - **feat: evolution memory**
 - **fix: error count inflated by warnings** — `_error_count_window()` was counting `[WARNING]` as errors. Vectrax reported 240 errors when there were 0 real `[ERROR]`/`[CRITICAL]`. Now only counts actual errors.
 - **fix: reentry messages blocked by telegram_guard**
