@@ -273,6 +273,25 @@ def _detect_convergence_changes(prev: dict, curr: dict, record) -> int:
     n = 0
     prev_conv = len(prev.get("gravity_convergences", []))
     curr_conv = len(curr.get("gravity_convergences", []))
+
+    # Record convergence history (births/dissolutions)
+    try:
+        from core.learn.convergence_history import record_snapshot
+        curr_convergences = curr.get("gravity_convergences", [])
+        result = record_snapshot(curr_convergences)
+        if result.get("births", 0) > 0:
+            record("convergence", "convergence_birth",
+                   f"{result['births']} convergencia(s) nacieron",
+                   evidence=result, severity="info")
+            n += 1
+        if result.get("dissolutions", 0) > 0:
+            record("convergence", "convergence_dissolved",
+                   f"{result['dissolutions']} convergencia(s) se disolvieron",
+                   evidence=result, severity="info")
+            n += 1
+    except Exception as _ch:
+        logger.debug("convergence_history failed: %s", _ch)
+
     if curr_conv > prev_conv:
         delta = curr_conv - prev_conv
         record("convergence", "convergence_detected",

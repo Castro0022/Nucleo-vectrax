@@ -432,6 +432,15 @@ def build_self_context(lang: str = "es", user_id: str = "") -> str:
     except Exception as _ev_exc:
         logger.debug("Evolution context failed: %s", _ev_exc)
 
+    # Convergence history — births, deaths, active details
+    try:
+        from core.learn.convergence_history import build_context as _conv_ctx
+        conv_history = _conv_ctx(limit=5)
+        if conv_history:
+            base += "\n\n" + conv_history
+    except Exception as _ch_exc:
+        logger.debug("Convergence history context failed: %s", _ch_exc)
+
     # Market observation awareness
     market_ctx = ""
     try:
