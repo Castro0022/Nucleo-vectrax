@@ -90,6 +90,12 @@ GATEWAY_TIMEOUT = 30.0
 MEMORY_WATCHDOG_INTERVAL = 30
 # Max drain wait before hard exit (seconds)
 MEMORY_DRAIN_TIMEOUT = 30
+# Main loop watchdog: if main loop doesn't tick in this many seconds,
+# force exit. Catches silent deadlocks (e.g. all threads stuck +
+# pool.submit blocks waiting for a free slot).
+MAIN_LOOP_WATCHDOG_TIMEOUT = 60
+# Stuck processing recovery interval (seconds)
+STUCK_RECOVERY_INTERVAL = 120
 
 # Dynamic concurrency: scale with available RAM
 try:
@@ -703,6 +709,89 @@ def _process_one(msg):
 # Main worker loop
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Main loop watchdog — detects silent deadlocks
+# ---------------------------------------------------------------------------
+
+import threading as _wd_threading
+
+_watchdog_last_tick = 0.0
+_watchdog_lock = _wd_threading.Lock()
+
+
+def _watchdog_tick() -> None:
+    """Called by the main loop every iteration to signal liveness."""
+    global _watchdog_last_tick
+    with _watchdog_lock:
+        _watchdog_last_tick = time.time()
+
+
+def _watchdog_thread(timeout: float) -> None:
+    """Background thread that force-exits if main loop is stuck.
+
+    Root cause: when all ThreadPoolExecutor threads are stuck on LLM
+    calls, pool.submit() blocks waiting for a free slot. This blocks
+    the main loop, which stops the heartbeat. The supervisor can't
+    detect the hang because the heartbeat file stops updating silently.
+
+    This watchdog detects that condition and force-exits, allowing
+    the supervisor to restart the worker cleanly.
+    """
+    while True:
+        time.sleep(timeout / 2)
+        with _watchdog_lock:
+            last = _watchdog_last_tick
+        if last == 0.0:
+            continue  # not started yet
+        age = time.time() - last
+        if age > timeout:
+            logger.critical(
+                "MAIN_LOOP_WATCHDOG | main loop stuck for %.0fs > %.0fs — force exit",
+                age, timeout,
+            )
+            # Force exit — supervisor will restart us
+            os._exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Stuck processing recovery
+# ---------------------------------------------------------------------------
+
+def _recover_stuck_processing(max_age_s: int = 90) -> int:
+    """Reset messages stuck in 'processing' status back to 'error'.
+
+    When the worker crashes or a thread hangs, messages can stay in
+    'processing' forever. This function recovers them.
+
+    Args:
+        max_age_s: Messages in 'processing' longer than this are stuck.
+
+    Returns:
+        Number of messages recovered.
+    """
+    try:
+        import sqlite3
+        _qdb = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            '..', 'vault', 'message_queue.db',
+        )
+        _qdb = os.path.normpath(_qdb)
+        conn = sqlite3.connect(_qdb, timeout=5)
+        count = conn.execute(
+            "UPDATE queue SET status='error', error='stuck_processing_recovered' "
+            "WHERE status='processing' AND started_at > 0 AND started_at < ?",
+            (time.time() - max_age_s,),
+        ).rowcount
+        conn.commit()
+        conn.close()
+        if count:
+            logger.warning("STUCK_RECOVERY | reset %d stuck processing messages", count)
+        return count
+    except Exception as exc:
+        logger.debug("Stuck recovery failed: %s", exc)
+        return 0
+
+
 def run_worker() -> None:
     from core.transport.message_queue import dequeue, mark_error, cleanup
 
@@ -711,6 +800,10 @@ def run_worker() -> None:
     last_cleanup = time.time()
     pool = ThreadPoolExecutor(max_workers=CONCURRENT, thread_name_prefix="pw")
     active = {}  # msg_id → (future, start_time)
+    # Semaphore to prevent pool.submit() from blocking the main loop.
+    # When all CONCURRENT threads are busy, acquire() returns False
+    # instead of blocking — main loop continues writing heartbeat.
+    _pool_semaphore = _wd_threading.Semaphore(CONCURRENT)
 
     def _stop(sig, frame):
         nonlocal running
@@ -726,9 +819,20 @@ def run_worker() -> None:
     last_digest = 0.0     # última ejecución del router digest
     last_market_learn = 0.0  # ciclo de aprendizaje de mercado (cada 30 min)
     last_mem_check = 0.0  # memory watchdog
+    last_stuck_recovery = 0.0  # stuck processing recovery
 
-    # Discard stale messages from previous sessions (>5 min old)
-    _STALE_AGE = 300  # 5 minutes
+    # Start main loop watchdog thread
+    _wd = _wd_threading.Thread(
+        target=_watchdog_thread,
+        args=(MAIN_LOOP_WATCHDOG_TIMEOUT,),
+        daemon=True,
+        name="main_loop_watchdog",
+    )
+    _wd.start()
+    logger.info("Main loop watchdog started (timeout=%ds)", MAIN_LOOP_WATCHDOG_TIMEOUT)
+
+    # Discard stale messages from previous sessions (>90s old)
+    _STALE_AGE = 90  # was 300s — lowered to catch crash-orphaned messages faster
     try:
         import sqlite3
         _qdb = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -769,10 +873,14 @@ def run_worker() -> None:
 
     while running:
         try:
+            # Signal watchdog: main loop is alive
+            _watchdog_tick()
+
             # Check completed/timed-out
             done_ids = []
             for mid, (fut, t0) in list(active.items()):
                 if fut.done():
+                    _pool_semaphore.release()
                     try:
                         if fut.result():
                             processed += 1
@@ -782,13 +890,20 @@ def run_worker() -> None:
                 elif time.time() - t0 > MSG_TIMEOUT:
                     logger.warning("TIMEOUT %s (>%ds)", mid, MSG_TIMEOUT)
                     mark_error(mid, f"Timeout after {MSG_TIMEOUT}s")
+                    # fut.cancel() doesn't kill threads — but we still
+                    # release the semaphore so the main loop can continue.
+                    # The orphaned thread will eventually finish or be
+                    # killed when the worker restarts.
+                    _pool_semaphore.release()
                     fut.cancel()
                     done_ids.append(mid)
             for mid in done_ids:
                 active.pop(mid, None)
 
-            # Dequeue if capacity
-            if len(active) < CONCURRENT:
+            # Dequeue if capacity — use semaphore instead of len(active)
+            # to prevent pool.submit() from blocking the main loop when
+            # all threads are stuck.
+            if _pool_semaphore.acquire(blocking=False):
                 msg = dequeue()
                 if msg:
                     # Skip messages older than 2 minutes (stale from crash/restart)
@@ -796,13 +911,16 @@ def run_worker() -> None:
                     if msg_age > 120:
                         logger.warning("SKIP stale %s | %.0fs old | %s", msg.id, msg_age, msg.content[:30])
                         mark_error(msg.id, f"stale_{msg_age:.0f}s")
+                        _pool_semaphore.release()
                     else:
                         logger.info("DEQUEUE %s | %s | chat=%d", msg.id, msg.content[:30], msg.chat_id)
                         future = pool.submit(_process_one, msg)
                         active[msg.id] = (future, time.time())
                 else:
+                    _pool_semaphore.release()
                     time.sleep(POLL_INTERVAL)
             else:
+                # All threads busy — don't block, just wait
                 time.sleep(0.1)
 
             # Heartbeat
@@ -814,6 +932,11 @@ def run_worker() -> None:
             if time.time() - last_cleanup > CLEANUP_INTERVAL:
                 cleanup()
                 last_cleanup = time.time()
+
+            # Stuck processing recovery (every 120s)
+            if time.time() - last_stuck_recovery > STUCK_RECOVERY_INTERVAL:
+                _recover_stuck_processing(max_age_s=90)
+                last_stuck_recovery = time.time()
 
             # Motor proactivo — anticipa y avisa (cada 10 minutos)
             try:
