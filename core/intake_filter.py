@@ -238,8 +238,40 @@ def evaluate_intake(
             bypass_llm=True,
         )
 
-    # ── Filtro 1: ruido ──────────────────────────────────────
+    # ── Filtro 1: ruido ──────────────────────────────────────────
+    # IMPORTANT: "Si", "Dale", "Claro" etc. are NOT noise if the user
+    # has an active conversation. They are acknowledgments that the
+    # topic lock and pipeline should handle.
     if _NOISE.match(text_lower):
+        # Check for active conversation before discarding
+        _has_active_conv = False
+        try:
+            import sqlite3 as _sq1
+            import os as _os1
+            _mem_db = _os1.path.join(
+                _os1.path.dirname(_os1.path.dirname(_os1.path.abspath(__file__))),
+                "vault", "user_memory.db",
+            )
+            _c1 = _sq1.connect(_mem_db, timeout=1)
+            _row = _c1.execute(
+                "SELECT MAX(timestamp) FROM interactions WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            _c1.close()
+            if _row and _row[0]:
+                import time as _t1
+                _has_active_conv = (_t1.time() - float(_row[0])) < 600  # 10 min
+        except Exception:
+            pass
+
+        if _has_active_conv:
+            # Active conversation — treat as continuation, not noise
+            return IntakeResult(
+                importance=Importance.MEDIUM,
+                action=Action.EXECUTE,
+                reason="conversational_ack",
+            )
+
         return IntakeResult(
             importance=Importance.LOW,
             action=Action.IGNORE,
