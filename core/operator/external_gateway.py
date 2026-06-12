@@ -733,6 +733,36 @@ class ExternalGateway:
         except Exception as exc:
             logger.debug("Gravity activation failed (passthrough): %s", exc)
 
+        # ══════════════════════════════════════════════════════════════
+        # STEP 4.2a2: SELF-REFERENCE LAYER — primera persona
+        # Detecta si el input describe el propio sistema VECTRAX.
+        # Si sí → inyecta directiva de voz en primera persona al contexto
+        # para que el LLM responda "estoy observando mi…" en vez de
+        # "la imagen muestra…". NO resuelve respuesta, solo cambia POV.
+        # ══════════════════════════════════════════════════════════════
+        _self_ref_result = None
+        try:
+            from vectrax.self_reference_layer import evaluate as _sr_evaluate
+            from vectrax.self_reference_layer import build_context_injection as _sr_inject
+            _self_ref_result = _sr_evaluate(content)
+            if _self_ref_result.self_reference:
+                from core.language_gate import get_user_language
+                _sr_lang = get_user_language(user_id, content)
+                _sr_block = _sr_inject(_self_ref_result, lang=_sr_lang)
+                if _sr_block:
+                    memory_context = (
+                        _sr_block + "\n\n" + memory_context
+                        if memory_context else _sr_block
+                    )
+                logger.info(
+                    "Pipeline: SELF-REFERENCE | subject=%s | term=%s | capture=%s",
+                    _self_ref_result.subject,
+                    _self_ref_result.matched_term,
+                    _self_ref_result.is_system_capture,
+                )
+        except Exception as _sr_exc:
+            logger.debug("Self-reference layer failed (passthrough): %s", _sr_exc)
+
         # 4.2b Auto-contexto — Vectrax se observa a sí mismo
         _self_resolved = False
         if not response_text:

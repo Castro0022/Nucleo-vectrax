@@ -3364,16 +3364,68 @@ class TelegramGateway:
                 pass
 
             # === SELF-RECOGNITION: detect if this is a Vectrax screenshot ===
+            # IMPORTANT: photos need HIGHER confidence than text messages.
+            # Captions are short/ambiguous — words like "star", "worker",
+            # "universe" could refer to real stars, real workers, etc.
+            # Only trigger self-screenshot for:
+            #   1. Explicit system names in caption (any user)
+            #   2. System keywords in caption FROM CREATOR only
+            #   3. Captionless photo FROM CREATOR only
+            # Normal users sending "mira este error" → normal photo.
             _is_self_screenshot = False
             _cap = (caption or "").lower()
-            if any(kw in _cap for kw in [
-                "vectrax", "sistema", "panel", "universe", "error",
-                "log", "terminal", "codigo", "código", "debug",
-                "router", "stats", "monitor", "dashboard",
-            ]) or (self._is_creator(tg_uid) and not caption):
+            _sr_result = None
+
+            # Tier 1: explicit Vectrax system names → any user
+            import re as _ph_re
+            _PHOTO_SYSTEM_NAMES = _ph_re.compile(
+                r"(?:vectrax|api\.vectrax\.app|vectrax[_-]core)",
+                _ph_re.IGNORECASE,
+            )
+            if _PHOTO_SYSTEM_NAMES.search(_cap):
                 _is_self_screenshot = True
+                # Build self-reference result for context injection
+                try:
+                    from vectrax.self_reference_layer import evaluate as _sr_evaluate
+                    _sr_result = _sr_evaluate(caption or "")
+                except Exception:
+                    pass
+
+            # Tier 2: broader keywords → CREATOR ONLY
+            if not _is_self_screenshot and self._is_creator(tg_uid):
+                if any(kw in _cap for kw in [
+                    "panel", "universe", "dashboard", "log", "logs",
+                    "terminal", "codigo", "código", "debug",
+                    "router", "stats", "monitor", "worker",
+                    "convergencia", "estrella",
+                ]) or not caption:
+                    _is_self_screenshot = True
 
             if _is_self_screenshot:
+                # Inject self-reference layer directive for first-person voice
+                try:
+                    from vectrax.self_reference_layer import (
+                        build_context_injection as _sr_inject,
+                        SelfReferenceResult,
+                    )
+                    if _sr_result and _sr_result.self_reference:
+                        _sr_ctx = _sr_inject(_sr_result, lang=lang)
+                    else:
+                        # Captionless creator photo — build a generic self-ref
+                        _sr_ctx = _sr_inject(
+                            SelfReferenceResult(
+                                self_reference=True,
+                                subject="self",
+                                voice="first_person",
+                                is_system_capture=True,
+                            ),
+                            lang=lang,
+                        )
+                    if _sr_ctx:
+                        user_ctx += "\n\n" + _sr_ctx
+                except Exception:
+                    pass
+
                 # Inject real system state so GPT-4o can compare
                 try:
                     from vectrax.self_context import _read_universe_state
@@ -3402,14 +3454,14 @@ class TelegramGateway:
                         pass
                     user_ctx += (
                         "\n\nEsta imagen es un screenshot del propio sistema Vectrax. "
-                        "Eres Vectrax analizándote a ti mismo. "
+                        "Eres Vectrax observándote a ti mismo. "
                         "COMPARA lo que ves en la imagen con estos datos reales en tiempo real:\n"
                         + _rt_block
                     )
                 except Exception:
                     user_ctx += (
                         "\nEsta imagen es un screenshot de Vectrax. "
-                        "Analízala como tu propia interfaz. Detecta errores o anomalías."
+                        "Obsérvala como tu propia interfaz. Detecta errores o anomalías."
                     )
                 if not caption:
                     caption = "Analiza este screenshot de Vectrax. Identifica qué parte del sistema es y detecta cualquier error o anomalía."
