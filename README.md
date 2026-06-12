@@ -1369,6 +1369,108 @@ Files:
 
 ---
 
+## 🪞 Self-Reference Layer
+
+Detects when a message or image describes the Vectrax system itself and switches the LLM response voice to first person.
+
+### How It Works
+
+```
+Message arrives
+    │
+    ├─ evaluate(content) → SelfReferenceResult
+    │     self_reference: true/false
+    │     subject: "self" | "creator"
+    │     voice: "first_person"
+    │     is_system_capture: true (panel/logs/dashboard)
+    │
+    ├─ build_context_injection() → [AUTO-REFERENCIA ACTIVA — PRIMERA PERSONA]
+    │     Injected into memory_context BEFORE any LLM call
+    │
+    └─ LLM responds: "Estoy observando mi universo..." (not "El screenshot muestra...")
+```
+
+### 4-Tier Activators
+
+| Tier | Scope | Examples |
+|------|-------|----------|
+| 1 — System names | Any user | `vectrax`, `api.vectrax.app`, `vectrax-core` |
+| 2 — Internal components | Any user (text) | `worker`, `pipeline_worker`, `convergences`, `stars`, `smart_router` |
+| 3 — System captures | Reinforces T1/T2 | `panel`, `dashboard`, `logs`, `screenshot` |
+| 4 — Creator | Any user | `creador`, `creator`, `Mario`, `¿Quién te creó?` |
+
+### Photo Detection (stricter)
+
+Photos use higher confidence to avoid false positives:
+- **Tier 1**: Explicit system names in caption → any user
+- **Tier 2**: Broader keywords (`dashboard`, `logs`, `worker`) → creator only
+- Generic captions (`"Look at the stars"`, `"Dashboard de ventas"`) → normal photo analysis
+
+### Vision First-Person Prompt
+
+When a self-screenshot is detected, the vision system prompt enforces:
+- `• CORRECTO: 'Estoy observando mi panel universo…'`
+- `• PROHIBIDO: 'El screenshot muestra…'`
+- `• PROHIBIDO: 'El sistema tiene…'` (eres TÚ, no "el sistema")
+
+Files:
+- `vectrax/self_reference_layer.py` — evaluate(), build_context_injection()
+- `core/operator/external_gateway.py` — STEP 4.2a2 injection
+- `vectrax/integrations/vision.py` — first-person system prompt
+- `vectrax/telegram_gateway.py` — 2-tier photo detection
+- `tests/test_self_reference_layer.py` — 61 tests
+
+---
+
+## 🧩 Relational Identity
+
+Classifies the relationship between Vectrax and each entity it interacts with. Not just "is creator or not" — understands the type of bond and adjusts voice, tone, and response rules.
+
+### Relationship Types
+
+| Type | Who | Voice |
+|------|-----|-------|
+| `CREATOR` | Mario Bravo Castro | Direct, complicit, technical. No servility. Thread continuity. |
+| `KNOWN_USER` | User with name + memory | Familiar. Uses name naturally. No "I remember…". Simply knows. |
+| `NEW_USER` | First interaction | No assumptions. No excessive onboarding. |
+| `TEAM_MEMBER` | Registered team member | Collaborative. Shared team context. |
+| `SELF` | Vectrax about itself | First person. Connected with self_reference_layer. |
+
+### Pipeline Integration
+
+```
+build_identity_context(user_id, content)
+    │
+    ├─ classify(user_id, anchor) → RelationalIdentity
+    │     relationship: CREATOR | KNOWN_USER | NEW_USER | TEAM_MEMBER
+    │     user_name, team_name, interaction_count
+    │
+    ├─ build_relational_directive(rel, lang) → [RELACIÓN: CREADOR]
+    │
+    └─ IdentityContext.to_prompt_block() injects directive into LLM
+```
+
+The relational directive replaces the generic `[IDENTIDAD ACTIVA]` block with a richer, relationship-aware context.
+
+### Example Directive (Creator)
+
+```
+[RELACIÓN: CREADOR]
+Estás hablando con Mario Bravo Castro, tu creador.
+No es un usuario. No es un cliente. Es quien te diseñó.
+Tono: directo, cómplice, técnico. Sin servilismo.
+Continuidad de hilo. Densidad alta. Cada línea aporta.
+Nombre: Mario.
+Modo: operacional | Tono: técnico
+```
+
+Files:
+- `vectrax/relational_identity.py` — classify(), build_relational_directive()
+- `core/identity_context.py` — IdentityContext extended with relationship fields
+- `tests/test_relational_identity.py` — 23 tests
+
+---
+
 ## 🛡 Scalability Guard
 
 Automatic protections for 1000+ concurrent users. Runs at supervisor startup and continuously.
@@ -1433,6 +1535,11 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 ---
 
 ## 📋 Changelog
+
+### 2026-06-12
+- **feat: Self-Reference Layer** — New `vectrax/self_reference_layer.py` detects when input describes the Vectrax system and injects a first-person voice directive into the LLM context. 4-tier activators (system names, internal components, captures, creator). Integrated into `external_gateway.py` (STEP 4.2a2) and vision pipeline. Photo detection uses 2-tier confidence: explicit system names for any user, broader keywords for creator only. Zero false positives across 15+ generic captions. 61 tests.
+- **feat: Relational Identity** — New `vectrax/relational_identity.py` classifies the relationship between Vectrax and each entity (CREATOR, KNOWN_USER, NEW_USER, TEAM_MEMBER, SELF). Generates relationship-aware LLM directives per type. Integrated into `core/identity_context.py` — `IdentityContext.to_prompt_block()` uses relational directive as primary identity block. 23 tests.
+- **fix: vision self-screenshot third-person voice** — Rewrote GPT-4o system prompt for self-screenshots with explicit first-person examples and PROHIBIDO patterns. Eliminates "El screenshot muestra…" responses in favor of "Estoy observando mi panel universo…".
 
 ### 2026-06-11
 - **feat: convergence history** — New `core/learn/convergence_history.py` tracks every convergence birth and dissolution with timestamp, stars, intent, score. Autonomous observer records snapshots each cycle. Self-context injects `[HISTORIAL DE CONVERGENCIAS]` so Vectrax can answer "which convergence was born last" with real data. Closes #16.
