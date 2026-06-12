@@ -536,50 +536,27 @@ def format_alert_history(limit: int = 10) -> str:
 
 
 def send_convergence_alerts() -> int:
-    """Check for critical convergences and notify creator via Telegram.
+    """Check for critical convergences and record in history.
 
-    Returns number of alerts sent.
+    DISABLED: Telegram notifications turned off by creator request.
+    Convergence data is still recorded in alert_history for analysis
+    and available via /vx market alerts. No messages sent to chat.
+
+    Returns number of alerts recorded (not sent).
     """
     alerts = check_convergence_alerts()
     if not alerts:
         return 0
 
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    chat_id = os.environ.get("TELEGRAM_CREATOR_CHAT_ID", "")
-    if not token or not chat_id:
-        return 0
-
+    # Record in history file (available via get_alert_history())
     for alert in alerts:
         _append_alert_history(alert)
-        intent = alert.get("intent", alert.get("a_intent", "?"))
-        reasons = ", ".join(alert["alert_reasons"])
-        star_a = alert["star_a"]
-        star_b = alert["star_b"]
-        hits = alert.get("combined_hits", "?")
-        cc = alert.get("combined_cc", "?")
-        domains = " ↔ ".join(alert.get("domains", []))
-        text = (
-            f"⚡ <b>Convergencia crítica detectada</b>\n\n"
-            f"🔗 {star_a} ↔ {star_b}\n"
-            f"🎯 Símbolo: {intent}\n"
-            f"📊 Hits: {hits} | CC: {cc}\n"
-            f"🚨 Razón: {reasons}\n"
-            f"🌐 Dominios: {domains}"
-        )
 
-        try:
-            import urllib.request
-            data = json.dumps({"chat_id": chat_id, "text": text, "parse_mode": "HTML"}).encode()
-            req = urllib.request.Request(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                data=data,
-                headers={"Content-Type": "application/json"},
-            )
-            urllib.request.urlopen(req, timeout=10)
-        except Exception:
-            pass
+    # NO Telegram notification — alerts are silent by default.
+    # Data is preserved in vault/convergence_alert_history.jsonl.
+    # Creator can check via /vx market alerts when needed.
 
-    return len(alerts)
+    return 0  # 0 = no messages sent to Telegram
 
 
 def universe_report(lang: str = "es") -> str:
