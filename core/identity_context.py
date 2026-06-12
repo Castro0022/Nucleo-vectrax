@@ -35,6 +35,8 @@ class IdentityContext:
     is_creator: bool = False
     memory_summary: str = ""
     tone: str = ""
+    relationship: str = ""       # relational identity type (creator/known_user/new_user/team_member)
+    relational_directive: str = ""  # LLM directive block from relational_identity
     timestamp: float = field(default_factory=time.time)
 
     def to_prompt_block(self) -> str:
@@ -43,6 +45,17 @@ class IdentityContext:
         This block tells the LLM WHO is talking, WHAT mode to use,
         and HOW to respond — before the LLM sees the user's message.
         """
+        # If we have a relational directive, use it as the primary
+        # identity block — it's richer than the generic format.
+        if self.relational_directive:
+            block = self.relational_directive
+            if self.tone:
+                block += f"\nModo: {self.mode} | Tono: {self.tone}"
+            if self.memory_summary:
+                block += f"\nContexto de memoria: {self.memory_summary[:200]}"
+            return block
+
+        # Fallback: generic format (if relational_identity unavailable)
         lines = ["[IDENTIDAD ACTIVA]"]
 
         if self.user_name:
@@ -111,10 +124,19 @@ def build_identity_context(user_id: str, content: str) -> IdentityContext:
     except Exception:
         pass
 
+    # Relational identity — classify relationship type and build directive
+    try:
+        from vectrax.relational_identity import classify, build_relational_directive
+        rel = classify(user_id, anchor=None)  # anchor loaded above if available
+        ctx.relationship = rel.relationship.value
+        ctx.relational_directive = build_relational_directive(rel, lang=ctx.user_lang)
+    except Exception as _rel_exc:
+        logger.debug("Relational identity failed (passthrough): %s", _rel_exc)
+
     logger.info(
-        "IDENTITY | user=%s name=%s mode=%s creator=%s lang=%s",
+        "IDENTITY | user=%s name=%s mode=%s creator=%s lang=%s rel=%s",
         user_id[:20], ctx.user_name or "?", ctx.mode,
-        ctx.is_creator, ctx.user_lang,
+        ctx.is_creator, ctx.user_lang, ctx.relationship or "?",
     )
 
     return ctx
