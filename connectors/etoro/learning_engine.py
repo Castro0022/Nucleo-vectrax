@@ -123,7 +123,113 @@ def update_proposal_status(proposal_id: str, status: str) -> bool:
     return found
 
 
-# ── Core cycle functions ──────────────────────────────────────────────
+# ── Telegram notification helpers ─────────────────────────────────────────
+
+_ALERTED_PATTERNS_FILE = os.path.join(
+    os.path.expanduser("~"), ".vectrax", "alerted_usable_patterns.json"
+)
+
+
+def _tg_notify(text: str) -> bool:
+    """Send a Telegram message to the creator. Fire-and-forget."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.environ.get("TELEGRAM_CREATOR_CHAT_ID", "")
+    if not token or not chat_id:
+        return False
+    try:
+        import urllib.request
+        data = json.dumps({"chat_id": chat_id, "text": text}).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=10)
+        return True
+    except Exception:
+        return False
+
+
+def _load_alerted_patterns() -> set:
+    try:
+        if os.path.exists(_ALERTED_PATTERNS_FILE):
+            return set(json.load(open(_ALERTED_PATTERNS_FILE)))
+    except Exception:
+        pass
+    return set()
+
+
+def _save_alerted_patterns(keys: set) -> None:
+    try:
+        os.makedirs(os.path.dirname(_ALERTED_PATTERNS_FILE), exist_ok=True)
+        with open(_ALERTED_PATTERNS_FILE, "w") as f:
+            json.dump(list(keys), f)
+    except Exception:
+        pass
+
+
+def _notify_new_usable_patterns() -> int:
+    """Alert creator when a pattern becomes usable for the first time."""
+    try:
+        from connectors.etoro.pattern_memory import get_patterns
+        patterns = get_patterns()
+        usable = [p for p in patterns if p.is_usable]
+        if not usable:
+            return 0
+
+        alerted = _load_alerted_patterns()
+        new_count = 0
+
+        for p in usable:
+            key = f"{p.symbol}_{p.direction}"
+            if key in alerted:
+                continue
+            alerted.add(key)
+            new_count += 1
+            text = (
+                f"\u26a1 Patr\u00f3n USABLE detectado\n\n"
+                f"{p.direction.upper()} {p.symbol}\n"
+                f"WR={p.win_rate:.0f}% | E={p.expectancy:+.3f}%\n"
+                f"Se\u00f1ales: {p.n_total} | Confianza: {p.confidence}\n\n"
+                f"Auto-ejecuci\u00f3n activada \u2014 ejecutar\u00e1 paper trade\n"
+                f"cuando las 9 condiciones se cumplan."
+            )
+            _tg_notify(text)
+            logger.info(
+                "[ALERT] New usable pattern: %s %s | WR=%.0f%% N=%d",
+                p.direction, p.symbol, p.win_rate, p.n_total,
+            )
+
+        if new_count:
+            _save_alerted_patterns(alerted)
+        return new_count
+    except Exception as e:
+        logger.debug("notify_usable_patterns error: %s", e)
+        return 0
+
+
+def _notify_trade_executed(
+    proposal: "TradeProposal",
+    mode: str,
+    result: Dict,
+) -> None:
+    """Notify creator immediately when a trade is auto-executed."""
+    try:
+        amount = result.get("amount_usd", 0)
+        text = (
+            f"\U0001f4b9 Trade ejecutado ({mode.upper()})\n\n"
+            f"{proposal.direction.upper()} {proposal.symbol}\n"
+            f"Monto: ${amount:.0f} | Entry: {proposal.entry_price:.2f}\n"
+            f"SL: {proposal.stop_loss:.2f} | TP: {proposal.take_profit:.2f}\n"
+            f"WR: {proposal.win_rate:.0f}% | E: {proposal.expectancy:+.3f}%\n"
+            f"ID: {proposal.proposal_id[:12]}"
+        )
+        _tg_notify(text)
+    except Exception as e:
+        logger.debug("notify_trade_executed error: %s", e)
+
+
+# ── Core cycle functions ────────────────────────────────────────────────────────
 
 def _observe_and_record(symbols: List[str]) -> Dict[str, Any]:
     """
@@ -425,6 +531,8 @@ def _auto_execute_proposals(proposals: List[TradeProposal]) -> int:
                     )
                 except Exception:
                     pass
+                # Notify creator of execution
+                _notify_trade_executed(p, mode.value, result)
             else:
                 logger.warning(
                     "[AUTO] Proposal %s execution failed: %s",
@@ -483,6 +591,9 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     # Steps 2-3: Always run (resolve outcomes + rebuild patterns from history)
     r2 = _resolve_outcomes()
     r3 = _update_patterns()
+
+    # Step 3.5: Alert creator when a pattern becomes usable for the first time
+    _notify_new_usable_patterns()
 
     # Step 4: Only generate proposals for open markets
     proposals = _generate_proposals(open_syms) if open_syms else []
