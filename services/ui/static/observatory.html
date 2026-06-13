@@ -342,14 +342,29 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
     }
     html += card('⚡', `Señales<span class="count">${sigs.length}</span>`, sigHtml || '<div class="empty">Acumulando...</div>');
 
-    // Patterns
+    // Patterns with progress bars
+    const allPats = d.all_patterns || pats;
     let patHtml = '';
-    for (const p of pats.slice(0,5)) {
-      const wrCls = p.win_rate>=55?'color:var(--success)':'color:var(--danger)';
-      const confCls = p.confidence==='HIGH'?'color:var(--success)':p.confidence==='MEDIUM'?'color:var(--warn)':'color:var(--dim)';
-      patHtml += `<div style="padding:4px 0;border-bottom:1px solid rgba(26,34,53,0.3);font-size:12px"><div style="display:flex;gap:6px;align-items:center"><span style="font-weight:700">${p.symbol} ${p.direction.toUpperCase()}</span><span style="font-size:10px;${confCls}">${p.confidence}</span>${p.usable?'<span style="color:var(--success);font-size:10px">✓</span>':''}</div><div style="font-family:var(--mono);color:var(--dim);font-size:11px">${p.n_total} obs · WR <span style="${wrCls}">${fmt(p.win_rate,1)}%</span> · E: ${fmt(p.expectancy,3)}%</div></div>`;
+    for (const p of allPats.slice(0, 12)) {
+      const wrCls = p.win_rate >= 55 ? 'color:var(--success)' : p.win_rate >= 40 ? 'color:var(--warn)' : 'color:var(--danger)';
+      const barPct = p.progress || Math.min(Math.round(p.n_total / 15 * 100), 100);
+      const barColor = p.usable ? 'var(--success)' : barPct >= 60 ? 'var(--warn)' : 'var(--accent)';
+      const dirCls = p.direction === 'buy' ? 'color:var(--success)' : 'color:var(--danger)';
+      patHtml += `<div style="padding:6px 0;border-bottom:1px solid rgba(26,34,53,0.3);font-size:12px">
+        <div style="display:flex;gap:6px;align-items:center">
+          <span style="${dirCls};font-weight:700;font-size:10px;width:32px">${p.direction.toUpperCase()}</span>
+          <span style="font-weight:700;width:45px">${p.symbol}</span>
+          <span style="font-family:var(--mono);font-size:11px;${wrCls}">${fmt(p.win_rate,0)}%</span>
+          <span style="font-family:var(--mono);font-size:10px;color:var(--dim)">E:${fmt(p.expectancy,3)}%</span>
+          ${p.usable ? '<span style="color:var(--success);font-size:10px;font-weight:700">✓ USABLE</span>' : ''}
+          <span style="margin-left:auto;font-family:var(--mono);font-size:10px;color:var(--dim)">${p.n_total}/15</span>
+        </div>
+        <div style="margin-top:4px;height:4px;background:rgba(26,34,53,0.8);border-radius:2px;overflow:hidden">
+          <div style="height:100%;width:${barPct}%;background:${barColor};border-radius:2px;transition:width 0.5s"></div>
+        </div>
+      </div>`;
     }
-    html += card('🧠', `Patrones<span class="count">${pats.length}</span>`, patHtml || '<div class="empty">Necesita señales resueltas</div>');
+    html += card('🧠', `Patrones<span style="margin-left:6px;font-size:10px;color:var(--dim)">${allPats.length} total</span>`, patHtml || '<div class="empty">Necesita señales resueltas</div>');
 
     // Proposals
     let propHtml = '';
@@ -374,8 +389,25 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
       const icon = l.result==='ganadora'?'✅':l.result==='perdedora'?'❌':'➖';
       learnHtml += `<div style="display:flex;gap:6px;padding:4px 0;border-bottom:1px solid rgba(26,34,53,0.3);font-size:12px">${icon} <span>${l.direction.toUpperCase()} ${l.symbol} — ${l.result}</span><span style="font-family:var(--mono);margin-left:auto;${l.pnl_usd>0?'color:var(--success)':'color:var(--danger)'}">$${fmt(l.pnl_usd,2)}</span></div>`;
     }
-    learnHtml += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--dim)">Paper: ${exec.paper_trades||0} · Wins: ${exec.paper_wins||0} · Pérdidas consec: ${exec.consecutive_losses||0}</div>`;
+    learnHtml += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--dim)">Paper: ${exec.paper_trades||0}/${exec.min_paper_signals||30} · Wins: ${exec.paper_wins||0} · Pérdidas consec: ${exec.consecutive_losses||0} · Max: $${exec.max_position_usd||50}</div>`;
     html += card('🔄', 'Aprendizaje', learnHtml);
+
+    // Notifications
+    const notifs = d.notifications || [];
+    if (notifs.length) {
+      let notifHtml = '';
+      for (const n of notifs.slice(0, 8)) {
+        const icon = n.type === 'pattern_usable' ? '⚡' : '🔗';
+        const ts = n.timestamp ? n.timestamp.slice(0, 16) : '';
+        notifHtml += `<div style="display:flex;gap:6px;padding:4px 0;border-bottom:1px solid rgba(26,34,53,0.3);font-size:11px">
+          <span>${icon}</span>
+          <span style="color:var(--accent);font-weight:600;min-width:40px">${n.symbol}</span>
+          <span style="color:var(--dim);flex:1">${n.detail}</span>
+          <span style="color:var(--dim);font-family:var(--mono);font-size:10px">${ts}</span>
+        </div>`;
+      }
+      html += card('🔔', `Notificaciones<span style="margin-left:6px;font-size:10px;color:var(--dim)">${notifs.length}</span>`, notifHtml);
+    }
 
     el.innerHTML = html;
   }

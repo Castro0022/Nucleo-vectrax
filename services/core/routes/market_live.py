@@ -196,8 +196,63 @@ async def market_live() -> Dict[str, Any]:
             "consecutive_losses": cfg.get("consecutive_losses", 0),
             "daily_loss_usd": cfg.get("daily_loss_usd", 0),
             "halt": cfg.get("halt", False),
+            "max_position_usd": cfg.get("max_position_usd", 50),
+            "min_paper_signals": cfg.get("min_paper_signals", 30),
+            "min_paper_win_rate": cfg.get("min_paper_win_rate", 60),
         }
     except Exception:
         result["executor"] = {"mode": "unknown"}
+
+    # === 8. ALL PATTERNS WITH PROGRESS ===
+    all_patterns = []
+    try:
+        from connectors.etoro.pattern_memory import get_patterns
+        for p in sorted(get_patterns(), key=lambda x: x.n_total, reverse=True):
+            if p.n_total < 2:
+                continue
+            all_patterns.append({
+                "symbol": p.symbol,
+                "direction": p.direction,
+                "n_total": p.n_total,
+                "n_wins": p.n_wins,
+                "n_losses": p.n_losses,
+                "win_rate": round(p.win_rate, 1),
+                "expectancy": round(p.expectancy, 3),
+                "confidence": p.confidence,
+                "usable": p.is_usable,
+                "progress": min(round(p.n_total / 15 * 100), 100),
+            })
+    except Exception:
+        pass
+    result["all_patterns"] = all_patterns
+
+    # === 9. NOTIFICATION HISTORY ===
+    notifications = []
+    try:
+        from core.learn.gravity_engine import get_alert_history
+        for a in get_alert_history(limit=10):
+            notifications.append({
+                "type": "convergence",
+                "timestamp": a.get("timestamp", ""),
+                "symbol": a.get("intent", "?"),
+                "detail": ", ".join(a.get("reasons", [])) or f"cc={a.get('combined_cc', '?')}",
+            })
+    except Exception:
+        pass
+    try:
+        import json as _json
+        _alerted_file = os.path.join(os.path.expanduser("~"), ".vectrax", "alerted_usable_patterns.json")
+        if os.path.exists(_alerted_file):
+            alerted = _json.load(open(_alerted_file))
+            for key in alerted:
+                notifications.append({
+                    "type": "pattern_usable",
+                    "timestamp": "",
+                    "symbol": key.split("_")[0] if "_" in key else key,
+                    "detail": f"Patr\u00f3n usable: {key}",
+                })
+    except Exception:
+        pass
+    result["notifications"] = notifications
 
     return result
