@@ -49,8 +49,15 @@ def _get_client() -> httpx.Client:
     if _http_client is None or _http_client.is_closed:
         api_key = os.environ.get("ETORO_API_KEY", "").strip()
         user_key = os.environ.get("ETORO_USER_KEY", "").strip()
+        # Try HTTP/2 if h2 is installed, fallback to HTTP/1.1
+        _use_h2 = False
+        try:
+            import h2  # noqa: F401
+            _use_h2 = True
+        except ImportError:
+            pass
         _http_client = httpx.Client(
-            http2=True,
+            http2=_use_h2,
             timeout=httpx.Timeout(REQUEST_TIMEOUT, connect=4.0),
             limits=httpx.Limits(
                 max_keepalive_connections=15,
@@ -64,6 +71,7 @@ def _get_client() -> httpx.Client:
                 "User-Agent":    "Vectrax/2.0",
             },
         )
+        logger.info("eToro HTTP client initialized | http2=%s | pool=15/30", _use_h2)
     return _http_client
 
 
