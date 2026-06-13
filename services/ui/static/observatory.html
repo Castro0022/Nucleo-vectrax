@@ -64,6 +64,13 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
 
 .empty { color: var(--dim); font-style: italic; font-size: 12px; padding: 8px 0; }
 .nav-links { display: flex; gap: 16px; padding: 8px 24px 0; font-size: 13px; }
+
+@keyframes flash { 0%{background:rgba(79,143,247,0.3)} 100%{background:transparent} }
+@keyframes pulse-glow { 0%,100%{box-shadow:0 0 4px var(--success)} 50%{box-shadow:0 0 12px var(--success)} }
+.val-changed { animation: flash 1.5s ease-out; border-radius: 3px; }
+.pulse-active { animation: pulse-glow 2s infinite; }
+.countdown { font-family: var(--mono); font-size: 11px; color: var(--warn); padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px; }
+.live-dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--success); margin-right:4px; animation: pulse-glow 2s infinite; }
 </style>
 </head>
 <body>
@@ -76,7 +83,8 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
 <div class="nav-links">
   <a href="/universe/view">🌌 Universe</a>
   <a href="/">← Vectrax</a>
-  <span style="margin-left:auto;color:var(--dim);font-family:var(--mono);font-size:11px" id="refresh-info"></span>
+  <span id="cycle-countdown" class="countdown" style="margin-left:auto"></span>
+  <span style="color:var(--dim);font-family:var(--mono);font-size:11px" id="refresh-info"></span>
 </div>
 
 <div class="grid" id="dashboard">
@@ -89,6 +97,29 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
   const grid = document.getElementById('dashboard');
   const statusEl = document.getElementById('status');
   const refreshEl = document.getElementById('refresh-info');
+  const countdownEl = document.getElementById('cycle-countdown');
+
+  // Track previous values for change detection
+  let _prev = {};
+  function trackVal(key, val) {
+    const changed = _prev[key] !== undefined && _prev[key] !== val;
+    _prev[key] = val;
+    return changed;
+  }
+
+  // Cycle countdown (30 min = 1800s)
+  let _lastCycleTs = 0;
+  const CYCLE_INTERVAL = 1800;
+  function updateCountdown() {
+    if (!_lastCycleTs) { countdownEl.textContent = ''; return; }
+    const elapsed = Math.floor(Date.now()/1000 - _lastCycleTs);
+    const remaining = Math.max(0, CYCLE_INTERVAL - elapsed);
+    const m = Math.floor(remaining / 60);
+    const s = remaining % 60;
+    countdownEl.innerHTML = `<span class="live-dot"></span>Pr\u00f3ximo ciclo: ${m}:${s.toString().padStart(2,'0')}`;
+    if (remaining === 0) countdownEl.innerHTML = `<span class="live-dot"></span>Ciclo ejecut\u00e1ndose...`;
+  }
+  setInterval(updateCountdown, 1000);
 
   const DOMAIN_COLORS = {
     market: '#06d6a0', user_interest: '#22d3ee', unknown: '#4f8ff7',
@@ -106,8 +137,10 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
     return Math.floor(s/86400) + 'd ago';
   }
 
-  function metric(label, value, cls='') {
-    return `<div class="metric"><span class="label">${label}</span><span class="value ${cls}">${value}</span></div>`;
+  function metric(label, value, cls='', key='') {
+    const changed = key && trackVal(key, value);
+    const flash = changed ? ' val-changed' : '';
+    return `<div class="metric${flash}"><span class="label">${label}</span><span class="value ${cls}">${value}</span></div>`;
   }
 
   function card(icon, title, content) {
@@ -152,12 +185,12 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
     html += sectionTitle('📊 Resumen General');
 
     html += card('⭐', 'Universo', [
-      metric('Estrellas totales', fmt(d.total_stars), 'accent'),
-      metric('Gravitacionales', fmt(g.total)),
-      metric('De usuarios', fmt(lg.user_stars)),
+      metric('Estrellas totales', fmt(d.total_stars), 'accent', 'u_stars'),
+      metric('Gravitacionales', fmt(g.total), '', 'u_grav'),
+      metric('De usuarios', fmt(lg.user_stars), '', 'u_user'),
       metric('Knowledge (legacy)', fmt(lg.knowledge_stars)),
-      metric('Patrones', fmt(lg.patterns)),
-      metric('Constelaciones', fmt(lg.constellations)),
+      metric('Patrones', fmt(lg.patterns), '', 'u_pat'),
+      metric('Constelaciones', fmt(lg.constellations), '', 'u_const'),
       metric('Masa total', fmt(d.legacy?.layers ? Object.values(d.legacy.layers).reduce((a,b)=>a+b,0) : 0)),
     ].join(''));
 
@@ -170,13 +203,13 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
     ].join(''));
 
     html += card('⚙️', 'Sistema', [
-      metric('Estado', op.status || '—', op.status === 'healthy' ? 'success' : 'warn'),
-      metric('Worker', op.worker_alive ? '✅ Activo' : '❌ Inactivo', op.worker_alive ? 'success' : 'danger'),
-      metric('Heartbeat', fmt(op.worker_heartbeat_age, 0) + 's'),
-      metric('Cola pendiente', fmt(op.queue_pending)),
-      metric('Cola errores', fmt(op.queue_error), op.queue_error > 0 ? 'warn' : ''),
-      metric('RAM', fmt(op.memory_mb) + ' MB'),
-      metric('Latencia avg', fmt(op.avg_latency_s, 2) + 's'),
+      metric('Estado', op.status || '—', op.status === 'healthy' ? 'success' : 'warn', 'sys_status'),
+      metric('Worker', op.worker_alive ? '✅ Activo' : '❌ Inactivo', op.worker_alive ? 'success' : 'danger', 'sys_worker'),
+      metric('Heartbeat', fmt(op.worker_heartbeat_age, 0) + 's', '', 'sys_hb'),
+      metric('Cola pendiente', fmt(op.queue_pending), '', 'sys_qp'),
+      metric('Cola errores', fmt(op.queue_error), op.queue_error > 0 ? 'warn' : '', 'sys_qe'),
+      metric('RAM', fmt(op.memory_mb) + ' MB', '', 'sys_ram'),
+      metric('Latencia avg', fmt(op.avg_latency_s, 2) + 's', '', 'sys_lat'),
     ].join(''));
 
     html += card('📋', 'Operador', [
@@ -289,6 +322,8 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
       const res = await fetch('/v1/market/live');
       if (!res.ok) return;
       const d = await res.json();
+      // Update cycle countdown from API timestamp
+      if (d.ts) _lastCycleTs = d.ts;
       renderMarket(d);
     } catch(e) { /* silent */ }
   }
