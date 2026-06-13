@@ -887,6 +887,100 @@ Usuario: "Dime cómo está el BTC"
 
 ---
 
+## 💹 eToro Trading Connector
+
+Conector REST autenticado para la eToro Public API v1. Soporta lectura de mercado, portfolio, y ejecución de órdenes reales.
+
+### ⚠️ Advertencias de Riesgo
+
+> **DINERO REAL**: Este conector ejecuta operaciones con fondos reales en eToro.
+> Toda operación de apertura/cierre usa la cuenta real del creador.
+> No hay modo demo disponible con las claves actuales.
+>
+> **Pérdida de capital**: Las operaciones de mercado conllevan riesgo de pérdida.
+> Spread de BTC: ~$0.44 por round-trip de $25.
+>
+> **Solo el creador** puede ejecutar operaciones de trading.
+> Los endpoints de escritura requieren autorización explícita.
+
+### Endpoints Verificados (2026-06-13)
+
+| Endpoint | Ruta API v1 | Estado |
+|---|---|---|
+| Market Search | `GET /market-data/search?internalSymbolFull=BTC&fields=instrumentId,internalSymbolFull,displayname` | ✅ 200 |
+| Instrument Metadata | `GET /market-data/instruments?instrumentIds=100000` | ✅ 200 |
+| Live Rates | `GET /market-data/instruments/rates?instrumentIds=100000` | ✅ 200 |
+| Candles History | `GET /market-data/instruments/{id}/history/candles/{dir}/{interval}/{count}` | ✅ 200 |
+| Portfolio + PnL | `GET /trading/info/real/pnl` | ✅ 200 |
+| Trade History | `GET /trading/info/trade/history?minDate=YYYY-MM-DD` | ✅ 200 |
+| Open Order (real) | `POST /trading/execution/market-open-orders/by-amount` | ✅ 200 |
+| Close Position | `POST /trading/execution/market-close-orders/positions/{positionId}` | ✅ 200 |
+| Watchlists | `GET /watchlists` | ✅ 200 |
+| Demo PnL | `GET /trading/info/demo/pnl` | ❌ 403 (key is Real) |
+| Agent Portfolios | `GET /agent-portfolios` | ❌ 403 (feature not enabled) |
+
+### Latencias Verificadas
+
+| Operación | Latencia | Notas |
+|---|---|---|
+| Open order | ~325ms | Orden ejecutada en eToro |
+| Close position | ~271ms | Cierre inmediato |
+| Portfolio read | ~600ms–2s | Depende de cantidad de posiciones |
+| Live rates | ~800ms | Bid/ask en tiempo real |
+| Market search | ~800ms | Búsqueda de instrumentos |
+
+### Headers Requeridos
+
+Toda petición debe incluir:
+- `x-api-key`: API key global
+- `x-user-key`: User key específica de la cuenta
+- `x-request-id`: UUID único por petición
+- `Content-Type: application/json`
+
+### Environment Variables
+
+| Variable | Descripción | Valor actual |
+|---|---|---|
+| `ETORO_API_KEY` | API key global de eToro | Configurada |
+| `ETORO_USER_KEY` | User key de la cuenta | Configurada |
+| `ETORO_ENVIRONMENT` | `real` o `demo` | `real` |
+
+### Trading Test Tool
+
+Herramienta de verificación de capacidad de trading:
+
+```bash
+# Solo lectura — portfolio + precio
+docker exec vectrax-core python -m connectors.etoro.trading_test
+
+# Round-trip REAL — abre $25 BTC, verifica, cierra
+docker exec vectrax-core python -m connectors.etoro.trading_test --execute
+
+# Cerrar todas las posiciones abiertas
+docker exec vectrax-core python -m connectors.etoro.trading_test --close-only
+```
+
+### Diferencias clave vs API legacy
+
+La API v1 de eToro cambió varias rutas respecto a versiones anteriores:
+
+| Operación | Ruta INCORRECTA (legacy) | Ruta CORRECTA (v1) |
+|---|---|---|
+| Portfolio | `/trading/info/demo/portfolio` | `/trading/info/real/pnl` (objeto `clientPortfolio`) |
+| Orders list | `/trading/info/demo/orders` | Incluidas en `/real/pnl` → `clientPortfolio.orders[]` |
+| Open order | `/trading/execution/demo/orders` | `/trading/execution/market-open-orders/by-amount` |
+| Close order | `/trading/execution/orders` | `/trading/execution/market-close-orders/positions/{id}` |
+| Price | `/market-data/instruments/{id}/price` | `/market-data/instruments/rates?instrumentIds={id}` |
+
+Files:
+- `connectors/etoro/etoro_client.py` — REST client con auth + retry
+- `connectors/etoro/client.py` — httpx client alternativo
+- `connectors/etoro/trading_test.py` — herramienta de verificación
+- `connectors/etoro/learning_engine.py` — ciclo de aprendizaje
+- `connectors/etoro/auto_executor.py` — ejecución automática
+
+---
+
 ## 🔍 Self-Audit Engine
 
 Vectrax includes a permanent self-observation system that audits the entire infrastructure automatically and reports findings to the creator via Telegram.
@@ -1536,8 +1630,18 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 
 ## 📋 Changelog
 
+### 2026-06-13
+- **feat: eToro trading verified** — Full endpoint audit revealed correct API v1 routes. Market data, portfolio, and REAL trading all operational (Open: 325ms, Close: 271ms). Documented route differences vs legacy API.
+- **feat: eToro round-trip test** — New `connectors/etoro/trading_test.py` with dry-run, --execute (open/verify/close), and --close-only modes. Verified on production with $25 BTC round-trip.
+- **fix: worker main loop watchdog** — Daemon thread monitors main loop liveness. If stuck >60s (all ThreadPoolExecutor threads blocked on LLM calls), force `os._exit(1)` for supervisor restart.
+- **fix: pool overflow protection** — Semaphore replaces `len(active) < CONCURRENT` check. Main loop never blocks on `pool.submit()`, heartbeat keeps writing.
+- **fix: stuck processing recovery** — Every 120s, resets messages in `processing` status >90s to `error`. Startup stale threshold lowered from 300s to 90s.
+- **fix: noise filter active conversation** — "Si", "Dale", "Perfecto" no longer discarded as noise during active conversations (<10 min since last interaction). Classified as `conversational_ack` → EXECUTE.
+- **fix: trailing whitespace in intake** — "Perfecto !" (space before !) now correctly matches noise regex after `.strip()` normalization.
+- **fix: convergence alert spam** — Disabled Telegram notifications for convergence alerts (16+ per cycle). Data still recorded in `vault/convergence_alert_history.jsonl` for on-demand access.
+
 ### 2026-06-12
-- **feat: Self-Reference Layer** — New `vectrax/self_reference_layer.py` detects when input describes the Vectrax system and injects a first-person voice directive into the LLM context. 4-tier activators (system names, internal components, captures, creator). Integrated into `external_gateway.py` (STEP 4.2a2) and vision pipeline. Photo detection uses 2-tier confidence: explicit system names for any user, broader keywords for creator only. Zero false positives across 15+ generic captions. 61 tests.
+- **feat: Self-Reference Layer**
 - **feat: Relational Identity** — New `vectrax/relational_identity.py` classifies the relationship between Vectrax and each entity (CREATOR, KNOWN_USER, NEW_USER, TEAM_MEMBER, SELF). Generates relationship-aware LLM directives per type. Integrated into `core/identity_context.py` — `IdentityContext.to_prompt_block()` uses relational directive as primary identity block. 23 tests.
 - **fix: vision self-screenshot third-person voice** — Rewrote GPT-4o system prompt for self-screenshots with explicit first-person examples and PROHIBIDO patterns. Eliminates "El screenshot muestra…" responses in favor of "Estoy observando mi panel universo…".
 
