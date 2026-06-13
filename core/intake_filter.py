@@ -227,7 +227,7 @@ def evaluate_intake(
     Es rápido (<1ms), sin I/O, sin LLM.
     """
     text = content.strip()
-    text_lower = text.lower().rstrip("!?.")
+    text_lower = text.lower().rstrip("!?.").strip()
 
     # ── Filtro 0: vacío ──────────────────────────────────────
     if not text or len(text) < 1:
