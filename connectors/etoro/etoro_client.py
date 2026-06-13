@@ -2,10 +2,12 @@
 Vectrax eToro Client — Authenticated REST API
 ==============================================
 Wraps the eToro Public API v1 with:
+  - Persistent httpx.Client with connection pooling + HTTP/2
+  - Per-phase latency metrics (connect, request, response, total)
+  - Instrument ID cache (24h TTL)
   - Automatic auth headers (x-api-key, x-user-key, x-request-id)
   - Demo/real environment switching via ETORO_ENVIRONMENT
   - Exponential backoff on 429 (rate limit)
-  - All operations logged
 
 Read endpoints (no authorization gate):
   get_portfolio(), get_pnl(), get_price(), get_candles(), get_instrument_id()
@@ -20,18 +22,49 @@ import logging
 import os
 import time
 import uuid
-import urllib.error
-import urllib.parse
-import urllib.request
 from typing import Any, Dict, List, Optional
+
+import httpx
 
 from connectors.etoro import BASE_URL, validate_host
 
 logger = logging.getLogger("vectrax.etoro.client")
 
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = 10
 MAX_RETRIES     = 3
 _HOST           = "public-api.etoro.com"
+
+
+# ---------------------------------------------------------------------------
+# Persistent HTTP client — one connection pool for all requests.
+# Eliminates TCP+TLS handshake overhead on every call.
+# ---------------------------------------------------------------------------
+
+_http_client: Optional[httpx.Client] = None
+
+
+def _get_client() -> httpx.Client:
+    """Return singleton httpx.Client with connection pooling."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        api_key = os.environ.get("ETORO_API_KEY", "").strip()
+        user_key = os.environ.get("ETORO_USER_KEY", "").strip()
+        _http_client = httpx.Client(
+            http2=True,
+            timeout=httpx.Timeout(REQUEST_TIMEOUT, connect=4.0),
+            limits=httpx.Limits(
+                max_keepalive_connections=15,
+                max_connections=30,
+            ),
+            headers={
+                "x-api-key":    api_key,
+                "x-user-key":   user_key,
+                "Content-Type":  "application/json",
+                "Accept":        "application/json",
+                "User-Agent":    "Vectrax/2.0",
+            },
+        )
+    return _http_client
 
 
 def _get_credentials() -> tuple[str, str]:
@@ -51,6 +84,30 @@ def _get_env_prefix() -> str:
     return "demo" if env != "real" else ""
 
 
+# ---------------------------------------------------------------------------
+# Instrument ID cache — 24h TTL, avoids repeated search API calls.
+# ---------------------------------------------------------------------------
+
+_instrument_cache: Dict[str, tuple] = {}  # symbol → (instrument_id, timestamp)
+_INSTRUMENT_CACHE_TTL = 86400  # 24 hours
+
+
+def _cache_get_instrument(symbol: str) -> Optional[int]:
+    """Return cached instrument ID or None if expired/missing."""
+    entry = _instrument_cache.get(symbol.upper())
+    if entry and (time.time() - entry[1]) < _INSTRUMENT_CACHE_TTL:
+        return entry[0]
+    return None
+
+
+def _cache_set_instrument(symbol: str, instrument_id: int) -> None:
+    _instrument_cache[symbol.upper()] = (instrument_id, time.time())
+
+
+# ---------------------------------------------------------------------------
+# Core request function with phase metrics
+# ---------------------------------------------------------------------------
+
 def _request(
     method: str,
     endpoint: str,
@@ -59,54 +116,58 @@ def _request(
 ) -> Dict[str, Any]:
     """
     Execute an authenticated request to the eToro API.
-    Returns: {"success": True, "data": ..., "latency_ms": ...}
+
+    Uses persistent httpx.Client with connection pooling.
+    Records per-phase latency metrics for diagnostics.
+
+    Returns: {"success": True, "data": ..., "latency_ms": ..., "phases": {...}}
           or {"success": False, "error": ..., "status": ...}
     """
     if not validate_host(_HOST):
         return {"success": False, "error": "Host not in allowlist"}
 
     try:
-        api_key, user_key = _get_credentials()
+        _get_credentials()  # validate keys exist
     except EnvironmentError as e:
         return {"success": False, "error": str(e)}
 
     url = f"{BASE_URL}{endpoint}"
-    if params:
-        url += "?" + urllib.parse.urlencode(params)
-
-    headers = {
-        "x-api-key":      api_key,
-        "x-user-key":     user_key,
-        "x-request-id":   str(uuid.uuid4()),
-        "Content-Type":   "application/json",
-        "Accept":         "application/json",
-        "User-Agent":     "Vectrax/1.0",
-    }
-
-    data = json.dumps(body).encode("utf-8") if body else None
+    client = _get_client()
     delay = 1.0
 
     for attempt in range(1, MAX_RETRIES + 1):
-        t0 = time.time()
+        # Per-request unique ID
+        req_headers = {"x-request-id": str(uuid.uuid4())}
+
+        # Phase timing
+        t_start = time.perf_counter()
+
         try:
-            req = urllib.request.Request(url, data=data, headers=headers, method=method)
-            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-                body_bytes = resp.read()
-                latency_ms = round((time.time() - t0) * 1000, 1)
-                result = json.loads(body_bytes) if body_bytes else {}
-                logger.info(
-                    "[LEDGER] etoro %s %s — %dms — OK",
-                    method, endpoint, latency_ms,
-                )
-                return {"success": True, "data": result, "latency_ms": latency_ms}
+            resp = client.request(
+                method, url,
+                params=params,
+                json=body,
+                headers=req_headers,
+            )
+            t_response = time.perf_counter()
 
-        except urllib.error.HTTPError as exc:
-            latency_ms = round((time.time() - t0) * 1000, 1)
-            error_body = exc.read().decode("utf-8", errors="replace")
+            # Parse response
+            t_parse_start = time.perf_counter()
+            result = resp.json() if resp.content else {}
+            t_parse = time.perf_counter()
 
-            # Rate limit — exponential backoff
-            if exc.code == 429 and attempt < MAX_RETRIES:
-                retry_after = float(exc.headers.get("Retry-After", delay))
+            total_ms = round((t_parse - t_start) * 1000, 1)
+            phases = {
+                "request_ms": round((t_response - t_start) * 1000, 1),
+                "parse_ms": round((t_parse - t_parse_start) * 1000, 1),
+                "total_ms": total_ms,
+                "http_version": str(resp.http_version) if hasattr(resp, 'http_version') else "?",
+                "reused_connection": not resp.stream._stream.connection.is_idle if hasattr(resp, 'stream') else None,
+            }
+
+            # Handle HTTP errors
+            if resp.status_code == 429 and attempt < MAX_RETRIES:
+                retry_after = float(resp.headers.get("Retry-After", delay))
                 logger.warning(
                     "[LEDGER] etoro 429 rate-limited — sleeping %.1fs (attempt %d/%d)",
                     retry_after, attempt, MAX_RETRIES,
@@ -115,29 +176,56 @@ def _request(
                 delay *= 2
                 continue
 
-            logger.error(
-                "[LEDGER] etoro %s %s — %dms — HTTP %d: %s",
-                method, endpoint, latency_ms, exc.code, error_body[:300],
+            if resp.status_code >= 400:
+                error_body = resp.text[:300]
+                logger.error(
+                    "[LEDGER] etoro %s %s — %dms — HTTP %d: %s",
+                    method, endpoint, total_ms, resp.status_code, error_body,
+                )
+                return {
+                    "success": False,
+                    "error": f"HTTP {resp.status_code}",
+                    "details": error_body,
+                    "status": resp.status_code,
+                    "latency_ms": total_ms,
+                    "phases": phases,
+                }
+
+            logger.info(
+                "[LEDGER] etoro %s %s — %dms — OK | req=%dms parse=%dms",
+                method, endpoint, total_ms,
+                phases["request_ms"], phases["parse_ms"],
             )
             return {
-                "success": False,
-                "error": f"HTTP {exc.code}",
-                "details": error_body[:300],
-                "status": exc.code,
-                "latency_ms": latency_ms,
+                "success": True,
+                "data": result,
+                "latency_ms": total_ms,
+                "phases": phases,
             }
 
-        except Exception as exc:
-            latency_ms = round((time.time() - t0) * 1000, 1)
+        except httpx.TimeoutException as exc:
+            total_ms = round((time.perf_counter() - t_start) * 1000, 1)
             logger.error(
-                "[LEDGER] etoro %s %s — %dms — ERROR: %s",
-                method, endpoint, latency_ms, exc,
+                "[LEDGER] etoro %s %s — %dms — TIMEOUT: %s",
+                method, endpoint, total_ms, exc,
             )
             if attempt < MAX_RETRIES:
                 time.sleep(delay)
                 delay *= 2
                 continue
-            return {"success": False, "error": str(exc), "latency_ms": latency_ms}
+            return {"success": False, "error": f"Timeout: {exc}", "latency_ms": total_ms}
+
+        except Exception as exc:
+            total_ms = round((time.perf_counter() - t_start) * 1000, 1)
+            logger.error(
+                "[LEDGER] etoro %s %s — %dms — ERROR: %s",
+                method, endpoint, total_ms, exc,
+            )
+            if attempt < MAX_RETRIES:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return {"success": False, "error": str(exc), "latency_ms": total_ms}
 
     return {"success": False, "error": "Max retries exceeded"}
 
@@ -198,7 +286,16 @@ def get_portfolio() -> Dict[str, Any]:
 
 
 def get_instrument_id(symbol: str) -> Optional[int]:
-    """Resolve instrument ID from symbol (e.g. 'BTCUSD', 'AAPL')."""
+    """Resolve instrument ID from symbol (e.g. 'BTC', 'AAPL').
+
+    Uses 24h in-memory cache to avoid repeated API calls.
+    Instrument IDs are stable — BTC is always 100000.
+    """
+    # Check cache first
+    cached = _cache_get_instrument(symbol)
+    if cached is not None:
+        return cached
+
     result = _request(
         "GET",
         "/market-data/search",
@@ -220,12 +317,18 @@ def get_instrument_id(symbol: str) -> Optional[int]:
         iid = item.get("instrumentId") or item.get("InstrumentID")
         sym = item.get("internalSymbolFull", "")
         if sym.upper() == symbol.upper() and iid:
-            return int(iid)
+            iid = int(iid)
+            _cache_set_instrument(symbol, iid)
+            return iid
 
     # Fallback: first result
     first = items[0]
     iid = first.get("instrumentId") or first.get("InstrumentID")
-    return int(iid) if iid else None
+    if iid:
+        iid = int(iid)
+        _cache_set_instrument(symbol, iid)
+        return iid
+    return None
 
 
 def get_price(instrument_id: int) -> Dict[str, Any]:
