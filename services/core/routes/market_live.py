@@ -36,9 +36,19 @@ async def market_view():
     return HTMLResponse("<h1>market_live.html not found</h1>", status_code=404)
 
 
+# Response cache — avoids hitting eToro API on every dashboard refresh.
+# Market data changes slowly; 15s cache is transparent to the UI (10s poll).
+_cache: Dict[str, Any] = {"data": None, "ts": 0}
+_CACHE_TTL = 15  # seconds
+
+
 @router.get("/live")
 async def market_live() -> Dict[str, Any]:
     """Complete market cycle snapshot for real-time UI."""
+    # Return cached response if fresh enough
+    if _cache["data"] and (time.time() - _cache["ts"]) < _CACHE_TTL:
+        return _cache["data"]
+
     result: Dict[str, Any] = {"ts": time.time()}
 
     # === 1. SYMBOLS BEING OBSERVED (with live prices) ===
@@ -254,5 +264,9 @@ async def market_live() -> Dict[str, Any]:
     except Exception:
         pass
     result["notifications"] = notifications
+
+    # Cache the result
+    _cache["data"] = result
+    _cache["ts"] = time.time()
 
     return result
