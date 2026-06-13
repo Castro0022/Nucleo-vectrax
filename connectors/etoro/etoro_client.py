@@ -169,8 +169,6 @@ def _request(
                 "request_ms": round((t_response - t_start) * 1000, 1),
                 "parse_ms": round((t_parse - t_parse_start) * 1000, 1),
                 "total_ms": total_ms,
-                "http_version": str(resp.http_version) if hasattr(resp, 'http_version') else "?",
-                "reused_connection": not resp.stream._stream.connection.is_idle if hasattr(resp, 'stream') else None,
             }
 
             # Handle HTTP errors
