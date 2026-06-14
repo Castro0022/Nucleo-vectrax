@@ -509,21 +509,10 @@ def ingest_v2(
         logger.debug("ingest_v2: DISCARDED (score=%.2f) | %s", mem_score, text[:40])
         return existing or UserStar(user_id=user_id)
 
-    # ── 2. Embed ───────────────────────────────────────────────
+    # ── 2. Embed ─────────────────────────────────────────────────
     vec = embed(text)
 
-    # ── 3. Insert pattern with status ───────────────────────────
-    pattern = Pattern(
-        user_id=user_id,
-        content=text,
-        embedding=encode_embedding(vec),
-        topic=topic,
-        status=mem_status,
-        value_score=mem_score,
-    )
-    db.insert_pattern(pattern)
-
-    # ── 3. Get or create UserStar ──────────────────────────────
+    # ── 3. Get or create UserStar ──────────────────────────────────
     star = db.get_user_star(user_id)
     if star is None:
         role = ROLE_CREATOR if is_creator else ROLE_USER
@@ -534,9 +523,71 @@ def ingest_v2(
         )
         logger.info("New star born: %s (role=%s)", user_id[:20], role)
 
+    # ── 3.5 LEARNING GATE — does this transform the universe? ───
+    # Evaluates novelty, coherence, impact BEFORE deciding whether
+    # to actively incorporate into the gravitational universe.
+    _learning_active = True
+    _learning_reason = "default"
+    try:
+        from core.learn.learning_gate import evaluate as _lg_evaluate
+        # Gather existing state for evaluation
+        _centroid = decode_embedding(star.embedding) if star.embedding else None
+        _existing_patterns = db.get_patterns_for_user(
+            user_id, limit=20, status=PATTERN_STORED,
+        )
+        _existing_vecs = [
+            decode_embedding(p.embedding)
+            for p in _existing_patterns
+            if p.embedding
+        ]
+        _conv_links = len(g.get_neighbors(user_id)) if g.get_graph().has_node(user_id) else 0
+        _topic_dist = db.get_topic_distribution(user_id)
+
+        _lg_decision = _lg_evaluate(
+            embedding=vec,
+            user_id=user_id,
+            centroid_embedding=_centroid,
+            existing_embeddings=_existing_vecs,
+            current_mass=star.mass,
+            pattern_count=star.pattern_count,
+            topic_diversity=len(_topic_dist),
+            convergence_links=_conv_links,
+            is_creator=is_creator,
+        )
+        _learning_active = _lg_decision.is_active
+        _learning_reason = _lg_decision.reason
+    except Exception as _lg_exc:
+        logger.debug("Learning gate failed (passthrough): %s", _lg_exc)
+
+    # ── 4. Insert pattern ────────────────────────────────────────
+    # Always stored — but learning_type determines if it changes the star
+    pattern = Pattern(
+        user_id=user_id,
+        content=text,
+        embedding=encode_embedding(vec),
+        topic=topic,
+        status=mem_status,
+        value_score=mem_score,
+    )
+    db.insert_pattern(pattern)
+
     star.pattern_count = db.get_pattern_count(user_id)
     star.last_active = time.time()
     star.activation_count += 1
+
+    # ── PASSIVE PATH: record but don't transform gravitational state ──
+    if not _learning_active:
+        db.upsert_user_star(star)
+        g.add_star(user_id, layer=star.layer, mass=star.mass)
+        elapsed = time.time() - t0
+        logger.info(
+            "ingest_v2: %s | PASSIVE(%s) | mass=%.4f | layer=%s | patterns=%d | %.0fms",
+            user_id[:20], _learning_reason,
+            star.mass, star.layer, star.pattern_count, elapsed * 1000,
+        )
+        return star
+
+    # ── ACTIVE PATH: full gravitational transformation ─────────────
 
     # ── 5. Recalculate centroid (STORED patterns only) ────────
     patterns = db.get_patterns_for_user(
@@ -551,7 +602,7 @@ def ingest_v2(
         centroid = mean_embedding(pattern_vecs)
         star.embedding = encode_embedding(centroid)
 
-    # ── 5. Recalculate mass ───────────────────────────────────
+    # ── 6. Recalculate mass ───────────────────────────────────────
     topic_dist = db.get_topic_distribution(user_id)
     star.topic_fingerprint = _json.dumps(topic_dist, ensure_ascii=False)
     convergence_links = len(g.get_neighbors(user_id)) if g.get_graph().has_node(user_id) else 0
@@ -563,23 +614,22 @@ def ingest_v2(
         is_creator=star.is_creator,
     )
 
-    # ── 6. Distance + layer ───────────────────────────────────
+    # ── 7. Distance + layer ───────────────────────────────────────
     star.distance_to_core = compute_distance_from_mass(star.mass)
-    star.layer = assign_layer(star.mass)  # mass IS the gravity for user-stars
+    star.layer = assign_layer(star.mass)
 
-    # ── 7. Persist star ───────────────────────────────────────
+    # ── 8. Persist star ─────────────────────────────────────────
     db.upsert_user_star(star)
 
-    # ── 8. Graph: ensure node exists ──────────────────────────
+    # ── 9. Graph: ensure node exists ──────────────────────────────
     g.add_star(user_id, layer=star.layer, mass=star.mass)
 
-    # ── 8b. Feed Word Gravity Index ─────────────────────────
+    # ── 9b. Feed Word Gravity Index ─────────────────────────
     try:
         from core.word_gravity import extract_keywords, upsert_word
         _wgi_keywords = extract_keywords(text)
-        # Delta based on memory value score: higher value = more gravity
         _wgi_delta = max(0.02, mem_score * 0.15)
-        _wgi_scope = user_id  # per-user scope
+        _wgi_scope = user_id
         for _kw in _wgi_keywords:
             upsert_word(
                 _kw, scope=_wgi_scope, delta=_wgi_delta,
@@ -589,20 +639,20 @@ def ingest_v2(
     except Exception as _wgi_exc:
         logger.debug("WGI feed failed: %s", _wgi_exc)
 
-    # ── 9. Convergence with other user-stars ──────────────────
+    # ── 10. Convergence with other user-stars ──────────────────
     _detect_user_convergence(star, user_id)
 
-    # ── 10. Update nucleus ────────────────────────────────────
+    # ── 11. Update nucleus ──────────────────────────────────────
     try:
         from vectrax.core_nucleus import refresh_centroid_v2
         refresh_centroid_v2()
     except Exception:
-        pass  # non-fatal
+        pass
 
     elapsed = time.time() - t0
     logger.info(
-        "ingest_v2: %s | %s(%.2f) | mass=%.4f | dist=%.4f | layer=%s | patterns=%d | %.0fms",
-        user_id[:20], mem_status, mem_score,
+        "ingest_v2: %s | ACTIVE(%s) | mass=%.4f | dist=%.4f | layer=%s | patterns=%d | %.0fms",
+        user_id[:20], _learning_reason,
         star.mass, star.distance_to_core,
         star.layer, star.pattern_count, elapsed * 1000,
     )

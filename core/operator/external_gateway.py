@@ -1169,6 +1169,15 @@ class ExternalGateway:
         except Exception:
             pass
 
+        # 10.0.1 PATTERN REFINEMENT — tick counter
+        # Every 50 interactions, the universe self-organizes:
+        # reinforce active stars, degrade inactive ones, dissolve weak links.
+        try:
+            from core.learn.pattern_refinement import tick as _refine_tick
+            _refine_tick()
+        except Exception:
+            pass
+
         # 10.1 Feed the user's star (gravitational v2) + knowledge graph — BACKGROUND
         #   Runs in a thread so it doesn't block response delivery.
         #   ingest_v2: user star grows with patterns
