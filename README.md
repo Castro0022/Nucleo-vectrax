@@ -1651,6 +1651,78 @@ File: `core/external_call_guard.py`
 
 ---
 
+## 🧠 Learning Core — Máquina de Aprendizaje Selectivo
+
+Vectrax no aprende todo. Aprende lo que lo transforma. El ciclo completo:
+
+```
+Entrada (exterior)
+    ↓
+Observación (intake + presence tracking)
+    ↓
+Learning Gate — ¿esto transforma el universo?
+    │
+    ├─ ACTIVE → incorpora (centroide, masa, convergencias, WGI)
+    └─ PASSIVE → registra sin transformar estado gravitacional
+    ↓
+Cada 50 interacciones: Pattern Refinement
+    ├─ REINFORCE: estrellas activas → +10% masa
+    ├─ DEGRADE: estrellas inactivas (7d) → -15% masa
+    └─ DISSOLVE: convergencias cc<0.3 → eliminar
+    ↓
+Observation Bias — recomputa pesos por dominio
+    ├─ Dominios coherentes → más atención (weight > 1.0)
+    └─ Dominios degradados → menos atención (weight < 1.0)
+    ↓
+Siguiente observación usa los pesos → LOOP CERRADO
+```
+
+### Learning Gate
+
+Evalúa cada input antes de incorporarlo al universo:
+
+| Criterio | Umbral | Significado |
+|---|---|---|
+| **Novedad** | distancia al centroide > 0.3 | Significativamente diferente de lo que ya sé |
+| **Coherencia** | similitud a patrón existente > 0.5 | Conecta con conocimiento previo |
+| **Impacto** | cambio de masa > 0.005 | Transformaría las propiedades gravitacionales |
+
+Si ningún criterio se cumple → `PASSIVE` (registra, no transforma).
+Si al menos uno se cumple → `ACTIVE` (transformación gravitacional completa).
+Creador siempre `ACTIVE`. Primer patrón siempre `ACTIVE`.
+
+### Pattern Refinement
+
+Cada 50 interacciones, el universo se auto-organiza:
+- Lo útil gana masa y se acerca al centro
+- Lo inútil pierde masa y se aleja a la periferia
+- Convergencias débiles se disuelven naturalmente
+
+### Observation Bias
+
+Después del refinamiento, los pesos de observación se recalculan:
+- Dominios con alta coherencia y actividad → más frecuencia de observación
+- Dominios con patrones degradados → menos frecuencia
+- Convergencias cross-domain fuertes → ambos dominios priorizados
+
+Pesos reales en producción:
+```
+market=2.90  user_interest=1.30  unknown=1.30  services=1.00  tests=1.00
+```
+
+Consumed by:
+- `autonomous_observer.py` — prioriza detección de cambios en dominios de alto peso
+- `learning_engine.py` — modula profundidad de observación de mercado (skip si peso < 0.5)
+
+Files:
+- `core/learn/learning_gate.py` — evaluate(): novedad + coherencia + impacto
+- `core/learn/pattern_refinement.py` — reinforce/degrade/dissolve cada 50 interacciones
+- `core/learn/observation_bias.py` — compute_bias(): pesos por dominio
+- `vectrax/engine.py` — ingest_v2() integra learning gate
+- `vault/observation_bias.json` — pesos persistidos
+
+---
+
 ## 📊 RAM Monitoring
 
 Layer 7 of the meta_loop records worker RAM to the observation ledger every hour.
@@ -1695,7 +1767,9 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 ## 📋 Changelog
 
 ### 2026-06-14
-- **feat: ExternalCallGuard** — Unified resilience layer for all external APIs. `guarded_call(provider, fn, timeout, fallback)` wraps any external call with timeout + circuit breaker + fallback. Circuit opens after 5 consecutive failures, recovers after 60s. Fail-fast in 4μs when open. 15/15 stress tests pass.
+- **feat: Learning Core** — Selective learning + universe self-organization. Learning Gate evaluates novelty/coherence/impact before incorporating input (ACTIVE vs PASSIVE). Pattern Refinement every 50 interactions: reinforce active stars, degrade inactive, dissolve weak convergences. Observation Bias closes the loop: learned weights modulate how the autonomous observer and market cycle observe.
+- **feat: Contextual Presence Layer** — Vectrax observes user behavior and intervenes only with real context. Triggers: return after >2h silence, topic convergence (3+ in 7 days). Limits: 1 per session, 15s cooldown, no repeats, 24h cooldown, >5 interactions minimum. 16 tests.
+- **feat: ExternalCallGuard**
 - **feat: OpenAI + Gemini guard integration** — Both LLM providers now check circuit breaker before API calls and record success/failure. Dual protection with existing api_gate (429 backoff).
 - **feat: persistent httpx client for eToro** — Replaces urllib.request with singleton httpx.Client + connection pooling + HTTP/2. Latency: 800ms → 220ms (3.6x). Instrument ID cache with 24h TTL eliminates repeated search calls.
 - **perf: /v1/market/live cache** — 15s response cache. Dashboard endpoint: 5,469ms → 1ms (5,469x). Zero errors under 10 concurrent requests.
