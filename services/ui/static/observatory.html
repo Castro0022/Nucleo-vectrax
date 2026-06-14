@@ -184,15 +184,33 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
     // === RESUMEN GENERAL ===
     html += sectionTitle('📊 Resumen General');
 
+    const sb = d.star_breakdown || {};
     html += card('⭐', 'Universo', [
       metric('Estrellas totales', fmt(d.total_stars), 'accent', 'u_stars'),
-      metric('Gravitacionales', fmt(g.total), '', 'u_grav'),
-      metric('De usuarios', fmt(lg.user_stars), '', 'u_user'),
-      metric('Knowledge (legacy)', fmt(lg.knowledge_stars)),
+      metric('• Gravitacionales', fmt(sb.gravitational || g.total), '', 'u_grav'),
+      metric('• Knowledge', fmt(sb.knowledge || lg.knowledge_stars), '', 'u_know'),
+      metric('• Usuarios', fmt(sb.users || lg.user_stars), '', 'u_user'),
       metric('Patrones', fmt(lg.patterns), '', 'u_pat'),
       metric('Constelaciones', fmt(lg.constellations), '', 'u_const'),
-      metric('Masa total', fmt(d.legacy?.layers ? Object.values(d.legacy.layers).reduce((a,b)=>a+b,0) : 0)),
     ].join(''));
+
+    // Observation Bias card
+    const bias = d.observation_bias || {};
+    let biasHtml = '';
+    if (Object.keys(bias).length) {
+      for (const [dom, w] of Object.entries(bias).sort((a,b) => b[1]-a[1])) {
+        const pct = Math.min(w / 3.0 * 100, 100);
+        const col = w >= 1.5 ? 'var(--success)' : w < 0.8 ? 'var(--danger)' : 'var(--accent)';
+        biasHtml += `<div style="padding:3px 0"><div style="display:flex;justify-content:space-between;font-size:12px"><span>${dom}</span><span style="font-family:var(--mono);color:${col}">${w.toFixed(2)}</span></div><div style="height:3px;background:rgba(26,34,53,0.8);border-radius:2px;margin-top:2px"><div style="height:100%;width:${pct}%;background:${col};border-radius:2px"></div></div></div>`;
+      }
+    } else {
+      biasHtml = '<div class="empty">Sin datos de bias</div>';
+    }
+    const learn = d.learning || {};
+    if (learn.interactions_until_refine !== undefined) {
+      biasHtml += `<div style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:11px;color:var(--dim)">Refinamiento en ${learn.interactions_until_refine}/${learn.refine_interval} interacciones</div>`;
+    }
+    html += card('🎯', 'Observation Bias', biasHtml);
 
     html += card('👥', 'Usuarios', [
       metric('Usuarios reales', fmt(u.total), 'accent'),

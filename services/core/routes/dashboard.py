@@ -566,7 +566,37 @@ async def dashboard_observatory() -> Dict[str, Any]:
     result["legacy"] = legacy
 
     # === TOTAL STARS (unified) ===
-    result["total_stars"] = gravity["total"] + legacy.get("user_stars", 0)
+    # Three distinct star populations — NO double-counting:
+    #   gravitational: gravity engine records (market observations, convergences)
+    #   knowledge: legacy knowledge stars from vectrax.db (ingest v1)
+    #   users: one star per user (ingest v2)
+    result["total_stars"] = (
+        gravity.get("total", 0)
+        + legacy.get("knowledge_stars", 0)
+        + legacy.get("user_stars", 0)
+    )
+    result["star_breakdown"] = {
+        "gravitational": gravity.get("total", 0),
+        "knowledge": legacy.get("knowledge_stars", 0),
+        "users": legacy.get("user_stars", 0),
+    }
+
+    # === OBSERVATION BIAS ===
+    try:
+        from core.learn.observation_bias import get_bias
+        result["observation_bias"] = get_bias()
+    except Exception:
+        result["observation_bias"] = {}
+
+    # === LEARNING GATE STATS ===
+    # Provide learning core visibility
+    result["learning"] = {}
+    try:
+        from core.learn.pattern_refinement import _interaction_count, CYCLE_INTERVAL
+        result["learning"]["interactions_until_refine"] = CYCLE_INTERVAL - _interaction_count
+        result["learning"]["refine_interval"] = CYCLE_INTERVAL
+    except Exception:
+        pass
 
     # === MARKET OBSERVATORY ===
     market = {"symbols": [], "total_signals": 0, "total_patterns": 0}
