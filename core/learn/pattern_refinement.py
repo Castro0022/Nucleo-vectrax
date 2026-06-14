@@ -157,6 +157,15 @@ def tick() -> bool:
     _interaction_count += 1
     if _interaction_count >= CYCLE_INTERVAL:
         _interaction_count = 0
-        run_refinement_cycle()
+        result = run_refinement_cycle()
+
+        # After refinement, update observation bias
+        # This closes the loop: learning → observation → better learning
+        try:
+            from core.learn.observation_bias import compute_bias
+            compute_bias()
+        except Exception:
+            pass
+
         return True
     return False
