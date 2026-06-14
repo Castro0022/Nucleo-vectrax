@@ -572,6 +572,14 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
 
     t0 = time.time()
 
+    # Observation Bias: check if market domain has enough weight to observe
+    _market_bias = 1.0
+    try:
+        from core.learn.observation_bias import get_domain_weight
+        _market_bias = get_domain_weight("market")
+    except Exception:
+        pass
+
     # Determine which symbols have open markets right now
     try:
         from connectors.etoro.market_mode import get_open_symbols, get_active_mode
@@ -581,12 +589,21 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         open_syms = symbols  # fallback: treat all as open
         mode = "market"
 
-    logger.info("[LEARN] Starting cycle | mode=%s | open=%s/%s %s",
+    logger.info("[LEARN] Starting cycle | mode=%s | open=%s/%s %s | bias=%.2f",
                 mode, len(open_syms), len(symbols),
-                open_syms if open_syms else "(all closed)")
+                open_syms if open_syms else "(all closed)",
+                _market_bias)
 
     # Step 1: Observe only open markets (no noise from closed markets)
-    r1 = _observe_and_record(open_syms) if open_syms else {"signals_recorded": 0}
+    # Observation depth modulated by bias weight:
+    #   bias >= 1.5 → observe all symbols (high attention)
+    #   bias 0.5-1.5 → normal observation
+    #   bias < 0.5 → skip observation this cycle (low attention)
+    if _market_bias < 0.5 and open_syms:
+        logger.info("[LEARN] BIAS SKIP | market weight=%.2f < 0.5 — reduced observation", _market_bias)
+        r1 = {"signals_recorded": 0}
+    else:
+        r1 = _observe_and_record(open_syms) if open_syms else {"signals_recorded": 0}
 
     # Steps 2-3: Always run (resolve outcomes + rebuild patterns from history)
     r2 = _resolve_outcomes()

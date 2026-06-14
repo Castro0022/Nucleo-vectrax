@@ -77,6 +77,14 @@ def observe_and_record() -> int:
     except Exception:
         mode = "memory"
 
+    # Load observation bias — domains with higher weight get deeper analysis
+    _bias_weights: Dict[str, float] = {}
+    try:
+        from core.learn.observation_bias import get_bias
+        _bias_weights = get_bias()
+    except Exception:
+        pass
+
     # Compare and detect changes
     # -- Always active (both modes) --
     try:
@@ -84,8 +92,12 @@ def observe_and_record() -> int:
     except Exception as exc:
         logger.debug("operator detector failed: %s", exc)
 
+    # Gravity changes: only run detailed detection for high-weight domains
     try:
-        recorded += _detect_gravity_changes(prev_grav, current_gravity, record)
+        recorded += _detect_gravity_changes(
+            prev_grav, current_gravity, record,
+            bias_weights=_bias_weights,
+        )
     except Exception as exc:
         logger.debug("gravity detector failed: %s", exc)
 
@@ -104,8 +116,9 @@ def observe_and_record() -> int:
     except Exception as exc:
         logger.debug("user detector failed: %s", exc)
 
-    # -- Market Mode only (silenced when markets closed) --
-    if mode == "market":
+    # -- Market Mode: observation depth modulated by bias weight --
+    _market_weight = _bias_weights.get("market", 1.0)
+    if mode == "market" or _market_weight >= 1.5:
         try:
             recorded += _detect_market_changes(prev_grav, current_gravity, record)
         except Exception as exc:
@@ -224,16 +237,28 @@ def _detect_operator_changes(prev: dict, curr: dict, record) -> int:
     return n
 
 
-def _detect_gravity_changes(prev_grav: Optional[dict], curr_grav: dict, record) -> int:
+def _detect_gravity_changes(
+    prev_grav: Optional[dict],
+    curr_grav: dict,
+    record,
+    bias_weights: Optional[Dict[str, float]] = None,
+) -> int:
     if not prev_grav:
         return 0
     n = 0
+    _bw = bias_weights or {}
 
-    # New stars
+    # New stars — prioritize high-weight domains
     prev_ids = set(prev_grav.get("stars", {}).keys())
     curr_ids = set(curr_grav.get("stars", {}).keys())
     new_stars = curr_ids - prev_ids
-    for sid in list(new_stars)[:10]:  # cap at 10 per cycle
+    # Sort new stars by domain weight (high-weight domains first)
+    new_stars_sorted = sorted(
+        new_stars,
+        key=lambda s: _bw.get(curr_grav["stars"].get(s, {}).get("domain", ""), 1.0),
+        reverse=True,
+    )
+    for sid in new_stars_sorted[:10]:  # cap at 10 per cycle
         star = curr_grav["stars"][sid]
         record("gravity", "new_star",
                f"Nueva estrella: {star['domain']}/{star['intent']} — {star['summary'][:50]}",
