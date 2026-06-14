@@ -63,6 +63,14 @@ class OpenAIProvider(BaseLLMProvider):
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         self._ensure_client()
 
+        # ExternalCallGuard: circuit breaker check
+        try:
+            from core.external_call_guard import _check_circuit
+            if not _check_circuit("openai"):
+                raise RuntimeError("OpenAI circuit OPEN — failing fast")
+        except ImportError:
+            pass
+
         # API Gate: skip call entirely if rate-limited (exponential backoff)
         try:
             from core.api_gate import check_gate, record_429, record_success
@@ -87,19 +95,39 @@ class OpenAIProvider(BaseLLMProvider):
         if request.max_tokens:
             payload["max_tokens"] = request.max_tokens
 
-        resp = await self._client.post(
-            f"{self.endpoint}/chat/completions", json=payload
-        )
+        try:
+            resp = await self._client.post(
+                f"{self.endpoint}/chat/completions", json=payload
+            )
+        except Exception as exc:
+            try:
+                from core.external_call_guard import _record_failure
+                _record_failure("openai", str(exc), is_timeout="Timeout" in type(exc).__name__)
+            except Exception:
+                pass
+            raise
+
+        latency_ms = (time.time() - start) * 1000
 
         if resp.status_code == 429:
             try:
                 record_429("openai")
             except Exception:
                 pass
+            try:
+                from core.external_call_guard import _record_failure
+                _record_failure("openai", "HTTP 429")
+            except Exception:
+                pass
             resp.raise_for_status()
 
         try:
             record_success("openai")
+        except Exception:
+            pass
+        try:
+            from core.external_call_guard import _record_success
+            _record_success("openai", latency_ms)
         except Exception:
             pass
 
@@ -116,7 +144,7 @@ class OpenAIProvider(BaseLLMProvider):
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
             total_tokens=usage.get("total_tokens"),
-            latency_ms=(time.time() - start) * 1000,
+            latency_ms=latency_ms,
         )
 
     async def stream(self, request: GenerateRequest) -> AsyncIterator[str]:

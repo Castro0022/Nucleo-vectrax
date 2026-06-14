@@ -99,6 +99,14 @@ class GeminiProvider(BaseLLMProvider):
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         self._ensure_client()
 
+        # ExternalCallGuard: circuit breaker check
+        try:
+            from core.external_call_guard import _check_circuit
+            if not _check_circuit("gemini"):
+                raise RuntimeError("Gemini circuit OPEN — failing fast")
+        except ImportError:
+            pass
+
         # API Gate: skip call entirely if rate-limited (exponential backoff)
         try:
             from core.api_gate import check_gate, record_429, record_success
@@ -115,19 +123,45 @@ class GeminiProvider(BaseLLMProvider):
         )
         payload = self._build_payload(request)
 
-        resp = await self._client.post(url, json=payload)
+        try:
+            resp = await self._client.post(url, json=payload)
+        except Exception as exc:
+            try:
+                from core.external_call_guard import _record_failure
+                _record_failure("gemini", str(exc), is_timeout="Timeout" in type(exc).__name__)
+            except Exception:
+                pass
+            raise
+
+        latency_ms = (time.time() - start) * 1000
+
         if resp.status_code == 429:
             try:
                 record_429("gemini")
             except Exception:
                 pass
+            try:
+                from core.external_call_guard import _record_failure
+                _record_failure("gemini", "HTTP 429")
+            except Exception:
+                pass
             raise RuntimeError(f"Gemini 429: {self._extract_error(resp)}")
         if resp.status_code != 200:
+            try:
+                from core.external_call_guard import _record_failure
+                _record_failure("gemini", f"HTTP {resp.status_code}")
+            except Exception:
+                pass
             raise RuntimeError(
                 f"Gemini API error ({resp.status_code}): {self._extract_error(resp)}"
             )
         try:
             record_success("gemini")
+        except Exception:
+            pass
+        try:
+            from core.external_call_guard import _record_success
+            _record_success("gemini", latency_ms)
         except Exception:
             pass
         data = resp.json()
@@ -142,7 +176,7 @@ class GeminiProvider(BaseLLMProvider):
             prompt_tokens=usage.get("promptTokenCount"),
             completion_tokens=usage.get("candidatesTokenCount"),
             total_tokens=usage.get("totalTokenCount"),
-            latency_ms=(time.time() - start) * 1000,
+            latency_ms=latency_ms,
         )
 
     async def stream(self, request: GenerateRequest) -> AsyncIterator[str]:
