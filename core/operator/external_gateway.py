@@ -265,6 +265,16 @@ class ExternalGateway:
             pass
 
         # ══════════════════════════════════════════════════════════════
+        # STEP -1: CONTEXTUAL PRESENCE — record user activity
+        # Fire-and-forget. Never blocks. Never fails visibly.
+        # ══════════════════════════════════════════════════════════════
+        try:
+            from core.contextual_presence import record_presence
+            record_presence(user_id, content)
+        except Exception:
+            pass
+
+        # ══════════════════════════════════════════════════════════════
         # STEP 0: IDENTITY ANCHOR — cargar identidad ANTES de todo
         # ══════════════════════════════════════════════════════════════
         identity_ctx = ""
@@ -1334,6 +1344,43 @@ class ExternalGateway:
                 )
         except Exception as _exc:
             logger.debug("router_activation close failed: %s", _exc)
+
+        # ══════════════════════════════════════════════════════════════
+        # CONTEXTUAL PRESENCE — evaluate after response (background)
+        # Only for Telegram users. Non-blocking. Intervention sent
+        # separately if triggered.
+        # ══════════════════════════════════════════════════════════════
+        if channel == "telegram" and response_text:
+            try:
+                from core.contextual_presence import evaluate_presence
+                import threading as _cp_threading
+
+                def _presence_eval():
+                    try:
+                        intervention = evaluate_presence(user_id)
+                        if intervention:
+                            # Send via the bus — the pipeline_worker
+                            # will pick it up and deliver via _tg_send.
+                            self._bus.emit(
+                                channel=Channels.EXTERNAL,
+                                event_type="external.presence_intervention",
+                                source_layer=0,
+                                priority=EventPriority.LOW,
+                                payload={
+                                    "user_id": user_id,
+                                    "channel": channel,
+                                    "intervention": intervention,
+                                },
+                                metadata={"origin": "contextual_presence"},
+                            )
+                    except Exception:
+                        pass
+
+                _cp_threading.Thread(
+                    target=_presence_eval, daemon=True,
+                ).start()
+            except Exception:
+                pass
 
         return GatewayResult(
             event_id=correlation_id,
