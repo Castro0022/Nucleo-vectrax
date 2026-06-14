@@ -335,6 +335,9 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
     return d.toLocaleTimeString('es', {hour:'2-digit', minute:'2-digit'});
   }
 
+  // Retain last good market data to prevent flash on reload
+  let _lastMarketData = null;
+
   async function loadMarket() {
     try {
       const res = await fetch('/v1/market/live');
@@ -342,8 +345,15 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
       const d = await res.json();
       // Update cycle countdown from API timestamp
       if (d.ts) _lastCycleTs = d.ts;
-      renderMarket(d);
-    } catch(e) { /* silent */ }
+      // Only update if we got actual data (symbols present)
+      if (d.symbols && d.symbols.length > 0) {
+        _lastMarketData = d;
+      }
+      renderMarket(_lastMarketData || d);
+    } catch(e) {
+      // On error, keep showing last good data
+      if (_lastMarketData) renderMarket(_lastMarketData);
+    }
   }
 
   function renderMarket(d) {
@@ -462,7 +472,12 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
       html += card('🔔', `Notificaciones<span style="margin-left:6px;font-size:10px;color:var(--dim)">${notifs.length}</span>`, notifHtml);
     }
 
-    el.innerHTML = html;
+    // Smooth update: only replace if content changed (prevents flash)
+    const newHtml = html;
+    if (el._lastHtml !== newHtml) {
+      el.innerHTML = newHtml;
+      el._lastHtml = newHtml;
+    }
   }
 
   load();

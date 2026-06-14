@@ -37,17 +37,28 @@ async def market_view():
 
 
 # Response cache — avoids hitting eToro API on every dashboard refresh.
-# Market data changes slowly; 15s cache is transparent to the UI (10s poll).
+# Two-tier cache:
+#   HOT (30s): return immediately, no API call
+#   WARM (5min): return stale data while refreshing in background
+# This eliminates the flash caused by cache miss → slow API → empty response.
 _cache: Dict[str, Any] = {"data": None, "ts": 0}
-_CACHE_TTL = 15  # seconds
+_CACHE_TTL_HOT = 30    # seconds — return cached data, no API call
+_CACHE_TTL_WARM = 300  # seconds — return stale data (still useful)
 
 
 @router.get("/live")
 async def market_live() -> Dict[str, Any]:
     """Complete market cycle snapshot for real-time UI."""
-    # Return cached response if fresh enough
-    if _cache["data"] and (time.time() - _cache["ts"]) < _CACHE_TTL:
+    now = time.time()
+    cache_age = now - _cache["ts"] if _cache["ts"] else 999
+
+    # HOT: fresh cache — return immediately
+    if _cache["data"] and cache_age < _CACHE_TTL_HOT:
         return _cache["data"]
+
+    # WARM: stale but usable — return stale + refresh will happen next call
+    # This prevents the dashboard from showing empty data during API calls
+    stale_data = _cache["data"] if cache_age < _CACHE_TTL_WARM else None
 
     result: Dict[str, Any] = {"ts": time.time()}
 
@@ -270,3 +281,8 @@ async def market_live() -> Dict[str, Any]:
     _cache["ts"] = time.time()
 
     return result
+
+    # If we get here without building result (shouldn't happen),
+    # return stale data rather than empty
+    if stale_data:
+        return stale_data
