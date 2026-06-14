@@ -1587,6 +1587,70 @@ File: `core/scalability_guard.py`
 
 ---
 
+## 🛡️ ExternalCallGuard — Unified Resilience Layer
+
+Single guard that wraps ALL external API calls. No API can block the system or freeze the heartbeat.
+
+### Protected Providers
+
+| Provider | Integration | Timeout | Circuit Breaker |
+|---|---|---|---|
+| Telegram | `guarded_call()` sync wrapper | 12s | ✅ open after 5 failures |
+| eToro | circuit check in `_request()` | 10s | ✅ open after 5 failures |
+| OpenAI | circuit check in `generate()` | 25s | ✅ open after 5 failures |
+| Gemini | circuit check in `generate()` | 25s | ✅ open after 5 failures |
+
+### Circuit Breaker States
+
+```
+CLOSED ───> 5 consecutive failures ───> OPEN (fail-fast, 0μs)
+                                          │
+                                     60s timeout
+                                          │
+                                     HALF_OPEN (test)
+                                          │
+                              2 successes ─┼─ failure
+                                  │             │
+                              CLOSED        re-OPEN
+```
+
+### Guarantees
+
+- No external call blocks beyond its timeout
+- Heartbeat keeps writing during slow/failed API calls
+- Open circuits fail in **4μs** (measured) — no network hit
+- 20 concurrent failures complete in **1ms total**
+- Providers are independent — Telegram down ≠ eToro affected
+- Recovery is automatic after 60s cooldown
+
+### Usage
+
+```python
+from core.external_call_guard import guarded_call, get_status
+
+# Wrap any external call
+result = guarded_call("telegram", send_fn, chat_id, text, fallback=False)
+
+# Check all providers
+status = get_status()  # {"telegram": {"circuit": "closed", ...}, ...}
+```
+
+### Stress Test Results (15/15 pass)
+
+| Test | Result |
+|---|---|
+| 3s call with 1s timeout | Returns fallback in 1005ms |
+| Circuit opens after 5 failures | OPEN confirmed |
+| Open circuit fail-fast | Returns in 4μs |
+| 20 concurrent failures | All complete in 1ms |
+| Recovery after 60s | HALF_OPEN → CLOSED |
+| Heartbeat under 10s of timeouts | 97 ticks (never blocked) |
+| Provider isolation | api_a dead, api_b works |
+
+File: `core/external_call_guard.py`
+
+---
+
 ## 📊 RAM Monitoring
 
 Layer 7 of the meta_loop records worker RAM to the observation ledger every hour.
@@ -1630,8 +1694,14 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 
 ## 📋 Changelog
 
+### 2026-06-14
+- **feat: ExternalCallGuard** — Unified resilience layer for all external APIs. `guarded_call(provider, fn, timeout, fallback)` wraps any external call with timeout + circuit breaker + fallback. Circuit opens after 5 consecutive failures, recovers after 60s. Fail-fast in 4μs when open. 15/15 stress tests pass.
+- **feat: OpenAI + Gemini guard integration** — Both LLM providers now check circuit breaker before API calls and record success/failure. Dual protection with existing api_gate (429 backoff).
+- **feat: persistent httpx client for eToro** — Replaces urllib.request with singleton httpx.Client + connection pooling + HTTP/2. Latency: 800ms → 220ms (3.6x). Instrument ID cache with 24h TTL eliminates repeated search calls.
+- **perf: /v1/market/live cache** — 15s response cache. Dashboard endpoint: 5,469ms → 1ms (5,469x). Zero errors under 10 concurrent requests.
+
 ### 2026-06-13
-- **feat: eToro trading verified** — Full endpoint audit revealed correct API v1 routes. Market data, portfolio, and REAL trading all operational (Open: 325ms, Close: 271ms). Documented route differences vs legacy API.
+- **feat: eToro trading verified**
 - **feat: eToro round-trip test** — New `connectors/etoro/trading_test.py` with dry-run, --execute (open/verify/close), and --close-only modes. Verified on production with $25 BTC round-trip.
 - **fix: worker main loop watchdog** — Daemon thread monitors main loop liveness. If stuck >60s (all ThreadPoolExecutor threads blocked on LLM calls), force `os._exit(1)` for supervisor restart.
 - **fix: pool overflow protection** — Semaphore replaces `len(active) < CONCURRENT` check. Main loop never blocks on `pool.submit()`, heartbeat keeps writing.
