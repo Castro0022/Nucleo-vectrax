@@ -186,22 +186,29 @@ def _tg_send(chat_id: int, text: str, **kwargs) -> bool:
         # Cualquier fallo aquí cae a comportamiento legacy.
         logger.debug("sovereignty bypass on _tg_send: %s", _se)
 
-    sent_message_id = None
-    try:
+    # === GUARDED TELEGRAM CALL =======================================
+    # All Telegram sends go through ExternalCallGuard.
+    # If Telegram is down/slow, the call times out cleanly (12s max)
+    # and the circuit breaker prevents hammering a dead API.
+    def _do_tg_send():
         r = _TG_HTTP.post(
             f"{_TG_BASE}/sendMessage",
             json={"chat_id": chat_id, "text": text},
         )
         r.raise_for_status()
-        body = r.json()
-        ok = body.get("ok", False)
-        # Capturar message_id del mensaje enviado por el bot — lo usaremos
-        # como reply_to_message_id para anclar el audio a ESTE texto.
-        if ok:
-            sent_message_id = (body.get("result") or {}).get("message_id")
-    except Exception as exc:
-        logger.warning("TG send failed: %s", exc)
+        return r.json()
+
+    sent_message_id = None
+    try:
+        from core.external_call_guard import guarded_call
+        body = guarded_call("telegram", _do_tg_send, fallback=None)
+    except Exception:
+        body = None
+    if body is None:
         return False
+    ok = body.get("ok", False)
+    if ok:
+        sent_message_id = (body.get("result") or {}).get("message_id")
 
     # Class G runtime observation — register response hash for the detector
     if ok:

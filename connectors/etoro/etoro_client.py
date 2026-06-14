@@ -143,6 +143,15 @@ def _request(
     client = _get_client()
     delay = 1.0
 
+    # Check ExternalCallGuard circuit before making any call
+    try:
+        from core.external_call_guard import _check_circuit, _record_success, _record_failure
+        if not _check_circuit("etoro"):
+            logger.info("[LEDGER] etoro %s %s — CIRCUIT_OPEN", method, endpoint)
+            return {"success": False, "error": "circuit_open", "latency_ms": 0}
+    except ImportError:
+        pass  # guard not available — proceed without it
+
     for attempt in range(1, MAX_RETRIES + 1):
         # Per-request unique ID
         req_headers = {"x-request-id": str(uuid.uuid4())}
@@ -202,6 +211,11 @@ def _request(
                 method, endpoint, total_ms,
                 phases["request_ms"], phases["parse_ms"],
             )
+            # Record success in guard circuit breaker
+            try:
+                _record_success("etoro", total_ms)
+            except Exception:
+                pass
             return {
                 "success": True,
                 "data": result,
@@ -215,6 +229,10 @@ def _request(
                 "[LEDGER] etoro %s %s — %dms — TIMEOUT: %s",
                 method, endpoint, total_ms, exc,
             )
+            try:
+                _record_failure("etoro", f"Timeout: {exc}", is_timeout=True)
+            except Exception:
+                pass
             if attempt < MAX_RETRIES:
                 time.sleep(delay)
                 delay *= 2
@@ -227,6 +245,10 @@ def _request(
                 "[LEDGER] etoro %s %s — %dms — ERROR: %s",
                 method, endpoint, total_ms, exc,
             )
+            try:
+                _record_failure("etoro", str(exc))
+            except Exception:
+                pass
             if attempt < MAX_RETRIES:
                 time.sleep(delay)
                 delay *= 2
