@@ -16,22 +16,59 @@ Fecha: 2026-06-15
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("vectrax.domain_ingester")
 
 
-def event_to_text(event_type: str, data: Dict[str, Any]) -> str:
+# Domain template cache
+_templates: Dict[str, Dict] = {}
+
+
+def _load_template(domain: str) -> Optional[Dict]:
+    """Load domain template from config/domain_templates/{domain}.json."""
+    if domain in _templates:
+        return _templates[domain]
+    try:
+        import json
+        template_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config", "domain_templates", f"{domain}.json",
+        )
+        if os.path.exists(template_path):
+            tpl = json.load(open(template_path))
+            _templates[domain] = tpl
+            return tpl
+    except Exception:
+        pass
+    _templates[domain] = None
+    return None
+
+
+def event_to_text(event_type: str, data: Dict[str, Any], domain: str = "") -> str:
     """Convert a business event into embeddable text.
 
-    Flattens nested dicts, formats key-value pairs into natural language.
+    If a domain template exists with a text_template for this event_type,
+    uses the template for richer text. Otherwise falls back to key=value format.
     """
-    parts = [event_type]
+    # Try domain template first
+    if domain:
+        tpl = _load_template(domain)
+        if tpl:
+            evt_config = tpl.get("event_types", {}).get(event_type, {})
+            text_tpl = evt_config.get("text_template", "")
+            if text_tpl:
+                try:
+                    return text_tpl.format(**data)
+                except (KeyError, ValueError):
+                    pass  # fallback to generic
 
+    # Generic format
+    parts = [event_type]
     for key, value in data.items():
         if isinstance(value, dict):
-            # Flatten one level
             for k2, v2 in value.items():
                 parts.append(f"{key}.{k2}={v2}")
         elif isinstance(value, list):
@@ -60,7 +97,7 @@ def ingest_event(
     Returns: {"success": True, "star_id": ..., "learning": "active/passive"}
     """
     t0 = time.perf_counter()
-    text = event_to_text(event_type, data)
+    text = event_to_text(event_type, data, domain=domain)
     fingerprint = f"{domain}:{event_type}:{_hash_data(data)}"
 
     result: Dict[str, Any] = {

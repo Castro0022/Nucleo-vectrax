@@ -1,0 +1,48 @@
+{
+  "domain": "finance",
+  "name": "Finance / Finanzas",
+  "description": "Transacciones, balances, flujo de caja, cuentas por cobrar/pagar",
+  "event_types": {
+    "transaction": {
+      "fields": ["type", "amount", "account", "category", "counterparty", "reference"],
+      "weights": {"amount": 1.0, "category": 0.8, "type": 0.7},
+      "text_template": "{type}: ${amount} {category} — {counterparty}"
+    },
+    "invoice": {
+      "fields": ["client", "amount", "due_date", "status", "items"],
+      "weights": {"amount": 0.9, "due_date": 0.8, "status": 0.7},
+      "text_template": "Factura: {client} ${amount} vence={due_date} estado={status}"
+    },
+    "payment_received": {
+      "fields": ["client", "amount", "method", "invoice_ref", "days_late"],
+      "weights": {"amount": 0.9, "days_late": 0.8},
+      "text_template": "Cobro: {client} ${amount} via {method}"
+    },
+    "expense": {
+      "fields": ["category", "amount", "vendor", "description", "recurring"],
+      "weights": {"amount": 0.9, "category": 0.8, "recurring": 0.7},
+      "text_template": "Gasto: {category} ${amount} — {vendor}"
+    },
+    "cash_flow_snapshot": {
+      "fields": ["balance", "inflow_30d", "outflow_30d", "runway_days", "accounts_receivable"],
+      "weights": {"runway_days": 1.0, "balance": 0.9},
+      "text_template": "Flujo: balance=${balance} entrada=${inflow_30d} salida=${outflow_30d} runway={runway_days}d"
+    }
+  },
+  "convergence_rules": {
+    "late_payments": "Clientes que pagan tarde recurrentemente",
+    "expense_spikes": "Categorías de gasto con crecimiento anormal",
+    "cash_runway": "Alerta si runway < 60 días",
+    "revenue_concentration": "Si >40% del ingreso viene de un solo cliente"
+  },
+  "learning_gate_overrides": {
+    "novelty_threshold": 0.2,
+    "coherence_threshold": 0.5
+  },
+  "proposal_types": [
+    "collection_priority",
+    "expense_reduction",
+    "cash_flow_forecast",
+    "client_risk_alert"
+  ]
+}

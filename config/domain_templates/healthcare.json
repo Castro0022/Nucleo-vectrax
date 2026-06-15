@@ -1,0 +1,48 @@
+{
+  "domain": "healthcare",
+  "name": "Healthcare / Salud",
+  "description": "Citas, pacientes, tratamientos, facturación, inventario médico",
+  "event_types": {
+    "appointment": {
+      "fields": ["patient_id", "provider", "type", "date", "time", "duration_min", "status"],
+      "weights": {"status": 0.8, "type": 0.7, "provider": 0.6},
+      "text_template": "Cita: paciente={patient_id} {type} con {provider} {date} {time} [{status}]"
+    },
+    "treatment": {
+      "fields": ["patient_id", "diagnosis", "treatment", "provider", "outcome", "follow_up"],
+      "weights": {"outcome": 1.0, "diagnosis": 0.9, "treatment": 0.8},
+      "text_template": "Tratamiento: {diagnosis} → {treatment} resultado={outcome}"
+    },
+    "billing": {
+      "fields": ["patient_id", "service", "amount", "insurance", "copay", "status"],
+      "weights": {"amount": 0.9, "status": 0.8},
+      "text_template": "Facturación: {service} ${amount} seguro={insurance} copago=${copay} [{status}]"
+    },
+    "supply_usage": {
+      "fields": ["item", "quantity_used", "remaining", "department", "expiry_date"],
+      "weights": {"remaining": 0.9, "expiry_date": 0.8},
+      "text_template": "Insumo: {item} usado={quantity_used} restante={remaining} depto={department}"
+    },
+    "no_show": {
+      "fields": ["patient_id", "provider", "date", "type", "consecutive_no_shows"],
+      "weights": {"consecutive_no_shows": 1.0},
+      "text_template": "No-show: paciente={patient_id} {type} con {provider} (consecutivos={consecutive_no_shows})"
+    }
+  },
+  "convergence_rules": {
+    "no_show_pattern": "Pacientes con 3+ no-shows → proponer recordatorio reforzado",
+    "supply_expiry": "Insumos próximos a vencer con stock alto → redistribuir",
+    "provider_load": "Proveedores con agenda >90% → proponer redistribución",
+    "treatment_effectiveness": "Tratamientos con bajo outcome rate → revisar protocolo"
+  },
+  "learning_gate_overrides": {
+    "novelty_threshold": 0.2,
+    "coherence_threshold": 0.5
+  },
+  "proposal_types": [
+    "scheduling_optimization",
+    "supply_reorder",
+    "patient_retention",
+    "protocol_review"
+  ]
+}

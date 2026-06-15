@@ -1,0 +1,48 @@
+{
+  "domain": "restaurant",
+  "name": "Restaurant / Restaurante",
+  "description": "Pedidos, mesas, inventario cocina, reservas, personal",
+  "event_types": {
+    "order": {
+      "fields": ["table", "items", "total", "server", "guests"],
+      "weights": {"total": 0.9, "items": 0.8, "table": 0.5},
+      "text_template": "Pedido mesa {table}: {items} total=${total}"
+    },
+    "reservation": {
+      "fields": ["name", "guests", "date", "time", "phone"],
+      "weights": {"guests": 0.7, "date": 0.8},
+      "text_template": "Reserva: {name} {guests}p {date} {time}"
+    },
+    "kitchen_inventory": {
+      "fields": ["item", "current_qty", "unit", "min_qty", "supplier"],
+      "weights": {"current_qty": 0.9, "min_qty": 0.8},
+      "text_template": "Inventario cocina: {item} {current_qty}{unit} (mín={min_qty})"
+    },
+    "shift": {
+      "fields": ["employee", "role", "start", "end", "hours"],
+      "weights": {"hours": 0.7, "role": 0.6},
+      "text_template": "Turno: {employee} ({role}) {start}-{end}"
+    },
+    "daily_close": {
+      "fields": ["total_sales", "total_orders", "avg_ticket", "tips", "waste_pct"],
+      "weights": {"total_sales": 1.0, "avg_ticket": 0.9, "waste_pct": 0.8},
+      "text_template": "Cierre: ventas=${total_sales} pedidos={total_orders} ticket_avg=${avg_ticket}"
+    }
+  },
+  "convergence_rules": {
+    "peak_hours": "Detectar horas de mayor demanda por día de semana",
+    "menu_performance": "Platos más vendidos vs menos vendidos por margen",
+    "waste_pattern": "Patrones de desperdicio por día/ingrediente",
+    "staffing": "Correlación entre personal y satisfacción/velocidad"
+  },
+  "learning_gate_overrides": {
+    "novelty_threshold": 0.2,
+    "coherence_threshold": 0.45
+  },
+  "proposal_types": [
+    "menu_optimization",
+    "staffing_recommendation",
+    "inventory_reorder",
+    "peak_hour_preparation"
+  ]
+}

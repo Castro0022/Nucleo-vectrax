@@ -1,0 +1,47 @@
+{
+  "domain": "retail",
+  "name": "Retail / Tienda",
+  "description": "Ventas, inventario, devoluciones, proveedores",
+  "event_types": {
+    "sale": {
+      "fields": ["product", "quantity", "amount", "customer_id", "payment_method"],
+      "weights": {"amount": 0.9, "product": 0.8, "customer_id": 0.6},
+      "text_template": "Venta: {product} x{quantity} ${amount}"
+    },
+    "return": {
+      "fields": ["product", "quantity", "amount", "reason", "customer_id"],
+      "weights": {"reason": 0.9, "amount": 0.8},
+      "text_template": "Devolución: {product} x{quantity} ${amount} — {reason}"
+    },
+    "restock": {
+      "fields": ["product", "quantity", "supplier", "cost", "expected_date"],
+      "weights": {"cost": 0.8, "supplier": 0.7},
+      "text_template": "Reposición: {product} x{quantity} de {supplier} ${cost}"
+    },
+    "inventory_alert": {
+      "fields": ["product", "current_stock", "min_stock", "days_to_stockout"],
+      "weights": {"days_to_stockout": 1.0, "current_stock": 0.8},
+      "text_template": "Alerta inventario: {product} stock={current_stock} (mín={min_stock})"
+    },
+    "expense": {
+      "fields": ["category", "amount", "description", "vendor"],
+      "weights": {"amount": 0.9, "category": 0.7},
+      "text_template": "Gasto: {category} ${amount} — {description}"
+    }
+  },
+  "convergence_rules": {
+    "low_stock_high_sales": "Si un producto tiene ventas altas y stock bajo, proponer reposición",
+    "supplier_delay": "Si un proveedor entrega tarde 3+ veces, alertar",
+    "margin_drop": "Si el margen de un producto cae bajo el objetivo, proponer ajuste"
+  },
+  "learning_gate_overrides": {
+    "novelty_threshold": 0.25,
+    "coherence_threshold": 0.4
+  },
+  "proposal_types": [
+    "restock_recommendation",
+    "price_adjustment",
+    "supplier_change",
+    "inventory_optimization"
+  ]
+}

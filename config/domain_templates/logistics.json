@@ -1,0 +1,48 @@
+{
+  "domain": "logistics",
+  "name": "Logistics / Logística",
+  "description": "Envíos, rutas, entregas, incidencias, almacén",
+  "event_types": {
+    "shipment": {
+      "fields": ["tracking_id", "origin", "destination", "weight_kg", "carrier", "status"],
+      "weights": {"status": 0.9, "weight_kg": 0.6},
+      "text_template": "Envío {tracking_id}: {origin}→{destination} {weight_kg}kg {carrier} [{status}]"
+    },
+    "delivery": {
+      "fields": ["tracking_id", "delivered_at", "recipient", "on_time", "condition"],
+      "weights": {"on_time": 1.0, "condition": 0.8},
+      "text_template": "Entrega {tracking_id}: {recipient} on_time={on_time} condición={condition}"
+    },
+    "incident": {
+      "fields": ["tracking_id", "type", "description", "severity", "resolution"],
+      "weights": {"severity": 1.0, "type": 0.9},
+      "text_template": "Incidencia [{severity}]: {type} — {description}"
+    },
+    "warehouse": {
+      "fields": ["location", "item", "quantity", "action", "zone"],
+      "weights": {"quantity": 0.7, "action": 0.8},
+      "text_template": "Almacén {location}: {action} {item} x{quantity} zona={zone}"
+    },
+    "route_performance": {
+      "fields": ["route_id", "stops", "distance_km", "duration_hrs", "fuel_cost", "on_time_pct"],
+      "weights": {"on_time_pct": 1.0, "fuel_cost": 0.8},
+      "text_template": "Ruta {route_id}: {stops} paradas {distance_km}km {duration_hrs}h OT={on_time_pct}%"
+    }
+  },
+  "convergence_rules": {
+    "carrier_reliability": "Carriers con entregas tardías recurrentes",
+    "route_optimization": "Rutas con alto costo por entrega vs alternativas",
+    "damage_pattern": "Productos que se dañan en tránsito repetidamente",
+    "warehouse_bottleneck": "Zonas con tiempos de picking lentos"
+  },
+  "learning_gate_overrides": {
+    "novelty_threshold": 0.2,
+    "coherence_threshold": 0.4
+  },
+  "proposal_types": [
+    "carrier_switch",
+    "route_optimization",
+    "warehouse_reorganization",
+    "packaging_improvement"
+  ]
+}
