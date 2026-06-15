@@ -1,0 +1,35 @@
+{
+  "legal_entity": {
+    "name": "Vectrax-Core LLC",
+    "type": "Domestic Limited-Liability Company",
+    "file_number": "L26000196875",
+    "status": "Active",
+    "filing_date": "2026-04-07",
+    "jurisdiction": "Florida, USA",
+    "filing_jurisdiction": "Florida",
+    "domestic_jurisdiction": "Florida",
+    "department": "Florida Department of State",
+    "last_refreshed": "2026-05-31",
+    "registered_agent": "Mario Bravo Castro",
+    "principal_address": "3502 SW 4th St, Miami, FL 33135",
+    "mailing_address": "3502 SW 4th St, Miami, FL 33135",
+    "principals": [
+      {
+        "name": "Mario Bravo Castro",
+        "title": "MGR",
+        "address": "3502 SW 4th St, Miami, FL 33135"
+      }
+    ]
+  },
+  "product": {
+    "name": "Vectrax",
+    "domain": "vectrax.app",
+    "api_domain": "api.vectrax.app",
+    "description": "Cognitive memory system with gravitational knowledge architecture"
+  },
+  "creator": {
+    "name": "Mario Bravo Castro",
+    "role": "Founder & Creator",
+    "telegram_id": "2030762343"
+  }
+}
