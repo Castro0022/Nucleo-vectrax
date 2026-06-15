@@ -687,27 +687,75 @@ class TelegramGateway:
                     except Exception as _e:
                         logger.debug("old_client.close() raised (ignored): %s", _e)
 
-                # Set OS-level hard timeout — interrupts even stuck C calls
-                signal.alarm(POLL_ALARM_TIMEOUT)
+                # ══════════════════════════════════════════════════════
+                # SUBPROCESS-ISOLATED POLL — definitive Bug #3 fix
+                # The HTTP call runs in a separate process. If SSL hangs
+                # at C level and holds the GIL, we kill the subprocess.
+                # The parent process (this one) NEVER blocks on SSL.
+                # Heartbeat keeps writing. Supervisor never detects stale.
+                # ══════════════════════════════════════════════════════
+                import multiprocessing as _mp
 
-                t0 = time.time()
-                r = self._poll_http.post(
-                    f"{self._base}/getUpdates",
-                    json={"offset": self._offset, "timeout": POLL_TIMEOUT,
-                          "allowed_updates": ["message"]},
+                def _poll_subprocess(_q, _base, _offset, _timeout, _token):
+                    """Run getUpdates in isolated process."""
+                    try:
+                        import httpx as _hx
+                        _c = _hx.Client(
+                            timeout=_hx.Timeout(_timeout + 5, connect=5),
+                            limits=_hx.Limits(max_connections=2, max_keepalive_connections=0),
+                        )
+                        _r = _c.post(
+                            f"{_base}/getUpdates",
+                            json={"offset": _offset, "timeout": _timeout,
+                                  "allowed_updates": ["message"]},
+                        )
+                        _r.raise_for_status()
+                        _q.put({"ok": True, "data": _r.json()})
+                    except Exception as _e:
+                        _q.put({"ok": False, "error": str(_e)})
+
+                _result_q = _mp.Queue(maxsize=1)
+                _proc = _mp.Process(
+                    target=_poll_subprocess,
+                    args=(_result_q, self._base, self._offset, POLL_TIMEOUT, self._token),
+                    daemon=True,
                 )
-                r.raise_for_status()
+                t0 = time.time()
+                _proc.start()
+                _proc.join(timeout=POLL_TIMEOUT + 8)  # 8s grace for connect+TLS
 
-                # Cancel alarm — poll completed successfully
-                signal.alarm(0)
+                if _proc.is_alive():
+                    # Subprocess stuck in SSL — kill it instantly
+                    logger.warning(
+                        "POLL_SUBPROCESS_KILL | hung for %.0fs — killing PID %d",
+                        time.time() - t0, _proc.pid,
+                    )
+                    _proc.kill()
+                    _proc.join(timeout=3)
+                    try: _result_q.close()
+                    except Exception: pass
+                    self._last_poll_ok = time.time()
+                    self._write_heartbeat()
+                    continue  # retry with fresh subprocess
+
+                # Subprocess completed — get result
+                try:
+                    _poll_result = _result_q.get_nowait()
+                except Exception:
+                    _poll_result = {"ok": False, "error": "no result from subprocess"}
+                try: _result_q.close()
+                except Exception: pass
+
+                if not _poll_result.get("ok"):
+                    raise RuntimeError(_poll_result.get("error", "poll subprocess failed"))
 
                 self._last_poll_ok = time.time()
                 poll_ms = (self._last_poll_ok - t0) * 1000
-                d = r.json()
+                d = _poll_result["data"]
                 updates = d.get("result", []) if d.get("ok") else []
                 self._polls += 1
                 self._errors = 0
-                _consecutive_sigalrm = 0  # reset: successful poll
+                _consecutive_sigalrm = 0
 
                 if updates:
                     self._last_update_time = time.time()
@@ -760,45 +808,15 @@ class TelegramGateway:
                     _save_offset(self._offset)
 
             except _PollTimeout:
-                # SIGALRM fired — the poll was stuck at the C/OS level.
-                signal.alarm(0)  # cancel any pending alarm
-                logger.warning(
-                    "SIGALRM | Poll exceeded %ds hard timeout — abandoning dead socket",
-                    POLL_ALARM_TIMEOUT,
-                )
-                # ROOT CAUSE FIX (REPEAT FAILURE #324, every ~10800s):
-                # close_old=False — do NOT call old_client.close() here.
-                #
-                # When Telegram's load balancer silently drops the TCP connection
-                # at ~3h (10800s), the next poll blocks on a dead SSL socket.
-                # SIGALRM interrupts the Python frame, but old_client.close() then
-                # attempts an SSL shutdown handshake on the broken socket, which
-                # blocks at the C level, holds the GIL, and prevents the heartbeat
-                # daemon thread from running → os._exit() never fires → supervisor
-                # detects stale heartbeat (40s threshold) and kills the process.
-                #
-                # Abandoning the socket (close_old=False) leaks one fd every ~3h —
-                # acceptable. The garbage collector will eventually reclaim it.
-                self._refresh_poll_client(close_old=False)
+                # Legacy SIGALRM path — kept as fallback but subprocess
+                # isolation should prevent this from ever firing.
+                signal.alarm(0)
+                logger.warning("SIGALRM | legacy fallback fired")
                 self._last_poll_ok = time.time()
-                # Fresh client just created; any pending refresh signal is obsolete.
-                self._needs_poll_refresh = False
-                # SSL_BACKOFF: consecutive SSL timeouts exhaust the 35s watchdog window
-                # because each failed poll consumes time before _last_poll_ok resets.
-                # Sleep with exponential backoff so the watchdog timer stays safe.
-                _consecutive_sigalrm += 1
-                if _consecutive_sigalrm > 1:
-                    _backoff = min(_consecutive_sigalrm * 5, 30)
-                    logger.warning(
-                        "SSL_BACKOFF | consecutive=%d → sleeping %ds before retry",
-                        _consecutive_sigalrm, _backoff,
-                    )
-                    time.sleep(_backoff)
-                    self._last_poll_ok = time.time()  # refresh watchdog after sleep
                 continue
 
             except Exception as e:
-                signal.alarm(0)  # cancel any pending alarm
+                signal.alarm(0)
                 err_str = str(e)
                 # 409 Conflict = otra instancia corriendo — esperar más y resetear
                 if "409" in err_str or "Conflict" in err_str:
