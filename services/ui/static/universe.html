@@ -181,7 +181,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   };
 
   // --- Colors ---
-  const LAYER_COLORS = { core: '#fbbf24', mid: '#4f8ff7', outer: '#3a4560' };
+  const LAYER_COLORS = { core: '#fbbf24', mid: '#60a0ff', outer: '#5a7090' };
   const TYPE_COLORS = { convergence: '#a78bfa', collective: '#06d6a0' };
   const DOMAIN_COLORS = {
     market: '#06d6a0', user_interest: '#22d3ee', unknown: '#4f8ff7',
@@ -377,14 +377,14 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       s._y = s._baseY + driftY - Math.sign(s._baseY) * breath;
     }
 
-    // Deep field parallax (3 layers + twinkling)
+    // Deep field parallax (3 layers + twinkling) — BRIGHTER
     for (const bs of bgStars) {
       const [sx, sy] = toScreen(bs.x * bs.px, bs.y * bs.px);
       if (sx < -10 || sx > W+10 || sy < -10 || sy > H+10) continue;
-      const flicker = bs.a + bs.a * 0.6 * Math.sin(t * 0.6 + bs.x * 0.005 + bs.y * 0.003);
-      ctx.fillStyle = `rgba(190,200,220,${flicker})`;
+      const flicker = bs.a * 1.5 + bs.a * 0.8 * Math.sin(t * 0.6 + bs.x * 0.005 + bs.y * 0.003);
+      ctx.fillStyle = `rgba(200,215,240,${Math.min(flicker, 1)})`;
       ctx.beginPath();
-      ctx.arc(sx, sy, bs.r, 0, Math.PI * 2);
+      ctx.arc(sx, sy, bs.r * 1.2, 0, Math.PI * 2);
       ctx.fill();
     }
 
@@ -536,36 +536,36 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       const depth = s._depthScale || 1;
       const twinkle = (0.5 + depth * 0.5) * (0.65 + 0.35 * Math.sin(t * (s._twinkleSpeed || 0.02) * 60 + (s._twinklePhase || 0)));
 
-      // Outer bloom (soft, wide — dimmer for far stars)
-      const bloom = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 4);
-      bloom.addColorStop(0, getStarColor(s, 0.04 * twinkle * depth));
+      // Outer bloom (wider, brighter — more cinematic)
+      const bloom = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 5);
+      bloom.addColorStop(0, getStarColor(s, 0.08 * twinkle * depth));
+      bloom.addColorStop(0.4, getStarColor(s, 0.03 * twinkle * depth));
       bloom.addColorStop(1, 'transparent');
       ctx.fillStyle = bloom;
       ctx.beginPath();
-      ctx.arc(sx, sy, r * 4, 0, Math.PI * 2);
+      ctx.arc(sx, sy, r * 5, 0, Math.PI * 2);
       ctx.fill();
 
-      // Inner glow
-      if (s.mass > 0.15 || isHovered) {
-        const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 2.2);
-        glow.addColorStop(0, getStarColor(s, (isHovered ? 0.35 : 0.12) * twinkle));
-        glow.addColorStop(1, 'transparent');
-        ctx.fillStyle = glow;
-        ctx.beginPath();
-        ctx.arc(sx, sy, r * 2.2, 0, Math.PI * 2);
-        ctx.fill();
-      }
+      // Inner glow (always visible, not just high-mass)
+      const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 2.5);
+      const glowAlpha = isHovered ? 0.45 : (0.15 + s.mass * 0.2);
+      glow.addColorStop(0, getStarColor(s, glowAlpha * twinkle));
+      glow.addColorStop(1, 'transparent');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r * 2.5, 0, Math.PI * 2);
+      ctx.fill();
 
-      // Star body (depth modulates opacity)
-      ctx.fillStyle = getStarColor(s, (0.6 + depth * 0.4) * twinkle);
+      // Star body (brighter, more solid)
+      ctx.fillStyle = getStarColor(s, (0.75 + depth * 0.25) * twinkle);
       ctx.beginPath();
       ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.fill();
 
-      // Hot center
-      ctx.fillStyle = `rgba(255,252,240,${0.3 * twinkle})`;
+      // Hot center (larger, brighter)
+      ctx.fillStyle = `rgba(255,252,240,${0.5 * twinkle})`;
       ctx.beginPath();
-      ctx.arc(sx - r*0.08, sy - r*0.08, r * 0.25, 0, Math.PI * 2);
+      ctx.arc(sx - r*0.06, sy - r*0.06, r * 0.35, 0, Math.PI * 2);
       ctx.fill();
 
       // Convergence/collective ring
@@ -1021,17 +1021,19 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     layoutStars();
     applyFilters();
 
-    // Stats
+    // Stats — show unified total from API + breakdown
     const nGravity = stars.filter(s => s._domain).length;
+    const nKnowledge = stars.filter(s => !s._domain && s.star_type !== 'convergence').length;
     const nMarket = stars.filter(s => s._domain === 'market').length;
     const nUser = stars.filter(s => s._domain === 'user_interest').length;
     const nConv = _gravConvCount || 0;
     let statsHtml =
-      `<b>${stars.length}</b> estrellas · ` +
+      `<b style="color:#fff;font-size:13px">${stars.length}</b> estrellas · ` +
       `<b>${edges.length}</b> conexiones`;
-    if (nGravity) statsHtml += ` · <b>${nGravity}</b> gravitacionales`;
-    if (nMarket) statsHtml += ` · <b>${nMarket}</b> mercado`;
-    if (nUser) statsHtml += ` · <b>${nUser}</b> interés`;
+    if (nGravity) statsHtml += ` · <span style="color:#60a0ff"><b>${nGravity}</b> gravitacionales</span>`;
+    if (nKnowledge) statsHtml += ` · <b>${nKnowledge}</b> knowledge`;
+    if (nMarket) statsHtml += ` · <span style="color:#06d6a0"><b>${nMarket}</b> mercado</span>`;
+    if (nUser) statsHtml += ` · <span style="color:#22d3ee"><b>${nUser}</b> interés</span>`;
     if (nConv) statsHtml += ` · <span style="color:#a78bfa"><b>${nConv}</b> convergencias</span>`;
     if (wordGravity.length) statsHtml += ` · <span style="color:#f472b6"><b>${wordGravity.length}</b> palabras</span>`;
     statsEl.innerHTML = statsHtml;

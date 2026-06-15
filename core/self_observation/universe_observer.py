@@ -97,8 +97,16 @@ class UniverseSnapshot:
 
     def to_api_dict(self) -> Dict[str, Any]:
         """Formato optimizado para el endpoint /v1/universe."""
+        # Total unificado: gravitacionales + knowledge + usuarios
+        _total = self.gravity_total + self.knowledge_star_count + self.star_count
         return {
             "heartbeat": self.timestamp,
+            "total_stars": _total,
+            "star_breakdown": {
+                "gravitational": self.gravity_total,
+                "knowledge": self.knowledge_star_count,
+                "users": self.star_count,
+            },
             "nucleus": {
                 "alive": self.nucleus_alive,
                 "initialised": self.nucleus_initialised,
