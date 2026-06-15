@@ -575,6 +575,24 @@ Vectrax is complete and production-ready. Future enhancements could include:
 - Docker deployment
 - Kubernetes operator
 
+## 🏢 Legal Entity
+
+| Field | Value |
+|---|---|
+| **Entity** | Vectrax-Core LLC |
+| **Type** | Domestic Limited-Liability Company |
+| **File #** | L26000196875 |
+| **Status** | Active |
+| **Filed** | April 7, 2026 |
+| **Jurisdiction** | Florida, USA |
+| **Department** | Florida Department of State |
+| **Principal** | Mario Bravo Castro (MGR) |
+| **Address** | 3502 SW 4th St, Miami, FL 33135 |
+
+Config: `config/entity.json`
+
+---
+
 ## 🚀 Deployment (Vultr)
 
 ```bash
