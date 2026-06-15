@@ -305,13 +305,16 @@ WORKER_HEARTBEAT_PATH = RUNTIME_DIR / "worker_heartbeat"
 WORKER_HEARTBEAT_MAX_AGE = 30  # seconds without heartbeat = hung
 
 GATEWAY_HEARTBEAT_PATH = RUNTIME_DIR / "gateway_heartbeat"
-GATEWAY_HEARTBEAT_MAX_AGE = 40  # PALLIATIVE (was 75): reduces dead window during Bug #3 stuck polls
+# Bug #3 definitive: SSL at C level holds GIL → SIGALRM can't deliver,
+# heartbeat thread can't run. Only external kill works. Minimize the gap:
+#   33s threshold + 10s check = max 43s stale (was 40+15=55s)
+GATEWAY_HEARTBEAT_MAX_AGE = 33
 
 
 class VectraxSupervisor:
     """Main supervisor loop."""
 
-    HEALTH_CHECK_INTERVAL = 15  # seconds
+    HEALTH_CHECK_INTERVAL = 10  # seconds (was 15 — tighter for Bug #3)
 
     def __init__(self) -> None:
         self.services: Dict[str, ManagedService] = {}
