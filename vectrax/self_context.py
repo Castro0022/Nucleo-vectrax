@@ -226,78 +226,60 @@ def _read_live_stats() -> dict:
 
 
 def _read_universe_state() -> str:
-    """Lee el estado completo del universo gravitacional + operacional.
+    """Lee el estado real del universo usando universe_census (fuente única).
 
-    Usa el universe_observer para obtener el snapshot unificado.
-    Defensive: si falla, devuelve cadena vacía.
+    Los mismos números que muestra el panel visual y el observatory.
+    Cero discrepancias.
     """
     try:
-        from core.self_observation.universe_observer import observe_universe
-        snap = observe_universe()
+        from core.universe_census import get_census
+        c = get_census()
 
-        # Estrellas por capa
-        layers = snap.layers
-        core_n = layers.get("core", 0)
-        mid_n = layers.get("mid", 0)
-        outer_n = layers.get("outer", 0)
-
-        # Estrellas más activas (top 5 por activation_count)
-        top_stars = sorted(
-            snap.stars, key=lambda s: s.get("activation_count", 0), reverse=True
-        )[:5]
-        top_lines = []
-        for s in top_stars:
-            top_lines.append(
-                f"  {s['user_id']} (role={s['role']}, mass={s['mass']}, "
-                f"patterns={s['pattern_count']}, layer={s['layer']})"
-            )
-
-        # Total unificado: gravity engine es el conteo más completo
-        total_stars = snap.gravity_total + snap.star_count
-        domain_list = ', '.join(snap.gravity_domains.keys()) if snap.gravity_domains else 'cognitivo'
+        # Dominios con conteo
+        dom_parts = [f"{d}={n}" for d, n in sorted(c.domains.items(), key=lambda x: -x[1]) if n > 0]
+        dom_str = ", ".join(dom_parts[:6]) if dom_parts else "cognitivo"
 
         lines = [
-            "[UNIVERSO GRAVITACIONAL — estado en tiempo real]",
-            f"DATO EXACTO: Mi universo tiene {total_stars} estrellas en total.",
-            f"  • {snap.gravity_total} estrellas gravitacionales (dominios: {domain_list})",
-            f"  • {snap.star_count} estrellas de usuarios (core:{core_n}, mid:{mid_n}, outer:{outer_n})",
-            f"Convergencias cross-domain (mercado ↔ interés): {len(snap.gravity_convergences)}",
-            f"Masa total: {round(snap.total_mass, 4)}",
-            f"Patrones acumulados: {snap.pattern_count}",
-            f"Núcleo: {'centroide activo' if snap.nucleus_has_centroid else 'sin centroide'}, "
-            f"{snap.core_star_count} estrellas core",
+            "[MI UNIVERSO — estado real en este momento]",
+            f"TOTAL: {c.total} estrellas",
+            f"  • {c.gravitational} gravitacionales ({dom_str})",
+            f"  • {c.knowledge} knowledge (capas: {', '.join(f'{k}={v}' for k,v in c.layers.items())})",
+            f"  • {c.users} usuarios",
+            f"Convergencias: {c.convergences}",
+            f"Patrones: {c.patterns}",
+            f"Constelaciones: {c.constellations}",
+            f"Masa total: {c.mass_total}",
         ]
-        if top_lines:
-            lines.append("Estrellas más activas:")
-            lines.extend(top_lines)
+        if c.word_gravity_count:
+            lines.append(f"Palabras gravitacionales: {c.word_gravity_count}")
 
-        # Estado operacional
-        worker = "activo" if snap.worker_alive else "inactivo"
-        lines.append(f"\n[ESTADO OPERACIONAL]")
-        lines.append(f"Worker: {worker}")
-        lines.append(
-            f"Cola: {snap.queue_pending} pendientes, "
-            f"{snap.queue_processing} procesando"
-        )
-        lines.append(
-            f"Memoria gravitacional: {snap.deep_memory_count} registros "
-            f"({snap.deep_memory_active} activos, "
-            f"{snap.deep_memory_fused} fusionados, "
-            f"{snap.deep_memory_archived} archivados)"
-        )
-        lines.append(
-            f"Identidades: {snap.context_identities_count}, "
-            f"Principios esenciales: {snap.essential_memories_count}"
-        )
-        lines.append(
-            f"Modos: audio={snap.audio_mode}, "
-            f"soberanía={snap.sovereignty_mode}, "
-            f"proactivo={'sí' if snap.proactive_engine_enabled else 'no'}"
-        )
-        lines.append(f"Errores 24h: {snap.recent_error_count_24h}")
+        # Observation bias
+        try:
+            from core.learn.observation_bias import get_bias
+            bias = get_bias()
+            if bias:
+                bias_parts = [f"{d}={w:.1f}" for d, w in sorted(bias.items(), key=lambda x: -x[1])[:4]]
+                lines.append(f"Bias de observación: {', '.join(bias_parts)}")
+        except Exception:
+            pass
 
-        if snap.signals:
-            lines.append(f"Señales: {', '.join(snap.signals)}")
+        # Estado operacional (compact)
+        try:
+            from core.self_observation.universe_observer import observe_universe
+            snap = observe_universe()
+            worker = "activo" if snap.worker_alive else "inactivo"
+            lines.append(f"\n[OPERACIONAL]")
+            lines.append(f"Worker: {worker} | Cola: {snap.queue_pending} pendientes")
+            lines.append(f"Errores 24h: {snap.recent_error_count_24h}")
+
+            # Top 3 estrellas más activas
+            top = sorted(snap.stars, key=lambda s: s.get("activation_count", 0), reverse=True)[:3]
+            if top:
+                lines.append("Estrellas más activas:")
+                for s in top:
+                    lines.append(f"  {s['user_id'][:20]} mass={s['mass']} layer={s['layer']} act={s['activation_count']}")
+        except Exception:
+            pass
 
         return "\n".join(lines)
     except Exception as exc:
