@@ -86,6 +86,7 @@ class UniverseSnapshot:
     gravity_stars: List[Dict[str, Any]] = field(default_factory=list)
     gravity_domains: Dict[str, Any] = field(default_factory=dict)
     gravity_convergences: List[Dict[str, Any]] = field(default_factory=list)
+    gravity_convergences_total: int = 0
     gravity_total: int = 0
 
     # ── Word Gravity Index (WGI) ─────────────────────────────
@@ -96,16 +97,32 @@ class UniverseSnapshot:
         return asdict(self)
 
     def to_api_dict(self) -> Dict[str, Any]:
-        """Formato optimizado para el endpoint /v1/universe."""
-        # Total unificado: gravitacionales + knowledge + usuarios
-        _total = self.gravity_total + self.knowledge_star_count + self.star_count
+        """Formato optimizado para el endpoint /v1/universe.
+
+        Totals come from census (single source of truth).
+        Details (star list, edges) are local to the observer.
+        """
+        try:
+            from core.universe_census import get_census
+            c = get_census()
+            _total = c.total
+            _grav = c.gravitational
+            _know = c.knowledge
+            _users = c.users
+            _conv_total = c.convergences
+        except Exception:
+            _total = self.gravity_total + self.knowledge_star_count + self.star_count
+            _grav = self.gravity_total
+            _know = self.knowledge_star_count
+            _users = self.star_count
+            _conv_total = self.gravity_convergences_total
         return {
             "heartbeat": self.timestamp,
             "total_stars": _total,
             "star_breakdown": {
-                "gravitational": self.gravity_total,
-                "knowledge": self.knowledge_star_count,
-                "users": self.star_count,
+                "gravitational": _grav,
+                "knowledge": _know,
+                "users": _users,
             },
             "nucleus": {
                 "alive": self.nucleus_alive,
@@ -162,6 +179,7 @@ class UniverseSnapshot:
                 "stars": self.gravity_stars,
                 "domains": self.gravity_domains,
                 "convergences": self.gravity_convergences,
+                "convergences_total": self.gravity_convergences_total,
             },
             "word_gravity": {
                 "words": self.word_gravity_words,
@@ -296,6 +314,7 @@ def _collect_gravity_engine(snap: UniverseSnapshot) -> None:
 
         # Cross-domain convergences
         convs = gi.cross_domain_convergences()
+        snap.gravity_convergences_total = len(convs)
         for c in convs[:20]:
             snap.gravity_convergences.append(c)
 

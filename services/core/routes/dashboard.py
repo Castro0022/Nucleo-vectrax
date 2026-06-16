@@ -510,15 +510,20 @@ async def dashboard_observatory() -> Dict[str, Any]:
     """
     result: Dict[str, Any] = {"ts": time.time()}
 
-    # === GRAVITY ENGINE ===
-    gravity = {"total": 0, "domains": {}, "top_stars": [], "convergences": [], "tiers": {}}
+    # === CENSUS (single source of truth for totals) ===
+    from core.universe_census import get_census
+    census = get_census()
+
+    # === GRAVITY ENGINE (details — totals come from census) ===
+    gravity = {"total": census.gravitational, "domains": {}, "top_stars": [], "convergences": [], "tiers": {}}
     try:
         from core.learn.gravity_engine import get_gravity_index
         gi = get_gravity_index()
-        gravity["total"] = len(gi.all_records())
         gravity["domains"] = gi.domain_stats()
         gravity["tiers"] = gi.tier_counts()
-        gravity["convergences"] = gi.cross_domain_convergences()[:20]
+        all_convergences = gi.cross_domain_convergences()
+        gravity["convergences_total"] = census.convergences
+        gravity["convergences"] = all_convergences[:20]
         top = gi.top_stars(n=20)
         gravity["top_stars"] = [
             {
@@ -565,20 +570,12 @@ async def dashboard_observatory() -> Dict[str, Any]:
         legacy["error"] = str(exc)
     result["legacy"] = legacy
 
-    # === TOTAL STARS (unified) ===
-    # Three distinct star populations — NO double-counting:
-    #   gravitational: gravity engine records (market observations, convergences)
-    #   knowledge: legacy knowledge stars from vectrax.db (ingest v1)
-    #   users: one star per user (ingest v2)
-    result["total_stars"] = (
-        gravity.get("total", 0)
-        + legacy.get("knowledge_stars", 0)
-        + legacy.get("user_stars", 0)
-    )
+    # === TOTAL STARS (from census — single source of truth) ===
+    result["total_stars"] = census.total
     result["star_breakdown"] = {
-        "gravitational": gravity.get("total", 0),
-        "knowledge": legacy.get("knowledge_stars", 0),
-        "users": legacy.get("user_stars", 0),
+        "gravitational": census.gravitational,
+        "knowledge": census.knowledge,
+        "users": census.users,
     }
 
     # === OBSERVATION BIAS ===
@@ -598,19 +595,20 @@ async def dashboard_observatory() -> Dict[str, Any]:
     except Exception:
         pass
 
-    # === MARKET OBSERVATORY ===
-    market = {"symbols": [], "total_signals": 0, "total_patterns": 0}
+    # === MARKET OBSERVATORY (totals from census, details computed) ===
+    market = {
+        "symbols": [],
+        "total_signals": census.market_signals,
+        "total_patterns": census.market_patterns,
+        "global_win_rate": census.market_win_rate,
+    }
     try:
         from connectors.etoro.learning_engine import DEFAULT_WATCHLIST
-        from connectors.etoro.signal_recorder import load_signals, get_signal_stats
+        from connectors.etoro.signal_recorder import load_signals
         from connectors.etoro.pattern_memory import get_patterns
 
         all_signals = load_signals(limit=500)
         all_patterns = get_patterns()
-        stats = get_signal_stats()
-        market["total_signals"] = stats.get("total", 0)
-        market["total_patterns"] = len(all_patterns)
-        market["global_win_rate"] = stats.get("win_rate", 0)
 
         for sym in DEFAULT_WATCHLIST:
             s_upper = sym.upper()
@@ -646,35 +644,19 @@ async def dashboard_observatory() -> Dict[str, Any]:
         market["error"] = str(exc)
     result["market"] = market
 
-    # === USER MEMORY ===
-    users = {"total": 0, "interactions": 0, "facts": 0, "core_memory": 0, "teams": 0}
-    try:
-        conn = _user_conn()
-        users["total"] = conn.execute(
-            "SELECT COUNT(DISTINCT user_id) FROM profiles WHERE user_id NOT LIKE 'test:%'"
-        ).fetchone()[0]
-        users["interactions"] = conn.execute("SELECT COUNT(*) FROM interactions").fetchone()[0]
-        try:
-            users["facts"] = conn.execute("SELECT COUNT(*) FROM user_facts").fetchone()[0]
-        except Exception:
-            pass
-        try:
-            users["core_memory"] = conn.execute("SELECT COUNT(*) FROM core_memory").fetchone()[0]
-        except Exception:
-            pass
-        try:
-            users["teams"] = conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
-        except Exception:
-            pass
-        conn.close()
-    except Exception as exc:
-        users["error"] = str(exc)
-    result["users"] = users
+    # === USER MEMORY (from census) ===
+    result["users"] = {
+        "total": census.users_total,
+        "interactions": census.interactions,
+        "facts": census.user_facts,
+        "core_memory": census.core_memory,
+        "teams": census.teams,
+    }
 
-    # === CONVERGENCES ===
+    # === CONVERGENCES (total from census) ===
     convergences = {"cross_domain": 0, "details": []}
     try:
-        convergences["cross_domain"] = len(gravity.get("convergences", []))
+        convergences["cross_domain"] = census.convergences
         convergences["details"] = gravity.get("convergences", [])[:10]
         # Alert history
         from core.learn.gravity_engine import get_alert_history

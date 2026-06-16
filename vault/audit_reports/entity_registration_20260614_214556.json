@@ -1,0 +1,41 @@
+{
+  "report_type": "entity_registration_validation",
+  "generated_at": "2026-06-15T01:45:56Z",
+  "entity": {
+    "name": "Vectrax-Core LLC",
+    "file_number": "L26000196875",
+    "status": "Active",
+    "filing_date": "2026-04-07",
+    "jurisdiction": "Florida, USA",
+    "department": "Florida Department of State",
+    "principal": "Mario Bravo Castro",
+    "principal_title": "MGR",
+    "address": "3502 SW 4th St, Miami, FL 33135"
+  },
+  "validation": {
+    "total_checks": 21,
+    "passed": 21,
+    "failed": 0,
+    "categories": {
+      "entity_fields": "7/7",
+      "principal_fields": "4/4",
+      "product_fields": "3/3",
+      "creator_fields": "3/3",
+      "cross_validation": "4/4"
+    }
+  },
+  "system_integration": {
+    "config_file": "config/entity.json",
+    "git_commit": "6f39ca1",
+    "git_tag": "v2026.06.15-entity",
+    "readme_documented": true,
+    "deployed_to_production": false
+  },
+  "creator_verification": {
+    "name_matches_principal": true,
+    "name_matches_agent": true,
+    "telegram_id": "2030762343",
+    "vx_creator_id_matches": true,
+    "system_prompt_references_creator": true
+  }
+}

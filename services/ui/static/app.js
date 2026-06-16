@@ -114,8 +114,9 @@ function showPanel(name) {
 let _sistemaTimer = null;
 
 function showDashSection(sec) {
-  // Detener auto-refresh del sistema si cambiamos de tab
+  // Detener auto-refresh si cambiamos de tab
   if (sec !== 'sistema') { clearInterval(_sistemaTimer); _sistemaTimer = null; }
+  if (sec !== 'patterns') { clearInterval(_patTimer); _patTimer = null; }
 
   document.querySelectorAll('.dash-section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.dash-tab').forEach(b   => b.classList.remove('active'));
@@ -124,7 +125,7 @@ function showDashSection(sec) {
 
   // Load section data on switch
   const loaders = { overview: loadOverview, gravity: loadGravity,
-    mercado: loadMercado, convergencias: loadConvergencias,
+    mercado: loadMercado, patterns: loadPatterns, convergencias: loadConvergencias,
     stars: loadStars, constellations: loadConstellations,
     history: loadHistory, sessions: loadSessions, proposals: loadProposals,
     operator: loadOperator, audit: loadAudit,
@@ -464,6 +465,144 @@ async function loadMercado() {
     }
     el.innerHTML = html;
   } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+}
+
+/* ---- Patterns (Pattern Performance) ---- */
+let _patTimer = null;
+async function loadPatterns() {
+  const el = $('sec-patterns');
+  el.innerHTML = '<p class="dim">Cargando pattern performance…</p>';
+  clearInterval(_patTimer);
+  _patTimer = setInterval(() => {
+    if (document.querySelector('#sec-patterns.active')) _renderPatterns();
+  }, 15000);
+  await _renderPatterns();
+}
+
+async function _renderPatterns() {
+  const el = $('sec-patterns');
+  try {
+    const d = await api('GET', '/market/patterns');
+    const k = d.kpi || {};
+    const pats = d.patterns || [];
+    const syms = d.symbols || [];
+    const tl = d.timeline || [];
+    const eq = d.equity_curve || [];
+    const exec = d.executor || {};
+    const mode = exec.mode || 'off';
+    const modeCls = mode === 'paper' ? 'tag-warn' : mode === 'live' ? 'tag-err' : 'tag-dim';
+    const ts = d.ts ? new Date(d.ts * 1000).toLocaleTimeString() : '—';
+
+    let html = `<div class="sys-header dim">Actualizado: ${ts} — auto-refresh 15s <span class="tag ${modeCls}">${mode.toUpperCase()}</span></div>`;
+
+    // KPI row
+    html += '<div class="sys-grid">';
+    html += _patKpi('Patrones', k.total_patterns ?? 0, '');
+    html += _patKpi('Usables', k.usable_patterns ?? 0, k.usable_patterns > 0 ? 'tag-ok' : '');
+    html += _patKpi('Win Rate', (k.global_win_rate ?? 0) + '%', k.global_win_rate >= 55 ? 'tag-ok' : k.global_win_rate >= 40 ? 'tag-warn' : 'tag-err');
+    html += _patKpi('Expectancy', (k.avg_expectancy >= 0 ? '+' : '') + (k.avg_expectancy ?? 0).toFixed(3) + '%', k.avg_expectancy > 0 ? 'tag-ok' : 'tag-err');
+    html += _patKpi('Resueltas', (k.total_signals_resolved ?? 0) + ' (' + (k.total_wins??0) + 'W/' + (k.total_losses??0) + 'L)', '');
+    html += _patKpi('Pendientes', d.pending_signals ?? 0, 'tag-warn');
+    html += _patKpi('Paper', (exec.paper_trades ?? 0) + ' (WR ' + (exec.paper_wr ?? 0).toFixed(1) + '%)', '');
+    html += _patKpi('Building', k.building_patterns ?? 0, '');
+    html += '</div>';
+
+    // Signal timeline
+    if (tl.length > 0) {
+      html += '<div class="card" style="margin-top:12px"><div class="card-head">⏱ Signal Timeline (' + tl.length + ')</div><div style="display:flex;gap:2px;flex-wrap:wrap;padding:4px 0">';
+      tl.forEach(s => {
+        const c = s.status==='win'?'#10b981':s.status==='loss'?'#ef4444':s.status==='expired'?'#fbbf24':'#5a6374';
+        html += '<div title="' + s.symbol + ' ' + s.direction.toUpperCase() + ' ' + s.status + ' ' + (s.return_pct>0?'+':'') + (s.return_pct||0).toFixed(2) + '%" style="width:10px;height:10px;border-radius:50%;background:' + c + ';box-shadow:0 0 3px ' + c + '"></div>';
+      });
+      html += '</div><div style="font-size:10px;color:#5a6374;margin-top:4px"><span style="color:#10b981">● Win</span> <span style="color:#ef4444">● Loss</span> <span style="color:#5a6374">● Neutral</span> <span style="color:#fbbf24">● Expired</span></div></div>';
+    }
+
+    // Equity curve (text-based since no canvas in SPA)
+    if (eq.length > 1) {
+      const last = eq[eq.length - 1];
+      const cum = last.cumulative_pct;
+      const cls = cum >= 0 ? 'tag-ok' : 'tag-err';
+      html += '<div class="card" style="margin-top:12px"><div class="card-head">📈 Equity Curve</div>';
+      html += '<div style="display:flex;align-items:center;gap:8px;padding:4px 0"><span class="tag ' + cls + '" style="font-size:16px">' + (cum >= 0 ? '+' : '') + cum.toFixed(3) + '%</span><span class="dim">P&L acumulado sobre ' + eq.length + ' señales</span></div>';
+      // Mini bar chart
+      html += '<div style="display:flex;align-items:flex-end;gap:1px;height:40px;margin-top:6px">';
+      const mx = Math.max(...eq.map(e => Math.abs(e.cumulative_pct)), 0.01);
+      eq.forEach(e => {
+        const h = Math.max(Math.abs(e.cumulative_pct) / mx * 36, 2);
+        const bg = e.status === 'win' ? '#10b981' : e.status === 'loss' ? '#ef4444' : '#5a6374';
+        html += '<div style="width:4px;height:' + h + 'px;background:' + bg + ';border-radius:1px;flex-shrink:0" title="' + e.symbol + ' ' + (e.cumulative_pct>=0?'+':'') + e.cumulative_pct.toFixed(2) + '%"></div>';
+      });
+      html += '</div></div>';
+    }
+
+    // Pattern leaderboard
+    html += '<div class="card" style="margin-top:12px"><div class="card-head">🏆 Pattern Leaderboard (' + pats.length + ')</div>';
+    if (pats.length === 0) {
+      html += '<p class="dim">Sin patrones — necesita señales resueltas</p>';
+    } else {
+      pats.forEach(p => {
+        const wrCls = p.win_rate >= 55 ? 'tag-ok' : p.win_rate >= 40 ? 'tag-warn' : 'tag-err';
+        const expCls = p.expectancy > 0 ? 'tag-ok' : 'tag-err';
+        const dirCls = p.direction === 'buy' ? 'tag-ok' : 'tag-err';
+        const barPct = p.progress || 0;
+        const barBg = p.usable ? '#10b981' : barPct >= 60 ? '#fbbf24' : '#4f8ff7';
+        html += '<div style="padding:6px 0;border-bottom:1px solid rgba(26,34,53,0.4)">';
+        html += '<div style="display:flex;align-items:center;gap:6px;font-size:12px">';
+        html += '<span class="tag ' + dirCls + '">' + p.direction.toUpperCase() + '</span>';
+        html += '<strong>' + p.symbol + '</strong>';
+        html += '<span class="tag ' + wrCls + '">WR ' + p.win_rate.toFixed(0) + '%</span>';
+        html += '<span class="tag ' + expCls + '">E: ' + (p.expectancy>0?'+':'') + p.expectancy.toFixed(3) + '%</span>';
+        if (p.usable) html += '<span class="tag tag-ok">⚡ USABLE</span>';
+        html += '<span class="dim" style="margin-left:auto;font-size:11px">N=' + p.n_total + ' ' + p.n_wins + 'W/' + p.n_losses + 'L</span>';
+        html += '</div>';
+        html += '<div style="height:3px;background:rgba(26,34,53,0.6);border-radius:2px;margin-top:4px;overflow:hidden"><div style="height:100%;width:' + barPct + '%;background:' + barBg + ';border-radius:2px"></div></div>';
+        html += '</div>';
+      });
+    }
+    html += '</div>';
+
+    // Per-symbol breakdown + executor (side by side)
+    html += '<div class="sys-grid" style="margin-top:12px">';
+    // Symbols
+    html += '<div class="card"><div class="card-head">📋 Por Símbolo</div>';
+    syms.forEach(s => {
+      const wrCls = s.win_rate >= 55 ? 'tag-ok' : s.win_rate >= 40 ? 'tag-warn' : 'tag-err';
+      html += '<div class="kv"><span><strong>' + s.symbol + '</strong> <span class="tag ' + wrCls + '">' + s.win_rate.toFixed(1) + '%</span>' + (s.usable > 0 ? ' <span class="tag tag-ok">⚡' + s.usable + '</span>' : '') + '</span><span class="dim">' + s.patterns + 'p ' + s.signals + 's ' + s.wins + 'W/' + s.losses + 'L E:' + (s.best_exp>0?'+':'') + s.best_exp.toFixed(3) + '%</span></div>';
+    });
+    html += '</div>';
+    // Executor
+    html += '<div class="card"><div class="card-head">⚙️ Auto-Executor</div>';
+    html += '<div class="kv"><span class="dim">Modo</span><span class="tag ' + modeCls + '">' + mode.toUpperCase() + '</span></div>';
+    html += '<div class="kv"><span class="dim">Paper trades</span><span>' + (exec.paper_trades||0) + ' (' + (exec.paper_wins||0) + 'W)</span></div>';
+    html += '<div class="kv"><span class="dim">Paper WR</span><span>' + (exec.paper_wr||0).toFixed(1) + '%</span></div>';
+    html += '<div class="kv"><span class="dim">Consec. losses</span><span>' + (exec.consecutive_losses||0) + '/3</span></div>';
+    html += '<div class="kv"><span class="dim">Halt</span><span>' + (exec.halt ? '🛑 YES' : '✅ NO') + '</span></div>';
+    const prog = Math.min(Math.round((exec.paper_trades||0) / Math.max(exec.min_paper_signals||30,1) * 100), 100);
+    html += '<div style="margin-top:6px;font-size:11px;color:#5a6374">Progreso a LIVE: ' + (exec.paper_trades||0) + '/' + (exec.min_paper_signals||30) + ' (' + prog + '%)</div>';
+    html += '<div style="height:3px;background:rgba(26,34,53,0.6);border-radius:2px;margin-top:3px;overflow:hidden"><div style="height:100%;width:' + prog + '%;background:' + (prog>=100?'#10b981':'#4f8ff7') + ';border-radius:2px"></div></div>';
+    html += '</div>';
+    html += '</div>';
+
+    // Best/worst
+    if (k.best_pattern || k.worst_pattern) {
+      html += '<div class="sys-grid" style="margin-top:12px">';
+      if (k.best_pattern) {
+        const b = k.best_pattern;
+        html += '<div class="card"><div class="card-head">🏅 Mejor Patrón</div><div class="kv"><span>' + b.direction.toUpperCase() + ' ' + b.symbol + '</span><span>WR ' + b.win_rate.toFixed(0) + '% · E: +' + b.expectancy.toFixed(3) + '%</span></div></div>';
+      }
+      if (k.worst_pattern) {
+        const w = k.worst_pattern;
+        html += '<div class="card"><div class="card-head">⚠️ Peor Patrón</div><div class="kv"><span>' + w.direction.toUpperCase() + ' ' + w.symbol + '</span><span>WR ' + w.win_rate.toFixed(0) + '% · E: ' + w.expectancy.toFixed(3) + '%</span></div></div>';
+      }
+      html += '</div>';
+    }
+
+    el.innerHTML = html;
+  } catch (e) { el.innerHTML = '<p class="err">' + esc(e.message) + '</p>'; }
+}
+
+function _patKpi(label, value, cls) {
+  return '<div class="card" style="text-align:center;padding:10px"><div style="font-size:20px;font-weight:800;font-family:var(--mono,monospace)" class="' + cls + '">' + value + '</div><div class="dim" style="font-size:10px;text-transform:uppercase;margin-top:2px">' + label + '</div></div>';
 }
 
 /* ---- Convergencias ---- */

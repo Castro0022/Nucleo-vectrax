@@ -1,73 +1,73 @@
 {
-  "head": "3015542",
+  "head": "ffac262",
   "branch": "main",
   "recent_commits": [
     {
-      "sha": "30155428",
-      "subject": "feat: Identity Layer + MODE_SELECTOR — persistent identity through pipeline",
+      "sha": "ffac262d",
+      "subject": "feat: market pattern analyzer script",
       "author": "Mario Bravo Castro",
-      "ts": 1780878777,
-      "files_changed": 4
-    },
-    {
-      "sha": "16324e36",
-      "subject": "fix: TTS rate limit cooldown — stop hammering OpenAI after 429",
-      "author": "Mario Bravo Castro",
-      "ts": 1780878317,
+      "ts": 1781616342,
       "files_changed": 1
     },
     {
-      "sha": "356b4dc4",
-      "subject": "docs: complete CHANGELOG for 2026-06-07 — memory pre-check, name leak, scalability, warm-up",
+      "sha": "6e00940f",
+      "subject": "fix: heartbeat during subprocess wait — eliminates 3h stale incident",
       "author": "Mario Bravo Castro",
-      "ts": 1780873327,
+      "ts": 1781615276,
+      "files_changed": 1
+    },
+    {
+      "sha": "73d73512",
+      "subject": "fix: send ALL gravitational stars to canvas — no more missing stars",
+      "author": "Mario Bravo Castro",
+      "ts": 1781515226,
+      "files_changed": 1
+    },
+    {
+      "sha": "f66a16b3",
+      "subject": "feat: universe_census — single source of truth for all star counts",
+      "author": "Mario Bravo Castro",
+      "ts": 1781514961,
       "files_changed": 2
     },
     {
-      "sha": "2058128e",
-      "subject": "fix: prevent creator name leak to other users in self_context",
+      "sha": "a4384075",
+      "subject": "fix: universe panel sync + brighter visuals",
       "author": "Mario Bravo Castro",
-      "ts": 1780871414,
+      "ts": 1781514474,
       "files_changed": 2
     },
     {
-      "sha": "3775a0e5",
-      "subject": "docs: add Scalability Guard and RAM Monitoring to README",
+      "sha": "7efe33c0",
+      "subject": "fix: DEFINITIVE Bug #3 — subprocess-isolated poll eliminates SSL/GIL deadlock",
       "author": "Mario Bravo Castro",
-      "ts": 1780815409,
-      "files_changed": 2
+      "ts": 1781507517,
+      "files_changed": 1
     },
     {
-      "sha": "8a86db6c",
-      "subject": "feat: Layer 7 — hourly RAM snapshots recorded to observation ledger",
+      "sha": "6382495e",
+      "subject": "fix: reduce Bug #3 detection window — 55s → 43s max stale",
       "author": "Mario Bravo Castro",
-      "ts": 1780815212,
-      "files_changed": 2
+      "ts": 1781507352,
+      "files_changed": 1
     },
     {
-      "sha": "071fc021",
-      "subject": "fix: raise watchdog to 1.2GB — 900MB is stable loaded state, not a leak",
+      "sha": "d7da1ef8",
+      "subject": "test: 44 tests for tenant isolation, domain ingester, and templates",
       "author": "Mario Bravo Castro",
-      "ts": 1780815005,
-      "files_changed": 2
-    },
-    {
-      "sha": "b55c8082",
-      "subject": "fix: force gc.collect() after each message to stop memory leak",
-      "author": "Mario Bravo Castro",
-      "ts": 1780814833,
-      "files_changed": 2
+      "ts": 1781492867,
+      "files_changed": 1
     }
   ],
   "modified_modules": [
-    ".git_snapshot/SUMMARY.json",
-    "vectrax/telegram_gateway.py",
-    "services/ui/static/universe.html",
-    "core/meta_loop.py",
-    "core/learn/gravity_engine.py",
-    "CHANGELOG.md",
+    "README.md",
     "vectrax/self_context.py",
-    "connectors/etoro/learning_engine.py"
+    "services/ui/static/observatory.html",
+    "core/operator/external_gateway.py",
+    "connectors/etoro/etoro_client.py",
+    "core/intake_filter.py",
+    "vectrax/telegram_gateway.py",
+    "services/core/routes/market_live.py"
   ],
-  "generated_at": 1780878779
+  "generated_at": 1781620766
 }

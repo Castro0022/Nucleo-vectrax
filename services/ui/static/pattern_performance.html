@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vectrax — Pattern Performance</title>
+<style>
+:root {
+  --bg: #060a10; --surface: #0e1420; --surface2: #131b2a; --border: #1a2235;
+  --text: #d1d5db; --dim: #5a6374; --accent: #4f8ff7;
+  --green: #10b981; --red: #ef4444; --yellow: #fbbf24;
+  --cyan: #22d3ee; --purple: #a78bfa; --orange: #f97316;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --mono: 'SF Mono', Menlo, Consolas, monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.header {
+  padding: 16px 24px; display: flex; align-items: center; gap: 16px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(14,20,32,0.95) 0%, var(--bg) 100%);
+}
+.header .logo { font-size: 18px; font-weight: 800; color: var(--cyan); }
+.header .sub { font-size: 13px; color: var(--dim); }
+.header .right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+.mode-badge {
+  font-family: var(--mono); font-size: 11px; padding: 3px 10px; border-radius: 5px;
+  border: 1px solid var(--border);
+}
+.mode-paper { color: var(--yellow); border-color: rgba(251,191,36,0.3); background: rgba(251,191,36,0.1); }
+.mode-live { color: var(--red); border-color: rgba(239,68,68,0.3); background: rgba(239,68,68,0.1); }
+.mode-off { color: var(--dim); }
+.nav { display: flex; gap: 14px; padding: 8px 24px; font-size: 12px; border-bottom: 1px solid var(--border); }
+.refresh-ts { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+
+/* KPI row */
+.kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 16px 24px; }
+.kpi {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; text-align: center;
+}
+.kpi .value { font-size: 26px; font-weight: 800; font-family: var(--mono); line-height: 1.2; }
+.kpi .label { font-size: 11px; color: var(--dim); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+.kpi .sub-value { font-size: 11px; color: var(--dim); font-family: var(--mono); margin-top: 2px; }
+
+/* Grid */
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0 24px 20px; }
+@media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
+.full { grid-column: 1 / -1; }
+
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; overflow: hidden;
+}
+.card-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--dim); margin-bottom: 10px; display: flex; align-items: center; gap: 6px;
+}
+.card-title .ct { font-size: 14px; }
+.card-title .count { margin-left: auto; color: var(--accent); font-family: var(--mono); }
+
+.empty { color: var(--dim); font-style: italic; font-size: 12px; padding: 12px 0; text-align: center; }
+
+/* Canvas chart */
+canvas { width: 100%; height: 160px; display: block; }
+
+/* Pattern row */
+.pat { padding: 8px 0; border-bottom: 1px solid rgba(26,34,53,0.4); font-size: 12px; }
+.pat:last-child { border-bottom: none; }
+.pat-head { display: flex; align-items: center; gap: 6px; }
+.pat-dir { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
+.pat-dir.buy { background: rgba(16,185,129,0.15); color: var(--green); }
+.pat-dir.sell { background: rgba(239,68,68,0.15); color: var(--red); }
+.pat-sym { font-weight: 700; min-width: 50px; }
+.pat-conf { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-family: var(--mono); }
+.pat-conf.HIGH { background: rgba(16,185,129,0.15); color: var(--green); }
+.pat-conf.MEDIUM { background: rgba(251,191,36,0.15); color: var(--yellow); }
+.pat-conf.LOW { background: rgba(90,99,116,0.15); color: var(--dim); }
+.pat-stats { font-family: var(--mono); font-size: 11px; color: var(--dim); margin-top: 3px; display: flex; gap: 10px; flex-wrap: wrap; }
+.pat-bar { height: 4px; background: rgba(26,34,53,0.8); border-radius: 2px; margin-top: 5px; overflow: hidden; }
+.pat-bar-fill { height: 100%; border-radius: 2px; transition: width 0.6s ease; }
+
+/* Symbol card */
+.sym-card { padding: 10px 0; border-bottom: 1px solid rgba(26,34,53,0.4); }
+.sym-card:last-child { border-bottom: none; }
+.sym-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.sym-name { font-weight: 800; font-size: 14px; }
+.sym-wr { font-family: var(--mono); font-weight: 600; }
+.sym-stats { font-family: var(--mono); font-size: 11px; color: var(--dim); margin-top: 3px; display: flex; gap: 10px; }
+
+/* Timeline dots */
+.tl-row { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; padding: 8px 0; }
+.tl-dot {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  cursor: default; position: relative;
+}
+.tl-dot.win { background: var(--green); box-shadow: 0 0 4px var(--green); }
+.tl-dot.loss { background: var(--red); box-shadow: 0 0 4px var(--red); }
+.tl-dot.neutral { background: var(--dim); }
+.tl-dot.expired { background: var(--yellow); opacity: 0.6; }
+.tl-legend { display: flex; gap: 12px; font-size: 10px; color: var(--dim); padding-top: 6px; }
+.tl-legend span::before {
+  content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-right: 4px; vertical-align: middle;
+}
+.tl-legend .lg-win::before { background: var(--green); }
+.tl-legend .lg-loss::before { background: var(--red); }
+.tl-legend .lg-neutral::before { background: var(--dim); }
+.tl-legend .lg-expired::before { background: var(--yellow); }
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.card { animation: fadeIn 0.3s ease; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="logo">📊 PATTERN PERFORMANCE</span>
+  <span class="sub">Rendimiento de patrones de trading en tiempo real</span>
+  <div class="right">
+    <span class="mode-badge mode-off" id="mode-badge">—</span>
+  </div>
+</div>
+<div class="nav">
+  <a href="/market/view">📈 Market Cycle</a>
+  <a href="/v1/dashboard/observatory">🔭 Observatory</a>
+  <a href="/universe/view">🌌 Universe</a>
+  <a href="/">← Vectrax</a>
+  <span class="refresh-ts" id="refresh-ts"></span>
+</div>
+
+<div class="kpi-row" id="kpi-row"></div>
+<div class="grid" id="main"></div>
+
+<script>
+(function() {
+  'use strict';
+  const kpiRow = document.getElementById('kpi-row');
+  const main = document.getElementById('main');
+  const modeBadge = document.getElementById('mode-badge');
+  const refreshTs = document.getElementById('refresh-ts');
+
+  function fmt(n, d) { return typeof n === 'number' ? n.toFixed(d||0) : '—'; }
+  function ago(ts) {
+    if (!ts) return '—';
+    const s = Math.floor(Date.now()/1000 - ts);
+    if (s < 60) return s + 's';
+    if (s < 3600) return Math.floor(s/60) + 'm';
+    if (s < 86400) return Math.floor(s/3600) + 'h';
+    return Math.floor(s/86400) + 'd';
+  }
+
+  function kpi(value, label, cls, sub) {
+    return '<div class="kpi"><div class="value" style="color:var(--' + (cls||'accent') + ')">' + value + '</div><div class="label">' + label + '</div>' + (sub ? '<div class="sub-value">' + sub + '</div>' : '') + '</div>';
+  }
+
+  function card(icon, title, content, extra) {
+    return '<div class="card' + (extra||'') + '"><div class="card-title"><span class="ct">' + icon + '</span>' + title + '</div>' + content + '</div>';
+  }
+
+  // Simple canvas equity curve
+  function drawEquity(canvasId, data) {
+    const c = document.getElementById(canvasId);
+    if (!c || !data.length) return;
+    const ctx = c.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const w = c.clientWidth; const h = c.clientHeight;
+    c.width = w * dpr; c.height = h * dpr;
+    ctx.scale(dpr, dpr);
+
+    const vals = data.map(d => d.cumulative_pct);
+    const mn = Math.min(0, ...vals);
+    const mx = Math.max(0, ...vals);
+    const range = (mx - mn) || 1;
+    const pad = 8;
+
+    // Grid lines
+    ctx.strokeStyle = 'rgba(26,34,53,0.6)';
+    ctx.lineWidth = 0.5;
+    const zeroY = pad + (mx / range) * (h - pad*2);
+    ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(w, zeroY); ctx.stroke();
+    ctx.fillStyle = '#5a6374'; ctx.font = '10px monospace';
+    ctx.fillText('0%', 2, zeroY - 3);
+    if (mx > 0) { ctx.fillText('+' + mx.toFixed(1) + '%', 2, pad + 10); }
+    if (mn < 0) { ctx.fillText(mn.toFixed(1) + '%', 2, h - pad); }
+
+    // Fill area
+    const gradient = ctx.createLinearGradient(0, 0, 0, h);
+    const lastVal = vals[vals.length - 1];
+    if (lastVal >= 0) {
+      gradient.addColorStop(0, 'rgba(16,185,129,0.2)');
+      gradient.addColorStop(1, 'rgba(16,185,129,0)');
+    } else {
+      gradient.addColorStop(0, 'rgba(239,68,68,0)');
+      gradient.addColorStop(1, 'rgba(239,68,68,0.2)');
+    }
+    ctx.beginPath();
+    for (let i = 0; i < vals.length; i++) {
+      const x = pad + (i / Math.max(vals.length - 1, 1)) * (w - pad*2);
+      const y = pad + ((mx - vals[i]) / range) * (h - pad*2);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    const lastX = pad + ((vals.length-1) / Math.max(vals.length-1, 1)) * (w - pad*2);
+    ctx.lineTo(lastX, zeroY);
+    ctx.lineTo(pad, zeroY);
+    ctx.closePath();
+    ctx.fillStyle = gradient; ctx.fill();
+
+    // Line
+    ctx.beginPath();
+    ctx.strokeStyle = lastVal >= 0 ? '#10b981' : '#ef4444';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < vals.length; i++) {
+      const x = pad + (i / Math.max(vals.length - 1, 1)) * (w - pad*2);
+      const y = pad + ((mx - vals[i]) / range) * (h - pad*2);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    // Dots on each point colored by outcome
+    for (let i = 0; i < data.length; i++) {
+      const x = pad + (i / Math.max(data.length - 1, 1)) * (w - pad*2);
+      const y = pad + ((mx - vals[i]) / range) * (h - pad*2);
+      ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI*2);
+      ctx.fillStyle = data[i].status === 'win' ? '#10b981' : data[i].status === 'loss' ? '#ef4444' : '#5a6374';
+      ctx.fill();
+    }
+
+    // End label
+    ctx.fillStyle = lastVal >= 0 ? '#10b981' : '#ef4444';
+    ctx.font = 'bold 12px monospace';
+    ctx.fillText((lastVal >= 0 ? '+' : '') + lastVal.toFixed(2) + '%', lastX + 6, pad + ((mx - lastVal) / range) * (h - pad*2) + 4);
+  }
+
+  async function load() {
+    try {
+      const res = await fetch('/v1/market/patterns');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const d = await res.json();
+      render(d);
+      refreshTs.textContent = new Date().toLocaleTimeString();
+    } catch(e) {
+      refreshTs.textContent = 'Error: ' + e.message;
+    }
+  }
+
+  function render(d) {
+    const k = d.kpi || {};
+    const exec = d.executor || {};
+    const pats = d.patterns || [];
+    const syms = d.symbols || [];
+    const tl = d.timeline || [];
+    const eq = d.equity_curve || [];
+
+    // Mode badge
+    const mode = exec.mode || 'off';
+    modeBadge.textContent = mode.toUpperCase();
+    modeBadge.className = 'mode-badge mode-' + mode;
+
+    // === KPIs ===
+    let kh = '';
+    kh += kpi(k.total_patterns || 0, 'Patrones', 'accent');
+    kh += kpi(k.usable_patterns || 0, 'Usables', k.usable_patterns > 0 ? 'green' : 'dim');
+    kh += kpi(fmt(k.global_win_rate, 1) + '%', 'Win Rate Global', k.global_win_rate >= 55 ? 'green' : k.global_win_rate >= 40 ? 'yellow' : 'red');
+    kh += kpi((k.avg_expectancy >= 0 ? '+' : '') + fmt(k.avg_expectancy, 3) + '%', 'Expectancy Avg', k.avg_expectancy > 0 ? 'green' : 'red');
+    kh += kpi(k.total_signals_resolved || 0, 'Señales Resueltas', 'cyan', k.total_wins + 'W / ' + k.total_losses + 'L');
+    kh += kpi(d.pending_signals || 0, 'Pendientes', 'yellow');
+    kh += kpi(exec.paper_trades || 0, 'Paper Trades', 'purple', 'WR: ' + fmt(exec.paper_wr, 1) + '%');
+    kh += kpi(k.building_patterns || 0, 'En Construcción', 'orange');
+    kpiRow.innerHTML = kh;
+
+    let html = '';
+
+    // === EQUITY CURVE ===
+    if (eq.length > 1) {
+      html += '<div class="card full"><div class="card-title"><span class="ct">📈</span>Equity Curve — P&L Acumulado</div><canvas id="eq-canvas" style="height:180px"></canvas></div>';
+    }
+
+    // === SIGNAL TIMELINE ===
+    if (tl.length) {
+      let dots = '<div class="tl-row">';
+      for (const s of tl) {
+        dots += '<div class="tl-dot ' + s.status + '" title="' + s.symbol + ' ' + s.direction.toUpperCase() + ' ' + s.status + ' ' + (s.return_pct > 0 ? '+' : '') + fmt(s.return_pct, 2) + '%"></div>';
+      }
+      dots += '</div>';
+      dots += '<div class="tl-legend"><span class="lg-win">Win</span><span class="lg-loss">Loss</span><span class="lg-neutral">Neutral</span><span class="lg-expired">Expired</span></div>';
+      html += card('⏱️', 'Signal Timeline<span class="count">' + tl.length + '</span>', dots, ' full');
+    }
+
+    // === PATTERN LEADERBOARD ===
+    let patHtml = '';
+    for (const p of pats) {
+      const wrCls = p.win_rate >= 55 ? 'color:var(--green)' : p.win_rate >= 40 ? 'color:var(--yellow)' : 'color:var(--red)';
+      const expCls = p.expectancy > 0 ? 'color:var(--green)' : 'color:var(--red)';
+      const barPct = p.progress;
+      const barColor = p.usable ? 'var(--green)' : barPct >= 60 ? 'var(--yellow)' : 'var(--accent)';
+      const age = p.last_updated ? ago(p.last_updated) : '—';
+
+      patHtml += '<div class="pat">';
+      patHtml += '<div class="pat-head">';
+      patHtml += '<span class="pat-dir ' + p.direction + '">' + p.direction.toUpperCase() + '</span>';
+      patHtml += '<span class="pat-sym">' + p.symbol + '</span>';
+      patHtml += '<span class="pat-conf ' + p.confidence + '">' + p.confidence + '</span>';
+      if (p.usable) patHtml += '<span style="color:var(--green);font-size:10px;font-weight:700">⚡ USABLE</span>';
+      patHtml += '<span style="margin-left:auto;font-family:var(--mono);font-size:11px;' + expCls + '">' + (p.expectancy > 0 ? '+' : '') + fmt(p.expectancy, 3) + '%</span>';
+      patHtml += '</div>';
+      patHtml += '<div class="pat-stats">';
+      patHtml += '<span>N=' + p.n_total + '</span>';
+      patHtml += '<span style="' + wrCls + '">WR ' + fmt(p.win_rate, 0) + '%</span>';
+      patHtml += '<span>' + p.n_wins + 'W/' + p.n_losses + 'L</span>';
+      patHtml += '<span>AvgW ' + fmt(p.avg_win_pct, 2) + '% / AvgL ' + fmt(p.avg_loss_pct, 2) + '%</span>';
+      if (p.session) patHtml += '<span>' + p.session + '</span>';
+      patHtml += '<span style="color:var(--dim)">' + age + '</span>';
+      patHtml += '</div>';
+      patHtml += '<div class="pat-bar"><div class="pat-bar-fill" style="width:' + barPct + '%;background:' + barColor + '"></div></div>';
+      patHtml += '</div>';
+    }
+    html += card('🏆', 'Pattern Leaderboard<span class="count">' + pats.length + '</span>', patHtml || '<div class="empty">Sin patrones — necesita señales resueltas</div>', ' full');
+
+    // === PER-SYMBOL BREAKDOWN ===
+    let symHtml = '';
+    for (const s of syms) {
+      const wrCls = s.win_rate >= 55 ? 'color:var(--green)' : s.win_rate >= 40 ? 'color:var(--yellow)' : 'color:var(--red)';
+      const expCls = s.best_exp > 0 ? 'color:var(--green)' : 'color:var(--red)';
+      symHtml += '<div class="sym-card">';
+      symHtml += '<div class="sym-head">';
+      symHtml += '<span class="sym-name">' + s.symbol + '</span>';
+      symHtml += '<span class="sym-wr" style="' + wrCls + '">' + fmt(s.win_rate, 1) + '%</span>';
+      if (s.usable > 0) symHtml += '<span style="color:var(--green);font-size:10px">⚡' + s.usable + ' usable</span>';
+      symHtml += '<span style="margin-left:auto;font-family:var(--mono);font-size:11px;' + expCls + '">E: ' + (s.best_exp > 0 ? '+' : '') + fmt(s.best_exp, 3) + '%</span>';
+      symHtml += '</div>';
+      symHtml += '<div class="sym-stats">';
+      symHtml += '<span>' + s.patterns + ' patrones</span>';
+      symHtml += '<span>' + s.signals + ' señales</span>';
+      symHtml += '<span>' + s.wins + 'W / ' + s.losses + 'L</span>';
+      symHtml += '</div>';
+      symHtml += '</div>';
+    }
+    html += card('📋', 'Breakdown por Símbolo<span class="count">' + syms.length + '</span>', symHtml || '<div class="empty">Sin datos</div>');
+
+    // === EXECUTOR STATUS ===
+    let execHtml = '';
+    execHtml += '<div style="padding:4px 0;display:flex;justify-content:space-between;font-size:12px;border-bottom:1px solid rgba(26,34,53,0.4)"><span style="color:var(--dim)">Modo</span><span style="font-family:var(--mono);font-weight:700;color:var(--' + (mode==='paper'?'yellow':mode==='live'?'red':'dim') + ')">' + mode.toUpperCase() + '</span></div>';
+    execHtml += '<div style="padding:4px 0;display:flex;justify-content:space-between;font-size:12px;border-bottom:1px solid rgba(26,34,53,0.4)"><span style="color:var(--dim)">Paper Trades</span><span style="font-family:var(--mono)">' + (exec.paper_trades||0) + ' (' + (exec.paper_wins||0) + 'W)</span></div>';
+    execHtml += '<div style="padding:4px 0;display:flex;justify-content:space-between;font-size:12px;border-bottom:1px solid rgba(26,34,53,0.4)"><span style="color:var(--dim)">Paper WR</span><span style="font-family:var(--mono);color:var(--' + (exec.paper_wr >= 60 ? 'green' : 'yellow') + ')">' + fmt(exec.paper_wr, 1) + '%</span></div>';
+    execHtml += '<div style="padding:4px 0;display:flex;justify-content:space-between;font-size:12px;border-bottom:1px solid rgba(26,34,53,0.4)"><span style="color:var(--dim)">Pérdidas Consec.</span><span style="font-family:var(--mono);color:var(--' + (exec.consecutive_losses >= 2 ? 'red' : 'text') + ')">' + (exec.consecutive_losses||0) + '/3</span></div>';
+    execHtml += '<div style="padding:4px 0;display:flex;justify-content:space-between;font-size:12px;border-bottom:1px solid rgba(26,34,53,0.4)"><span style="color:var(--dim)">Daily Loss</span><span style="font-family:var(--mono)">$' + fmt(exec.daily_loss_usd, 2) + '</span></div>';
+    execHtml += '<div style="padding:4px 0;display:flex;justify-content:space-between;font-size:12px;border-bottom:1px solid rgba(26,34,53,0.4)"><span style="color:var(--dim)">Max Position</span><span style="font-family:var(--mono)">$' + (exec.max_position_usd||50) + '</span></div>';
+    execHtml += '<div style="padding:4px 0;display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--dim)">Halt</span><span style="font-family:var(--mono);color:var(--' + (exec.halt ? 'red' : 'green') + ')">' + (exec.halt ? '🛑 YES' : '✅ NO') + '</span></div>';
+    const progress = Math.min(Math.round((exec.paper_trades||0) / Math.max(exec.min_paper_signals||30, 1) * 100), 100);
+    execHtml += '<div style="margin-top:8px;font-size:10px;color:var(--dim)">Progreso a LIVE: ' + (exec.paper_trades||0) + '/' + (exec.min_paper_signals||30) + ' trades (' + progress + '%)</div>';
+    execHtml += '<div style="height:4px;background:rgba(26,34,53,0.8);border-radius:2px;margin-top:4px;overflow:hidden"><div style="height:100%;width:' + progress + '%;background:' + (progress >= 100 ? 'var(--green)' : 'var(--accent)') + ';border-radius:2px"></div></div>';
+    html += card('⚙️', 'Auto-Executor', execHtml);
+
+    // === BEST / WORST ===
+    if (k.best_pattern || k.worst_pattern) {
+      let bwHtml = '';
+      if (k.best_pattern) {
+        const b = k.best_pattern;
+        bwHtml += '<div style="padding:8px 10px;border-radius:6px;background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.15);margin-bottom:8px;font-size:12px"><div style="font-weight:700;color:var(--green)">🏅 Mejor Patrón</div><div style="font-family:var(--mono);margin-top:4px">' + b.direction.toUpperCase() + ' ' + b.symbol + ' — WR ' + fmt(b.win_rate, 0) + '% · E: +' + fmt(b.expectancy, 3) + '%</div></div>';
+      }
+      if (k.worst_pattern) {
+        const w = k.worst_pattern;
+        bwHtml += '<div style="padding:8px 10px;border-radius:6px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.15);font-size:12px"><div style="font-weight:700;color:var(--red)">⚠️ Peor Patrón</div><div style="font-family:var(--mono);margin-top:4px">' + w.direction.toUpperCase() + ' ' + w.symbol + ' — WR ' + fmt(w.win_rate, 0) + '% · E: ' + fmt(w.expectancy, 3) + '%</div></div>';
+      }
+      html += card('🎯', 'Extremos', bwHtml);
+    }
+
+    main.innerHTML = html;
+
+    // Draw equity chart after DOM insert
+    if (eq.length > 1) {
+      requestAnimationFrame(() => drawEquity('eq-canvas', eq));
+    }
+  }
+
+  load();
+  setInterval(load, 15000);
+})();
+</script>
+</body>
+</html>

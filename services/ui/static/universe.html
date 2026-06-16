@@ -998,7 +998,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
             _domain: gs.domain,
           });
         }
-        _gravConvCount = gConvergences.length;
+        _gravConvCount = (gData.gravity && gData.gravity.convergences_total) || gConvergences.length;
         for (const c of gConvergences) {
           newEdges.push({
             source: c.star_a, target: c.star_b,

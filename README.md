@@ -119,6 +119,46 @@ Vectrax is a universal AI infrastructure layer that:
 - **ConvergenceLearner** - Closes the operational awareness cycle: observes PresenciaObserver decisions, detects degradation patterns per motor, and proposes threshold adjustments with evidence — never applies changes without creator authorization
 - **LawSignal** - Connects the 7 Fundamental Laws (Kybalion-inspired) as active score weights: violations reduce sovereignty/convergence or raise noise before PresenciaObserver decides. The principles don't respond. They weigh.
 
+### 📊 Pattern Performance Dashboard
+Real-time monitoring of trading pattern performance integrated into the Vectrax SPA.
+
+Access: **Dashboard → Patterns** tab, or standalone at `/market/patterns/view`.
+
+**Sections:**
+- **KPI Row** — Total patterns, usable count, global win rate, avg expectancy, resolved signals (W/L), pending, paper trades, building count
+- **Signal Timeline** — Visual dot-chart of last 60 resolved signals (win/loss/neutral/expired)
+- **Equity Curve** — Cumulative P&L with per-signal bars colored by outcome
+- **Pattern Leaderboard** — All patterns ranked by expectancy with progress bars to usable threshold (N≥15, WR≥55%, E>0)
+- **Per-Symbol Breakdown** — Aggregated stats per symbol (patterns, signals, W/L, best expectancy)
+- **Auto-Executor Status** — Mode (OFF/PAPER/LIVE), paper WR, consecutive losses, halt state, progress to LIVE
+- **Best/Worst Patterns** — Extremes by expectancy
+
+Auto-refresh: 15s. All data from `/v1/market/patterns` API.
+
+Files: `services/core/routes/pattern_performance.py`, `services/ui/static/pattern_performance.html`, `services/ui/static/app.js` (loadPatterns)
+Tests: `tests/test_pattern_performance.py` (37 tests: API schema, KPI aggregation, equity curve, timeline filtering, edge cases, UI components)
+
+### 📡 Universe Census — Single Source of Truth
+Every endpoint that reports universe totals reads from one shared function: `get_census()`.
+
+**Problem solved:** Observatory, Universe panel, Patterns dashboard, and self_context each computed star counts, convergences, and market stats independently. Different truncations and field names caused discrepancies (e.g., convergences showing 20 instead of 360).
+
+**Architecture:**
+```
+get_census()  ───┬───→ /v1/census          (direct)
+  [10s TTL cache]   ├───→ /v1/dashboard/observatory
+                    ├───→ /v1/universe        (universe_observer.to_api_dict)
+                    ├───→ /v1/market/patterns
+                    └───→ self_context.py     (LLM prompt injection)
+```
+
+**Census fields:** star totals (gravitational/knowledge/users), convergences, patterns, constellations, mass, word gravity, market (signals/patterns/win_rate/usable/executor_mode), Telegram users (total/interactions/facts/core_memory/teams).
+
+**Adding new data:** Add it to `_build_census()` once → all endpoints inherit it automatically.
+
+File: `core/universe_census.py`
+API: `GET /v1/census`
+
 ### ✦ Word Gravity Index (WGI)
 Conversational continuity driven by word mass instead of context windows. Each significant word accumulates gravitational mass based on frequency, convergences, and semantic connections. When a high-mass word appears in a message, it activates its entire associated constellation — not just recent messages, but the full network of linked concepts.
 
@@ -1783,6 +1823,11 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 ---
 
 ## 📋 Changelog
+
+### 2026-06-16
+- **feat: Pattern Performance Dashboard** — Dedicated dashboard for trading pattern analytics. Integrated as Dashboard → Patterns tab in the SPA + standalone page at `/market/patterns/view`. Shows KPIs, signal timeline, equity curve, pattern leaderboard, per-symbol breakdown, executor status. API: `GET /v1/market/patterns`. 37 automated tests covering API schema, KPI aggregation, equity curve cumulativity, edge cases, and UI components.
+- **feat: Universe Census — Single Source of Truth** — Unified `get_census()` function with 10s TTL cache replaces all independent star/convergence/market counting. Observatory, Universe panel, Patterns API, and self_context now derive totals from one shared computation. New `GET /v1/census` endpoint exposes raw census. Eliminates the class of bugs where different endpoints showed different numbers (e.g., convergences 20 vs 360).
+- **fix: convergence count truncation** — Observatory and Universe panel were counting `len(truncated_list[:20])` instead of the full convergence total. Fixed in `dashboard.py`, `universe_observer.py`, and `universe.html`.
 
 ### 2026-06-14
 - **feat: Learning Core** — Selective learning + universe self-organization. Learning Gate evaluates novelty/coherence/impact before incorporating input (ACTIVE vs PASSIVE). Pattern Refinement every 50 interactions: reinforce active stars, degrade inactive, dissolve weak convergences. Observation Bias closes the loop: learned weights modulate how the autonomous observer and market cycle observe.
