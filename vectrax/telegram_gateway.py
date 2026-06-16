@@ -722,7 +722,14 @@ class TelegramGateway:
                 )
                 t0 = time.time()
                 _proc.start()
-                _proc.join(timeout=POLL_TIMEOUT + 8)  # 8s grace for connect+TLS
+
+                # Wait for subprocess WITH heartbeat — never go stale.
+                # _proc.join(38) would block for 38s without heartbeat.
+                # Instead, poll every 5s and write heartbeat each iteration.
+                _poll_deadline = t0 + POLL_TIMEOUT + 8
+                while _proc.is_alive() and time.time() < _poll_deadline:
+                    self._write_heartbeat()
+                    _proc.join(timeout=5)  # check every 5s
 
                 if _proc.is_alive():
                     # Subprocess stuck in SSL — kill it instantly
