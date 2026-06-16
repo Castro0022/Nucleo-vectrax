@@ -572,6 +572,26 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
 
     t0 = time.time()
 
+    # Circuit breaker: skip entire cycle if eToro API is circuit-broken.
+    # Prevents the learning cycle from stalling the worker with dozens of
+    # failing API calls (each with timeout + retries).
+    try:
+        from core.external_call_guard import _check_circuit, get_status
+        if not _check_circuit("etoro"):
+            status = get_status("etoro")
+            logger.warning(
+                "[LEARN] CIRCUIT OPEN for eToro — skipping cycle | remaining=%ss | failures=%d",
+                status.get("remaining_s", "?"), status.get("consecutive_failures", 0),
+            )
+            return {
+                "mode": "circuit_open",
+                "skipped": True,
+                "elapsed_s": round(time.time() - t0, 1),
+                "reason": "eToro circuit breaker open",
+            }
+    except ImportError:
+        pass  # guard not available
+
     # Observation Bias: check if market domain has enough weight to observe
     _market_bias = 1.0
     try:

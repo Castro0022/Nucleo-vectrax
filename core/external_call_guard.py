@@ -82,16 +82,26 @@ class ProviderState:
 # Default timeouts per provider (seconds)
 DEFAULT_TIMEOUTS: Dict[str, float] = {
     "telegram": 12.0,
-    "etoro": 10.0,
+    "etoro": 6.0,
     "openai": 25.0,
     "gemini": 25.0,
 }
 DEFAULT_TIMEOUT = 15.0
 
-# Circuit breaker thresholds
+# Circuit breaker thresholds (global defaults)
 FAILURE_THRESHOLD = 5          # failures before opening circuit
 SUCCESS_THRESHOLD = 2          # successes in half-open to close
 RECOVERY_TIMEOUT = 60.0        # seconds before trying half-open
+
+# Per-provider overrides — providers with tighter requirements
+# eToro: opens circuit faster (3 fails) and recovers faster (45s)
+# to prevent the learning cycle from stalling the worker.
+PROVIDER_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "etoro": {
+        "failure_threshold": 3,
+        "recovery_timeout": 45.0,
+    },
+}
 
 # Thread pool for timeout-bounded execution
 _pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="guard")
@@ -122,7 +132,10 @@ def _check_circuit(provider: str) -> bool:
             return True
 
         if ps.state == CircuitState.OPEN:
-            if (now - ps.opened_at) >= RECOVERY_TIMEOUT:
+            recovery = PROVIDER_OVERRIDES.get(provider, {}).get(
+                "recovery_timeout", RECOVERY_TIMEOUT
+            )
+            if (now - ps.opened_at) >= recovery:
                 ps.state = CircuitState.HALF_OPEN
                 ps.consecutive_successes = 0
                 logger.info(
@@ -175,14 +188,17 @@ def _record_failure(provider: str, error: str, is_timeout: bool = False) -> None
                 "GUARD %s | circuit re-OPENED from half_open | error=%s",
                 provider, error[:80],
             )
-        elif (ps.state == CircuitState.CLOSED
-              and ps.consecutive_failures >= FAILURE_THRESHOLD):
-            ps.state = CircuitState.OPEN
-            ps.opened_at = time.time()
-            logger.warning(
-                "GUARD %s | circuit OPENED after %d consecutive failures | last=%s",
-                provider, ps.consecutive_failures, error[:80],
+        elif ps.state == CircuitState.CLOSED:
+            threshold = PROVIDER_OVERRIDES.get(provider, {}).get(
+                "failure_threshold", FAILURE_THRESHOLD
             )
+            if ps.consecutive_failures >= threshold:
+                ps.state = CircuitState.OPEN
+                ps.opened_at = time.time()
+                logger.warning(
+                    "GUARD %s | circuit OPENED after %d consecutive failures (threshold=%d) | last=%s",
+                    provider, ps.consecutive_failures, threshold, error[:80],
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +300,10 @@ def _format_state(name: str, ps: ProviderState) -> Dict[str, Any]:
     now = time.time()
     remaining = 0.0
     if ps.state == CircuitState.OPEN:
-        remaining = max(0, RECOVERY_TIMEOUT - (now - ps.opened_at))
+        recovery = PROVIDER_OVERRIDES.get(name, {}).get(
+            "recovery_timeout", RECOVERY_TIMEOUT
+        )
+        remaining = max(0, recovery - (now - ps.opened_at))
     return {
         "provider": name,
         "circuit": ps.state.value,

@@ -30,8 +30,8 @@ from connectors.etoro import BASE_URL, validate_host
 
 logger = logging.getLogger("vectrax.etoro.client")
 
-REQUEST_TIMEOUT = 10
-MAX_RETRIES     = 3
+REQUEST_TIMEOUT = 6   # 6s — normal calls are ~200-300ms; 10s was too generous
+MAX_RETRIES     = 2   # 2 attempts max — prevents 30s blocking on dead API
 _HOST           = "public-api.etoro.com"
 
 
