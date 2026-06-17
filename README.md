@@ -1824,6 +1824,10 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 
 ## 📋 Changelog
 
+### 2026-06-17
+- **feat: Identity Anchor** — New `VECTRAX CORE` identity declaration as the first section of the system prompt, before any behavioral instructions. Establishes the existential frame: evolving identity, purpose cycle (Observe → Accumulate → Detect → Converge → Propose → Re-observe), architecture-only self-description. Ambiguity rule integrated into REGLAS DURAS as operational behavior. Verified: emotion-free responses, no assistant language, architecture-based voice.
+- **feat: eToro circuit breaker tightening** — Per-provider overrides in ExternalCallGuard: eToro opens circuit at 3 failures (not global 5), recovers at 45s (not 60s). Client timeout reduced 10s→6s, retries 3→2. Learning cycle checks circuit before starting — skips entirely when eToro is down. Worst case blocking: 150s→36s (within 60s watchdog). 25 integration tests.
+
 ### 2026-06-16
 - **feat: Pattern Performance Dashboard** — Dedicated dashboard for trading pattern analytics. Integrated as Dashboard → Patterns tab in the SPA + standalone page at `/market/patterns/view`. Shows KPIs, signal timeline, equity curve, pattern leaderboard, per-symbol breakdown, executor status. API: `GET /v1/market/patterns`. 37 automated tests covering API schema, KPI aggregation, equity curve cumulativity, edge cases, and UI components.
 - **feat: Universe Census — Single Source of Truth** — Unified `get_census()` function with 10s TTL cache replaces all independent star/convergence/market counting. Observatory, Universe panel, Patterns API, and self_context now derive totals from one shared computation. New `GET /v1/census` endpoint exposes raw census. Eliminates the class of bugs where different endpoints showed different numbers (e.g., convergences 20 vs 360).
