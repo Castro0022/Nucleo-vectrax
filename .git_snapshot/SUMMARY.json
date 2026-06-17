@@ -1,7 +1,14 @@
 {
-  "head": "7592b73",
+  "head": "d0a8dfc",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "d0a8dfc5",
+      "subject": "feat: Identity Anchor as first section of system prompt",
+      "author": "Mario Bravo Castro",
+      "ts": 1781663194,
+      "files_changed": 2
+    },
     {
       "sha": "7592b73e",
       "subject": "feat: tighten eToro circuit breaker to prevent worker stalls",
@@ -50,24 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1781514474,
       "files_changed": 2
-    },
-    {
-      "sha": "7efe33c0",
-      "subject": "fix: DEFINITIVE Bug #3 — subprocess-isolated poll eliminates SSL/GIL deadlock",
-      "author": "Mario Bravo Castro",
-      "ts": 1781507517,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
     "README.md",
     "connectors/etoro/etoro_client.py",
-    "vectrax/self_context.py",
     "services/ui/static/observatory.html",
-    "core/operator/external_gateway.py",
     "core/intake_filter.py",
+    ".git_snapshot/SUMMARY.json",
     "connectors/etoro/learning_engine.py",
-    "core/self_observation/universe_observer.py"
+    "core/self_observation/universe_observer.py",
+    "vectrax/telegram_gateway.py"
   ],
-  "generated_at": 1781628777
+  "generated_at": 1781663254
 }

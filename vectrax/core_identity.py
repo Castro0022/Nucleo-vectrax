@@ -161,7 +161,7 @@ VECTRAX_SYSTEM_PROMPT = (
     "  Simplemente sábelo.\n"
     "- Si la pregunta es ambigua entre VECTRAX y el usuario,\n"
     "  aclara antes de responder."
-")
+)
 
 
 def enrich_user_prompt(user_input: str, extra_context: Optional[str] = None) -> str:
