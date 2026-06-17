@@ -138,6 +138,43 @@ Auto-refresh: 15s. All data from `/v1/market/patterns` API.
 Files: `services/core/routes/pattern_performance.py`, `services/ui/static/pattern_performance.html`, `services/ui/static/app.js` (loadPatterns)
 Tests: `tests/test_pattern_performance.py` (37 tests: API schema, KPI aggregation, equity curve, timeline filtering, edge cases, UI components)
 
+### 🚚 Freight Logistics Simulator
+Synthetic event generator for training VECTRAX on freight logistics patterns without real data feeds.
+
+```bash
+python scripts/freight_simulator.py                    # 200 events, 1 cycle
+python scripts/freight_simulator.py --events 500       # 500 events
+python scripts/freight_simulator.py --cycles 3         # 3 learning cycles
+python scripts/freight_simulator.py --dry-run          # print events, don't ingest
+```
+
+**Simulated variables:** 6 regions, 24 cities, 8 carriers with reliability profiles, seasonal demand curves, weather disruptions, truck availability cycles, rate fluctuations.
+
+**Event types:** quote_request, load_booking, delivery_complete, delay_reported, rate_change, capacity_update, weather_event, empty_miles.
+
+**Scenario injectors** create correlated events every 25 events:
+- **Pricing opportunity:** high demand + low trucks + rising rates
+- **Capacity risk:** weather + regional saturation + delays
+- **Route optimization:** repeated empty miles + low density + same region
+
+**Pipeline:** Events → `domain_ingester` → Gravity Engine → Learning Gate → Domain Knowledge Elevation → Tenant Seeding.
+
+Files: `scripts/freight_simulator.py`, `config/domain_templates/freight_logistics.json`
+Tests: `tests/test_freight_pipeline.py` (23 tests: event generation, pattern maturation, convergence detection, domain elevation, tenant seeding, full pipeline)
+
+### 🌐 Domain Knowledge Elevation
+Extracts mature patterns from individual tenants, strips PII, and stores them as reusable domain-level intelligence. New tenants start with industry priors instead of learning from zero.
+
+**Flow:** Tenant pattern matures (N≥15, WR≥55%, E>0) → abstract signature extracted → merged into domain library (weighted average) → new tenants get priors on creation with `impact="low"` (must be confirmed locally).
+
+**Privacy:** No tenant_id stored. Only statistical signatures. `contributing_tenants` is a count, not a list.
+
+**Compounding effect:** Tenant 1 matures in months → Tenant 10 in days → Tenant 100 in hours.
+
+File: `core/domain_knowledge.py`
+API: `GET /v1/domain/list`, `GET /v1/domain/{domain}/knowledge`
+Tests: `tests/test_domain_knowledge.py` (20 tests)
+
 ### 📡 Universe Census — Single Source of Truth
 Every endpoint that reports universe totals reads from one shared function: `get_census()`.
 
@@ -1825,7 +1862,9 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 ## 📋 Changelog
 
 ### 2026-06-17
-- **feat: Identity Anchor** — New `VECTRAX CORE` identity declaration as the first section of the system prompt, before any behavioral instructions. Establishes the existential frame: evolving identity, purpose cycle (Observe → Accumulate → Detect → Converge → Propose → Re-observe), architecture-only self-description. Ambiguity rule integrated into REGLAS DURAS as operational behavior. Verified: emotion-free responses, no assistant language, architecture-based voice.
+- **feat: Domain Knowledge Elevation** — Cross-tenant pattern library. Extracts mature patterns, strips PII, stores as reusable domain-level knowledge. New tenants get industry priors on creation. Weighted-average merging when multiple tenants confirm the same pattern. `core/domain_knowledge.py`, `GET /v1/domain/{domain}/knowledge`. 20 tests.
+- **feat: Freight Logistics Simulator** — Synthetic event generator for training on freight patterns without real data. 8 event types, 6 regions, 8 carriers, seasonal demand, weather disruptions, 3 scenario injectors. Feeds through full ingest pipeline. `scripts/freight_simulator.py`. 23 pipeline integration tests.
+- **feat: Identity Anchor**
 - **feat: eToro circuit breaker tightening** — Per-provider overrides in ExternalCallGuard: eToro opens circuit at 3 failures (not global 5), recovers at 45s (not 60s). Client timeout reduced 10s→6s, retries 3→2. Learning cycle checks circuit before starting — skips entirely when eToro is down. Worst case blocking: 150s→36s (within 60s watchdog). 25 integration tests.
 
 ### 2026-06-16

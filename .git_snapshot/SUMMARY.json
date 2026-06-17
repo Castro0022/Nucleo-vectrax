@@ -1,7 +1,14 @@
 {
-  "head": "f77f7fc",
+  "head": "529870f",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "529870f1",
+      "subject": "feat: freight logistics synthetic simulator + domain template",
+      "author": "Mario Bravo Castro",
+      "ts": 1781674767,
+      "files_changed": 3
+    },
     {
       "sha": "f77f7fc2",
       "subject": "feat: Domain Knowledge Elevation — cross-tenant pattern library",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1781616342,
       "files_changed": 1
-    },
-    {
-      "sha": "6e00940f",
-      "subject": "fix: heartbeat during subprocess wait — eliminates 3h stale incident",
-      "author": "Mario Bravo Castro",
-      "ts": 1781615276,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
@@ -69,5 +69,5 @@
     "services/core/app.py",
     "connectors/etoro/learning_engine.py"
   ],
-  "generated_at": 1781669518
+  "generated_at": 1781674769
 }
