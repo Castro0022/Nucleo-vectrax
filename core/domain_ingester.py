@@ -184,6 +184,18 @@ def ingest_event(
         "[INGEST] %s | %s/%s | %s | %dms",
         tenant_id[:15], domain, event_type, learning_type, elapsed_ms,
     )
+
+    # 4. Domain Knowledge Elevation — fire-and-forget
+    # Check if any patterns in this domain have matured enough to elevate
+    # to the shared domain library. Never blocks or affects the ingest.
+    try:
+        from core.domain_knowledge import try_elevate_from_gravity
+        elevated = try_elevate_from_gravity(domain, tenant_id)
+        if elevated:
+            result["domain_elevated"] = elevated
+    except Exception:
+        pass
+
     return result
 
 

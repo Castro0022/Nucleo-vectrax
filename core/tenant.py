@@ -120,7 +120,8 @@ def create_tenant(name: str, plan: str = "free", domain: str = "") -> Dict:
     conn.close()
 
     logger.info("TENANT created | id=%s name=%s plan=%s domain=%s", tenant_id, name, plan, domain)
-    return {
+
+    result = {
         "tenant_id": tenant_id,
         "api_key": api_key,
         "name": name,
@@ -128,6 +129,28 @@ def create_tenant(name: str, plan: str = "free", domain: str = "") -> Dict:
         "domain": domain,
         "daily_limit": PLAN_LIMITS.get(plan, 100),
     }
+
+    # Seed domain priors — if this domain has accumulated knowledge from
+    # other tenants, inject it as low-weight gravity events so the new
+    # tenant starts with industry experience instead of zero.
+    if domain:
+        try:
+            from core.domain_knowledge import seed_tenant_priors
+            priors = seed_tenant_priors(domain)
+            if priors:
+                from core.learn.gravity_engine import get_gravity_index
+                gi = get_gravity_index()
+                for event in priors:
+                    gi.record_event(**event)
+                result["domain_priors_seeded"] = len(priors)
+                logger.info(
+                    "TENANT %s seeded with %d domain priors from %s",
+                    tenant_id, len(priors), domain,
+                )
+        except Exception as exc:
+            logger.debug("tenant prior seeding failed (non-blocking): %s", exc)
+
+    return result
 
 
 def validate_key(api_key: str) -> Optional[Tenant]:
