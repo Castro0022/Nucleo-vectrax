@@ -1,7 +1,21 @@
 {
-  "head": "3594234",
+  "head": "f77f7fc",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "f77f7fc2",
+      "subject": "feat: Domain Knowledge Elevation — cross-tenant pattern library",
+      "author": "Mario Bravo Castro",
+      "ts": 1781669489,
+      "files_changed": 6
+    },
+    {
+      "sha": "13864674",
+      "subject": "docs: changelog for Identity Anchor + eToro circuit breaker (2026-06-17)",
+      "author": "Mario Bravo Castro",
+      "ts": 1781663632,
+      "files_changed": 2
+    },
     {
       "sha": "35942341",
       "subject": "fix: syntax error in system prompt closing parenthesis",
@@ -43,31 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1781615276,
       "files_changed": 1
-    },
-    {
-      "sha": "73d73512",
-      "subject": "fix: send ALL gravitational stars to canvas — no more missing stars",
-      "author": "Mario Bravo Castro",
-      "ts": 1781515226,
-      "files_changed": 1
-    },
-    {
-      "sha": "f66a16b3",
-      "subject": "feat: universe_census — single source of truth for all star counts",
-      "author": "Mario Bravo Castro",
-      "ts": 1781514961,
-      "files_changed": 2
     }
   ],
   "modified_modules": [
     "README.md",
-    "connectors/etoro/etoro_client.py",
     ".git_snapshot/SUMMARY.json",
+    "connectors/etoro/etoro_client.py",
     "services/ui/static/observatory.html",
     "core/intake_filter.py",
-    "connectors/etoro/learning_engine.py",
-    "core/self_observation/universe_observer.py",
-    "vectrax/telegram_gateway.py"
+    "core/domain_ingester.py",
+    "services/core/app.py",
+    "connectors/etoro/learning_engine.py"
   ],
-  "generated_at": 1781663393
+  "generated_at": 1781669518
 }
