@@ -1,7 +1,14 @@
 {
-  "head": "8ad73d2",
+  "head": "7592b73",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "7592b73e",
+      "subject": "feat: tighten eToro circuit breaker to prevent worker stalls",
+      "author": "Mario Bravo Castro",
+      "ts": 1781628753,
+      "files_changed": 5
+    },
     {
       "sha": "8ad73d20",
       "subject": "feat: Pattern Performance Dashboard + Unified Census",
@@ -50,24 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1781507517,
       "files_changed": 1
-    },
-    {
-      "sha": "6382495e",
-      "subject": "fix: reduce Bug #3 detection window — 55s → 43s max stale",
-      "author": "Mario Bravo Castro",
-      "ts": 1781507352,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
     "README.md",
+    "connectors/etoro/etoro_client.py",
     "vectrax/self_context.py",
     "services/ui/static/observatory.html",
     "core/operator/external_gateway.py",
-    "connectors/etoro/etoro_client.py",
     "core/intake_filter.py",
-    "core/self_observation/universe_observer.py",
-    "vectrax/telegram_gateway.py"
+    "connectors/etoro/learning_engine.py",
+    "core/self_observation/universe_observer.py"
   ],
-  "generated_at": 1781628528
+  "generated_at": 1781628777
 }
