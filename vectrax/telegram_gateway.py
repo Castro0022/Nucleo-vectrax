@@ -73,7 +73,7 @@ POLL_CLIENT_REFRESH = 900   # recreate HTTP client every 15 min (defense in dept
 # POLL_STUCK_THRESHOLD: watchdog kills process if poll hasn't completed in N seconds.
 # Must be > POLL_ALARM_TIMEOUT (32s) to give SIGALRM time to fire first,
 # but low enough to catch cases where SIGALRM can't interrupt C-level code.
-POLL_STUCK_THRESHOLD = 35
+POLL_STUCK_THRESHOLD = 50  # Must be > POLL_TIMEOUT(30) + subprocess overhead(~8s) + margin
 POLL_ALARM_TIMEOUT = POLL_TIMEOUT + 2   # 32s: SIGALRM fires before 35s watchdog
 TCP_PROBE_TIMEOUT = 3                    # pre-poll TCP probe timeout
 TCP_PROBE_HOST = "api.telegram.org"      # resolved once, cached
@@ -721,6 +721,7 @@ class TelegramGateway:
                     daemon=True,
                 )
                 t0 = time.time()
+                self._last_poll_ok = t0  # Update BEFORE poll to prevent false stale detection
                 _proc.start()
 
                 # Wait for subprocess WITH heartbeat — never go stale.
