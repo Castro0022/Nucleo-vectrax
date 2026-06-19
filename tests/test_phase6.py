@@ -302,8 +302,14 @@ def test_validate_model_name():
 
 @pytest.mark.asyncio
 async def test_retry_with_rate_limiter():
-    """Test retry logic with rate limiting"""
-    config = RateLimitConfig(max_requests=2, window_seconds=1.0)
+    """Test retry logic with rate limiting.
+
+    Contract: the function would succeed on its retry, but the rate limiter
+    only grants ONE token and does not refill within the retry window. The
+    retries therefore exhaust because every retry after the first is
+    rate-limited.
+    """
+    config = RateLimitConfig(max_requests=1, window_seconds=60.0)
     limiter = RateLimiter(config)
     
     call_count = 0
@@ -313,18 +319,20 @@ async def test_retry_with_rate_limiter():
         call_count += 1
         
         if not limiter.try_acquire():
-            raise Exception("Rate limited")
+            # Rate-limited attempts are retryable, so the retry loop keeps
+            # trying and ultimately raises RetryExhausted.
+            raise ConnectionError("Rate limited")
         
         if call_count < 2:
             raise ConnectionError("Temporary failure")
         
         return "success"
     
-    retry_config = RetryConfig(max_attempts=5, initial_delay=0.1)
+    retry_config = RetryConfig(max_attempts=5, initial_delay=0.05)
     
-    # This will fail first time, then succeed after rate limit refill
+    # First attempt consumes the only token and fails; every retry is
+    # rate-limited → attempts exhaust → RetryExhausted.
     with pytest.raises(RetryExhausted):
-        # Rate limit will prevent retries
         await retry_async(rate_limited_function, retry_config)
     
     print("✅ Retry + rate limiting integration works")
