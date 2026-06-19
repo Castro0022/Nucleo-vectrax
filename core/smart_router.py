@@ -675,19 +675,24 @@ class SmartRouter:
             best_topic = "general"
             topic_confidence = 0.5
 
-        # Intentar detección por strategic_router si está disponible
+        # Intentar detección por strategic_router SOLO como fallback cuando los
+        # keywords no encontraron un tópico específico. La detección por keyword
+        # es la fuente determinista de verdad para los tópicos sensibles
+        # documentados (trading/financial/security/health/code); el strategic
+        # router (embeddings) puede devolver ruido — sobre todo con un vault
+        # vacío — y no debe sobrescribir una coincidencia clara de keywords.
         strategic_topic = None
         strategic_conf = 0.0
-        try:
-            sr = self._get_strategic_router()
-            if sr is not None:
-                strategic_topic, strategic_conf = sr.detect_topic(text)
-                # Preferir strategic si tiene mayor confianza
-                if strategic_conf > topic_confidence:
-                    best_topic = strategic_topic
-                    topic_confidence = strategic_conf
-        except Exception as exc:
-            logger.debug("Strategic router topic detection failed: %s", exc)
+        if best_topic == "general":
+            try:
+                sr = self._get_strategic_router()
+                if sr is not None:
+                    strategic_topic, strategic_conf = sr.detect_topic(text)
+                    if strategic_topic and strategic_conf > topic_confidence:
+                        best_topic = strategic_topic
+                        topic_confidence = strategic_conf
+            except Exception as exc:
+                logger.debug("Strategic router topic detection failed: %s", exc)
 
         # Evaluación de riesgo
         sensitive = best_topic in _SENSITIVE_TOPICS
@@ -799,26 +804,26 @@ class SmartRouter:
                 f"Comando del sistema: {signals.get('command', '?')}",
             )
 
-        # Memoria (statement/nota)
+        # Memoria (statement/nota) — contrato: MEMORY siempre RESOLVE_MEMORY.
+        # La profundidad de memoria del usuario solo ajusta la CONFIANZA, no
+        # cambia la estrategia: un statement es memoria por definición. (Antes
+        # se degradaba a ROUTE_SINGLE cuando depth<5, lo que rompe el contrato
+        # y, con memoria vacía, mandaba todo statement al LLM.)
         if intent == Intent.MEMORY:
             _owner = signals.get("owner", "")
             _mem_depth = self._estimate_memory_depth(_owner)
             _affinity = self._get_user_topic_affinity(_owner)
             _topic_match = topic in _affinity
             if _mem_depth >= 5:
-                # Boost confidence if the topic matches user's history
                 _conf = 0.95 if _topic_match else 0.9
-                return (
-                    Strategy.RESOLVE_MEMORY, [], _conf,
-                    "Statement/nota → memory (depth=%d%s)" % (
-                        _mem_depth,
-                        ", topic_match" if _topic_match else "",
-                    ),
-                )
-            providers = self._suggest_providers(topic, single=True)
+            else:
+                _conf = 0.7
             return (
-                Strategy.ROUTE_SINGLE, providers, 0.6,
-                "Memoria superficial (depth=%d) → LLM directo" % _mem_depth,
+                Strategy.RESOLVE_MEMORY, [], _conf,
+                "Statement/nota → memory (depth=%d%s)" % (
+                    _mem_depth,
+                    ", topic_match" if _topic_match else "",
+                ),
             )
 
         # Búsqueda de lugar físico
@@ -842,7 +847,12 @@ class SmartRouter:
                 "Consulta de mercado → market_vigilance + market_router",
             )
 
-        # Consulta local (memoria propia)
+        # Consulta local (memoria propia) — contrato: LOCAL siempre RESOLVE_LOCAL.
+        # La pregunta es explícitamente sobre la memoria del usuario ("qué dije
+        # sobre X"); resolverla localmente es lo correcto aunque la memoria esté
+        # vacía (el resolver local maneja el caso sin resultados). La profundidad
+        # solo ajusta la confianza. (Antes degradaba a RESOLVE_ONLINE con
+        # depth<3, rompiendo el contrato cuando la memoria estaba vacía.)
         if intent == Intent.LOCAL:
             _owner = signals.get("owner", "")
             _mem_depth = self._estimate_memory_depth(_owner)
@@ -850,16 +860,14 @@ class SmartRouter:
             _topic_match = topic in _affinity
             if _mem_depth >= 3:
                 _conf = 0.92 if _topic_match else 0.85
-                return (
-                    Strategy.RESOLVE_LOCAL, [], _conf,
-                    "Memoria propia → local (depth=%d%s)" % (
-                        _mem_depth,
-                        ", topic_match" if _topic_match else "",
-                    ),
-                )
+            else:
+                _conf = 0.7
             return (
-                Strategy.RESOLVE_ONLINE, [], 0.65,
-                "Memoria insuficiente (depth=%d) → online" % _mem_depth,
+                Strategy.RESOLVE_LOCAL, [], _conf,
+                "Memoria propia → local (depth=%d%s)" % (
+                    _mem_depth,
+                    ", topic_match" if _topic_match else "",
+                ),
             )
 
         # AI explícita (single)
