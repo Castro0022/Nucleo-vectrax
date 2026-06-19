@@ -1,7 +1,21 @@
 {
-  "head": "529870f",
+  "head": "b8e8ede",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "b8e8ede9",
+      "subject": "fix: eliminate false gateway stale alarms",
+      "author": "Mario Bravo Castro",
+      "ts": 1781755414,
+      "files_changed": 2
+    },
+    {
+      "sha": "df2e1bfe",
+      "subject": "feat: freight simulator + pipeline tests + README docs",
+      "author": "Mario Bravo Castro",
+      "ts": 1781675382,
+      "files_changed": 3
+    },
     {
       "sha": "529870f1",
       "subject": "feat: freight logistics synthetic simulator + domain template",
@@ -43,31 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1781628753,
       "files_changed": 5
-    },
-    {
-      "sha": "8ad73d20",
-      "subject": "feat: Pattern Performance Dashboard + Unified Census",
-      "author": "Mario Bravo Castro",
-      "ts": 1781621197,
-      "files_changed": 18
-    },
-    {
-      "sha": "ffac262d",
-      "subject": "feat: market pattern analyzer script",
-      "author": "Mario Bravo Castro",
-      "ts": 1781616342,
-      "files_changed": 1
     }
   ],
   "modified_modules": [
     "README.md",
     ".git_snapshot/SUMMARY.json",
     "connectors/etoro/etoro_client.py",
+    "vectrax/telegram_gateway.py",
     "services/ui/static/observatory.html",
-    "core/intake_filter.py",
     "core/domain_ingester.py",
     "services/core/app.py",
     "connectors/etoro/learning_engine.py"
   ],
-  "generated_at": 1781674769
+  "generated_at": 1781755416
 }

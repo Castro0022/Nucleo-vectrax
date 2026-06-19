@@ -67,7 +67,7 @@ MAX_CONSECUTIVE_ERRORS = 10
 CONFLICT_RETRY_DELAY = 60  # 409 Conflict: espera 60s antes de reintentar
 RESPONSE_WAIT_TIMEOUT = 25.0
 WORKERS = 6
-HEARTBEAT_INTERVAL = 10  # seconds between heartbeat writes
+HEARTBEAT_INTERVAL = 3   # seconds between heartbeat writes (was 10 — too slow for stale detection)
 STATUS_LOG_INTERVAL = 300  # log status summary every 5 min
 POLL_CLIENT_REFRESH = 900   # recreate HTTP client every 15 min (defense in depth)
 # POLL_STUCK_THRESHOLD: watchdog kills process if poll hasn't completed in N seconds.
@@ -622,10 +622,10 @@ class TelegramGateway:
                 self._last_status_log = now
 
             # Sleep in small increments so we notice _running=False quickly
-            for _ in range(HEARTBEAT_INTERVAL * 2):
+            for _ in range(HEARTBEAT_INTERVAL * 4):
                 if not self._running:
                     break
-                time.sleep(0.5)
+                time.sleep(0.25)
 
     # == Polling loop (NEVER blocks) =======================================
 
@@ -695,6 +695,10 @@ class TelegramGateway:
                 # Heartbeat keeps writing. Supervisor never detects stale.
                 # ══════════════════════════════════════════════════════
                 import multiprocessing as _mp
+                # Use 'spawn' context to avoid fork() which copies 900MB+
+                # of process memory and holds the GIL during the copy.
+                # spawn creates a fresh process without memory copy overhead.
+                _ctx = _mp.get_context("spawn")
 
                 def _poll_subprocess(_q, _base, _offset, _timeout, _token):
                     """Run getUpdates in isolated process."""
@@ -714,8 +718,8 @@ class TelegramGateway:
                     except Exception as _e:
                         _q.put({"ok": False, "error": str(_e)})
 
-                _result_q = _mp.Queue(maxsize=1)
-                _proc = _mp.Process(
+                _result_q = _ctx.Queue(maxsize=1)
+                _proc = _ctx.Process(
                     target=_poll_subprocess,
                     args=(_result_q, self._base, self._offset, POLL_TIMEOUT, self._token),
                     daemon=True,
