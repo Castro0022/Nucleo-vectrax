@@ -1,7 +1,14 @@
 {
-  "head": "d947676",
+  "head": "a74a5f3",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "a74a5f34",
+      "subject": "fix: move gravity_index.json to persistent volume (~/.vectrax/)",
+      "author": "Mario Bravo Castro",
+      "ts": 1781834618,
+      "files_changed": 2
+    },
     {
       "sha": "d9476765",
       "subject": "fix: revert spawn to fork — spawn can't pickle local functions",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1781663632,
       "files_changed": 2
-    },
-    {
-      "sha": "35942341",
-      "subject": "fix: syntax error in system prompt closing parenthesis",
-      "author": "Mario Bravo Castro",
-      "ts": 1781663391,
-      "files_changed": 2
     }
   ],
   "modified_modules": [
@@ -69,5 +69,5 @@
     "services/core/app.py",
     "connectors/etoro/learning_engine.py"
   ],
-  "generated_at": 1781833994
+  "generated_at": 1781834620
 }
