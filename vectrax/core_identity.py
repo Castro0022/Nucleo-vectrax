@@ -271,6 +271,19 @@ def replacement_voice(kind: str, lang: str = "es") -> str:
     return entry.get(lang) or entry["es"]
 
 
+def effective_system_prompt(system_prompt: Optional[str] = None) -> str:
+    """Resuelve el system prompt efectivo para una llamada al LLM.
+
+    Fuente única de verdad de la soberanía de identidad a nivel de transporte:
+    si el caller no provee system_prompt, se usa VECTRAX_SYSTEM_PROMPT. Si el
+    caller provee uno explícito, ese gana. Así los providers se mantienen como
+    serializadores fieles del request, y la identidad por defecto vive en un
+    solo lugar (no hardcodeada dentro de cada _build_payload).
+    """
+    sp = (system_prompt or "").strip()
+    return sp or VECTRAX_SYSTEM_PROMPT
+
+
 def enrich_user_prompt(user_input: str, extra_context: Optional[str] = None) -> str:
     """
     Enrich the user message with additional context (memory, task instructions,

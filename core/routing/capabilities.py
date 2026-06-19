@@ -246,11 +246,16 @@ def models_with_capability(cap: Capability, local_only: bool = False) -> Dict[st
 def refresh_availability() -> None:
     """Re-check env vars and connector registry to update availability.
 
-    Cloud models: available if their API key env var is set.
-    Local models (e.g. Ollama): available only if the provider passed
-    the health check and is registered in the connector registry.
-    This prevents the ModelRouter from selecting Ollama on servers
-    where it isn't installed.
+    Contract (local-first, deterministic routing):
+      - Cloud models: available iff their API key env var is set.
+      - Local models (e.g. Ollama): available by DEFAULT (the routing catalog
+        is local-first). They are only marked unavailable when a connector for
+        that provider is registered AND reports unhealthy. When no connector is
+        registered at all (the common case in unit tests and fresh processes),
+        the local-first default is preserved so the ModelRouter can always make
+        a deterministic routing decision. Actual reachability is enforced at the
+        execution layer (connector registry + circuit breaker + fallback), not
+        by zeroing the routing catalog.
     """
     env_map = {
         "openai": "OPENAI_API_KEY",
@@ -258,21 +263,29 @@ def refresh_availability() -> None:
         "anthropic": "ANTHROPIC_API_KEY",
     }
 
-    # Check which local providers are actually registered (passed health check)
-    _registered_local: set = set()
+    # Inspect the connector registry: which local providers are registered, and
+    # which of those passed the health check.
+    _registered_local: set = set()       # registered AND healthy
+    _registered_local_any: set = set()   # registered (healthy or not)
     try:
         from core.intelligence.connector_registry import get_connector_registry
         reg = get_connector_registry()
         for desc in reg.list_descriptors():
-            if desc.is_local and desc.healthy:
-                _registered_local.add(desc.name)
+            if desc.is_local:
+                _registered_local_any.add(desc.name)
+                if desc.healthy:
+                    _registered_local.add(desc.name)
     except Exception:
         pass
 
     for profile in CAPABILITY_REGISTRY.values():
         if profile.is_local:
-            # Local models: only available if provider passed health check
-            profile.available = profile.provider in _registered_local
+            if profile.provider in _registered_local_any:
+                # A connector exists for this provider → trust its health.
+                profile.available = profile.provider in _registered_local
+            else:
+                # No connector registered → keep local-first default available.
+                profile.available = True
         else:
             env_var = env_map.get(profile.provider)
             if env_var:

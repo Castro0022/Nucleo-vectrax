@@ -12,7 +12,7 @@ from core.abstraction.base import (
     GenerateResponse
 )
 from core.observability import get_metrics_collector
-from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT, enrich_user_prompt
+from vectrax.core_identity import effective_system_prompt
 
 
 class OllamaProvider(BaseLLMProvider):
@@ -39,13 +39,13 @@ class OllamaProvider(BaseLLMProvider):
         success = False
         
         try:
-            # Build Ollama-specific request
-            # Strict identity: VECTRAX_SYSTEM_PROMPT is the ONLY system message
-            user_content = enrich_user_prompt(request.prompt, request.system_prompt)
+            # Build Ollama-specific request. Identity sovereignty by default:
+            # effective_system_prompt() supplies VECTRAX_SYSTEM_PROMPT when the
+            # caller didn't set one; an explicit system_prompt overrides it.
             ollama_request = {
                 "model": request.model,
-                "prompt": user_content,
-                "system": VECTRAX_SYSTEM_PROMPT,
+                "prompt": request.prompt,
+                "system": effective_system_prompt(request.system_prompt),
                 "stream": False,
                 "options": {
                     "temperature": request.temperature,
@@ -113,12 +113,11 @@ class OllamaProvider(BaseLLMProvider):
     
     async def stream(self, request: GenerateRequest) -> AsyncIterator[str]:
         """Stream response from Ollama"""
-        # Strict identity: single system message only
-        user_content = enrich_user_prompt(request.prompt, request.system_prompt)
+        # Identity sovereignty by default (see generate()).
         ollama_request = {
             "model": request.model,
-            "prompt": user_content,
-            "system": VECTRAX_SYSTEM_PROMPT,
+            "prompt": request.prompt,
+            "system": effective_system_prompt(request.system_prompt),
             "stream": True,
             "options": {
                 "temperature": request.temperature,
@@ -164,9 +163,29 @@ class OllamaProvider(BaseLLMProvider):
         await self.client.aclose()
     
     def __del__(self):
-        """Cleanup on deletion"""
+        """Best-effort cleanup on GC.
+
+        Only schedule the async close() when there is a running event loop to
+        await it. Otherwise we must NOT create the close() coroutine at all, or
+        Python emits 'coroutine was never awaited' RuntimeWarnings (the common
+        case in synchronous tests that instantiate providers and let them GC).
+        httpx.AsyncClient releases its own resources on GC.
+        """
+        client = getattr(self, "client", None)
+        if client is None:
+            return
+        try:
+            if getattr(client, "is_closed", False):
+                return
+        except Exception:
+            return
         try:
             import asyncio
-            asyncio.create_task(self.close())
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None and not loop.is_closed():
+                loop.create_task(self.close())
         except Exception:
             pass

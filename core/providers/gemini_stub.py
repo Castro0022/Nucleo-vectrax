@@ -19,7 +19,7 @@ from core.abstraction.base import (
     ProviderType,
 )
 from core.resilience.errors import NotConfiguredError
-from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT, enrich_user_prompt
+from vectrax.core_identity import effective_system_prompt
 
 
 class GeminiProvider(BaseLLMProvider):
@@ -60,19 +60,34 @@ class GeminiProvider(BaseLLMProvider):
     # -- Payload helpers ----------------------------------------------------
 
     def _build_payload(self, request: GenerateRequest) -> Dict:
-        """Build the Gemini API payload. Identity is always the sole systemInstruction."""
-        # Strict identity: VECTRAX_SYSTEM_PROMPT is the ONLY system instruction
-        user_content = enrich_user_prompt(request.prompt, request.system_prompt)
+        """Serialize a GenerateRequest into the Gemini API payload.
+
+        Pure serializer (contract): the request's prompt becomes the user
+        content, and request.system_prompt — if present — becomes the
+        systemInstruction. When no system_prompt is set, no systemInstruction
+        is emitted. Identity sovereignty (the VECTRAX default) is applied in
+        generate()/stream() via effective_system_prompt(), not hardcoded here.
+        """
         payload: Dict = {
-            "contents": [{"parts": [{"text": user_content}]}],
+            "contents": [{"parts": [{"text": request.prompt}]}],
             "generationConfig": {"temperature": request.temperature},
-            "systemInstruction": {
-                "parts": [{"text": VECTRAX_SYSTEM_PROMPT}]
-            },
         }
+        if request.system_prompt:
+            payload["systemInstruction"] = {
+                "parts": [{"text": request.system_prompt}]
+            }
         if request.max_tokens:
             payload["generationConfig"]["maxOutputTokens"] = request.max_tokens
         return payload
+
+    def _with_identity(self, request: GenerateRequest) -> GenerateRequest:
+        """Return a request whose system_prompt defaults to the Vectrax identity
+        when the caller did not provide one (identity sovereignty)."""
+        import dataclasses
+        return dataclasses.replace(
+            request,
+            system_prompt=effective_system_prompt(request.system_prompt),
+        )
 
     @staticmethod
     def _extract_text(data: Dict) -> str:
@@ -121,7 +136,7 @@ class GeminiProvider(BaseLLMProvider):
             f"{self.endpoint}/models/{request.model}:generateContent"
             f"?key={self._api_key}"
         )
-        payload = self._build_payload(request)
+        payload = self._build_payload(self._with_identity(request))
 
         try:
             resp = await self._client.post(url, json=payload)
@@ -186,7 +201,7 @@ class GeminiProvider(BaseLLMProvider):
             f"{self.endpoint}/models/{request.model}:streamGenerateContent"
             f"?key={self._api_key}&alt=sse"
         )
-        payload = self._build_payload(request)
+        payload = self._build_payload(self._with_identity(request))
 
         async with self._client.stream("POST", url, json=payload) as resp:
             resp.raise_for_status()
