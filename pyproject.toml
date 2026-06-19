@@ -50,6 +50,9 @@ vx = "cli.vx_main:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider"
+# Run bare `async def` tests without per-test markers (architectural fix for
+# the whole class of "async def not natively supported" errors).
+asyncio_mode = "auto"
 markers = [
     "unit: fast, hermetic unit test (default quality gate)",
     "integration: cross-module test, still hermetic (no network/credentials)",
