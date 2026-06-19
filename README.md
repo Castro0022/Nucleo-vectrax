@@ -1253,6 +1253,32 @@ Files:
 - `core/self_observation/autonomous_observer.py` — snapshot comparison + change detection
 - `vectrax/self_context.py` — `_read_recent_observations()` injects into LLM context
 
+### UPL Observation Priority (read-only, additive)
+
+The autonomous observer consults the **Universal Pattern Library (UPL)** once per cycle to decide *where to look first* — never *what to do*. UPL is a **strictly additive layer**: it only raises observation priority/frequency for domains that match a cross-domain structural hypothesis. It **never** affects `gravity_score`, `confidence`, `expectancy`, pattern thresholds, proposals, alerts, Telegram, or execution.
+
+```
+observe_and_record()
+    └── if UPL_OBSERVER_INTEGRATION != false:
+            get_usable_hypotheses(min_domains=2, min_observations=10)   ← read-only
+                └── for each matched domain:
+                        _bias_weights[domain] += 0.5   (additive, never replaces)
+                        record("upl", "hypothesis_boost", …)   ← audit only
+```
+
+**Hard guarantees:**
+- Wrapped in `try/except` — if UPL fails, the observer continues exactly as before (safe fallback).
+- Disable entirely with `UPL_OBSERVER_INTEGRATION=false`.
+- Boost is additive (`+0.5`) on the observation bias weight only (review order/frequency). No gravity/confidence/expectancy/threshold mutation.
+- Generates no proposals, alerts, or executions.
+
+**Audit log** — every priority change writes one `upl/hypothesis_boost` observation to the ledger with: `domain`, `hypothesis_id`, `matched_structure`, `affected_star_ids`, `priority_reason`.
+
+Files:
+- `core/universal_pattern_library.py` — `get_usable_hypotheses()` (read-only source)
+- `core/self_observation/autonomous_observer.py` — single authorized integration point
+Tests: `tests/test_upl_observer_integration.py` (7 tests: env toggle, exception safety, no proposals, no gravity/confidence/expectancy mutation, audit log fields)
+
 ---
 
 ## 📊 Market Auto-Execution (Experimental)
@@ -1854,6 +1880,7 @@ market=2.90  user_interest=1.30  unknown=1.30  services=1.00  tests=1.00
 Consumed by:
 - `autonomous_observer.py` — prioriza detección de cambios en dominios de alto peso
 - `learning_engine.py` — modula profundidad de observación de mercado (skip si peso < 0.5)
+- **UPL** — `autonomous_observer.py` suma un boost aditivo (+0.5) a estos pesos para dominios con hipótesis universal usable (solo prioridad de observación, read-only; ver *UPL Observation Priority*)
 
 Files:
 - `core/learn/learning_gate.py` — evaluate(): novedad + coherencia + impacto
@@ -2060,6 +2087,9 @@ Files:
 ### 2026-07-02
 - **feat: PAPER-shadow (observational)** — Records hypothetical trades under a flexible experimental gate WITHOUT executing, WITHOUT counting as real paper_trades, and WITHOUT advancing LIVE progress. New `connectors/etoro/paper_shadow.py` (+ `paper_shadow_trades` table), Step 9 in `learning_engine`, `shadow` block in `GET /v1/market/patterns`, and a shadow card in the SPA Patterns tab (separate from the real executor 0/30). Resolution reuses `outcome_tracker.classify_outcome` (single classifier). `READY_FOR_MANUAL_PROMOTION` is suggestion-only (real gate). 7 tests. Verified in prod: 69 candidates, shadow WR 55.3%, E +0.195, 0 ready.
 - **fix: is_usable decisive sample** — `PatternStats.is_usable` now measures `n_wins+n_losses` (decisive), not `n_total` (inflated by neutral/expired). Thresholds unchanged (N≥15, WR≥55%, E>0) — the fix aligns the sample with the metric it guards; the real gate stays closed until real evidence exists.
+
+### 2026-06-19
+- **feat: UPL observation priority (additive, read-only)** — `autonomous_observer.py` consults `get_usable_hypotheses()` once per cycle to boost observation priority/frequency for domains matching a cross-domain structural hypothesis. Strictly additive (`+0.5` on observation bias): never touches gravity_score/confidence/expectancy/thresholds, never generates proposals/alerts/execution. Wrapped in try/except (safe fallback), disable with `UPL_OBSERVER_INTEGRATION=false`. Audit log `upl/hypothesis_boost` records domain, hypothesis_id, matched_structure, affected_star_ids, priority_reason. `tests/test_upl_observer_integration.py` (7 tests).
 
 ### 2026-06-17
 - **feat: Domain Knowledge Elevation** — Cross-tenant pattern library. Extracts mature patterns, strips PII, stores as reusable domain-level knowledge. New tenants get industry priors on creation. Weighted-average merging when multiple tenants confirm the same pattern. `core/domain_knowledge.py`, `GET /v1/domain/{domain}/knowledge`. 20 tests.

@@ -25,6 +25,7 @@ API pública:
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -84,6 +85,53 @@ def observe_and_record() -> int:
         _bias_weights = get_bias()
     except Exception:
         pass
+
+    # -- UPL: observation priority hints (strictly read-only) --
+    # If enabled, UPL hypotheses boost ONLY the observation priority/frequency
+    # for matching domains. This NEVER affects gravity_score, confidence,
+    # expectancy, pattern thresholds, proposals, alerts, Telegram, or execution.
+    # Disable entirely with UPL_OBSERVER_INTEGRATION=false.
+    _upl_boosted_domains: Dict[str, str] = {}  # domain → hypothesis_id (audit)
+    _upl_enabled = os.environ.get("UPL_OBSERVER_INTEGRATION", "true").lower() != "false"
+    if _upl_enabled:
+        try:
+            from core.universal_pattern_library import get_usable_hypotheses
+            hypotheses = get_usable_hypotheses(min_domains=2, min_observations=10)
+            _curr_stars = current_gravity.get("stars", {})
+            for h in hypotheses:
+                for domain in h.source_domains:
+                    if domain in _upl_boosted_domains:
+                        continue  # domain already prioritized by an earlier hypothesis
+                    # Stars currently observed in this domain (read-only lookup).
+                    affected_star_ids = [
+                        sid for sid, star in _curr_stars.items()
+                        if star.get("domain") == domain
+                    ]
+                    # Raise observation priority ONLY (additive, never replaces).
+                    # Does NOT touch gravity_score, confidence, or expectancy.
+                    _bias_weights[domain] = _bias_weights.get(domain, 1.0) + 0.5
+                    _upl_boosted_domains[domain] = h.meta_id
+                    # Audit log — a UPL hypothesis changed review order/frequency.
+                    record(
+                        "upl", "hypothesis_boost",
+                        f"UPL priorizó la observación del dominio '{domain}' "
+                        f"por la hipótesis universal {h.meta_id}",
+                        evidence={
+                            "domain": domain,
+                            "hypothesis_id": h.meta_id,
+                            "matched_structure": h.structure,
+                            "affected_star_ids": affected_star_ids,
+                            "priority_reason": "cross-domain structural similarity",
+                        },
+                    )
+                    recorded += 1
+            if _upl_boosted_domains:
+                logger.info(
+                    "UPL_BOOST | %d domain(s) prioritized for observation: %s",
+                    len(_upl_boosted_domains), list(_upl_boosted_domains.keys()),
+                )
+        except Exception as exc:
+            logger.debug("UPL observer integration failed (non-blocking): %s", exc)
 
     # Compare and detect changes
     # -- Always active (both modes) --
