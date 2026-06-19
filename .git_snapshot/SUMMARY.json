@@ -1,7 +1,14 @@
 {
-  "head": "7a2f1bd",
+  "head": "d947676",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "d9476765",
+      "subject": "fix: revert spawn to fork — spawn can't pickle local functions",
+      "author": "Mario Bravo Castro",
+      "ts": 1781833968,
+      "files_changed": 2
+    },
     {
       "sha": "7a2f1bd4",
       "subject": "fix: gateway stale heartbeat — faster writes + spawn instead of fork",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1781663391,
       "files_changed": 2
-    },
-    {
-      "sha": "d0a8dfc5",
-      "subject": "feat: Identity Anchor as first section of system prompt",
-      "author": "Mario Bravo Castro",
-      "ts": 1781663194,
-      "files_changed": 2
     }
   ],
   "modified_modules": [
@@ -69,5 +69,5 @@
     "services/core/app.py",
     "connectors/etoro/learning_engine.py"
   ],
-  "generated_at": 1781831369
+  "generated_at": 1781833994
 }

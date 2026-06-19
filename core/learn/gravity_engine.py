@@ -19,10 +19,13 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.learn import VAULT_DIR
+from core.learn import VAULT_DIR, RUNTIME_DIR
 from core.learn.schemas import GravityRecord, Tier, TIER_ORDER
 
-GRAVITY_INDEX_PATH = os.path.join(VAULT_DIR, "gravity_index.json")
+# Persistent path: ~/.vectrax/ (Docker volume, survives deploys)
+# Old path: vault/ (bind-mounted code dir, overwritten by rsync)
+GRAVITY_INDEX_PATH = os.path.join(RUNTIME_DIR, "gravity_index.json")
+_OLD_GRAVITY_PATH = os.path.join(VAULT_DIR, "gravity_index.json")
 
 # Déjà Vu promotion thresholds
 DEJAVU_DEEP_TO_COLD_HITS = 1
@@ -56,6 +59,26 @@ class GravityIndex:
     def __init__(self, path: str = GRAVITY_INDEX_PATH):
         self.path = path
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        # Auto-migrate from old vault/ path if new path is empty
+        self._migrate_from_old_path()
+
+    def _migrate_from_old_path(self) -> None:
+        """One-time migration: if new path is empty but old path has data, copy it."""
+        if self.path != GRAVITY_INDEX_PATH:
+            return  # custom path (tests), skip migration
+        try:
+            new_size = os.path.getsize(self.path) if os.path.isfile(self.path) else 0
+            old_size = os.path.getsize(_OLD_GRAVITY_PATH) if os.path.isfile(_OLD_GRAVITY_PATH) else 0
+            if old_size > new_size and old_size > 500:  # old has more data
+                import shutil
+                shutil.copy2(_OLD_GRAVITY_PATH, self.path)
+                import logging
+                logging.getLogger("vectrax.gravity").info(
+                    "MIGRATED gravity_index from vault/ to ~/.vectrax/ (%d bytes)",
+                    old_size,
+                )
+        except Exception:
+            pass
 
     # -- persistence --------------------------------------------------------
 
@@ -388,7 +411,7 @@ ALERT_MIN_HITS = 5        # combined hits to consider significant
 ALERT_MIN_CC = 0.4        # combined coherence to consider strong
 ALERT_GROWTH_FACTOR = 2   # hits doubled since last check
 
-_ALERTS_SENT_FILE = os.path.join(VAULT_DIR, "convergence_alerts_sent.json")
+_ALERTS_SENT_FILE = os.path.join(RUNTIME_DIR, "convergence_alerts_sent.json")
 
 
 def _load_sent_alerts() -> Dict[str, Any]:
@@ -455,13 +478,13 @@ def check_convergence_alerts() -> List[Dict[str, Any]]:
     return new_alerts
 
 
-_ALERT_HISTORY_FILE = os.path.join(VAULT_DIR, "convergence_alert_history.jsonl")
+_ALERT_HISTORY_FILE = os.path.join(RUNTIME_DIR, "convergence_alert_history.jsonl")
 _MAX_ALERT_HISTORY = 200
 
 
 def _append_alert_history(alert: Dict[str, Any]) -> None:
     """Append alert to persistent JSONL history."""
-    hist_file = os.path.join(VAULT_DIR, "convergence_alert_history.jsonl")
+    hist_file = _ALERT_HISTORY_FILE
     try:
         os.makedirs(os.path.dirname(hist_file), exist_ok=True)
         entry = {
@@ -495,7 +518,7 @@ def _trim_alert_history() -> None:
 
 def get_alert_history(limit: int = 20) -> List[Dict[str, Any]]:
     """Return recent alert history (newest first)."""
-    hist_file = os.path.join(VAULT_DIR, "convergence_alert_history.jsonl")
+    hist_file = _ALERT_HISTORY_FILE
     if not os.path.isfile(hist_file):
         return []
     entries = []
