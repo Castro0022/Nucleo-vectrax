@@ -1,7 +1,14 @@
 {
-  "head": "4d72888",
+  "head": "2c9b745",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "2c9b7452",
+      "subject": "fix: handle None volume in crypto candles from eToro API",
+      "author": "Mario Bravo Castro",
+      "ts": 1781880979,
+      "files_changed": 2
+    },
     {
       "sha": "4d728888",
       "subject": "fix: universe canvas missing 392 knowledge stars + gateway threshold 60s",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1781675382,
       "files_changed": 3
-    },
-    {
-      "sha": "529870f1",
-      "subject": "feat: freight logistics synthetic simulator + domain template",
-      "author": "Mario Bravo Castro",
-      "ts": 1781674767,
-      "files_changed": 3
     }
   ],
   "modified_modules": [
@@ -69,5 +69,5 @@
     "vectrax_supervisor.py",
     "core/domain_ingester.py"
   ],
-  "generated_at": 1781880546
+  "generated_at": 1781880981
 }
