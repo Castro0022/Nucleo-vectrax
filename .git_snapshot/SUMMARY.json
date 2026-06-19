@@ -1,7 +1,14 @@
 {
-  "head": "b8e8ede",
+  "head": "7a2f1bd",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "7a2f1bd4",
+      "subject": "fix: gateway stale heartbeat — faster writes + spawn instead of fork",
+      "author": "Mario Bravo Castro",
+      "ts": 1781831367,
+      "files_changed": 2
+    },
     {
       "sha": "b8e8ede9",
       "subject": "fix: eliminate false gateway stale alarms",
@@ -50,24 +57,17 @@
       "author": "Mario Bravo Castro",
       "ts": 1781663194,
       "files_changed": 2
-    },
-    {
-      "sha": "7592b73e",
-      "subject": "feat: tighten eToro circuit breaker to prevent worker stalls",
-      "author": "Mario Bravo Castro",
-      "ts": 1781628753,
-      "files_changed": 5
     }
   ],
   "modified_modules": [
-    "README.md",
     ".git_snapshot/SUMMARY.json",
-    "connectors/etoro/etoro_client.py",
+    "README.md",
     "vectrax/telegram_gateway.py",
+    "connectors/etoro/etoro_client.py",
     "services/ui/static/observatory.html",
     "core/domain_ingester.py",
     "services/core/app.py",
     "connectors/etoro/learning_engine.py"
   ],
-  "generated_at": 1781755416
+  "generated_at": 1781831369
 }

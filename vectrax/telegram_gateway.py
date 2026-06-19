@@ -695,10 +695,6 @@ class TelegramGateway:
                 # Heartbeat keeps writing. Supervisor never detects stale.
                 # ══════════════════════════════════════════════════════
                 import multiprocessing as _mp
-                # Use 'spawn' context to avoid fork() which copies 900MB+
-                # of process memory and holds the GIL during the copy.
-                # spawn creates a fresh process without memory copy overhead.
-                _ctx = _mp.get_context("spawn")
 
                 def _poll_subprocess(_q, _base, _offset, _timeout, _token):
                     """Run getUpdates in isolated process."""
@@ -718,8 +714,8 @@ class TelegramGateway:
                     except Exception as _e:
                         _q.put({"ok": False, "error": str(_e)})
 
-                _result_q = _ctx.Queue(maxsize=1)
-                _proc = _ctx.Process(
+                _result_q = _mp.Queue(maxsize=1)
+                _proc = _mp.Process(
                     target=_poll_subprocess,
                     args=(_result_q, self._base, self._offset, POLL_TIMEOUT, self._token),
                     daemon=True,
