@@ -125,10 +125,10 @@ def _calc_relative_volume(candles: List[Dict], lookback: int = 20) -> float:
     """
     if len(candles) < lookback + 1:
         return 1.0
-    avg_vol = sum(c["volume"] for c in candles[1: lookback + 1]) / lookback
+    avg_vol = sum((c["volume"] or 0) for c in candles[1: lookback + 1]) / lookback
     if avg_vol <= 0:
         return 1.0
-    return candles[0]["volume"] / avg_vol
+    return (candles[0]["volume"] or 0) / avg_vol
 
 
 def _detect_key_zone(candles: List[Dict], price: float, atr: float) -> Tuple[bool, float, float]:

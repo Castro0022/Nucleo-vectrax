@@ -1,7 +1,14 @@
 {
-  "head": "1098483",
+  "head": "4d72888",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "4d728888",
+      "subject": "fix: universe canvas missing 392 knowledge stars + gateway threshold 60s",
+      "author": "Mario Bravo Castro",
+      "ts": 1781880544,
+      "files_changed": 3
+    },
     {
       "sha": "1098483d",
       "subject": "fix: bump app.js cache buster to v5",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1781674767,
       "files_changed": 3
-    },
-    {
-      "sha": "f77f7fc2",
-      "subject": "feat: Domain Knowledge Elevation — cross-tenant pattern library",
-      "author": "Mario Bravo Castro",
-      "ts": 1781669489,
-      "files_changed": 6
     }
   ],
   "modified_modules": [
@@ -65,9 +65,9 @@
     "vectrax/telegram_gateway.py",
     "connectors/etoro/etoro_client.py",
     "services/ui/static/observatory.html",
-    "core/domain_ingester.py",
-    "services/core/app.py",
-    "connectors/etoro/learning_engine.py"
+    "services/ui/static/universe.html",
+    "vectrax_supervisor.py",
+    "core/domain_ingester.py"
   ],
-  "generated_at": 1781836933
+  "generated_at": 1781880546
 }
