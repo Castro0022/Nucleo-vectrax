@@ -10,7 +10,7 @@ PYTEST := $(VENV)/bin/pytest
 UVICORN := $(VENV)/bin/uvicorn
 VX := $(VENV)/bin/vx
 
-.PHONY: help dev test test-integration lint run-core run-agent install clean
+.PHONY: help dev test test-integration test-live check lint run-core run-agent install clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -28,6 +28,13 @@ test:  ## Run all tests
 
 test-integration:  ## Run integration tests only (fast, no external deps)
 	PYTHONPATH=. $(PYTEST) tests/integration/ -v --tb=short
+
+test-live:  ## Run ONLY live tests (need real services/credentials)
+	PYTHONPATH=. $(PYTEST) tests/ -m live -v --tb=short
+
+check:  ## Quality gate: hermetic suite, excludes live tests (use in CI)
+	$(PYTHON) -c "import sys; assert sys.version_info[:2] >= (3, 9), sys.version"
+	PYTHONPATH=. $(PYTEST) tests/ -m "not live" --tb=short -q
 
 lint:  ## Run linting (basic syntax check)
 	$(PYTHON) -m py_compile services/core/app.py
