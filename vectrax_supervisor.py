@@ -305,12 +305,10 @@ WORKER_HEARTBEAT_PATH = RUNTIME_DIR / "worker_heartbeat"
 WORKER_HEARTBEAT_MAX_AGE = 30  # seconds without heartbeat = hung
 
 GATEWAY_HEARTBEAT_PATH = RUNTIME_DIR / "gateway_heartbeat"
-# Bug #3 definitive: SSL at C level holds GIL → SIGALRM can't deliver,
-# heartbeat thread can't run. Only external kill works.
-# Threshold must be > POLL_TIMEOUT (30s) + subprocess overhead (~8s)
-# to avoid false alarms on normal long-polls.
-#   45s threshold + 10s check = max 55s before kill
-GATEWAY_HEARTBEAT_MAX_AGE = 45
+# Threshold must exceed: POLL_TIMEOUT(30s) + fork overhead + subprocess
+# kill + retry delay. 60s handles worst case without false alarms.
+# Real hang detected in 60s + 10s check = 70s max.
+GATEWAY_HEARTBEAT_MAX_AGE = 60
 
 
 class VectraxSupervisor:

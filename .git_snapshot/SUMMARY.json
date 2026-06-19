@@ -1,7 +1,14 @@
 {
-  "head": "a74a5f3",
+  "head": "1098483",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "1098483d",
+      "subject": "fix: bump app.js cache buster to v5",
+      "author": "Mario Bravo Castro",
+      "ts": 1781836930,
+      "files_changed": 2
+    },
     {
       "sha": "a74a5f34",
       "subject": "fix: move gravity_index.json to persistent volume (~/.vectrax/)",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1781669489,
       "files_changed": 6
-    },
-    {
-      "sha": "13864674",
-      "subject": "docs: changelog for Identity Anchor + eToro circuit breaker (2026-06-17)",
-      "author": "Mario Bravo Castro",
-      "ts": 1781663632,
-      "files_changed": 2
     }
   ],
   "modified_modules": [
@@ -69,5 +69,5 @@
     "services/core/app.py",
     "connectors/etoro/learning_engine.py"
   ],
-  "generated_at": 1781834620
+  "generated_at": 1781836933
 }

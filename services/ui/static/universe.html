@@ -941,12 +941,9 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     // Build new arrays without touching the live ones yet
     let newStars = [], newEdges = [], newConst = [];
 
-    // 1. Gravitational DB stars
-    const token = localStorage.getItem('vectrax_token') || '';
+    // 1. Gravitational DB stars (no auth required — public endpoint)
     try {
-      const res = await fetch('/v1/gravitational/universe', {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
+      const res = await fetch('/v1/gravitational/universe');
       if (res.ok) {
         const data = await res.json();
         newStars = data.stars || [];
