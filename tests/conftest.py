@@ -68,6 +68,19 @@ def _hermetic_base(monkeypatch, tmp_path):
         )
     except Exception:
         pass
+    # Redirect the per-user SQLite memory store to the temp vault and reset its
+    # singleton, so tests that call store_memory()/clear_all_memory() can never
+    # read OR WIPE the real per-user memory DB. (user_memory._MEMORY_DB_PATH is
+    # computed from the module path and otherwise ignores VECTRAX_VAULT_DIR.)
+    try:
+        import vectrax.user_memory as _um
+
+        monkeypatch.setattr(
+            _um, "_MEMORY_DB_PATH", str(vault / "user_memory.db"), raising=False
+        )
+        monkeypatch.setattr(_um, "_store", None, raising=False)
+    except Exception:
+        pass
 
     # 2) Neutralize external credentials/config (deterministic, no real calls).
     for _key in _NEUTRALIZE_ENV:
