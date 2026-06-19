@@ -32,8 +32,14 @@ logger = logging.getLogger("vectrax.identity_layer")
 # Identidad base — System Prompt
 # ---------------------------------------------------------------------------
 
-# Identity layer uses the canonical system prompt from core_identity.
-from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT as SYSTEM_PROMPT  # noqa: F401
+# Identity layer uses the canonical system prompt and contract constants
+# from core_identity (single source of truth).
+from vectrax.core_identity import (  # noqa: F401
+    VECTRAX_SYSTEM_PROMPT as SYSTEM_PROMPT,
+    MEMORY_CONTEXT_MARKER,
+    identity_answer as _canonical_identity_answer,
+    replacement_voice as _canonical_replacement,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +148,7 @@ def build_prompt(
         except Exception:
             pass
         parts.append(
-            "[Historial reciente]\n"
+            f"{MEMORY_CONTEXT_MARKER}\n"
             f"{memory_context}"
         )
 
@@ -150,11 +156,13 @@ def build_prompt(
     try:
         from core.intake_filter import detect_context_type
         ctx_type = detect_context_type(content)
+        # NOTE: estos hints NO usan la palabra "Contexto" para que el marcador
+        # de memoria sea el único portador de esa cadena en el prompt.
         ctx_hints = {
-            "practical":     "Contexto práctico. Responde con acción directa. Una línea si es posible.",
-            "technical":     "Contexto técnico. Sé preciso. Puedes usar más detalle si el tema lo requiere.",
-            "creative":      "Contexto creativo. Rompe el patrón. Propone algo inesperado y concreto.",
-            "conversational":"Contexto conversacional. Responde como alguien presente. Breve y humano.",
+            "practical":     "Modo práctico. Responde con acción directa. Una línea si es posible.",
+            "technical":     "Modo técnico. Sé preciso. Puedes usar más detalle si el tema lo requiere.",
+            "creative":      "Modo creativo. Rompe el patrón. Propone algo inesperado y concreto.",
+            "conversational":"Modo conversacional. Responde como alguien presente. Breve y humano.",
         }
         hint = ctx_hints.get(ctx_type, "")
         if hint:
@@ -513,42 +521,32 @@ def generate_vectrax_replacement(
     memory_context: str = "",
 ) -> str:
     """
-    Genera una respuesta corta y humana con voz Vectrax.
+    Genera una respuesta corta con voz Vectrax cuando la salida del LLM
+    está vacía o fue rechazada.
 
-    Encapsulada detrás del Motor de Voz Viva (core/voice). El intent y
-    el tono se infieren con `classify_tone`, y la respuesta concreta la
-    construye `fallback_response` con plantillas variables.
+    Usa la voz de reemplazo CANÓNICA definida en core_identity (fuente
+    única de verdad). Clasifica la intención del input (saludo /
+    agradecimiento / pregunta / afirmación) y devuelve la plantilla
+    correspondiente en el idioma del usuario.
 
-    Mantiene firma original para compatibilidad con callers existentes.
-    Si el VoiceEngine no carga (entorno parcial), cae a comportamiento
-    legado humano — nunca al jerga-de-sistema anterior.
+    Determinista por contrato: nunca jerga de sistema ni frases meta
+    bloqueadas, y los saludos afirman la identidad (Vectrax).
     """
     text = user_input.strip() if user_input else ""
     lang = _get_locked_or_detected_lang(text)
-    name = _get_anchor_name()
+    if lang not in ("es", "en"):
+        lang = "es"
 
-    try:
-        from core.voice import classify_tone, fallback_response
-        c = classify_tone(text, context={"name": name, "lang": lang})
-        return fallback_response(
-            c["intent"], c["tone"], name or None,
-            lang=lang, seed=text,
-        )
-    except Exception as exc:
-        logger.debug("VoiceEngine fallback path failed (%s); legacy human", exc)
-
-    # Legado humano — nunca jerga sistémica
     if _GREETING_PATTERN.match(text):
-        if lang == "es":
-            return f"Hola{f', {name}' if name else ''}. ¿Qué necesitas?"
-        return f"Hey{f', {name}' if name else ''}. What do you need?"
-    if _THANKS_PATTERN.match(text):
-        return "De nada." if lang == "es" else "You're welcome."
-    if _QUESTION_PATTERN.search(text):
-        if lang == "es":
-            return "Cuéntame un poco más, así te ayudo mejor."
-        return "Tell me a bit more, so I can help better."
-    return "Lo guardo." if lang == "es" else "Got it."
+        kind = "greeting"
+    elif _THANKS_PATTERN.match(text):
+        kind = "thanks"
+    elif _QUESTION_PATTERN.search(text):
+        kind = "question"
+    else:
+        kind = "statement"
+
+    return _canonical_replacement(kind, lang)
 
 
 def _get_anchor_name() -> str:
@@ -594,107 +592,74 @@ def _get_locked_or_detected_lang(text: str) -> str:
 # Respuestas canónicas de identidad Vectrax
 # ---------------------------------------------------------------------------
 
-# Mapa de identidad bilingüe: (patrón, respuesta_es, respuesta_en)
-#
-# Reescrito 2026-05-06: voz humana, primera persona, sin jerga técnica
-# ("núcleo", "masa", "gravedad", "constelaciones") para preguntas
-# casuales. La jerga interna queda solo para queries explícitamente
-# técnicas que no matchean estos patrones casuales.
-_IDENTITY_MAP: list = [
+# Patrones de DETECCIÓN de preguntas de identidad, mapeados a la categoría
+# canónica cuya respuesta vive en core_identity.VECTRAX_IDENTITY_ANSWERS
+# (fuente única de verdad). El orden importa: más específico primero.
+_IDENTITY_PATTERNS: list = [
     (
+        "who",
         re.compile(
             r"(?:qui[eé]n\s+eres|what are you|who are you|qu[eé]\s+eres|c[oó]mo\s+te\s+llamas)",
             re.IGNORECASE,
         ),
-        "Soy Vectrax, el organismo digital que estamos construyendo. Opero bajo el núcleo de Mario.",
-        "I'm Vectrax, the digital organism we're building. I operate under Mario's nucleus.",
     ),
     (
+        "creator",
         re.compile(
             r"(?:qui[eé]n\s+(?:es\s+)?(?:tu|el)\s+creador"
             r"|who\s+(?:created|made|built)\s+you"
             r"|qui[eé]n\s+te\s+(?:cre[oó]|hizo|diseñ[oó]))",
             re.IGNORECASE,
         ),
-        "Mario Bravo Castro me hizo.",
-        "Mario Bravo Castro built me.",
     ),
     (
+        "universe",
         re.compile(
             r"(?:expl[ií]ca(?:me)?\s+(?:tu|el)\s+universo"
             r"|c[oó]mo\s+(?:es|funciona)\s+tu\s+universo"
             r"|tu\s+universo)",
             re.IGNORECASE,
         ),
-        "Mi universo es la memoria que vamos construyendo. "
-        "Cada cosa que me cuentas se conecta con lo que ya sé.",
-        "My universe is the memory we're building. "
-        "Every thing you tell me connects with what I already know.",
     ),
     (
+        "how",
         re.compile(
             r"(?:c[oó]mo\s+funcion(?:a|es|as)"
             r"|how\s+do\s+you\s+work"
             r"|expl[ií]ca(?:me)?\s+c[oó]mo\s+funcion)",
             re.IGNORECASE,
         ),
-        "Recuerdo lo que me dices, conecto patrones entre conversaciones, "
-        "y te respondo con contexto real. Mientras más me hablas, mejor te conozco.",
-        "I remember what you tell me, connect patterns across conversations, "
-        "and respond with real context. The more you talk to me, the better I know you.",
     ),
     (
+        "capabilities",
         re.compile(
             r"(?:qu[eé]\s+(?:puedes|sabes)\s+hacer"
             r"|what\s+can\s+you\s+do"
             r"|cu[aá]les\s+son\s+tus\s+capacidades)",
             re.IGNORECASE,
         ),
-        "Recuerdo, conecto, te ayudo a decidir. Hablamos por aquí; "
-        "te respondo con lo que sé de ti.",
-        "I remember, connect, help you decide. We talk here; "
-        "I answer with what I know about you.",
     ),
 ]
 
 
 def _match_identity_query(user_input: str) -> str:
-    """Si el input coincide con una pregunta de identidad, devuelve
-    una respuesta humana construida por el Motor de Voz Viva.
+    """Si el input coincide con una pregunta de identidad, devuelve la
+    respuesta CANÓNICA de esa categoría (core_identity, fuente única de
+    verdad).
 
-    `_IDENTITY_MAP` se mantiene como tabla de DETECCIÓN (regex). La
-    respuesta concreta se delega al VoiceEngine.fallback_response con
-    intent=identity, que tiene múltiples plantillas humanas. Las
-    cadenas legadas en `_IDENTITY_MAP` quedan como fallback de última
-    instancia si VoiceEngine no carga.
+    Determinista y soberana: la identidad NO se delega a un motor de voz
+    que pueda perder los anclajes (Vectrax / Mario Bravo Castro /
+    estrellas / gravedad / memoria / convergencias). Cada categoría tiene
+    su respuesta específica.
     """
     text = user_input.strip()
     lang = _get_locked_or_detected_lang(text)
+    if lang not in ("es", "en"):
+        lang = "es"
 
-    matched = False
-    for pattern, _es, _en in _IDENTITY_MAP:
+    for category, pattern in _IDENTITY_PATTERNS:
         if pattern.search(text):
-            matched = True
-            break
-    if not matched:
-        return ""
-
-    # Intentar VoiceEngine primero — voz humana, no jerga
-    try:
-        from core.voice import fallback_response
-        from core.voice.intent import INTENT_IDENTITY, TONE_CASUAL
-        name = _get_anchor_name()
-        return fallback_response(
-            INTENT_IDENTITY, TONE_CASUAL, name or None,
-            lang=lang, seed=text,
-        )
-    except Exception as exc:
-        logger.debug("VoiceEngine identity path failed (%s); legacy table", exc)
-
-    # Legado: tabla canónica (ya humanizada en deploy previo)
-    for pattern, response_es, response_en in _IDENTITY_MAP:
-        if pattern.search(text):
-            return response_es if lang == "es" else response_en
+            return _canonical_identity_answer(category, lang)
     return ""
 
 
@@ -778,7 +743,15 @@ def _reject_response(raw: str, user_input: str) -> str:
     if is_generic(text):
         return "generic_content"
 
-    # 6. Baja calidad (muro, Wikipedia, irrelevante)
+    # 6. Muro de texto sin estructura → SIEMPRE se reemplaza (hard reject).
+    #    Un muro (>8 oraciones sin bullets/saltos) no es una respuesta
+    #    Vectrax válida aunque tenga >80 chars, por eso no es soft.
+    _wall_sentences = _split_sentences(text)
+    _wall_has_structure = "\n" in text or "•" in text or "- " in text
+    if len(_wall_sentences) > MAX_UNSTRUCTURED_SENTENCES and not _wall_has_structure:
+        return "wall_of_text"
+
+    # 6b. Otra baja calidad (Wikipedia, irrelevante, repetición)
     if is_low_quality(text, ui):
         return "low_quality"
 
@@ -868,10 +841,12 @@ def enforce_final_answer(
         )
         return final
 
-    # ── RUTA SOBERANA DE MEMORIA ─────────────────────────────
+    # ── RUTA SOBERANA DE MEMORIA ────────────────────────
+    # La memoria es la salida soberana: NO pasa por identity matching,
+    # rechazo, filtros NI por el language gate (que traduciría y rompería
+    # la respuesta exacta del usuario). Solo estilo mínimo.
     if memory_resolved and raw:
         final = enforce_style(raw)
-        final = _enforce_lang(final, ui, user_id)
         logger.info(
             "FINAL | source=memory_sovereign | len=%d | input=%r",
             len(final), ui[:60],

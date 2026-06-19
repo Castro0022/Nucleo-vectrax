@@ -20,8 +20,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Ensure project root is importable
-sys.path.insert(0, os.path.expanduser("~/Vectrax"))
+# NOTE: repo root is made importable by tests/conftest.py. Do NOT inject a
+# hardcoded home-dir checkout here (it shadows the worktree under test on a
+# case-insensitive FS and breaks hermetic isolation).
 
 from core.operator.universal_bus import (
     Channels,

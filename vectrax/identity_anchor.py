@@ -32,6 +32,20 @@ logger = logging.getLogger("vectrax.identity_anchor")
 
 
 # ---------------------------------------------------------------------------
+# Etiquetas legibles de idioma — fuente única de verdad.
+# El sistema describe el idioma del usuario con su nombre en español (la
+# lengua interna de las directivas). Usado por IdentityAnchor.identity_context
+# y por build_identity_context para evitar mapas divergentes.
+# ---------------------------------------------------------------------------
+
+_LANG_LABELS_ES: Dict[str, str] = {
+    "es": "español", "en": "inglés", "fr": "francés",
+    "it": "italiano", "de": "alemán", "pt": "portugués",
+    "nl": "holandés",
+}
+
+
+# ---------------------------------------------------------------------------
 # Modelo de identidad anclada
 # ---------------------------------------------------------------------------
 
@@ -60,16 +74,11 @@ class IdentityAnchor:
 
     def identity_context(self) -> str:
         """Genera línea de contexto de identidad para inyectar en prompts."""
-        _lang_labels = {
-            "es": "español", "en": "inglés", "fr": "francés",
-            "it": "italiano", "de": "alemán", "pt": "portugués",
-            "nl": "holandés",
-        }
         parts = []
         if self.name:
             parts.append(f"El usuario se llama {self.name}.")
         if self.language:
-            lang_label = _lang_labels.get(self.language, self.language)
+            lang_label = _LANG_LABELS_ES.get(self.language, self.language)
             parts.append(f"Idioma del usuario: {lang_label}.")
         if self.preferences:
             vals = ", ".join(list(self.preferences.values())[:5])
@@ -400,74 +409,120 @@ def _extract_requested_lang(text: str) -> str:
     return "es"  # safe default
 
 
+# Mínimo de palabras para que un mensaje en un idioma distinto al fijado se
+# considere un cambio CLARO (y el lock lo siga). Mensajes más cortos se tratan
+# como ambiguos y MANTIENEN el idioma previo (rule: idioma sigue al usuario por
+# mensaje, pero no fuerza cambio ante señales débiles).
+_CLEAR_SWITCH_MIN_WORDS = 4
+
+
+def _persist_user_language(user_id: str, lang: str) -> None:
+    """Persiste el idioma del usuario (best-effort) vía conversational_policy."""
+    try:
+        from core.operator.conversational_policy import _save_user_language
+        _save_user_language(user_id, lang)
+    except Exception:
+        pass
+
+
+def _detect_message_language(user_input: str) -> str:
+    """Detecta el idioma de un mensaje. Usa la detección multilenguaje de
+    conversational_policy si está disponible; si no, heurística local es/en."""
+    try:
+        from core.operator.conversational_policy import detect_language as _detect_ml
+        return _detect_ml(user_input)
+    except Exception:
+        es_matches = len(_LANG_DETECT.findall(user_input))
+        return "es" if es_matches >= 1 else "en"
+
+
+def _is_clear_language_signal(user_input: str, detected: str) -> bool:
+    """True si el mensaje es una señal CLARA del idioma ``detected``:
+    suficientes palabras y al menos un marcador real de ese idioma.
+
+    Mensajes cortos o ambiguos (p.ej. 'ok', 'Hello there') NO cuentan: el
+    lock previo se mantiene. Mensajes claros en otro idioma (p.ej. una frase
+    completa) sí permiten que el idioma siga al usuario.
+    """
+    words = user_input.split()
+    if len(words) < _CLEAR_SWITCH_MIN_WORDS:
+        return False
+    # Requerir evidencia real del idioma detectado, no sólo el default.
+    try:
+        from core.operator.conversational_policy import _LANG_MARKERS
+        pattern = _LANG_MARKERS.get(detected)
+        if pattern is not None:
+            return len(pattern.findall(user_input)) >= 1
+    except Exception:
+        pass
+    if detected == "es":
+        return len(_LANG_DETECT.findall(user_input)) >= 1
+    return True
+
+
 def detect_and_lock_language(user_id: str, user_input: str) -> str:
     """
-    Detecta el idioma del mensaje actual y actualiza el lock.
+    Determina el idioma de respuesta para un usuario, por mensaje.
 
-    Soporta: es, en, fr, it, de, pt, nl.
-    Usa la detección unificada de conversational_policy.
+    Contrato (el idioma SIGUE al usuario, sin forzar cambios débiles):
+      1. Cambio EXPLÍCITO ('respóndeme en X') → cambia y fija.
+      2. Sin baseline (primer mensaje) → detecta y fija.
+      3. Con baseline → solo CAMBIA si el mensaje es una señal CLARA
+         (>= 4 palabras + marcadores) en otro idioma. Mensajes ambiguos o
+         cortos MANTIENEN el idioma fijado.
 
-    Returns:
-        Código de idioma detectado.
+    Soporta: es, en, fr, it, de, pt, nl. Usa la detección unificada de
+    conversational_policy.
     """
     # 1. Cambio explícito solicitado por el usuario
     if _LANG_CHANGE_PATTERNS.search(user_input):
         new_lang = _extract_requested_lang(user_input)
         _session.lock_language(user_id, new_lang)
-        # Persistir en DB
-        try:
-            from core.operator.conversational_policy import _save_user_language
-            _save_user_language(user_id, new_lang)
-        except Exception:
-            pass
+        _persist_user_language(user_id, new_lang)
         logger.info(
             "Language CHANGED by user request | user=%s | lang=%s",
             user_id[:20], new_lang,
         )
         return new_lang
 
-    # 2. Si ya tiene idioma persistente (DB), usarlo y fijar en sesión.
-    #    Solo cambia por instrucción EXPLÍCITA (ya manejada arriba).
-    try:
-        from core.operator.conversational_policy import _get_user_language
-        saved = _get_user_language(user_id)
-        if saved:
-            # Fijar en sesión si no estaba
-            if not _session.get_locked_language(user_id):
-                _session.lock_language(user_id, saved)
-                logger.info(
-                    "Language RESTORED from DB | user=%s | lang=%s",
-                    user_id[:20], saved,
-                )
-            return _session.get_locked_language(user_id) or saved
-    except Exception:
-        pass
+    # 2. Baseline actual: lock de sesión o idioma persistido en DB.
+    current = _session.get_locked_language(user_id)
+    if not current:
+        try:
+            from core.operator.conversational_policy import _get_user_language
+            current = _get_user_language(user_id)
+        except Exception:
+            current = ""
 
-    # 3. Si hay lock de sesión (set por instrucción o mensaje previo) → mantener
-    locked = _session.get_locked_language(user_id)
-    if locked:
-        return locked
+    detected = _detect_message_language(user_input)
 
-    # 4. Primera vez — detectar idioma del primer mensaje y fijar
-    try:
-        from core.operator.conversational_policy import detect_language as _detect_ml
-        detected = _detect_ml(user_input)
-    except Exception:
-        es_matches = len(_LANG_DETECT.findall(user_input))
-        detected = "es" if es_matches >= 1 else "en"
+    # 3. Primer mensaje (sin baseline) → fijar el idioma detectado.
+    if not current:
+        _session.lock_language(user_id, detected)
+        _persist_user_language(user_id, detected)
+        logger.info(
+            "Language INITIAL set | user=%s | lang=%s", user_id[:20], detected,
+        )
+        return detected
 
-    _session.lock_language(user_id, detected)
-    # Persistir en DB para sobrevivir reinicios
-    try:
-        from core.operator.conversational_policy import _save_user_language
-        _save_user_language(user_id, detected)
-    except Exception:
-        pass
-    logger.info(
-        "Language INITIAL set | user=%s | lang=%s",
-        user_id[:20], detected,
-    )
-    return detected
+    # 4. Con baseline: seguir SOLO si hay señal clara en otro idioma.
+    if (
+        detected
+        and detected != current
+        and _is_clear_language_signal(user_input, detected)
+    ):
+        _session.lock_language(user_id, detected)
+        _persist_user_language(user_id, detected)
+        logger.info(
+            "Language FOLLOWED clear signal | user=%s | %s→%s",
+            user_id[:20], current, detected,
+        )
+        return detected
+
+    # 5. Ambiguo o mismo idioma → mantener el baseline (y fijarlo en sesión).
+    if not _session.get_locked_language(user_id):
+        _session.lock_language(user_id, current)
+    return current
 
 
 # ---------------------------------------------------------------------------
@@ -618,12 +673,10 @@ def build_identity_context(anchor: IdentityAnchor) -> str:
         parts.append(tpl.format(name=anchor.name))
 
     if anchor.language:
-        _lang_labels = {
-            "es": "español", "en": "English", "fr": "français",
-            "it": "italiano", "de": "Deutsch", "pt": "português",
-            "nl": "Nederlands",
-        }
-        lang_label = _lang_labels.get(anchor.language, anchor.language)
+        # Etiqueta del idioma en español (fuente única de verdad), p.ej.
+        # 'inglés'. La plantilla de instrucción sí va en el idioma del
+        # usuario; solo el NOMBRE del idioma se expresa en español.
+        lang_label = _LANG_LABELS_ES.get(anchor.language, anchor.language)
         tpl = _lang_templates.get(lang, _lang_templates["en"])
         parts.append(tpl.format(lang_label=lang_label))
 

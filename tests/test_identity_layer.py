@@ -21,7 +21,10 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.expanduser("~/Vectrax"))
+# NOTE: repo root is made importable by tests/conftest.py. We must NOT inject a
+# hardcoded home-dir checkout (e.g. ~/Vectrax) here: on a case-insensitive FS it
+# resolves to the main checkout and shadows the worktree under test, breaking
+# hermetic isolation.
 
 from vectrax.identity_layer import (
     SYSTEM_PROMPT,
@@ -35,6 +38,20 @@ from vectrax.identity_layer import (
     is_generic,
     is_low_quality,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_identity_sessions():
+    """Hermetic isolation: clear the global identity-anchor session cache and
+    language locks around every test. Those are process-global mutable state
+    (`_session._cache` / `_session._language_locks`) read by the identity
+    layer; without clearing them a prior test's locked language or cached name
+    would leak and make these assertions order-dependent.
+    """
+    from vectrax.identity_anchor import clear_all_sessions
+    clear_all_sessions()
+    yield
+    clear_all_sessions()
 
 
 # ---------------------------------------------------------------------------

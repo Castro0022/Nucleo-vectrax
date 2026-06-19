@@ -220,16 +220,31 @@ def apply_language_policy(
 # Persistence (SQLite via user_memory)
 # ---------------------------------------------------------------------------
 
+def _user_memory_db_path() -> str:
+    """Resuelve la ruta del store de perfiles (user_memory.db).
+
+    Fuente única de verdad de la ubicación del vault: la variable de entorno
+    VECTRAX_VAULT_DIR. Si está definida (p.ej. el baseline hermético de tests
+    la apunta a un temp por test), se usa esa; si no, cae al vault del repo.
+    Esto evita que la persistencia de idioma escriba/lea el store real durante
+    los tests y mantiene una única noción de “dónde vive el vault”.
+    """
+    import os
+    vault_dir = os.environ.get("VECTRAX_VAULT_DIR")
+    if vault_dir:
+        return os.path.join(vault_dir, "user_memory.db")
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "vault", "user_memory.db",
+    )
+
+
 def _save_user_language(user_id: str, lang: str) -> None:
     """Persiste el idioma del usuario en SQLite."""
     try:
         import sqlite3
-        import os
         import time
-        db = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "vault", "user_memory.db",
-        )
+        db = _user_memory_db_path()
         conn = sqlite3.connect(db, timeout=3)
         # Update existing profile or create minimal one
         existing = conn.execute(
@@ -256,11 +271,7 @@ def _get_user_language(user_id: str) -> str:
     """Obtiene el idioma guardado del usuario. Retorna '' si no hay."""
     try:
         import sqlite3
-        import os
-        db = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "vault", "user_memory.db",
-        )
+        db = _user_memory_db_path()
         conn = sqlite3.connect(db, timeout=3)
         row = conn.execute(
             "SELECT language FROM profiles WHERE user_id = ?", (user_id,),
