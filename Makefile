@@ -20,7 +20,7 @@ dev:  ## Install dev dependencies
 	$(PYTHON) -m venv $(VENV) || true
 	$(PIP) install --upgrade pip
 	$(PIP) install -e ".[dev]" 2>/dev/null || $(PIP) install -e .
-	$(PIP) install pytest httpx pydantic
+	$(PIP) install pytest pytest-asyncio httpx pydantic
 	@echo "✅ Dev environment ready. Activate with: source $(VENV)/bin/activate"
 
 test:  ## Run all tests
