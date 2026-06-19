@@ -200,8 +200,28 @@ class ExternalGateway:
         content: str,
         channel: str = DEFAULT_CHANNEL,
     ) -> GatewayResult:
+        """Recibe un mensaje externo y lo procesa a través del bus.
+
+        Public entry point. Delegates to the processing implementation and
+        accounts the 'responded' counter EXACTLY ONCE per message that was
+        processed (any non-error result), regardless of which internal path
+        produced the response (greeting, intake, store, full pipeline, ...).
+        This keeps the stat consistent across every return path instead of
+        only the full-pipeline one.
         """
-        Recibe un mensaje externo y lo procesa a través del bus.
+        result = self._do_receive_message(user_id, content, channel)
+        if getattr(result, "processed", False):
+            self._total_responded += 1
+        return result
+
+    def _do_receive_message(
+        self,
+        user_id: str,
+        content: str,
+        channel: str = DEFAULT_CHANNEL,
+    ) -> GatewayResult:
+        """
+        Procesa un mensaje externo a través del bus (implementación).
 
         Args:
             user_id: Identificador del usuario externo.
@@ -1224,7 +1244,9 @@ class ExternalGateway:
             },
         )
 
-        self._total_responded += 1
+        # NOTE: _total_responded is incremented once in receive_message()
+        # (the public wrapper) for every processed result, so it stays
+        # consistent across all early-return paths too.
 
         # ════════════════════════════════════════════════════════════
         # RESPONSE AUDITOR — evaluar y reescribir si es genérica
