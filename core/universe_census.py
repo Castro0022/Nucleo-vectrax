@@ -77,6 +77,14 @@ class UniverseCensus:
     core_memory: int = 0
     teams: int = 0
 
+    # Quality / test / code / runtime phenomena (from the observation ledger).
+    # Counts only — detailed entities live in /v1/universe (universe_observer).
+    quality_failures: int = 0
+    quality_active_failures: int = 0
+    quality_recoveries: int = 0
+    quality_code_changes: int = 0
+    quality_convergences: int = 0
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "timestamp": self.timestamp,
@@ -106,6 +114,13 @@ class UniverseCensus:
                 "facts": self.user_facts,
                 "core_memory": self.core_memory,
                 "teams": self.teams,
+            },
+            "quality": {
+                "failures": self.quality_failures,
+                "active_failures": self.quality_active_failures,
+                "recoveries": self.quality_recoveries,
+                "code_changes": self.quality_code_changes,
+                "convergences": self.quality_convergences,
             },
         }
 
@@ -165,6 +180,24 @@ def _collect_market(c: UniverseCensus) -> None:
         pass
 
 
+def _collect_quality(c: UniverseCensus) -> None:
+    """Quality/test/code/runtime phenomena counts from the observation ledger.
+
+    Read-only and fully defensive: a missing ledger or any error leaves the
+    counts at zero and never blocks the census computation.
+    """
+    try:
+        from core.self_observation.quality_entities import get_quality_summary
+        s = get_quality_summary()
+        c.quality_failures = int(s.get("failures", 0))
+        c.quality_active_failures = int(s.get("active_failures", 0))
+        c.quality_recoveries = int(s.get("recoveries", 0))
+        c.quality_code_changes = int(s.get("code_changes", 0))
+        c.quality_convergences = int(s.get("convergences", 0))
+    except Exception as exc:
+        logger.debug("census quality failed: %s", exc)
+
+
 def _build_census() -> UniverseCensus:
     """Internal: compute the full census from all sources."""
     c = UniverseCensus(timestamp=time.time())
@@ -208,6 +241,9 @@ def _build_census() -> UniverseCensus:
 
     # === SOURCE 5: Users ===
     _collect_users(c)
+
+    # === SOURCE 6: Quality phenomena (read-only ledger summary) ===
+    _collect_quality(c)
 
     # Total — always consistent
     c.total = c.gravitational + c.knowledge + c.users

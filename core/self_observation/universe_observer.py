@@ -93,6 +93,15 @@ class UniverseSnapshot:
     word_gravity_words: List[Dict[str, Any]] = field(default_factory=list)
     word_gravity_stats: Dict[str, Any] = field(default_factory=dict)
 
+    # ── Quality phenomena (test/code/runtime as living entities) ──────
+    # Failures = stars (brightness ~ severity), recoveries = cooling,
+    # code changes = events, root-cause = cross-module convergence clusters.
+    quality_failures: List[Dict[str, Any]] = field(default_factory=list)
+    quality_recoveries: List[Dict[str, Any]] = field(default_factory=list)
+    quality_events: List[Dict[str, Any]] = field(default_factory=list)
+    quality_convergences: List[Dict[str, Any]] = field(default_factory=list)
+    quality_counts: Dict[str, int] = field(default_factory=dict)
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -184,6 +193,16 @@ class UniverseSnapshot:
             "word_gravity": {
                 "words": self.word_gravity_words,
                 "stats": self.word_gravity_stats,
+            },
+            "quality": {
+                "failures": self.quality_failures,
+                "recoveries": self.quality_recoveries,
+                "events": self.quality_events,
+                "convergences": self.quality_convergences,
+                "counts": self.quality_counts or {
+                    "failures": 0, "active_failures": 0, "recoveries": 0,
+                    "code_changes": 0, "convergences": 0, "total": 0,
+                },
             },
         }
 
@@ -341,6 +360,26 @@ def _collect_word_gravity(snap: UniverseSnapshot) -> None:
         logger.debug("word gravity collection failed: %s", exc)
 
 
+def _collect_quality(snap: UniverseSnapshot) -> None:
+    """Collect quality phenomena (test/code/runtime) as gravitational entities.
+
+    Sources from the observation ledger via the quality_entities SSOT mapper.
+    Fully defensive and read-only: never raises, so it can never block a
+    request, the worker, or a market cycle.
+    """
+    try:
+        from core.self_observation.quality_entities import get_quality_entities
+        q = get_quality_entities()
+        snap.quality_failures = q.get("failures", [])
+        snap.quality_recoveries = q.get("recoveries", [])
+        snap.quality_events = q.get("events", [])
+        snap.quality_convergences = q.get("convergences", [])
+        snap.quality_counts = q.get("counts", {})
+    except Exception as exc:
+        logger.debug("quality collection failed: %s", exc)
+        snap.signals.append("quality_ledger_unavailable")
+
+
 def _derive_signals(snap: UniverseSnapshot) -> None:
     """Genera señales de percepción a partir del estado recolectado."""
     if snap.queue_pending > 10:
@@ -365,6 +404,15 @@ def _derive_signals(snap: UniverseSnapshot) -> None:
     if snap.nucleus_has_centroid and snap.total_mass > 0:
         snap.signals.append("nucleus_gravitating")
 
+    # Quality phenomena signals — surface active risk in the perception layer.
+    _active_fail = (snap.quality_counts or {}).get("active_failures", 0)
+    if _active_fail > 5:
+        snap.signals.append("quality_failures_critical")
+    elif _active_fail > 0:
+        snap.signals.append("quality_failures_active")
+    if (snap.quality_counts or {}).get("convergences", 0) > 0:
+        snap.signals.append("quality_root_cause_detected")
+
 
 # ===========================================================================
 # Public entrypoint
@@ -383,6 +431,7 @@ def observe_universe() -> UniverseSnapshot:
     _collect_convergences(snap)
     _collect_gravity_engine(snap)
     _collect_word_gravity(snap)
+    _collect_quality(snap)
     _collect_operational(snap)
     _derive_signals(snap)
 

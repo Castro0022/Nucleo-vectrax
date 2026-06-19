@@ -231,30 +231,46 @@ class TestUniverseSnapshot(unittest.TestCase):
 # ===========================================================================
 
 class TestSelfContextFormat(unittest.TestCase):
-    """_read_universe_state() must show Knowledge stars and User stars."""
+    """_read_universe_state() must surface BOTH knowledge stars and user stars.
+
+    Contract: _read_universe_state() reads from the universe census (the single
+    source of truth) — not a raw UniverseSnapshot. We mock get_census so the
+    test is hermetic (independent of real machine DB state) and assert the real
+    census-based output format.
+    """
 
     @patch("core.self_observation.universe_observer.observe_universe")
-    def test_format_includes_both_star_types(self, mock_observe):
+    @patch("core.universe_census.get_census")
+    def test_format_includes_both_star_types(self, mock_census, mock_observe):
+        from core.universe_census import UniverseCensus
         from core.self_observation.universe_observer import UniverseSnapshot
 
-        mock_observe.return_value = UniverseSnapshot(
+        # Census = single source of truth for the universe totals/breakdown.
+        mock_census.return_value = UniverseCensus(
             timestamp=time.time(),
-            star_count=20,
-            knowledge_star_count=107,
-            pattern_count=89,
+            gravitational=0,
+            knowledge=107,
+            users=20,
+            total=127,
+            patterns=89,
+            convergences=0,
+            constellations=0,
+            mass_total=2.5,
             layers={"core": 1, "mid": 0, "outer": 19},
-            nucleus_has_centroid=True,
-            core_star_count=1,
-            total_mass=2.5,
+            word_gravity_count=0,
         )
+        # The operational sub-block calls observe_universe(); keep it hermetic.
+        mock_observe.return_value = UniverseSnapshot(timestamp=time.time())
 
         from vectrax.self_context import _read_universe_state
         state = _read_universe_state()
 
-        self.assertIn("Knowledge stars: 107", state)
-        self.assertIn("User stars: 20", state)
-        self.assertIn("core:1", state)
-        self.assertIn("outer:19", state)
+        # Both star populations are surfaced (census SSOT format).
+        self.assertIn("107 knowledge", state)
+        self.assertIn("20 usuarios", state)
+        # Layer breakdown is present.
+        self.assertIn("core=1", state)
+        self.assertIn("outer=19", state)
 
 
 if __name__ == "__main__":

@@ -127,6 +127,9 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   <label><input type="checkbox" data-filter="show-labels" checked> Etiquetas</label>
   <label><input type="checkbox" data-filter="show-word-gravity" checked> <span style="color:#f472b6">✦</span> Word Gravity</label>
   <label><input type="checkbox" data-filter="show-orbits"> Órbitas</label>
+  <div class="sep"></div>
+  <div class="filter-title">Salud del sistema</div>
+  <label><input type="checkbox" data-filter="show-quality" checked> <span style="color:#ff5a52">✵</span> Fenómenos de calidad <span class="cnt" id="cnt-quality"></span></label>
 </div>
 
 <!-- HUD: Legend -->
@@ -143,6 +146,11 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   <div class="legend-row"><div class="legend-ring" style="border-color:var(--convergence)"></div> Arco de convergencia</div>
   <div class="sep" style="height:1px;background:var(--border);margin:6px 0"></div>
   <div class="legend-row"><div class="legend-dot" style="background:#f472b6"></div> Word Gravity (palabras)</div>
+  <div class="sep" style="height:1px;background:var(--border);margin:6px 0"></div>
+  <div class="legend-row"><div class="legend-dot" style="background:#ff5a52"></div> Fallo (brillo = severidad)</div>
+  <div class="legend-row"><div class="legend-dot" style="background:#38bdf8"></div> Recuperación (enfriando)</div>
+  <div class="legend-row"><div class="legend-dot" style="background:#e2e8f0"></div> Cambio de código (destello)</div>
+  <div class="legend-row"><div class="legend-ring" style="border-color:#ff7849"></div> Convergencia de causa raíz</div>
   <div class="legend-row" style="opacity:0.6">Tamaño = masa · Brillo = profundidad</div>
 </div>
 
@@ -168,16 +176,21 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   // --- State ---
   let W = 0, H = 0;
   let stars = [], edges = [], constellations = [], wordGravity = [];
+  // Quality phenomena layer (test/code/runtime as living entities)
+  let qFailures = [], qRecoveries = [], qEvents = [], qConvergences = [];
+  let qCounts = {};
   let starMap = {};       // id → star object with computed x,y
   let cam = { x: 0, y: 0, zoom: 1, tx: 0, ty: 0, tz: 1 }; // t* = targets for easing
   let drag = { active: false, sx: 0, sy: 0, cx: 0, cy: 0 };
   let hovered = null;
+  let hoveredQuality = null;
   let animFrame = 0;
   let filters = {
     'layer-core': true, 'layer-mid': true, 'layer-outer': true,
     'dom-cognitive': true, 'dom-market': true, 'dom-interest': true, 'dom-users': true,
     'show-edges': true, 'show-convergences': true, 'show-constellations': true,
     'show-labels': true, 'show-word-gravity': true, 'show-orbits': false,
+    'show-quality': true,
   };
 
   // --- Colors ---
@@ -195,6 +208,12 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     'rgba(79,143,247,0.25)', 'rgba(167,139,250,0.25)', 'rgba(6,214,160,0.25)',
     'rgba(251,191,36,0.25)', 'rgba(248,113,113,0.25)', 'rgba(6,182,212,0.25)',
   ];
+  // Quality phenomena palette (RGB triplets so we can modulate alpha freely)
+  const Q_CRITICAL = [255, 70, 70];    // critical failure — hot red
+  const Q_WARNING  = [255, 150, 60];   // warning failure — amber
+  const Q_COOLING  = [56, 189, 248];   // recovery / cooling — cyan-blue
+  const Q_CODE     = [226, 232, 240];  // code change — white flash
+  const Q_ROOT     = [255, 120, 73];   // root-cause convergence — ember orange
 
   // --- Resize ---
   function resize() {
@@ -692,6 +711,9 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     }
     } // end show-convergences
 
+    // --- Quality phenomena layer (failures, recoveries, code, root-cause) ---
+    drawQuality(t);
+
     // --- Adaptive Label System ---
     if (filters['show-labels']) {
       // Label budget scales with zoom: 0 below 0.5, then ramps up
@@ -861,6 +883,197 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     requestAnimationFrame(draw);
   }
 
+  // --- Quality phenomena: deterministic, stable world positions ---
+  // Failures cluster by module; severity pulls them toward the core (greater
+  // gravitational urgency). Recoveries drift outward as they cool.
+  function qHash(s) { return Math.abs(hashStr(s || 'q')); }
+
+  function layoutQuality() {
+    const maxR = Math.min(W, H) * 0.42;
+    const angleOf = (module) => (qHash('mod:' + module) % 36000) / 36000 * Math.PI * 2;
+
+    for (let i = 0; i < qFailures.length; i++) {
+      const f = qFailures[i];
+      const h = qHash('qf:' + (f.id || f.module || i));
+      const br = (typeof f.brightness === 'number') ? f.brightness : 0.5;
+      const angle = angleOf(f.module || 'system') + ((h % 1000) / 1000 - 0.5) * 0.55;
+      // critical (br~1) → ~0.30·maxR ; low (br~0.3) → ~0.55·maxR
+      const rr = 0.30 + (1 - br) * 0.28 + ((h % 500) / 500 - 0.5) * 0.05;
+      f._wx = Math.cos(angle) * maxR * rr;
+      f._wy = Math.sin(angle) * maxR * rr;
+      f._baseR = 4 + br * 9;
+    }
+    for (let i = 0; i < qRecoveries.length; i++) {
+      const r = qRecoveries[i];
+      const h = qHash('qr:' + (r.id || r.module || i));
+      const angle = angleOf(r.module || 'system') + ((h % 1000) / 1000 - 0.5) * 0.55;
+      const rr = 0.50 + ((h % 400) / 400) * 0.16;
+      r._wx = Math.cos(angle) * maxR * rr;
+      r._wy = Math.sin(angle) * maxR * rr;
+    }
+    for (let i = 0; i < qEvents.length; i++) {
+      const ev = qEvents[i];
+      const h = qHash('qe:' + (ev.id || ev.module || i));
+      const angle = angleOf(ev.module || 'system') + ((h % 1000) / 1000 - 0.5) * 0.4;
+      const rr = 0.40 + ((h % 400) / 400) * 0.20;
+      ev._wx = Math.cos(angle) * maxR * rr;
+      ev._wy = Math.sin(angle) * maxR * rr;
+    }
+    for (let i = 0; i < qConvergences.length; i++) {
+      const c = qConvergences[i];
+      const mods = (c.modules && c.modules.length) ? c.modules : [c.module || 'system'];
+      c._pts = mods.map(m => {
+        const ah = qHash('mod:' + m);
+        const angle = (ah % 36000) / 36000 * Math.PI * 2;
+        const rr = 0.34 + ((ah % 500) / 500) * 0.20;
+        return { x: Math.cos(angle) * maxR * rr, y: Math.sin(angle) * maxR * rr, module: m };
+      });
+      c._cx = c._pts.reduce((a, p) => a + p.x, 0) / c._pts.length;
+      c._cy = c._pts.reduce((a, p) => a + p.y, 0) / c._pts.length;
+    }
+  }
+
+  function drawQuality(t) {
+    if (!filters['show-quality']) return;
+    const Z = cam.zoom;
+    const fontFamily = getComputedStyle(document.body).fontFamily;
+
+    // --- Root-cause convergences: cross-module clusters (ember energy) ---
+    for (const c of qConvergences) {
+      if (!c._pts) continue;
+      const sev = c.severity === 'critical' ? 1 : 0.7;
+      const pulse = 0.5 + 0.5 * Math.sin(t * 1.1 + (c._cx + c._cy) * 0.01);
+      const [ccx, ccy] = toScreen(c._cx, c._cy);
+      for (const p of c._pts) {
+        const [px, py] = toScreen(p.x, p.y);
+        const mx = (ccx + px) / 2 + Math.sin(t * 0.5 + p.x) * 12 * Z;
+        const my = (ccy + py) / 2 + Math.cos(t * 0.5 + p.y) * 12 * Z;
+        ctx.strokeStyle = `rgba(${Q_ROOT[0]},${Q_ROOT[1]},${Q_ROOT[2]},${0.08 + 0.10 * pulse})`;
+        ctx.lineWidth = (6 + pulse * 5) * Z;
+        ctx.beginPath(); ctx.moveTo(ccx, ccy); ctx.quadraticCurveTo(mx, my, px, py); ctx.stroke();
+        ctx.strokeStyle = `rgba(${Q_ROOT[0]},${Q_ROOT[1]},${Q_ROOT[2]},${0.28 + 0.20 * pulse})`;
+        ctx.lineWidth = (1 + pulse) * Z;
+        ctx.beginPath(); ctx.moveTo(ccx, ccy); ctx.quadraticCurveTo(mx, my, px, py); ctx.stroke();
+      }
+      const nodeR = (5 + pulse * 4) * Z * (0.7 + sev * 0.5);
+      const g = ctx.createRadialGradient(ccx, ccy, 0, ccx, ccy, nodeR * 4);
+      g.addColorStop(0, `rgba(${Q_ROOT[0]},${Q_ROOT[1]},${Q_ROOT[2]},${0.35 * pulse})`);
+      g.addColorStop(1, 'transparent');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(ccx, ccy, nodeR * 4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(${Q_ROOT[0]},${Q_ROOT[1]},${Q_ROOT[2]},${0.6 * pulse + 0.2})`;
+      ctx.beginPath(); ctx.arc(ccx, ccy, nodeR, 0, Math.PI * 2); ctx.fill();
+      c._x = c._cx; c._y = c._cy; c._r = nodeR / Z;
+      if (Z > 0.7) {
+        ctx.fillStyle = `rgba(${Q_ROOT[0]},${Q_ROOT[1]},${Q_ROOT[2]},0.6)`;
+        ctx.font = `${Math.max(9, 10 * Z)}px ${fontFamily}`;
+        ctx.textAlign = 'center';
+        ctx.fillText('\u2735 causa ra\u00edz (' + c._pts.length + ')', ccx, ccy - nodeR * 4 - 4);
+        ctx.textAlign = 'start';
+      }
+    }
+
+    // --- Recoveries: cooling cyan ripples ---
+    for (const r of qRecoveries) {
+      if (r._wx === undefined) continue;
+      const [sx, sy] = toScreen(r._wx, r._wy);
+      const ph = ((t * 0.25) + (qHash(r.id || '') % 100) / 100) % 1; // expanding 0..1
+      const ringR = (6 + ph * 16) * Z;
+      ctx.strokeStyle = `rgba(${Q_COOLING[0]},${Q_COOLING[1]},${Q_COOLING[2]},${0.25 * (1 - ph)})`;
+      ctx.lineWidth = 1.5 * Z;
+      ctx.beginPath(); ctx.arc(sx, sy, ringR, 0, Math.PI * 2); ctx.stroke();
+      const cr = 4 * Z;
+      const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, cr * 3);
+      g.addColorStop(0, `rgba(${Q_COOLING[0]},${Q_COOLING[1]},${Q_COOLING[2]},0.45)`);
+      g.addColorStop(1, 'transparent');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, cr * 3, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(${Q_COOLING[0]},${Q_COOLING[1]},${Q_COOLING[2]},0.7)`;
+      ctx.beginPath(); ctx.arc(sx, sy, cr * 0.5, 0, Math.PI * 2); ctx.fill();
+      r._x = r._wx; r._y = r._wy; r._r = cr / Z + 3;
+    }
+
+    // --- Code changes: transient white spark flashes near the module ---
+    for (const ev of qEvents) {
+      if (ev._wx === undefined) continue;
+      const [sx, sy] = toScreen(ev._wx, ev._wy);
+      const tw = 0.5 + 0.5 * Math.sin(t * 2.2 + (qHash(ev.id || '') % 628) / 100);
+      const cr = (2.5 + tw * 2.5) * Z;
+      const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, cr * 4);
+      g.addColorStop(0, `rgba(${Q_CODE[0]},${Q_CODE[1]},${Q_CODE[2]},${0.5 * tw})`);
+      g.addColorStop(1, 'transparent');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(sx, sy, cr * 4, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = `rgba(${Q_CODE[0]},${Q_CODE[1]},${Q_CODE[2]},${0.5 * tw + 0.2})`;
+      ctx.lineWidth = 1 * Z;
+      ctx.beginPath();
+      ctx.moveTo(sx - cr * 2, sy); ctx.lineTo(sx + cr * 2, sy);
+      ctx.moveTo(sx, sy - cr * 2); ctx.lineTo(sx, sy + cr * 2);
+      ctx.stroke();
+      ev._x = ev._wx; ev._y = ev._wy; ev._r = cr / Z + 3;
+    }
+
+    // --- Failure stars: brightness ~ severity, dangerous pulse ---
+    for (const f of qFailures) {
+      if (f._wx === undefined) continue;
+      const [sx, sy] = toScreen(f._wx, f._wy);
+      const br = (typeof f.brightness === 'number') ? f.brightness : 0.5;
+      const col = f.cooling ? Q_COOLING : (f.severity === 'critical' ? Q_CRITICAL : Q_WARNING);
+      const pulse = 0.55 + 0.45 * Math.sin(t * (1.4 + br * 1.6) + (qHash(f.id || '') % 628) / 100);
+      const intensity = f.cooling ? 0.4 : (0.5 + br * 0.5);
+      const r = (f._baseR || 6) * Z;
+      const isH = hoveredQuality && hoveredQuality.id === f.id;
+      const bloom = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 6);
+      bloom.addColorStop(0, `rgba(${col[0]},${col[1]},${col[2]},${0.12 * intensity * pulse})`);
+      bloom.addColorStop(0.4, `rgba(${col[0]},${col[1]},${col[2]},${0.05 * intensity})`);
+      bloom.addColorStop(1, 'transparent');
+      ctx.fillStyle = bloom; ctx.beginPath(); ctx.arc(sx, sy, r * 6, 0, Math.PI * 2); ctx.fill();
+      const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 2.6);
+      glow.addColorStop(0, `rgba(${col[0]},${col[1]},${col[2]},${(isH ? 0.6 : 0.3 + br * 0.3) * pulse})`);
+      glow.addColorStop(1, 'transparent');
+      ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(sx, sy, r * 2.6, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},${0.7 + 0.3 * intensity})`;
+      ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(255,250,245,${0.5 * pulse})`;
+      ctx.beginPath(); ctx.arc(sx, sy, r * 0.35, 0, Math.PI * 2); ctx.fill();
+      if (!f.cooling && f.severity === 'critical') {
+        ctx.strokeStyle = `rgba(${col[0]},${col[1]},${col[2]},${0.4 + 0.3 * pulse})`;
+        ctx.lineWidth = 1.2 * Z;
+        ctx.beginPath(); ctx.arc(sx, sy, r + 4 * Z, 0, Math.PI * 2); ctx.stroke();
+      }
+      if (isH) {
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(sx, sy, r + 2, 0, Math.PI * 2); ctx.stroke();
+      }
+      if ((Z > 1.0 && (br >= 0.9 || f.severity === 'critical')) || isH) {
+        ctx.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},0.85)`;
+        ctx.font = `${Math.max(8, 9 * Z)}px ${fontFamily}`;
+        ctx.textAlign = 'center';
+        ctx.fillText((f.module || '?').slice(0, 22), sx, sy + r + 12 * Z);
+        ctx.textAlign = 'start';
+      }
+      f._x = f._wx; f._y = f._wy; f._r = (f._baseR || 6) + 4;
+    }
+  }
+
+  // --- Quality hover detection ---
+  function _qHoverList() {
+    const out = [];
+    if (!filters['show-quality']) return out;
+    for (const f of qFailures) if (f._x !== undefined) out.push(f);
+    for (const r of qRecoveries) if (r._x !== undefined) out.push(r);
+    for (const ev of qEvents) if (ev._x !== undefined) out.push(ev);
+    for (const c of qConvergences) if (c._x !== undefined) out.push(c);
+    return out;
+  }
+  function findQualityAt(wx, wy) {
+    let best = null, bestD = Infinity;
+    for (const q of _qHoverList()) {
+      const dx = q._x - wx, dy = q._y - wy;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      const hitR = (q._r || 6) + 6;
+      if (d < hitR && d < bestD) { best = q; bestD = d; }
+    }
+    return best;
+  }
+
   // --- Mouse interaction ---
   canvas.addEventListener('mousedown', e => {
     drag.active = true;
@@ -884,6 +1097,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       if (d < hitR && d < closestDist) { closest = s; closestDist = d; }
     }
     hovered = closest;
+    // Quality phenomena hover only when no gravitational star is under cursor.
+    hoveredQuality = closest ? null : findQualityAt(wx, wy);
     if (closest) {
       const tt = tooltip;
       tt.style.display = 'block';
@@ -902,6 +1117,25 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         `<b>masa</b> ${closest.mass.toFixed(4)} · <b>dist</b> ${closest.distance_to_core.toFixed(4)}<br>` +
         `<b>capa</b> ${closest.layer} · <b>tipo</b> ${typeLabel}<br>` +
         `<b>owner</b> ${closest.owner || '–'} · <b>activaciones</b> ${closest.activation_count}`;
+    } else if (hoveredQuality) {
+      const q = hoveredQuality;
+      const tt = tooltip;
+      tt.style.display = 'block';
+      tt.style.left = (e.clientX + 16) + 'px';
+      tt.style.top = (e.clientY - 10) + 'px';
+      const rect = tt.getBoundingClientRect();
+      if (rect.right > W) tt.style.left = (e.clientX - rect.width - 16) + 'px';
+      if (rect.bottom > H) tt.style.top = (e.clientY - rect.height - 10) + 'px';
+      const kindLabel = q.kind === 'failure' ? (q.cooling ? 'fallo (enfriando)' : 'fallo') :
+                        q.kind === 'recovery' ? 'recuperación' :
+                        q.kind === 'code_event' ? 'cambio de código' : 'convergencia · causa raíz';
+      document.getElementById('tt-label').textContent = q.summary || q.module || q.obs_type || 'fenómeno';
+      let meta = `<b>tipo</b> ${kindLabel} · <b>dominio</b> ${q.domain || '–'}<br>`;
+      meta += `<b>módulo</b> ${(q.modules && q.modules.join(', ')) || q.module || '–'}`;
+      if (q.kind === 'failure') meta += `<br><b>severidad</b> ${q.severity} · <b>brillo</b> ${(q.brightness || 0).toFixed(2)}`;
+      else if (q.severity) meta += `<br><b>severidad</b> ${q.severity}`;
+      if (q.timestamp) meta += `<br><b>t</b> ${String(q.timestamp).replace('T', ' ').slice(0, 19)}`;
+      document.getElementById('tt-meta').innerHTML = meta;
     } else {
       tooltip.style.display = 'none';
     }
@@ -957,6 +1191,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
 
     // 2. Gravity engine stars (cognitive + market)
     let _gravConvCount = 0;
+    let _newQ = null;
     try {
       const gRes = await fetch('/v1/universe');
       if (gRes.ok) {
@@ -966,6 +1201,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         // Word Gravity — extract from same response (no second fetch)
         if (gData.word_gravity && gData.word_gravity.words) {
           wordGravity = gData.word_gravity.words;
+        }
+        // Quality phenomena — extract from same response (no second fetch)
+        if (gData.quality) {
+          _newQ = gData.quality;
         }
         const seen = new Set(newStars.map(s => s.id));
 
@@ -1012,10 +1251,16 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     stars = newStars;
     edges = newEdges;
     constellations = newConst;
+    qFailures = (_newQ && _newQ.failures) || [];
+    qRecoveries = (_newQ && _newQ.recoveries) || [];
+    qEvents = (_newQ && _newQ.events) || [];
+    qConvergences = (_newQ && _newQ.convergences) || [];
+    qCounts = (_newQ && _newQ.counts) || {};
 
     emptyEl.style.display = stars.length === 0 ? 'block' : 'none';
 
     layoutStars();
+    layoutQuality();
     applyFilters();
 
     // Stats — show unified total from API + breakdown
@@ -1033,7 +1278,16 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     if (nUser) statsHtml += ` · <span style="color:#22d3ee"><b>${nUser}</b> interés</span>`;
     if (nConv) statsHtml += ` · <span style="color:#a78bfa"><b>${nConv}</b> convergencias</span>`;
     if (wordGravity.length) statsHtml += ` · <span style="color:#f472b6"><b>${wordGravity.length}</b> palabras</span>`;
+    const qActive = qCounts.active_failures || 0;
+    const qRoot = qCounts.convergences || 0;
+    if (qActive) statsHtml += ` · <span style="color:#ff5a52"><b>${qActive}</b> fallos activos</span>`;
+    if (qRoot) statsHtml += ` · <span style="color:#ff7849"><b>${qRoot}</b> causa raíz</span>`;
     statsEl.innerHTML = statsHtml;
+    const _cq = document.getElementById('cnt-quality');
+    if (_cq) {
+      const _tot = qFailures.length + qRecoveries.length + qEvents.length + qConvergences.length;
+      _cq.textContent = _tot || '';
+    }
   }
 
   // --- Init ---

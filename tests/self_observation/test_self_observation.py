@@ -50,11 +50,17 @@ class TestStateCollector(unittest.TestCase):
         )
         # Llamamos los collectors privados con path roto via patch.
         import core.self_observation.state_collector as sc
-        old_q, old_g, old_c = sc._QUEUE_DB, sc._GRAVITY_DB, sc._CONTINUITY_DB
+        old_q, old_g, old_c, old_v = (
+            sc._QUEUE_DB, sc._GRAVITY_DB, sc._CONTINUITY_DB, sc._VECTRAX_DB,
+        )
         try:
             sc._QUEUE_DB = "/nonexistent/q.db"
             sc._GRAVITY_DB = "/nonexistent/g.db"
             sc._CONTINUITY_DB = "/nonexistent/c.db"
+            # _gravity_counts() reads vectrax.db as the PRIMARY source (gravity.db
+            # is only the legacy fallback). "Missing DBs gracefully" must isolate
+            # ALL sources the collector consults, not just the fallback.
+            sc._VECTRAX_DB = "/nonexistent/v.db"
             self.assertEqual(_queue_counts(), {
                 "pending": 0, "processing": 0, "done": 0, "error": 0,
             })
@@ -64,6 +70,7 @@ class TestStateCollector(unittest.TestCase):
             sc._QUEUE_DB = old_q
             sc._GRAVITY_DB = old_g
             sc._CONTINUITY_DB = old_c
+            sc._VECTRAX_DB = old_v
 
 
 class TestBaseline(unittest.TestCase):
