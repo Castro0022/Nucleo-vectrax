@@ -1,7 +1,14 @@
 {
-  "head": "2c9b745",
+  "head": "fc552c4",
   "branch": "main",
   "recent_commits": [
+    {
+      "sha": "fc552c47",
+      "subject": "fix: bump cache buster v6",
+      "author": "Mario Bravo Castro",
+      "ts": 1781882089,
+      "files_changed": 2
+    },
     {
       "sha": "2c9b7452",
       "subject": "fix: handle None volume in crypto candles from eToro API",
@@ -50,13 +57,6 @@
       "author": "Mario Bravo Castro",
       "ts": 1781755414,
       "files_changed": 2
-    },
-    {
-      "sha": "df2e1bfe",
-      "subject": "feat: freight simulator + pipeline tests + README docs",
-      "author": "Mario Bravo Castro",
-      "ts": 1781675382,
-      "files_changed": 3
     }
   ],
   "modified_modules": [
@@ -65,9 +65,9 @@
     "vectrax/telegram_gateway.py",
     "connectors/etoro/etoro_client.py",
     "services/ui/static/observatory.html",
+    "services/ui/templates/index.html",
     "services/ui/static/universe.html",
-    "vectrax_supervisor.py",
-    "core/domain_ingester.py"
+    "vectrax_supervisor.py"
   ],
-  "generated_at": 1781880981
+  "generated_at": 1781882091
 }
