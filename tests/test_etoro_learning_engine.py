@@ -1,6 +1,17 @@
 import sys, time, os
 sys.path.insert(0, '/app')
 
+# NOTE: This file is a MANUAL smoke script (run: `python tests/test_etoro_learning_engine.py`).
+# It executes live checks against a running /app environment and reads the real
+# runtime config (~/.vectrax/etoro_auto_config.json). It is NOT a pytest module.
+# Skip it during pytest collection so its module-level asserts don't break the suite.
+if "pytest" in sys.modules:
+    import pytest
+    pytest.skip(
+        "manual etoro smoke script; run directly with python, not under pytest",
+        allow_module_level=True,
+    )
+
 # Load environment variables from .env (API keys, etc.)
 try:
     from dotenv import load_dotenv

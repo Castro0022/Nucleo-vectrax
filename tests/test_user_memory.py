@@ -218,11 +218,17 @@ class TestLanguageDetection:
         assert profile["language"] == "es"
 
     def test_language_updates(self):
-        """El idioma se actualiza con cada mensaje."""
+        """El idioma se fija con el primer mensaje y queda BLOQUEADO.
+
+        Por diseño (ver user_memory._update_profile: "NO sobreescribir por
+        detección") el idioma no cambia con mensajes posteriores. Esto refleja
+        la regla de consistencia/bloqueo de idioma del sistema.
+        """
         store_memory("u1", "Hola", "Resp")
         assert get_user_profile("u1")["language"] == "es"
         store_memory("u1", "Hello world", "Resp")
-        assert get_user_profile("u1")["language"] == "en"
+        # Idioma bloqueado: permanece 'es' pese al mensaje en inglés.
+        assert get_user_profile("u1")["language"] == "es"
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +363,25 @@ class TestResolveWithMemory:
     Retorna {"text": "...", "source": "memory"} cuando resuelve,
     o "" cuando la pregunta no es sobre el usuario.
     """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_persistent_stores(self):
+        """Aísla subsistemas persistentes EXTERNOS para que estos tests sean
+        deterministas en cualquier máquina (CI limpio o la del creador), sin
+        borrar ni alterar la memoria permanente real:
+          - core_memory.get_living_response → "" (no leer el "alma" persistente)
+          - identity_anchor.get_locked_language → "" (sin idioma fijado previo)
+          - language_gate.get_user_language → idioma detectado del input
+        El store de usuario ya se limpia con el fixture módulo _clean_memory.
+        """
+        from unittest.mock import patch
+        with patch("vectrax.core_memory.get_living_response", return_value=""), \
+             patch("vectrax.identity_anchor.get_locked_language", return_value=""), \
+             patch(
+                 "core.language_gate.get_user_language",
+                 side_effect=lambda user_id, user_input="": _detect_lang(user_input),
+             ):
+            yield
 
     # ── Estructura del dict ─────────────────────────────────────
 

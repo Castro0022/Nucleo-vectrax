@@ -398,8 +398,9 @@ class TestSendTelegram:
         mock_resp.status_code = 200
 
         with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "fake:token"}):
-            with patch("httpx.post", return_value=mock_resp) as mock_post:
-                result = ml._send_telegram("999", "test msg")
+            with patch("core.telegram_guard.should_send_to_user", return_value=True):
+                with patch("httpx.post", return_value=mock_resp) as mock_post:
+                    result = ml._send_telegram("999", "test msg")
 
         assert result is True
         mock_post.assert_called_once()
@@ -412,15 +413,17 @@ class TestSendTelegram:
         mock_resp.status_code = 400
 
         with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "fake:token"}):
-            with patch("httpx.post", return_value=mock_resp):
-                result = ml._send_telegram("999", "msg")
+            with patch("core.telegram_guard.should_send_to_user", return_value=True):
+                with patch("httpx.post", return_value=mock_resp):
+                    result = ml._send_telegram("999", "msg")
         assert result is False
 
     def test_returns_false_on_exception(self):
         ml = _reload_meta_loop()
         with patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "fake:token"}):
-            with patch("httpx.post", side_effect=Exception("network error")):
-                result = ml._send_telegram("999", "msg")
+            with patch("core.telegram_guard.should_send_to_user", return_value=True):
+                with patch("httpx.post", side_effect=Exception("network error")):
+                    result = ml._send_telegram("999", "msg")
         assert result is False
 
 
