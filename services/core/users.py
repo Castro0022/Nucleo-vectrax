@@ -94,6 +94,7 @@ class UserStore:
         self._db.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_table()
         self._seed_creator()
+        self._seed_dev_owner()
 
     # ------------------------------------------------------------------
     # Connection
@@ -164,6 +165,42 @@ class UserStore:
             CREATOR_OWNER,
             seed_password,
         )
+
+    def _seed_dev_owner(self) -> None:
+        """Seed a deterministic 'owner' account for local API login.
+
+        In dev/local only (never production), this provides a frictionless
+        owner login with an EMPTY password so local tooling/tests can obtain
+        an owner token without knowing the creator's random seed password.
+        Gated on settings.is_dev so production never exposes an empty
+        credential. Idempotent.
+        """
+        try:
+            from services.core.config.settings import get_settings
+            if not get_settings().is_dev:
+                return
+        except Exception:
+            return
+
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT id FROM users WHERE username = ?", ("owner",)
+            ).fetchone()
+            if row:
+                return
+            conn.execute(
+                """INSERT INTO users
+                       (id, username, password_hash, role, channel, created_at, is_active)
+                   VALUES (?, ?, ?, 'owner', ?, ?, 1)""",
+                (
+                    str(uuid.uuid4())[:12],
+                    "owner",
+                    _hash_password(""),
+                    CHANNEL_CREATOR,
+                    time.time(),
+                ),
+            )
+        logger.info("Dev owner account seeded (empty password, dev/local only)")
 
     # ------------------------------------------------------------------
     # Public API

@@ -58,29 +58,50 @@ _STANDALONE_CRYPTO = re.compile(
     re.IGNORECASE,
 )
 
-# Price/status query verbs — all supported languages
+# Verbs split into STATUS ("how is X doing") vs PRICE ("price of X",
+# "precio de X"). They must NOT be conflated: a status query routes to
+# bitcoin_status/stock_status, an explicit price query routes to market_price.
+# (Previously both lived in one group, so "precio de bitcoin" matched
+# bitcoin_status — checked first — instead of market_price.)
 _STATUS_VERBS = (
     # Spanish
-    r"c[oó]mo\s+(?:est[aá]|va|anda|qued[oó])|cu[aá]nto\s+(?:vale|cuesta|est[aá])"
-    r"|d[ií]me\s+(?:el\s+)?(?:precio|estado|valor)|a\s+cu[aá]nto\s+est[aá]"
-    r"|precio\s+(?:de[l]?\s+)?|cotizaci[oó]n|qu[eé]\s+tal\s+(?:est[aá]|va)"
+    r"c[oó]mo\s+(?:est[aá]|va|anda|qued[oó])|qu[eé]\s+tal\s+(?:est[aá]|va)"
     # English
-    r"|how\s+is|how(?:'s|\s+is)\s+(?:the\s+)?|what(?:'s|\s+is)\s+(?:the\s+)?"
+    r"|how\s+is|how(?:'s|\s+is)\s+(?:the\s+)?"
+    # French
+    r"|comment\s+(?:va|est)"
+    # German
+    r"|wie\s+(?:steht|ist|l.uft)"
+    # Italian
+    r"|come\s+(?:va|sta)"
+    # Portuguese
+    r"|como\s+est[aá]"
+    # Dutch
+    r"|hoe\s+(?:staat|is)"
+)
+
+# Explicit price / quote verbs — all supported languages.
+_PRICE_VERBS = (
+    # Spanish
+    r"cu[aá]nto\s+(?:vale|cuesta|est[aá])"
+    r"|d[ií]me\s+(?:el\s+)?(?:precio|estado|valor)|a\s+cu[aá]nto\s+est[aá]"
+    r"|precio\s+(?:de[l]?\s+)?|cotizaci[oó]n"
+    # English
+    r"|what(?:'s|\s+is)\s+(?:the\s+)?"
     r"|price\s+of|current\s+price|tell\s+me\s+(?:the\s+)?price"
     r"|check\s+|show\s+(?:me\s+)?(?:the\s+)?"
     # French
-    r"|comment\s+(?:va|est)|quel\s+(?:est\s+le\s+)?prix|c'est\s+quoi\s+le\s+prix"
+    r"|quel\s+(?:est\s+le\s+)?prix|c'est\s+quoi\s+le\s+prix"
     r"|prix\s+(?:du?\s+)?|combien\s+(?:vaut|co.te)"
     # German
-    r"|wie\s+(?:steht|ist|l.uft|viel\s+kostet)|preis\s+(?:von\s+)?|kurs\s+(?:von\s+)?"
+    r"|wie\s+viel\s+kostet|preis\s+(?:von\s+)?|kurs\s+(?:von\s+)?"
     r"|was\s+(?:kostet|ist\s+der\s+kurs)"
     # Italian
-    r"|come\s+(?:va|sta)|quanto\s+(?:vale|costa)|prezzo\s+(?:di\s+)?|che\s+prezzo"
+    r"|quanto\s+(?:vale|costa)|prezzo\s+(?:di\s+)?|che\s+prezzo"
     # Portuguese
-    r"|como\s+est[aá]|quanto\s+(?:vale|custa|est[aá])|pre[cç]o\s+(?:do?\s+)?"
-    r"|me\s+fala\s+(?:o\s+)?"
+    r"|quanto\s+(?:custa|est[aá])|pre[cç]o\s+(?:do?\s+)?|me\s+fala\s+(?:o\s+)?"
     # Dutch
-    r"|hoe\s+(?:staat|is)|wat\s+is\s+de\s+koers|koers\s+(?:van\s+)?"
+    r"|wat\s+is\s+de\s+koers|koers\s+(?:van\s+)?"
 )
 
 MARKET_PATTERNS = {
@@ -114,10 +135,11 @@ MARKET_PATTERNS = {
         rf")",
         re.IGNORECASE,
     ),
-    # Price queries (catch-all for any ticker): "precio de bitcoin", "BTC price"
+    # Price queries (catch-all for any ticker): "precio de bitcoin", "BTC price".
+    # Uses PRICE verbs (status queries are handled above by *_status intents).
     "market_price": re.compile(
         rf"(?:"
-        rf"(?:{_STATUS_VERBS})\s*(?:el\s+|the\s+|der\s+|le\s+|il\s+|o\s+)?(?:{_ALL_TICKERS})"
+        rf"(?:{_PRICE_VERBS})\s*(?:el\s+|the\s+|der\s+|le\s+|il\s+|o\s+)?(?:{_ALL_TICKERS})"
         rf"|(?:{_ALL_TICKERS})\s+(?:precio|price|preis|prix|prezzo|pre[cç]o|cours|koers)"
         rf")",
         re.IGNORECASE,
