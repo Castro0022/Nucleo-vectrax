@@ -38,11 +38,71 @@ logger = logging.getLogger("vectrax.integrations.place_search")
 # Configuración
 # ---------------------------------------------------------------------------
 
-# Legacy Places API endpoints
-PLACES_API_BASE = "https://maps.googleapis.com/maps/api/place"
+# Google Places API (New) endpoints.
+_SEARCH_TEXT_URL = "https://places.googleapis.com/v1/places:searchText"
+_SEARCH_NEARBY_URL = "https://places.googleapis.com/v1/places:searchNearby"
+_DETAILS_URL = "https://places.googleapis.com/v1/places"  # + /{place_id}
 DEFAULT_LANGUAGE = "es"
 DEFAULT_MAX_RESULTS = 3  # máximo 3 — no explicar, solo resolver
-DEFAULT_RADIUS_METERS = 5000  # 5 km para búsquedas nearby
+DEFAULT_RADIUS_METERS = 5000.0  # 5 km para búsquedas nearby (float: la New API lo exige)
+
+# ---------------------------------------------------------------------------
+# FieldMasks — contrato público estable de costos por SKU tier.
+# Fuente única de verdad para qué campos pedimos a la New Places API.
+# Pro tier evita rating (SKU más barato); Enterprise añade rating/reviews
+# (resultados útiles); NUNCA pedimos campos Enterprise+Atmosphere (reviews,
+# editorialSummary, delivery, etc.) que son el SKU más caro.
+# Consumido por las llamadas a la API y verificado por los tests.
+# ---------------------------------------------------------------------------
+
+# Text / Nearby Search FieldMasks (prefijo 'places.').
+_SEARCH_FIELDMASK_PRO = (
+    "places.id,"
+    "places.displayName,"
+    "places.formattedAddress,"
+    "places.location,"
+    "places.primaryTypeDisplayName,"
+    "places.types"
+)
+_SEARCH_FIELDMASK_ENTERPRISE = (
+    _SEARCH_FIELDMASK_PRO + ","
+    "places.rating,"
+    "places.userRatingCount"
+)
+
+# Place Details FieldMasks (sin prefijo 'places.').
+_DETAILS_FIELDMASK_PRO = (
+    "id,"
+    "displayName,"
+    "formattedAddress,"
+    "location,"
+    "primaryTypeDisplayName,"
+    "googleMapsUri"
+)
+_DETAILS_FIELDMASK_ENTERPRISE = (
+    _DETAILS_FIELDMASK_PRO + ","
+    "rating,"
+    "userRatingCount,"
+    "nationalPhoneNumber,"
+    "currentOpeningHours,"
+    "websiteUri"
+)
+
+
+def _search_fieldmask(tier: str = "enterprise") -> str:
+    """FieldMask para Text/Nearby Search según tier ('enterprise' | 'pro')."""
+    return (
+        _SEARCH_FIELDMASK_ENTERPRISE if tier == "enterprise"
+        else _SEARCH_FIELDMASK_PRO
+    )
+
+
+def _details_fieldmask(tier: str = "enterprise") -> str:
+    """FieldMask para Place Details según tier ('enterprise' | 'pro')."""
+    return (
+        _DETAILS_FIELDMASK_ENTERPRISE if tier == "enterprise"
+        else _DETAILS_FIELDMASK_PRO
+    )
 
 # ---------------------------------------------------------------------------
 # Palabras clave para detección de intención de lugar
@@ -188,6 +248,7 @@ def _has_search_context(text: str) -> bool:
                         "restaurantes en Miami", "busca farmacias"
     Ejemplos negativos: "trabajo en un banco" (informativa)
     """
+    # Señales case-insensitive de búsqueda activa.
     search_signals = [
         r"\b(?:d[oó]nde|donde|busco|necesito|quiero|hay|encuentra|cerca|cercano|cercana)\b",
         r"\b(?:m[aá]s\s+cercan[oa]|por\s+aqu[ií]|aqu[ií]\s+cerca)\b",
@@ -195,7 +256,6 @@ def _has_search_context(text: str) -> bool:
         r"\b(?:abierto|abierta|horario|dirección|direccion|teléfono|telefono)\b",
         r"\b(?:recomienda|recomendación|mejor|mejores|bueno|buena|buenos|buenas|barato|económico|top|best)\b",
         r"\b(?:busca|buscar|encuentra|encontrar|search|find)\b",
-        r"\b(?:en|in)\s+[A-ZÁÉÍÓÚ]",  # "en Miami", "in New York" (ciudad con mayúscula)
         r"\b(?:rating|estrellas|calificación|reviews|reseñas|puntuación)\b",
         r"\b(?:google\s*places|places)\b",
         r"\?",  # Pregunta implícita
@@ -203,6 +263,11 @@ def _has_search_context(text: str) -> bool:
     for signal in search_signals:
         if re.search(signal, text, re.IGNORECASE):
             return True
+    # "en Miami", "in New York": ciudad con MAYÚSCULA. Debe ser case-SENSITIVE:
+    # con re.IGNORECASE, [A-Z] también matchea minúsculas y "trabajo en un
+    # banco" (informativo) daría falso positivo.
+    if re.search(r"\b(?:en|in)\s+[A-ZÁÉÍÓÚ]", text):
+        return True
     return False
 
 
@@ -253,35 +318,12 @@ def _extract_search_query(message: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# API — Google Places (Legacy)
+# API — Google Places (New)
 # ---------------------------------------------------------------------------
-# Usa la Places API legacy (no la "New") con endpoints GET estándar.
-# Se controla el costo con el parámetro 'fields' para pedir solo los
-# campos necesarios.
-#
-# Campos básicos (sin costo extra):
-#   name, formatted_address, geometry, place_id, types, business_status
-#
-# Campos de contacto ($):
-#   formatted_phone_number, opening_hours, website
-#
-# Campos de ambiente ($$):
-#   rating, user_ratings_total, reviews, price_level
+# Usa la Places API (New): endpoints POST con cuerpo JSON y el header
+# X-Goog-FieldMask para pedir SOLO los campos necesarios (control de costo
+# por SKU tier). Place Details es GET /v1/places/{id} con el mismo header.
 # ---------------------------------------------------------------------------
-
-# Fields para búsquedas (Text Search / Nearby Search)
-# Nota: Text Search legacy no soporta 'fields' — devuelve todo.
-# Nearby Search sí soporta 'fields' pero es opcional.
-
-# Fields para Place Details — básico (sin costo extra)
-_DETAILS_FIELDS_BASIC = "name,formatted_address,geometry,place_id,types"
-
-# Fields para Place Details — completo (contacto + rating)
-_DETAILS_FIELDS_FULL = (
-    "name,formatted_address,geometry,place_id,types,"
-    "rating,user_ratings_total,formatted_phone_number,"
-    "opening_hours,website,url"
-)
 
 
 def _get_api_key() -> str:
@@ -292,55 +334,59 @@ def _get_api_key() -> str:
     return key
 
 
+def _api_headers(api_key: str, field_mask: str) -> Dict[str, str]:
+    """Headers estándar de la New Places API."""
+    return {
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": field_mask,
+        "Content-Type": "application/json",
+    }
+
+
 def _text_search(
     query: str,
     language: str = DEFAULT_LANGUAGE,
     max_results: int = DEFAULT_MAX_RESULTS,
     location_bias: Optional[Dict[str, float]] = None,
     included_type: str = "",
-    include_rating: bool = True,
+    tier: str = "enterprise",
 ) -> List[Dict[str, Any]]:
     """
-    Google Places Text Search (Legacy API).
-    GET https://maps.googleapis.com/maps/api/place/textsearch/json
+    Google Places Text Search (New API).
+    POST https://places.googleapis.com/v1/places:searchText
 
-    Args:
-        query: Texto de búsqueda.
-        language: Código de idioma.
-        max_results: Máximo de resultados (hasta 20 por página).
-        location_bias: Centro para sesgar resultados.
-        included_type: Tipo de lugar (ej: "restaurant", "pharmacy").
-        include_rating: No aplica en legacy (siempre incluye rating).
+    Body: textQuery, languageCode, maxResultCount, includedType (opcional),
+    locationBias.circle (opcional, radius float). FieldMask via header.
     """
     api_key = _get_api_key()
     if not api_key:
         return []
 
-    url = f"{PLACES_API_BASE}/textsearch/json"
-
-    params: Dict[str, Any] = {
-        "query": query,
-        "language": language,
-        "key": api_key,
+    body: Dict[str, Any] = {
+        "textQuery": query,
+        "languageCode": language,
+        "maxResultCount": max_results,
     }
-
     if included_type:
-        params["type"] = included_type
-
+        body["includedType"] = included_type
     if location_bias:
-        params["location"] = f"{location_bias['lat']},{location_bias['lng']}"
-        params["radius"] = DEFAULT_RADIUS_METERS
+        body["locationBias"] = {
+            "circle": {
+                "center": {
+                    "latitude": float(location_bias["lat"]),
+                    "longitude": float(location_bias["lng"]),
+                },
+                "radius": float(DEFAULT_RADIUS_METERS),
+            }
+        }
+
+    headers = _api_headers(api_key, _search_fieldmask(tier))
 
     try:
-        resp = httpx.get(url, params=params, timeout=10.0)
+        resp = httpx.post(_SEARCH_TEXT_URL, json=body, headers=headers, timeout=10.0)
         resp.raise_for_status()
         data = resp.json()
-        status = data.get("status", "")
-        if status not in ("OK", "ZERO_RESULTS"):
-            logger.error("Places Text Search status: %s — %s",
-                         status, data.get("error_message", ""))
-            return []
-        return data.get("results", [])[:max_results]
+        return data.get("places", [])[:max_results]
     except httpx.HTTPStatusError as exc:
         logger.error(
             "Places Text Search HTTP error: %s %s",
@@ -358,46 +404,43 @@ def _nearby_search(
     radius: float = DEFAULT_RADIUS_METERS,
     max_results: int = DEFAULT_MAX_RESULTS,
     language: str = DEFAULT_LANGUAGE,
-    include_rating: bool = True,
+    tier: str = "enterprise",
 ) -> List[Dict[str, Any]]:
     """
-    Google Places Nearby Search (Legacy API).
-    GET https://maps.googleapis.com/maps/api/place/nearbysearch/json
+    Google Places Nearby Search (New API).
+    POST https://places.googleapis.com/v1/places:searchNearby
 
-    Args:
-        location: Dict con "lat" y "lng".
-        included_types: Lista de tipos (usa el primero como 'type').
-        radius: Radio en metros.
-        max_results: Máximo de resultados.
-        language: Código de idioma.
-        include_rating: No aplica en legacy.
+    Body: locationRestriction.circle (radius float), includedTypes (lista),
+    maxResultCount, languageCode. La New API NO soporta 'keyword'.
+    FieldMask via header.
     """
     api_key = _get_api_key()
     if not api_key:
         return []
 
-    url = f"{PLACES_API_BASE}/nearbysearch/json"
-
-    params: Dict[str, Any] = {
-        "location": f"{location['lat']},{location['lng']}",
-        "radius": int(radius),
-        "language": language,
-        "key": api_key,
+    body: Dict[str, Any] = {
+        "maxResultCount": max_results,
+        "languageCode": language,
+        "locationRestriction": {
+            "circle": {
+                "center": {
+                    "latitude": float(location["lat"]),
+                    "longitude": float(location["lng"]),
+                },
+                "radius": float(radius),
+            }
+        },
     }
-
     if included_types:
-        params["type"] = included_types[0]
+        body["includedTypes"] = included_types
+
+    headers = _api_headers(api_key, _search_fieldmask(tier))
 
     try:
-        resp = httpx.get(url, params=params, timeout=10.0)
+        resp = httpx.post(_SEARCH_NEARBY_URL, json=body, headers=headers, timeout=10.0)
         resp.raise_for_status()
         data = resp.json()
-        status = data.get("status", "")
-        if status not in ("OK", "ZERO_RESULTS"):
-            logger.error("Places Nearby Search status: %s — %s",
-                         status, data.get("error_message", ""))
-            return []
-        return data.get("results", [])[:max_results]
+        return data.get("places", [])[:max_results]
     except httpx.HTTPStatusError as exc:
         logger.error(
             "Places Nearby Search HTTP error: %s %s",
@@ -415,37 +458,24 @@ def _get_place_details(
     full: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
-    Google Places Details (Legacy API).
-    GET https://maps.googleapis.com/maps/api/place/details/json
+    Google Places Details (New API).
+    GET https://places.googleapis.com/v1/places/{place_id}
 
-    Args:
-        place_id: ID del lugar (ej: "ChIJ...").
-        language: Código de idioma.
-        full: Si True, incluye contacto y horarios.
+    FieldMask via header. full=True usa el tier Enterprise (contacto/horarios).
     """
     api_key = _get_api_key()
     if not api_key:
         return None
 
-    url = f"{PLACES_API_BASE}/details/json"
-
-    fields = _DETAILS_FIELDS_FULL if full else _DETAILS_FIELDS_BASIC
-
-    params = {
-        "place_id": place_id,
-        "fields": fields,
-        "language": language,
-        "key": api_key,
-    }
+    url = f"{_DETAILS_URL}/{place_id}"
+    field_mask = _details_fieldmask("enterprise" if full else "pro")
+    headers = _api_headers(api_key, field_mask)
+    params = {"languageCode": language}
 
     try:
-        resp = httpx.get(url, params=params, timeout=10.0)
+        resp = httpx.get(url, params=params, headers=headers, timeout=10.0)
         resp.raise_for_status()
-        data = resp.json()
-        if data.get("status") != "OK":
-            logger.error("Place Details status: %s", data.get("status", ""))
-            return None
-        return data.get("result")
+        return resp.json()
     except Exception as exc:
         logger.error("Place Details failed for %s: %s", place_id, exc)
         return None
@@ -489,19 +519,30 @@ def _normalize_place(
     raw: Dict[str, Any],
     user_location: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
-    """Normaliza un resultado de la API legacy a estructura Vectrax."""
-    name = raw.get("name", "")
+    """Normaliza un resultado de la New Places API a estructura Vectrax.
 
-    types = raw.get("types", [])
-    category = types[0] if types else ""
+    New API fields: id, displayName.text, formattedAddress, rating,
+    userRatingCount, primaryTypeDisplayName.text, types, location.latitude,
+    location.longitude.
+    """
+    display = raw.get("displayName") or {}
+    name = display.get("text", "") if isinstance(display, dict) else ""
 
-    place_location = raw.get("geometry", {}).get("location", {})
-    place_lat = place_location.get("lat", 0)
-    place_lng = place_location.get("lng", 0)
+    types = raw.get("types", []) or []
+    primary = raw.get("primaryTypeDisplayName") or {}
+    category = ""
+    if isinstance(primary, dict) and primary.get("text"):
+        category = primary["text"]
+    elif types:
+        category = types[0]
+
+    place_location = raw.get("location") or {}
+    place_lat = place_location.get("latitude")
+    place_lng = place_location.get("longitude")
 
     distance = None
     distance_label = ""
-    if user_location and place_lat and place_lng:
+    if user_location and place_lat is not None and place_lng is not None:
         distance = _approx_distance_km(
             user_location["lat"], user_location["lng"],
             place_lat, place_lng,
@@ -512,11 +553,11 @@ def _normalize_place(
         "nombre": name,
         "categoria": category,
         "rating": raw.get("rating"),
-        "total_reviews": raw.get("user_ratings_total"),
-        "direccion": raw.get("formatted_address", ""),
+        "total_reviews": raw.get("userRatingCount"),
+        "direccion": raw.get("formattedAddress", ""),
         "distancia_km": round(distance, 2) if distance is not None else None,
         "distancia_label": distance_label,
-        "place_id": raw.get("place_id", ""),
+        "place_id": raw.get("id", ""),
         "lat": place_lat,
         "lng": place_lng,
     }
@@ -639,19 +680,20 @@ def search_places(
 
 def format_results(results: List[Dict[str, Any]], query: str = "") -> str:
     """
-    Formato directo: máximo 3, sin intro, ordenados por distancia.
+    Formato directo y numerado, máximo 3, ordenados por distancia.
 
     Ejemplo:
-        Farmacia Cruz Verde — 4.2★ — 200 m
-        Farmacia Ahumada — 4.0★ — 350 m
-        Salcobrand — 3.8★ — 600 m
+        Encontré estos lugares:
+        1. Farmacia Cruz Verde — 4.2★ — 200 m
+        2. Farmacia Ahumada — 4.0★ — 350 m
+        3. Salcobrand — 3.8★ — 600 m
     """
     if not results:
         return _no_results_message(query)
 
-    lines = []
-    for place in results[:3]:  # máximo 3
-        parts = [place['nombre']]
+    lines = ["Encontré estos lugares:"]
+    for i, place in enumerate(results[:DEFAULT_MAX_RESULTS], start=1):
+        parts = [f"{i}. {place.get('nombre', '')}"]
 
         if place.get("rating"):
             parts.append(f"{place['rating']}★")
