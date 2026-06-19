@@ -49,7 +49,9 @@ vx = "cli.vx_main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-p no:cacheprovider"
+# The ledger plugin is loaded but INERT unless VECTRAX_TEST_LEDGER=1, so the
+# default gate is unaffected; set that env var to record run-level self-observation.
+addopts = "-p no:cacheprovider -p tests.plugins.ledger_plugin"
 # Run bare `async def` tests without per-test markers (architectural fix for
 # the whole class of "async def not natively supported" errors).
 asyncio_mode = "auto"

@@ -20,7 +20,9 @@ import threading
 
 import pytest
 
-sys.path.insert(0, os.path.expanduser("~/Vectrax"))
+# NOTE: repo root is made importable by tests/conftest.py. Do NOT inject a
+# hardcoded home-dir checkout (~/Vectrax): on a case-insensitive FS it resolves
+# to the main checkout and shadows the worktree under test.
 
 from vectrax.user_memory import (
     clear_all_memory,
