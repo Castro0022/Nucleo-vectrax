@@ -132,6 +132,15 @@ async def telegram_webhook(
     # Fetch gateway singleton
     gw = get_gateway_instance()
 
+    # Liveness: en modo webhook no hay hilo de heartbeat, así que refrescamos
+    # el gateway_heartbeat en cada update recibido. Permite que
+    # state_collector/dashboard reflejen vida del ingreso mientras hay tráfico.
+    # (En reposo, la vida del ingreso == vida del core_api.)
+    try:
+        gw._write_heartbeat()
+    except Exception:
+        pass
+
     # Idempotency via persisted offset.
     # Telegram may retry up to ~60s. We track the highest update_id we
     # enqueued in gw._offset (persisted by _save_offset).

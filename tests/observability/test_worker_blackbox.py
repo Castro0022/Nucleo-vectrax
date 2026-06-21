@@ -74,6 +74,27 @@ class TestDiagnosisCauses(unittest.TestCase):
         self.assertEqual(diag["causa_probable"], "timeout_externo")
 
     @patch.object(bb, '_alert_creator')
+    def test_gateway_stale_without_errors_not_timeout_externo(self, mock_alert):
+        """Regression: a frozen gateway (stale HB) whose logs only contain
+        benign 'telegram' lines must NOT be diagnosed as timeout_externo.
+        This was the recurring false positive.
+        """
+        logs = [
+            "POLL #5 | 0 updates | 30000ms",
+            "api.telegram.org getUpdates ok",
+            "STATUS | up=1h0m0s | processed=10",
+        ]
+        ext = bb._detect_external_calls(logs)
+        inc = _make_incident(
+            worker_name="telegram_gateway",
+            heartbeat_age_s=64,
+            external_calls=ext,
+            last_logs=logs,
+        )
+        diag = bb.diagnose_incident(inc)
+        self.assertNotEqual(diag["causa_probable"], "timeout_externo")
+
+    @patch.object(bb, '_alert_creator')
     def test_memoria_alta(self, mock_alert):
         inc = _make_incident(resources={"ram_mb": 800, "threads": 5})
         diag = bb.diagnose_incident(inc)
@@ -279,16 +300,32 @@ class TestDataCollectors(unittest.TestCase):
 
     def test_detect_external_calls(self):
         logs = [
-            "calling api.openai.com/v1/chat",
-            "timeout from etoro client",
+            "calling api.openai.com/v1/chat",      # mention only -> NOT counted
+            "timeout from etoro client",           # etoro + timeout -> counted
             "normal processing line",
-            "api.telegram.org response ok",
+            "api.telegram.org response ok",        # mention only -> NOT counted
         ]
         calls = bb._detect_external_calls(logs)
-        self.assertIn("OpenAI", calls["pending_apis"])
+        # Only providers with REAL problem evidence are counted as pending.
         self.assertIn("eToro", calls["pending_apis"])
-        self.assertIn("Telegram", calls["pending_apis"])
         self.assertIn("timeout_detected", calls["pending_apis"])
+        self.assertNotIn("OpenAI", calls["pending_apis"])
+        self.assertNotIn("Telegram", calls["pending_apis"])
+        # Mere mentions are still surfaced as 'seen' for context.
+        self.assertIn("OpenAI", calls["seen_apis"])
+        self.assertIn("Telegram", calls["seen_apis"])
+
+    def test_provider_mention_without_error_is_not_pending(self):
+        """Regression: provider name alone (no error indicator) must not be
+        counted as a pending/timed-out external call."""
+        logs = [
+            "POLL #5 | 0 updates | 30000ms",
+            "api.telegram.org getUpdates ok",
+            "STATUS | up=1h0m0s | processed=10",
+        ]
+        calls = bb._detect_external_calls(logs)
+        self.assertEqual(calls["pending_count"], 0)
+        self.assertNotIn("Telegram", calls["pending_apis"])
 
     def test_detect_no_external_calls(self):
         logs = ["just a normal log line", "nothing special here"]

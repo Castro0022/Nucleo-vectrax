@@ -126,6 +126,10 @@ def create_app() -> FastAPI:
                 # but we do NOT call gw.run() — no polling loop, no heartbeat.
                 gw._running = True
                 webhook.set_gateway_instance(gw)
+                try:
+                    gw._write_heartbeat()  # seed gateway heartbeat at startup
+                except Exception:
+                    pass
                 logger.info("TelegramGateway instantiated for webhook mode (no polling loop)")
             except Exception as exc:
                 logger.exception("Webhook mode init failed: %s", exc)
