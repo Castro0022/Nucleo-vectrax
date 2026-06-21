@@ -59,6 +59,12 @@ _SELF_REFERENCE = re.compile(
     r"|\bqu[eé]\s+(?:has|haz|has)\s+(?:observado|visto|detectado)\b"
     r"|\b[uú]ltim(?:as?|os?)\s+(?:observacion|cambios?|detecciones?)\b"
     r"|\bledger\b"
+    # Motores / orquestación / activación
+    r"|\bmotor(?:es)?\b"
+    r"|\bengines?\b"
+    r"|\borquesta(?:ci[oó]n|dor)?\b"
+    r"|\bactivaci[oó]n\b"
+    r"|\bactivad[oa]s?\b"
     r")",
     re.IGNORECASE,
 )
@@ -322,6 +328,63 @@ def _read_recent_observations(limit: int = 15) -> str:
         return ""
 
 
+def _read_engines_state() -> str:
+    """Lee el estado de los motores (capa de orquestación) para el auto-contexto.
+
+    Read-only y defensivo. Asegura que el registro declarativo esté poblado
+    (idempotente) y reporta de forma compacta cuántos motores están disponibles,
+    su distribución por tier, y el límite de seguridad: lo interno se conecta
+    solo, lo externo NUNCA se pone en vivo sin autorización.
+    """
+    try:
+        from core.orchestration import get_engine_status
+        # Asegura el registro poblado aunque el bootstrap de arranque no haya
+        # corrido en este proceso (p.ej. el gateway de Telegram). Idempotente.
+        try:
+            from core.orchestration import engine_registry as _reg
+            _reg._register_defaults()
+        except Exception:
+            pass
+
+        status = get_engine_status()
+        total = status.get("total", 0)
+        if not total:
+            return ""
+        available = status.get("available", 0)
+
+        by_tier: dict = {}
+        gated: list = []
+        external: list = []
+        for e in status.get("engines", []):
+            tier = e.get("tier", "?")
+            by_tier[tier] = by_tier.get(tier, 0) + 1
+            if tier == "gated_internal":
+                gated.append(e.get("name", "?"))
+            elif tier == "external":
+                external.append(e.get("name", "?"))
+
+        tier_str = ", ".join(f"{k}={v}" for k, v in sorted(by_tier.items()))
+        lines = [
+            "[MIS MOTORES — capa de orquestación, estado real en este momento]",
+            f"Disponibles: {available}/{total} (por tier: {tier_str})",
+            "Lo interno se conecta solo; lo externo NUNCA se pone en vivo sin autorización.",
+        ]
+        if gated:
+            lines.append(
+                "Internos sensibles (modo seguro — operador GUIADO, presencia OBSERVADOR): "
+                + ", ".join(sorted(gated)[:8])
+            )
+        if external:
+            lines.append(
+                "Externos (solo verificación de salud, jamás LIVE automático): "
+                + ", ".join(sorted(external)[:8])
+            )
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.debug("_read_engines_state failed: %s", exc)
+        return ""
+
+
 def build_self_context(lang: str = "es", user_id: str = "") -> str:
     """
     Construye el contexto de auto-observación de Vectrax.
@@ -434,9 +497,14 @@ def build_self_context(lang: str = "es", user_id: str = "") -> str:
     # Autonomous observations (persistent memory of what Vectrax observed)
     obs_ctx = _read_recent_observations()
 
+    # Engines (orchestration layer) — qué motores tengo conectados/activos
+    engines_ctx = _read_engines_state()
+
     parts = [base]
     if universe:
         parts.append(universe)
+    if engines_ctx:
+        parts.append(engines_ctx)
     if market_ctx:
         parts.append(f"[OBSERVACIÓN DE MERCADO]\n{market_ctx}")
     if obs_ctx:

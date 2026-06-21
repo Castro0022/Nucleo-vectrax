@@ -77,6 +77,17 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
 }
 #hud-back:hover { color: var(--text); }
 
+/* System HUD (engines + brokers) */
+#hud-system {
+  top: 60px; left: 16px; width: 232px;
+  background: rgba(14,20,32,0.92); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px; font-size: 11px;
+}
+#hud-system .sh-title { font-weight: 600; color: var(--text); margin-bottom: 6px; }
+#hud-system .sh-row { display: flex; justify-content: space-between; gap: 8px; color: var(--dim); margin-bottom: 3px; }
+#hud-system .sh-row b { color: var(--text); font-family: var(--mono); }
+#hud-system .sep { height: 1px; background: var(--border); margin: 9px 0; }
+
 /* Empty state */
 #empty-state {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -152,6 +163,15 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   <div class="legend-row"><div class="legend-dot" style="background:#e2e8f0"></div> Cambio de código (destello)</div>
   <div class="legend-row"><div class="legend-ring" style="border-color:#ff7849"></div> Convergencia de causa raíz</div>
   <div class="legend-row" style="opacity:0.6">Tamaño = masa · Brillo = profundidad</div>
+</div>
+
+<!-- HUD: System (engines + brokers) -->
+<div id="hud-system" class="hud">
+  <div class="sh-title">⚙ Motores</div>
+  <div id="sh-engines"><div class="sh-row"><span>cargando…</span></div></div>
+  <div class="sep"></div>
+  <div class="sh-title">📈 Brokers</div>
+  <div id="sh-brokers"><div class="sh-row"><span>cargando…</span></div></div>
 </div>
 
 <!-- Tooltip -->
@@ -1192,6 +1212,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     // 2. Gravity engine stars (cognitive + market)
     let _gravConvCount = 0;
     let _newQ = null;
+    let _newEngines = null;
     try {
       const gRes = await fetch('/v1/universe');
       if (gRes.ok) {
@@ -1205,6 +1226,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         // Quality phenomena — extract from same response (no second fetch)
         if (gData.quality) {
           _newQ = gData.quality;
+        }
+        // Engines (orchestration) — extract from same response
+        if (gData.engines) {
+          _newEngines = gData.engines;
         }
         const seen = new Set(newStars.map(s => s.id));
 
@@ -1288,6 +1313,46 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       const _tot = qFailures.length + qRecoveries.length + qEvents.length + qConvergences.length;
       _cq.textContent = _tot || '';
     }
+    renderEngines(_newEngines);
+  }
+
+  // --- System HUD: engines + brokers (additive, read-only) ---
+  function renderEngines(eng) {
+    const el = document.getElementById('sh-engines');
+    if (!el) return;
+    if (!eng) { el.innerHTML = '<div class="sh-row"><span>no disponible</span></div>'; return; }
+    const bt = eng.by_tier || {};
+    el.innerHTML =
+      `<div class="sh-row"><span>Disponibles</span><b style="color:#06d6a0">${eng.available||0}/${eng.total||0}</b></div>` +
+      `<div class="sh-row"><span>core</span><b>${bt.core||0}</b></div>` +
+      `<div class="sh-row"><span>observe</span><b>${bt.observe||0}</b></div>` +
+      `<div class="sh-row"><span>gated</span><b style="color:#fbbf24">${bt.gated_internal||0}</b></div>` +
+      `<div class="sh-row"><span>external</span><b style="color:#22d3ee">${bt.external||0}</b></div>`;
+  }
+
+  function renderBrokers(d) {
+    const el = document.getElementById('sh-brokers');
+    if (!el) return;
+    if (!d || d.error) { el.innerHTML = '<div class="sh-row"><span>no disponible</span></div>'; return; }
+    const syms = d.symbols || [], pats = d.patterns || [], sigs = d.signals || [], pos = d.positions || [];
+    const active = syms.filter(s => s.status === 'activo').length;
+    const usable = pats.filter(p => p.usable).length;
+    const ex = d.auto_executor || d.executor || {};
+    const mode = String(ex.mode || d.mode || 'off').toUpperCase();
+    const modeColor = mode === 'LIVE' ? '#ff5a52' : (mode === 'PAPER' ? '#fbbf24' : '#5a6374');
+    el.innerHTML =
+      `<div class="sh-row"><span>Modo</span><b style="color:${modeColor}">${mode}</b></div>` +
+      `<div class="sh-row"><span>Símbolos activos</span><b>${active}/${syms.length}</b></div>` +
+      `<div class="sh-row"><span>Patrones usables</span><b>${usable}/${pats.length}</b></div>` +
+      `<div class="sh-row"><span>Señales</span><b>${sigs.length}</b></div>` +
+      `<div class="sh-row"><span>Posiciones</span><b>${pos.length}</b></div>`;
+  }
+
+  function fetchBrokers() {
+    fetch('/v1/market/live')
+      .then(r => r.ok ? r.json() : null)
+      .then(renderBrokers)
+      .catch(() => renderBrokers(null));
   }
 
   // --- Init ---
@@ -1296,6 +1361,10 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
 
   // Refresh data every 15s (positions preserved, no flicker)
   setInterval(loadUniverse, 15000);
+
+  // Brokers panel: own cadence (market/live is cached server-side)
+  fetchBrokers();
+  setInterval(fetchBrokers, 30000);
 
 })();
 </script>
