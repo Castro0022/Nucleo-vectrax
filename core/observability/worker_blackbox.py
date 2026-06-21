@@ -174,7 +174,7 @@ def diagnose_incident(incident: Dict[str, Any]) -> Dict[str, Any]:
         else:
             confidence = min(confidence + 0.1, 0.95)
         pending_apis = ext_calls.get("pending_apis", [])
-        pos_evidence.append(f"APIs externas en logs: {pending_apis}")
+        pos_evidence.append(f"APIs con timeout/error reciente: {pending_apis}")
         if has_timeout_err:
             pos_evidence.append("Palabra 'timeout' en errores recientes")
         action = "verificar conectividad a APIs externas (OpenAI, Telegram, eToro)"
@@ -403,26 +403,57 @@ def _extract_errors(logs: List[str], n: int) -> List[str]:
     return errors[-n:]
 
 
+# Indicadores de un PROBLEMA real en una línea de log. No basta con que
+# aparezca el nombre del proveedor: el gateway SIEMPRE loggea "telegram",
+# así que contar la mera mención producía un 'timeout_externo' permanente
+# y falso. Sólo contamos un proveedor si su línea trae además uno de estos.
+_PROBLEM_INDICATORS = (
+    "timeout", "timed out", "connecttimeout", "readtimeout", "writetimeout",
+    "connecterror", "connectionerror", "connection refused", "unreachable",
+    "circuit open", "circuit_open", "circuit opened",
+    "failed", "failure", "error", "exception",
+    " 429", " 500", " 502", " 503", " 504",
+)
+_PROVIDER_PATTERNS = {
+    "OpenAI": ("openai", "api.openai"),
+    "Telegram": ("telegram", "api.telegram"),
+    "eToro": ("etoro",),
+    "Search": ("tavily", "jina"),
+    "Gemini": ("gemini",),
+}
+
+
 def _detect_external_calls(logs: List[str]) -> Dict[str, Any]:
-    """Detect pending external API calls from log patterns."""
-    apis = set()
+    """Detect external API calls that show REAL problem evidence.
+
+    A provider is counted as 'pending'/problematic ONLY when a recent log
+    line mentions it AND that same line carries a problem indicator
+    (timeout, connection error, circuit open, 5xx/429, ...). The mere
+    presence of a provider name is NOT evidence of a timeout — counting it
+    produced a permanent, misleading 'timeout_externo' diagnosis.
+
+    Providers merely seen (no error) are surfaced separately as 'seen_apis'
+    for context, without being counted.
+    """
+    problem_apis = set()
+    seen_apis = set()
+    timeout_detected = False
     for line in logs[-50:]:
         lower = line.lower()
-        if "openai" in lower or "api.openai" in lower:
-            apis.add("OpenAI")
-        if "telegram" in lower or "api.telegram" in lower:
-            apis.add("Telegram")
-        if "etoro" in lower:
-            apis.add("eToro")
-        if "tavily" in lower or "jina" in lower:
-            apis.add("Search")
-        if "gemini" in lower:
-            apis.add("Gemini")
-        if "timeout" in lower or "ConnectTimeout" in lower:
-            apis.add("timeout_detected")
+        has_problem = any(ind in lower for ind in _PROBLEM_INDICATORS)
+        if "timeout" in lower or "timed out" in lower:
+            timeout_detected = True
+        for name, needles in _PROVIDER_PATTERNS.items():
+            if any(n in lower for n in needles):
+                seen_apis.add(name)
+                if has_problem:
+                    problem_apis.add(name)
+    if timeout_detected:
+        problem_apis.add("timeout_detected")
     return {
-        "pending_apis": sorted(apis),
-        "pending_count": len(apis),
+        "pending_apis": sorted(problem_apis),
+        "pending_count": len(problem_apis),
+        "seen_apis": sorted(seen_apis),
     }
 
 

@@ -334,6 +334,12 @@ class VectraxSupervisor:
                 continue
             self.services[name] = ManagedService(name, config)
 
+        # En modo webhook el core_api porta el ingreso de Telegram, así que
+        # deja de ser opcional: DEBE permanecer arriba (y reiniciarse si cae).
+        if use_webhook and "core_api" in self.services:
+            self.services["core_api"].required = True
+            logger.info("USE_WEBHOOK=1 — core_api marcado required (porta el ingreso)")
+
     def start_all(self) -> None:
         """Start all services."""
         logger.info("=" * 55)
