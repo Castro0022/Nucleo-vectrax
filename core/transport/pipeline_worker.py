@@ -266,6 +266,34 @@ def _tg_venue(chat_id: int, place: dict) -> bool:
         return False
 
 
+def _tg_chat_action(chat_id: int, action: str = "typing") -> None:
+    """Best-effort Telegram chat action (e.g. 'typing…').
+
+    Pure UX signal (no message content) → reduces PERCEIVED latency while the
+    cognitive pipeline runs, without touching the pipeline. Routed through
+    ExternalCallGuard so a slow/down Telegram never adds latency to the reply
+    path. Never raises. Disable with VX_TYPING_INDICATOR=0.
+    """
+    if not _TG_HTTP:
+        return
+    if os.environ.get("VX_TYPING_INDICATOR", "1").strip().lower() in ("0", "false", "off", "no"):
+        return
+
+    def _do():
+        r = _TG_HTTP.post(
+            f"{_TG_BASE}/sendChatAction",
+            json={"chat_id": chat_id, "action": action},
+        )
+        r.raise_for_status()
+        return True
+
+    try:
+        from core.external_call_guard import guarded_call
+        guarded_call("telegram", _do, timeout=5, fallback=None)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Process one message
 # ---------------------------------------------------------------------------
@@ -427,6 +455,11 @@ def _process_one(msg):
             msg.id, msg.user_id, getattr(msg, 'priority', 1),
             (msg.content or "")[:120],
         )
+
+        # Acuse inmediato "escribiendo…": baja la latencia PERCIBIDA mientras
+        # corre el pipeline, sin tocarlo. Acotado por el guard; desactivable
+        # con VX_TYPING_INDICATOR=0.
+        _tg_chat_action(msg.chat_id, "typing")
 
         # ── CICLO DE CONVERGENCIA TOTAL (hard timeout) ────────────────────
         # Non-fatal: if convergence hangs or times out, pipeline continues.

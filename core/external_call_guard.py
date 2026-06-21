@@ -36,6 +36,7 @@ Fecha: 2026-06-13
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
@@ -116,6 +117,26 @@ def _get_state(provider: str) -> ProviderState:
     if provider not in _providers:
         _providers[provider] = ProviderState()
     return _providers[provider]
+
+
+def _resolve_timeout(provider: str) -> float:
+    """Resolve the timeout for a provider.
+
+    Priority: env override → per-provider default → global default. Lets ops
+    tune timeouts (e.g. a tighter interactive budget) WITHOUT code changes
+    and WITHOUT altering the safe defaults. Env var format (seconds):
+        VX_GUARD_TIMEOUT_OPENAI=12
+        VX_GUARD_TIMEOUT_TELEGRAM=8
+    """
+    raw = os.environ.get(f"VX_GUARD_TIMEOUT_{provider.upper()}", "").strip()
+    if raw:
+        try:
+            val = float(raw)
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+    return DEFAULT_TIMEOUTS.get(provider, DEFAULT_TIMEOUT)
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +256,7 @@ def guarded_call(
         - Heartbeat is never blocked (call runs in thread pool)
     """
     if timeout is None:
-        timeout = DEFAULT_TIMEOUTS.get(provider, DEFAULT_TIMEOUT)
+        timeout = _resolve_timeout(provider)
 
     # Check circuit breaker
     if not _check_circuit(provider):
