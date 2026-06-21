@@ -125,6 +125,21 @@ class UniverseSnapshot:
             _know = self.knowledge_star_count
             _users = self.star_count
             _conv_total = self.gravity_convergences_total
+        # Engines (orquestación) — read-only, defensivo.
+        try:
+            from core.orchestration import get_engine_status
+            _eng = get_engine_status()
+            _engines: Dict[str, Any] = {
+                "total": _eng.get("total", 0),
+                "available": _eng.get("available", 0),
+                "by_tier": {},
+                "list": _eng.get("engines", []),
+            }
+            for _e in _eng.get("engines", []):
+                _t = _e.get("tier", "?")
+                _engines["by_tier"][_t] = _engines["by_tier"].get(_t, 0) + 1
+        except Exception:
+            _engines = {"total": 0, "available": 0, "by_tier": {}, "list": []}
         return {
             "heartbeat": self.timestamp,
             "total_stars": _total,
@@ -204,6 +219,7 @@ class UniverseSnapshot:
                     "code_changes": 0, "convergences": 0, "total": 0,
                 },
             },
+            "engines": _engines,
         }
 
 

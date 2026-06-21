@@ -86,6 +86,11 @@ def _hermetic_base(monkeypatch, tmp_path):
     for _key in _NEUTRALIZE_ENV:
         monkeypatch.delenv(_key, raising=False)
 
+    # 3) Never auto-activate engines during tests (the API on_startup honours
+    #    this flag). Keeps the suite hermetic — no operator/observer state
+    #    written to the real ~/.vectrax when an app/TestClient is spun up.
+    monkeypatch.setenv("VECTRAX_ACTIVATE_ENGINES", "off")
+
     yield
 
 

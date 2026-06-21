@@ -168,3 +168,33 @@ Todo el grupo es **gated**: requiere credenciales de broker y datos de mercado, 
 - 🟡 **Alpaca Client** · `connectors/alpaca/alpaca_client.py` (417 loc) — conector de broker alternativo (paper trading). API: `health_check()`, `get_account()`, `get_positions()`, `submit_order()`, `close_position()`, `get_bars()`. Se selecciona por `BROKER_PROVIDER`. Requiere API keys.
 
 **Estado del grupo:** operativo a nivel de código pero **gated**. Por defecto el sistema observa/aprende mercado sin ejecutar (`auto_executor=OFF`); la ejecución PAPER/LIVE y las órdenes reales requieren credenciales de broker + activación manual y, en LIVE, autorización del creador y cumplimiento de límites de riesgo.
+
+---
+
+## ⚡ Activación / Orquestación de motores
+Capa única y declarativa para conectar/activar todos los motores: `core/orchestration/` (se apoya en el operator runtime y el meta_loop existentes; no los reemplaza).
+
+### Tiers de seguridad
+- **CORE** — cognitivo/interno; seguro de activar.
+- **OBSERVE** — observación/aprendizaje; no destructivo.
+- **GATED_INTERNAL** — interno sensible; se activa en su **sub-modo seguro** (operador GUIDED, PresenciaObserver OBSERVER). El modo que fuerza (ACTIVE/no-GUIDED) jamás lo enciende el bootstrap. Respeta flags (`RESILIENCE_ENABLED`, etc.).
+- **EXTERNAL** — credenciales/dinero/red (eToro, providers cloud, TTS). **Solo health-check**; nunca se pone en LIVE automáticamente (`auto_executor` marcado `__never__`).
+
+### Perfiles
+- `safe` (default) — activa CORE+OBSERVE, GATED_INTERNAL en sub-modo seguro, EXTERNAL solo verificado.
+- `full` — igual, pero permite activar GATED_INTERNAL marcados; **EXTERNAL/LIVE sigue requiriendo autorización explícita** (no se enciende aquí).
+
+### Cómo se activa
+- **Arranque del API** (`services/core/app.py` `on_startup`): lanza `activate_all('safe')` en un **hilo daemon** (no bloquea ni puede tumbar el arranque). Controlado por `VECTRAX_ACTIVATE_ENGINES` (default `safe`; `off` lo desactiva; `full` usa el perfil full).
+- **Comando único (local):** `make activate` · `make engines` (estado) · o `python -m core.orchestration [safe|full|status|dry]`.
+
+### Observabilidad
+- `GET /v1/engines` — estado **read-only** por motor (tier, disponible, gating). Igual que `/v1/universe` y `/v1/health`: solo lectura, sin secretos.
+- Cada bootstrap deja huella en el `observation_ledger` (dominio `activation`) y el snapshot del universo expone un bloque `engines` (conteos por tier + lista).
+
+### Seguridad (decisión explícita)
+NO existe ningún endpoint HTTP que dispare la activación: activar motores es una operación privilegiada (decisión operativa que requiere autorización del creador), por eso solo ocurre en el arranque del proceso y por el comando local. Así no se abre ninguna puerta de activación remota sin autenticación.
+
+### Garantías
+Idempotente · defensivo (un motor que falla no aborta el resto) · aditivo (no cambia el comportamiento de ningún motor; solo los cablea) · `dry_run` 100% read-only.
+Archivos: `core/orchestration/engine_registry.py`, `core/orchestration/bootstrap.py`, `core/orchestration/__main__.py`, `services/core/routes/engines.py`. Tests: `tests/test_orchestration.py` (16).

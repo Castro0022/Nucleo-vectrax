@@ -174,3 +174,13 @@ class TestEngineStatus:
         status = bs.get_engine_status()
         assert status["total"] >= 30
         assert "engines" in status
+
+
+class TestUniverseIntegration:
+    def test_universe_snapshot_exposes_engines(self):
+        """/v1/universe (to_api_dict) must include the additive 'engines' block."""
+        from core.self_observation.universe_observer import UniverseSnapshot
+        d = UniverseSnapshot().to_api_dict()
+        assert "engines" in d
+        assert d["engines"]["total"] >= 30
+        assert "by_tier" in d["engines"]
