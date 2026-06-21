@@ -76,6 +76,14 @@ class TestMixedLanguage:
     def test_short_not_mixed(self):
         assert is_mixed_language("ok") is False
 
+    def test_spanish_sharing_italian_words_not_mixed(self):
+        """Regression: Spanish that shares 'una'/'del' with Italian must NOT
+        be flagged mixed. The false positive forced the language gate to
+        translate correct Spanish responses, corrupting them (e.g. dropping
+        the accent in 'Jesús')."""
+        text = "Jesús de Nazaret fue una figura histórica central del cristianismo."
+        assert is_mixed_language(text) is False
+
 
 # ===========================================================================
 # 3. Enforcement: passthrough

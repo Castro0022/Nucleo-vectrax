@@ -138,6 +138,21 @@ _ES_FR_EXCLUSIVE_FR = re.compile(
     re.IGNORECASE,
 )
 
+# ES vs IT: comparten 'una', 'del', 'la'. Un texto español cotidiano matchea
+# el italiano por esas palabras compartidas (p.ej. 'una figura ... del ...').
+# Sin marcadores EXCLUSIVAMENTE italianos, el texto NO es italiano. Este set
+# se usa SOLO como tie-breaker ES/IT y NO afecta otros pares de idiomas.
+# El español usa acentos agudos (á é í ó ú); el italiano usa graves
+# (à è ì ò ù), que aquí son señal exclusiva italiana.
+_IT_EXCLUSIVE = re.compile(
+    r"[àèìòù]"
+    r"|\b(?:è|gli|della|delle|degli|nella|nello|nel|sono|siamo|sei"
+    r"|anche|questo|questa|quello|quella|molto|perch[éè]|cosa|ciao"
+    r"|grazie|buongiorno|essere|hanno|sulla|col|coi|tra|fra"
+    r"|che|per|non|come|pi[ùu]|pu[òo])\b",
+    re.IGNORECASE,
+)
+
 
 def detect_language(text: str) -> str:
     """
@@ -262,6 +277,18 @@ def is_mixed_language(text: str) -> bool:
         pt_x = bool(_PT_EXCLUSIVE.search(text))
         if not pt_x:
             significant.discard("pt")
+        elif not es_x:
+            significant.discard("es")
+
+    # ES/IT: 'una', 'del', 'la' inflan el score italiano en textos españoles.
+    # Sin marcadores exclusivos italianos, el texto NO es mezcla. Evita el
+    # falso positivo que disparaba traducción innecesaria de respuestas
+    # correctas en español (corrompiéndolas vía el language gate).
+    if "es" in significant and "it" in significant:
+        es_x = bool(_ES_EXCLUSIVE.search(text))
+        it_x = bool(_IT_EXCLUSIVE.search(text))
+        if not it_x:
+            significant.discard("it")
         elif not es_x:
             significant.discard("es")
 
