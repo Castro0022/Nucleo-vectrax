@@ -191,7 +191,11 @@ class ManagedService:
                 cwd=self.cwd,
                 env=env,
                 stdout=None,   # inherit parent stdout → visible in docker logs
-                stderr=subprocess.PIPE,
+                # stderr MERGED into the inherited stdout (→ docker logs), NOT a
+                # PIPE: an undrained PIPE fills (~64KB) and BLOCKS the child on
+                # its next stderr write. That silently hung core_api for ~13h
+                # (container 'healthy', :8900 dead). Merging removes it by design.
+                stderr=subprocess.STDOUT,
             )
             self.last_start = time.time()
             self.healthy = True
@@ -310,6 +314,14 @@ GATEWAY_HEARTBEAT_PATH = RUNTIME_DIR / "gateway_heartbeat"
 # Real hang detected in 60s + 10s check = 70s max.
 GATEWAY_HEARTBEAT_MAX_AGE = 60
 
+# core_api HTTP liveness. The webhook ingress AND the UI live in core_api; a
+# hung-but-alive uvicorn (blocked event loop) passes the process check but
+# stops serving on :PORT — taking down web AND Telegram at once. We probe
+# /health and restart core_api after N consecutive failures.
+CORE_API_HEALTH_URL = f"http://127.0.0.1:{CORE_API_PORT}/health"
+CORE_API_HTTP_MAX_FAILS = 3     # ~3 × HEALTH_CHECK_INTERVAL(10s) ≈ 30s to act
+CORE_API_HTTP_GRACE_S = 45      # don't probe until core_api had time to boot
+
 
 class VectraxSupervisor:
     """Main supervisor loop."""
@@ -319,6 +331,7 @@ class VectraxSupervisor:
     def __init__(self) -> None:
         self.services: Dict[str, ManagedService] = {}
         self._running = False
+        self._core_api_http_fails = 0
 
         # When USE_WEBHOOK=1, the telegram_gateway service is NOT started as
         # a separate process. Instead, TelegramGateway is instantiated inside
@@ -411,6 +424,7 @@ class VectraxSupervisor:
             # --- Heartbeat checks: detect hung processes ---
             self._check_worker_heartbeat()
             self._check_gateway_heartbeat()
+            self._check_core_api_http()
 
     def _check_worker_heartbeat(self) -> None:
         """Kill and restart pipeline_worker if heartbeat is stale."""
@@ -590,6 +604,55 @@ class VectraxSupervisor:
                         pass
         except Exception as exc:
             logger.debug("Gateway heartbeat check error: %s", exc)
+
+    def _check_core_api_http(self) -> None:
+        """Restart core_api if its HTTP surface is hung (process alive but the
+        port stops responding). Catches the silent 'healthy container, dead
+        :8900' state the process-only check misses — which took down web and
+        Telegram together in webhook mode.
+        """
+        svc = self.services.get("core_api")
+        if svc is None or not svc.healthy or svc.process is None:
+            return
+        # Grace: a freshly-(re)started core_api needs time to boot before probing.
+        if time.time() - svc.last_start < CORE_API_HTTP_GRACE_S:
+            return
+        ok = False
+        try:
+            import urllib.request
+            with urllib.request.urlopen(CORE_API_HEALTH_URL, timeout=5) as r:
+                ok = getattr(r, "status", 200) == 200
+        except Exception:
+            ok = False
+        if ok:
+            self._core_api_http_fails = 0
+            return
+        self._core_api_http_fails += 1
+        logger.warning(
+            "[core_api] HTTP probe failed (%d/%d) — %s not responding",
+            self._core_api_http_fails, CORE_API_HTTP_MAX_FAILS, CORE_API_HEALTH_URL,
+        )
+        if self._core_api_http_fails < CORE_API_HTTP_MAX_FAILS:
+            return
+        logger.critical(
+            "[core_api] HUNG (HTTP dead, process alive) — killing for restart",
+        )
+        try:
+            from core.operator.failure_immunity import record_failure
+            record_failure("core_api_hung", "http_unresponsive",
+                           f"fails={self._core_api_http_fails}")
+        except Exception:
+            pass
+        try:
+            svc.process.kill()
+            try:
+                svc.process.wait(timeout=5)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        svc.healthy = False  # main loop restarts it next iteration
+        self._core_api_http_fails = 0
 
     def stop_all(self) -> None:
         """Stop all services gracefully."""

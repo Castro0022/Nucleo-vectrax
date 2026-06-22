@@ -47,11 +47,15 @@ services:
     networks:
       - vectrax-net
     healthcheck:
-      test: ["CMD", "python", "/app/vectrax_supervisor.py", "--check"]
+      # Probe the REAL HTTP surface (core_api on :8900), not just the supervisor
+      # PID. A hung-but-alive core_api now reports 'unhealthy' in `docker ps`.
+      # Auto-recovery is handled in-process by the supervisor's
+      # _check_core_api_http(); this is the accurate status signal.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8900/health', timeout=5)"]
       interval: 30s
-      timeout: 5s
+      timeout: 8s
       retries: 3
-      start_period: 15s
+      start_period: 40s
     deploy:
       resources:
         limits:
