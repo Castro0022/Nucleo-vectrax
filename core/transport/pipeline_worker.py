@@ -294,6 +294,26 @@ def _tg_chat_action(chat_id: int, action: str = "typing") -> None:
         pass
 
 
+def _observe_runtime_error(exc: Exception, where: str = "pipeline_worker") -> None:
+    """Record a real production runtime fault as a quality phenomenon.
+
+    Makes worker failures/timeouts VISIBLE in the Universe (Pilar D) as failure
+    stars, instead of the quality block staying empty in prod. Best-effort:
+    never raises (wrapped), additive, and disable-able with VX_RUNTIME_OBSERVER=0.
+    Honors the quality_observer privacy contract: only the exception CLASS name
+    is stored (never the message/values).
+    """
+    if os.environ.get("VX_RUNTIME_OBSERVER", "1").strip().lower() in ("0", "false", "off", "no"):
+        return
+    try:
+        from core.self_observation.quality_observer import record_runtime_error
+        record_runtime_error(
+            type(exc).__name__, where=where, module=where, severity="warning",
+        )
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Process one message
 # ---------------------------------------------------------------------------
@@ -738,6 +758,10 @@ def _process_one(msg):
         elapsed = time.time() - t0
         logger.error("ERROR %s | %.1fs | %s", msg.id, elapsed, exc)
 
+        # Universe visibility (Pilar D): este fallo real se vuelve una estrella
+        # de fallo. Aditivo, defensivo, flag VX_RUNTIME_OBSERVER.
+        _observe_runtime_error(exc, where="pipeline_worker")
+
         # Intentar notificar al usuario del error
         _tg_send(msg.chat_id, "Error procesando tu mensaje. Intenta de nuevo.")
 
@@ -930,6 +954,10 @@ def run_worker() -> None:
                 elif time.time() - t0 > MSG_TIMEOUT:
                     logger.warning("TIMEOUT %s (>%ds)", mid, MSG_TIMEOUT)
                     mark_error(mid, f"Timeout after {MSG_TIMEOUT}s")
+                    _observe_runtime_error(
+                        TimeoutError(f"message exceeded {MSG_TIMEOUT}s"),
+                        where="pipeline_worker.timeout",
+                    )
                     # fut.cancel() doesn't kill threads — but we still
                     # release the semaphore so the main loop can continue.
                     # The orphaned thread will eventually finish or be
