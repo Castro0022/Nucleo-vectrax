@@ -17,7 +17,7 @@ from core.abstraction.base import (
     GenerateResponse,
     ProviderType,
 )
-from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT, enrich_user_prompt
+from vectrax.core_identity import effective_system_prompt
 
 
 # Backward-compatible re-export
@@ -81,14 +81,14 @@ class OpenAIProvider(BaseLLMProvider):
 
         start = time.time()
 
-        # Strict identity: VECTRAX_SYSTEM_PROMPT is the ONLY system message.
-        # Any extra system_prompt is demoted to user context.
-        user_content = enrich_user_prompt(request.prompt, request.system_prompt)
+        # Identity sovereignty by default: when the caller didn't set a
+        # system_prompt, effective_system_prompt() supplies VECTRAX_SYSTEM_PROMPT
+        # (single source of truth). An explicit system_prompt overrides it.
         payload = {
             "model": request.model,
             "messages": [
-                {"role": "system", "content": VECTRAX_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
+                {"role": "system", "content": effective_system_prompt(request.system_prompt)},
+                {"role": "user", "content": request.prompt},
             ],
             "temperature": request.temperature,
         }
@@ -150,13 +150,12 @@ class OpenAIProvider(BaseLLMProvider):
     async def stream(self, request: GenerateRequest) -> AsyncIterator[str]:
         self._ensure_client()
 
-        # Strict identity: single system message only
-        user_content = enrich_user_prompt(request.prompt, request.system_prompt)
+        # Identity sovereignty by default (see generate()).
         payload = {
             "model": request.model,
             "messages": [
-                {"role": "system", "content": VECTRAX_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
+                {"role": "system", "content": effective_system_prompt(request.system_prompt)},
+                {"role": "user", "content": request.prompt},
             ],
             "temperature": request.temperature,
             "stream": True,

@@ -82,6 +82,20 @@ NETWORK_DOWN_SLEEP = 10                  # sleep when network is unreachable
 _OFFSET_FILE = os.path.join(os.path.expanduser("~"), ".vectrax", "gateway_offset")
 
 
+def _offset_file_path() -> str:
+    """Resolve the gateway offset file path.
+
+    Honors VECTRAX_VAULT_DIR (single source of truth for volatile state, set
+    per-test by the hermetic baseline) so tests get a clean per-test offset
+    instead of reading the developer machine's real ~/.vectrax/gateway_offset.
+    Falls back to ~/.vectrax when the env var is unset (production default).
+    """
+    vault_dir = os.environ.get("VECTRAX_VAULT_DIR")
+    if vault_dir:
+        return os.path.join(vault_dir, "gateway_offset")
+    return _OFFSET_FILE
+
+
 # --- SIGALRM handler: interrupts stuck C-level calls (SSL read, etc.) ---
 class _PollTimeout(Exception):
     """Raised by SIGALRM when a poll exceeds the hard timeout."""
@@ -93,8 +107,9 @@ def _poll_alarm_handler(signum, frame):
 def _load_offset() -> int:
     """Load persisted Telegram offset from disk."""
     try:
-        if os.path.exists(_OFFSET_FILE):
-            with open(_OFFSET_FILE, "r") as f:
+        path = _offset_file_path()
+        if os.path.exists(path):
+            with open(path, "r") as f:
                 return int(f.read().strip())
     except Exception:
         pass
@@ -104,8 +119,9 @@ def _load_offset() -> int:
 def _save_offset(offset: int) -> None:
     """Persist Telegram offset to disk so restarts don't re-process messages."""
     try:
-        os.makedirs(os.path.dirname(_OFFSET_FILE), exist_ok=True)
-        with open(_OFFSET_FILE, "w") as f:
+        path = _offset_file_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
             f.write(str(offset))
     except Exception:
         pass
@@ -231,6 +247,89 @@ class TelegramGateway:
         except Exception as e:
             logger.warning("TG %s: %s", method, e)
             return None
+
+    # == Stable public adapter API =========================================
+    # Thin, stable surface used by callers/tests. It decouples the public
+    # contract (process one update, send one message, report stats) from the
+    # heavy internal polling/handler machinery (_handle/_send/_tg/_base), so
+    # the contract stays stable even as internals evolve.
+
+    MESSAGE_LIMIT = 4096  # Telegram hard limit per message
+    INITIALIZING_FALLBACK = (
+        "Vectrax está inicializando pensamiento, intenta de nuevo."
+    )
+
+    @property
+    def _base_url(self) -> str:
+        """Stable accessor for the Telegram API base URL (includes token)."""
+        return self._base
+
+    @property
+    def _total_processed(self) -> int:
+        """Stable accessor for the count of processed updates."""
+        return self._processed
+
+    def _api_call(self, method: str, **params) -> Optional[Dict]:
+        """Stable wrapper over the raw Telegram call. Tests patch this."""
+        return self._tg(method, **params)
+
+    def _send_message(self, chat_id: int, text: str, **extra) -> Optional[Dict]:
+        """Send a single text message, truncating to Telegram's 4096 limit."""
+        if not text:
+            return None
+        if len(text) > self.MESSAGE_LIMIT:
+            text = text[: self.MESSAGE_LIMIT - 3] + "..."
+        return self._api_call("sendMessage", chat_id=chat_id, text=text, **extra)
+
+    def _process_update(self, update: Dict) -> None:
+        """Process a single Telegram update through the ExternalGateway bus.
+
+        Contract:
+          - Updates without a message, or messages without text, are skipped
+            (no processing, no counter increment).
+          - A text message is handed to the ExternalGateway (which emits the
+            external.message_received / external.message_response bus events);
+            the resulting response is sent back. The user_id is namespaced as
+            'tg:<id>'. If the core produces no response, the single allowed
+            initialization fallback is sent (never a hardcoded canned reply).
+        """
+        if not isinstance(update, dict):
+            return
+        msg = update.get("message")
+        if not msg:
+            return
+        text = msg.get("text")
+        if not text:
+            return
+
+        chat_id = msg.get("chat", {}).get("id")
+        raw_uid = msg.get("from", {}).get("id", "unknown")
+        tg_user_id = f"tg:{raw_uid}"
+
+        response_text = ""
+        try:
+            from core.operator.external_gateway import get_external_gateway
+            result = get_external_gateway().receive_message(
+                user_id=tg_user_id, content=text, channel="telegram",
+            )
+            response_text = (getattr(result, "response", "") or "").strip()
+        except Exception as exc:
+            logger.debug("external gateway processing failed: %s", exc)
+
+        if not response_text:
+            response_text = self.INITIALIZING_FALLBACK
+
+        if chat_id is not None:
+            self._send_message(chat_id, response_text)
+        self._processed += 1
+
+    def stats(self) -> Dict[str, Any]:
+        """Stable status snapshot for monitoring/tests."""
+        return {
+            "total_processed": self._processed,
+            "running": self._running,
+            "current_offset": self._offset,
+        }
 
     # == Filtro de salida — bloquea fuga de datos internos ====================
 

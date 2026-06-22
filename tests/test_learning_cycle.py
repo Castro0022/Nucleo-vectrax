@@ -55,6 +55,41 @@ def _reset_singletons():
     reset_hypothesis_engine()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_learning_stores(tmp_path, monkeypatch):
+    """Hermetic isolation of the persistent stores the verification strategies
+    read.
+
+    VerificationEngine's temporal_consistency reads the episodic ledger and
+    precedent_match reads the learned-rules store. Both are process-wide
+    singletons backed by repo ``vault/*.jsonl`` and are NOT isolated per test;
+    other suites pollute them with generic 'test' tokens, which fabricates
+    false temporal/precedent evidence and wrongly confirms a no-evidence
+    hypothesis. Point both singletons at empty, per-test temp files so
+    verification is deterministic (reads see nothing) while still being
+    writable (the integrator can persist a rule).
+    """
+    try:
+        import core.learn.learned_rules as _lr
+        monkeypatch.setattr(
+            _lr, "_store",
+            _lr.LearnedRulesStore(path=str(tmp_path / "learned_rules.jsonl")),
+            raising=False,
+        )
+    except Exception:
+        pass
+    try:
+        import core.learn.episodic as _ep
+        monkeypatch.setattr(
+            _ep, "_ledger",
+            _ep.EpisodicLedger(path=str(tmp_path / "episodic_ledger.jsonl")),
+            raising=False,
+        )
+    except Exception:
+        pass
+    yield
+
+
 # ===========================================================================
 # 1. ANOMALY_DETECTOR
 # ===========================================================================

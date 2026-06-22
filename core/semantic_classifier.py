@@ -406,6 +406,20 @@ _FRAME_PATTERNS: List[Tuple[re.Pattern, _Frame, float]] = [
         r")",
         re.I,
     ), _Frame.STATEMENT, 0.85),
+
+    # === MENCIÓN CASUAL / PREFERENCIA (statement, NO búsqueda) ===
+    # "trabajo en un banco", "vivo en un hotel", "fui al gimnasio",
+    # "me gusta la comida italiana" — enunciado personal, no place_search.
+    # Da una base GENERAL_CHAT a estos casos para que una palabra de lugar
+    # mencionada casualmente NO dispare place_search (ni el embedding boost,
+    # que se desactiva cuando ya hay una señal de frame fuerte).
+    (re.compile(
+        r"\b(?:trabajo\s+en|trabajaba\s+en|vivo\s+en|viv[ií]a\s+en|"
+        r"estudi[eé]\s+en|estudio\s+en|fui\s+al?|fuimos\s+al?|voy\s+al?|"
+        r"conozco\s+(?:un|una)|me\s+gusta(?:n)?\s+(?:el|la|los|las)|"
+        r"i\s+work\s+(?:at|in)|i\s+live\s+(?:in|near)|i\s+went\s+to)\b",
+        re.I,
+    ), _Frame.STATEMENT, 0.85),
 ]
 
 

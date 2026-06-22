@@ -896,6 +896,23 @@ async function _renderSistema() {
     const stIcon = r.status === 'healthy' ? '🟢' : r.status === 'degraded' ? '🟡' : '🔴';
     const wIcon  = r.worker_alive ? '✅' : '❌';
     const govCls = g.mode === 'act' ? 'tag-ok' : g.mode === 'recover' ? 'tag-err' : 'tag-warn';
+    // Engines (orchestration) — try /engines, fallback to /universe.engines
+    let _eng = null;
+    try { _eng = await api('GET', '/engines'); }
+    catch (_e1) { try { const _u = await api('GET', '/universe'); _eng = _u && _u.engines; } catch (_e2) {} }
+    let engCard = '';
+    if (_eng && _eng.total != null) {
+      const _bt = _eng.by_tier || {};
+      engCard = `
+        <div class="card">
+          <div class="card-head">⚙ Motores</div>
+          <div class="kv"><span class="dim">Disponibles</span><span>${_eng.available ?? 0}/${_eng.total ?? 0}</span></div>
+          <div class="kv"><span class="dim">core</span><span>${_bt.core ?? 0}</span></div>
+          <div class="kv"><span class="dim">observe</span><span>${_bt.observe ?? 0}</span></div>
+          <div class="kv"><span class="dim">gated</span><span>${_bt.gated_internal ?? 0}</span></div>
+          <div class="kv"><span class="dim">external</span><span>${_bt.external ?? 0}</span></div>
+        </div>`;
+    }
     el.innerHTML = `
       <div class="sys-header dim">Actualizado: ${ts} — auto-refresh 15s</div>
       <div class="sys-grid">
@@ -934,6 +951,7 @@ async function _renderSistema() {
             return `<div class="kv"><span class="tag ${pc}">${i.priority}</span><span class="dim">${esc(i.title.substring(0,35))}</span></div>`;
           }).join('')}
         </div>
+        ${engCard}
       </div>`;
   } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }

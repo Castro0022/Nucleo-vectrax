@@ -158,13 +158,15 @@ def should_send_to_user(
         )
         return False
 
-    # Known automated reasons — internal telemetry only.
-    # NOTE: 'reentry' and 'scheduled' are USER-FACING messages.
-    # They must NOT be blocked here. Reentry = continuity message
-    # after 12-20h silence. Scheduled = user-requested reminders.
+    # Known automated send reasons — suppressed by default (silent mode).
+    # The user chat should feel like a conversation: only direct replies
+    # (is_user_reply / reason='user_reply'), critical alerts, and approval
+    # requests reach it automatically. Proactive/scheduled/reentry/digest
+    # sends are automated, not direct replies, so they are gated here. A
+    # user can still pull these via explicit commands (/reporte, /estado...).
     if reason in ("digest", "telemetry", "proactive",
                   "idea_notification", "observation", "metrics",
-                  "market_scheduled"):
+                  "market_scheduled", "scheduled", "reentry"):
         logger.info(
             "TELEGRAM_GUARD blocked (reason=%s): %s...",
             reason, text[:60].replace("\n", " "),

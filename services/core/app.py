@@ -37,6 +37,7 @@ from services.core.routes import (
     comm, gateway, billing, universe, webhook, recovery,
     monitor, ideas, dashboard, market_live, ingest_api,
     pattern_performance, census, domain_knowledge_api,
+    engines,
 )
 
 logger = logging.getLogger("vectrax.core.app")
@@ -99,6 +100,7 @@ def create_app() -> FastAPI:
     app.include_router(pattern_performance.router, prefix="/v1")
     app.include_router(census.router, prefix="/v1")
     app.include_router(domain_knowledge_api.router, prefix="/v1")
+    app.include_router(engines.router, prefix="/v1")
 
     # --- Lifecycle events ---
 
@@ -160,6 +162,38 @@ def create_app() -> FastAPI:
                 logger.exception("Recovery engine init failed (non-fatal): %s", exc)
         else:
             logger.info("Recovery engine disabled (RESILIENCE_ENABLED!=1)")
+
+        # --- Engine activation (additive, safe, non-blocking) ---
+        # Single durable entrypoint that connects/activates ALL engines via the
+        # declarative orchestration registry. Runs in a daemon thread so it can
+        # NEVER block or break API startup. Default profile 'safe': internal
+        # engines in their safe sub-mode (operator GUIDED, observer OBSERVER),
+        # external/risk engines health-checked only (never auto-LIVE).
+        # Disable with VECTRAX_ACTIVATE_ENGINES=off ; 'full' for the full profile.
+        _activate = _os.environ.get("VECTRAX_ACTIVATE_ENGINES", "safe").strip().lower()
+        if _activate in ("off", "0", "false", "no", "none", ""):
+            logger.info("Engine activation disabled (VECTRAX_ACTIVATE_ENGINES=%s)", _activate)
+        else:
+            _profile = "full" if _activate == "full" else "safe"
+
+            def _bootstrap_engines() -> None:
+                try:
+                    from core.orchestration import activate_all
+                    report = activate_all(_profile)
+                    logger.info(
+                        "Engine activation (%s): %s",
+                        _profile, report.get("by_status"),
+                    )
+                except Exception as exc:  # never fatal
+                    logger.warning("Engine activation skipped (non-fatal): %s", exc)
+
+            import threading as _threading
+            _threading.Thread(
+                target=_bootstrap_engines,
+                name="vx-engine-bootstrap",
+                daemon=True,
+            ).start()
+            logger.info("Engine activation dispatched (profile=%s, async)", _profile)
 
     @app.on_event("shutdown")
     async def on_shutdown():

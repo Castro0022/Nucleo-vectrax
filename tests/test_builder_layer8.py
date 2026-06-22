@@ -15,8 +15,9 @@ import textwrap
 
 import pytest
 
-# Ensure project root is importable
-sys.path.insert(0, os.path.expanduser("~/Vectrax"))
+# Project root is made importable by tests/conftest.py. Do NOT inject a
+# hardcoded home-dir checkout (~/Vectrax): on a case-insensitive FS it resolves
+# to the main checkout and shadows the worktree under test.
 
 
 # ---------------------------------------------------------------------------

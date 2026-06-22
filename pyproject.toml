@@ -47,6 +47,21 @@ all = [
 vectrax = "vectrax.cli:cli"
 vx = "cli.vx_main:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The ledger plugin is loaded but INERT unless VECTRAX_TEST_LEDGER=1, so the
+# default gate is unaffected; set that env var to record run-level self-observation.
+addopts = "-p no:cacheprovider -p tests.plugins.ledger_plugin"
+# Run bare `async def` tests without per-test markers (architectural fix for
+# the whole class of "async def not natively supported" errors).
+asyncio_mode = "auto"
+markers = [
+    "unit: fast, hermetic unit test (default quality gate)",
+    "integration: cross-module test, still hermetic (no network/credentials)",
+    "live: requires real external services or credentials (excluded from the gate)",
+    "slow: long-running test",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = [

@@ -138,8 +138,16 @@ class TestShouldSpeakGate(unittest.TestCase):
 
     def test_should_speak_when_enabled_and_short(self):
         from core.voice.telegram_dispatch import should_speak
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}, clear=False):
+        # should_speak depende de is_tts_enabled() (OPENAI_API_KEY,
+        # VECTRAX_TTS_DISABLED) Y de audio_mode() (VECTRAX_AUDIO_DISABLED,
+        # VECTRAX_AUDIO_MODE). Fijamos TODAS explícitamente para que el test
+        # sea robusto ante fugas de env de otros tests en la suite completa.
+        with patch.dict(os.environ, {
+            "OPENAI_API_KEY": "sk-test",
+            "VECTRAX_AUDIO_MODE": "voice",
+        }, clear=False):
             os.environ.pop("VECTRAX_TTS_DISABLED", None)
+            os.environ.pop("VECTRAX_AUDIO_DISABLED", None)
             self.assertTrue(should_speak("hola"))
 
     def test_should_not_speak_long_text(self):
