@@ -2,6 +2,26 @@
 
 All notable changes to Vectrax are documented in this file.
 
+## [2026-06-22] — Webhook ingress en producción + suite verde + fixes durables
+### Migración de ingreso Telegram a webhook (fin de incidentes heartbeat stale)
+- Causa raíz: el long-poll abría `multiprocessing.Process` + `mp.Queue` NUEVOS en cada poll; el churn de subprocesos/fds congelaba el propio heartbeat que protegía → incidentes recurrentes la última semana.
+- Cutover en producción: `USE_WEBHOOK=1` + `WEBHOOK_BASE_URL` (secreto reusado; `.env` del servidor con backup) + `docker compose up -d --force-recreate` + `scripts/set_webhook.py`.
+- Verificado con tráfico real: `RECV/QUEUED "Hola vectrax"` → `processed=1`; `getWebhookInfo` url set, pending=0, last_error none; ruta pública con secreto inválido → 403; 0 errores en ~16 min.
+- Supervisor en modo webhook: NO levanta el long-poll `telegram_gateway`; `core_api` pasa a `required`.
+- Rollback: `scripts/remove_webhook.py` + `USE_WEBHOOK=0` + recreate.
+- Doc: `docs/DEPLOY_WEBHOOK_CUTOVER_2026_06_22.md`.
+### Diagnóstico honesto del worker (PR #21)
+- `worker_blackbox._detect_external_calls` cuenta una API como problemática solo con evidencia real (timeout/5xx/circuit), no por mención → elimina el falso `timeout_externo` permanente (el gateway siempre loggea "telegram").
+### Latencia (PR #21)
+- Indicador `typing` inmediato al procesar + timeouts del `ExternalCallGuard` configurables por env (`VX_GUARD_TIMEOUT_<PROVIDER>`), sin cambiar los defaults seguros.
+### Language gate ES/IT (PR #20)
+- `is_mixed_language` ya no marca español puro como mezcla por palabras compartidas con italiano (`una`/`del`); evitaba que el gate tradujera y corrompiera respuestas correctas en español.
+### Calidad / orquestación / visibilidad (PR #20)
+- Suite hermética: **2879 passed, 1 skipped, 0 failed**.
+- Capa de orquestación de motores (`core/orchestration`, `GET /v1/engines`), visibilidad de motores/brokers en el dashboard y en `self_context`.
+### PRs / Deploy
+- PR #21 y PR #20 mergeadas a `main` (`d3e7f16`), desplegadas a Vultr `140.82.28.181` vía `deploy_vultr.sh`. `vectrax-core` Up (healthy).
+
 ## [2026-06-07] — Market Routing + Memory Pre-Check + Scalability + Name Leak Fix
 
 ### Memory pre-check (pipeline priority)
