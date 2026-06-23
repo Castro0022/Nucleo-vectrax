@@ -7,9 +7,12 @@ Cada interacción suma masa al nodo correspondiente en el Universe:
     Emoción  → +10   carga emocional fuerte (crisis, alegría intensa,
                      soporte) — la categoría con mayor peso porque
                      gravita más fuerte en la memoria del user
+    Salud    → +10   temas médicos, diagnósticos, síntomas, tratamientos
+                     — mismo peso que EMOCION; marcado como sensible para
+                     que el filtro de nudges lo excluya por tag explícito
 
 API pública:
-    MassKind                  Enum (VISION / PERSONA / EMOCION)
+    MassKind                  Enum (VISION / PERSONA / EMOCION / SALUD)
     MASS_VALUES               mapping declarativo
     add_mass(node_id, kind, store=None) -> float (nuevo total)
     get_mass(node_id, store=None) -> float
@@ -41,17 +44,27 @@ logger = logging.getLogger("vectrax.gravity.mass")
 
 class MassKind(str, Enum):
     """Tipo de evento que suma masa al nodo."""
-    VISION = "vision"
+    VISION  = "vision"
     PERSONA = "persona"
     EMOCION = "emocion"
+    SALUD   = "salud"   # temas médicos / salud — excluido de nudge context
+
+
+# Categorías sensibles: nunca se usan en contexto de nudges de presencia.
+# Consultado por continuity_reentry._is_sensitive_topic vía tag match.
+SENSITIVE_KINDS: frozenset[MassKind] = frozenset({
+    MassKind.EMOCION,
+    MassKind.SALUD,
+})
 
 
 # Valores declarativos. Modificarlos aquí ajusta toda la balanza
 # gravitacional del sistema.
 MASS_VALUES = {
-    MassKind.VISION: 5.0,
+    MassKind.VISION:  5.0,
     MassKind.PERSONA: 8.0,
     MassKind.EMOCION: 10.0,
+    MassKind.SALUD:   10.0,  # mismo peso que EMOCION
 }
 
 
