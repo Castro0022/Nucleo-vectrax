@@ -27,6 +27,7 @@ Creador: Mario Bravo Castro
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -66,9 +67,15 @@ class AbstractPattern:
     confidence: str = "LOW"
 
     # Provenance (anonymous)
-    contributing_tenants: int = 0  # how many tenants confirmed this pattern
+    contributing_tenants: int = 0  # how many DISTINCT tenants confirmed this
     first_elevated: float = 0.0
     last_confirmed: float = 0.0
+
+    # Per-tenant latest snapshot, keyed by an irreversible salted hash of the
+    # tenant_id (NOT the id itself). Enables idempotent re-elevation: the same
+    # tenant updates its own contribution instead of inflating the totals.
+    # Aggregates above are always recomputed from these snapshots.
+    tenant_contributions: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -131,6 +138,14 @@ def _make_signature(pattern_type: str, conditions: str) -> str:
     return f"{pattern_type}:{conditions}"
 
 
+def _tenant_hash(tenant_id: str) -> str:
+    """Irreversible, salted hash used only to dedupe tenant contributions.
+
+    Never stored or exposed as a tenant_id — it cannot be reversed back to one.
+    """
+    return hashlib.sha256(("vx_domain_knowledge:" + (tenant_id or "")).encode()).hexdigest()[:16]
+
+
 def _compute_confidence(sample_size: int, win_rate: float) -> str:
     if sample_size >= 30 and win_rate >= 65:
         return "HIGH"
@@ -172,59 +187,66 @@ def elevate_pattern(
 
     sig = _make_signature(pattern_type, conditions_signature)
     now = time.time()
+    th = _tenant_hash(tenant_id)
 
     lib = _load_library(domain)
     existing = lib.get(sig)
+    is_new_pattern = existing is None
 
-    if existing:
-        # Merge: weighted average based on sample sizes
-        total_n = existing.sample_size + sample_size
-        w_old = existing.sample_size / total_n
-        w_new = sample_size / total_n
+    if is_new_pattern:
+        existing = AbstractPattern(
+            signature=sig,
+            domain=domain,
+            pattern_type=pattern_type,
+            conditions_signature=conditions_signature,
+            first_elevated=now,
+        )
 
-        existing.win_rate = round(existing.win_rate * w_old + win_rate * w_new, 1)
-        existing.expectancy = round(existing.expectancy * w_old + expectancy * w_new, 3)
-        existing.avg_win_pct = round(existing.avg_win_pct * w_old + avg_win_pct * w_new, 3)
-        existing.avg_loss_pct = round(existing.avg_loss_pct * w_old + avg_loss_pct * w_new, 3)
-        existing.sample_size = total_n
-        existing.contributing_tenants += 1
-        existing.last_confirmed = now
-        existing.confidence = _compute_confidence(existing.sample_size, existing.win_rate)
+    # Record/refresh THIS tenant's latest snapshot. Re-elevating the same
+    # tenant simply overwrites its prior snapshot (idempotent) instead of
+    # double-counting observations or faking new contributing tenants.
+    is_new_tenant = th not in existing.tenant_contributions
+    existing.tenant_contributions[th] = {
+        "sample_size": int(sample_size),
+        "win_rate": round(win_rate, 1),
+        "expectancy": round(expectancy, 3),
+        "avg_win_pct": round(avg_win_pct, 3),
+        "avg_loss_pct": round(avg_loss_pct, 3),
+    }
 
-        lib[sig] = existing
-        _save_library(domain, lib)
+    # Recompute aggregates from per-tenant snapshots (sample-size weighted).
+    contribs = list(existing.tenant_contributions.values())
+    total_n = sum(c["sample_size"] for c in contribs)
+    if total_n > 0:
+        existing.win_rate = round(sum(c["win_rate"] * c["sample_size"] for c in contribs) / total_n, 1)
+        existing.expectancy = round(sum(c["expectancy"] * c["sample_size"] for c in contribs) / total_n, 3)
+        existing.avg_win_pct = round(sum(c["avg_win_pct"] * c["sample_size"] for c in contribs) / total_n, 3)
+        existing.avg_loss_pct = round(sum(c["avg_loss_pct"] * c["sample_size"] for c in contribs) / total_n, 3)
+    existing.sample_size = total_n
+    existing.contributing_tenants = len(existing.tenant_contributions)
+    existing.last_confirmed = now
+    existing.confidence = _compute_confidence(existing.sample_size, existing.win_rate)
 
+    lib[sig] = existing
+    _save_library(domain, lib)
+
+    if is_new_pattern:
+        logger.info(
+            "[DOMAIN] Elevated NEW %s | %s | WR=%.0f%% E=%+.3f%% | N=%d",
+            domain, sig, existing.win_rate, existing.expectancy, existing.sample_size,
+        )
+    elif is_new_tenant:
         logger.info(
             "[DOMAIN] Reinforced %s | %s | WR=%.0f%% E=%+.3f%% | tenants=%d N=%d",
             domain, sig, existing.win_rate, existing.expectancy,
             existing.contributing_tenants, existing.sample_size,
         )
-        return existing
     else:
-        # New domain pattern
-        ap = AbstractPattern(
-            signature=sig,
-            domain=domain,
-            pattern_type=pattern_type,
-            conditions_signature=conditions_signature,
-            win_rate=round(win_rate, 1),
-            expectancy=round(expectancy, 3),
-            avg_win_pct=round(avg_win_pct, 3),
-            avg_loss_pct=round(avg_loss_pct, 3),
-            sample_size=sample_size,
-            confidence=_compute_confidence(sample_size, win_rate),
-            contributing_tenants=1,
-            first_elevated=now,
-            last_confirmed=now,
+        logger.debug(
+            "[DOMAIN] Updated %s | %s | tenants=%d N=%d (same tenant)",
+            domain, sig, existing.contributing_tenants, existing.sample_size,
         )
-        lib[sig] = ap
-        _save_library(domain, lib)
-
-        logger.info(
-            "[DOMAIN] Elevated NEW %s | %s | WR=%.0f%% E=%+.3f%% | N=%d",
-            domain, sig, win_rate, expectancy, sample_size,
-        )
-        return ap
+    return existing
 
 
 def get_domain_priors(domain: str) -> List[AbstractPattern]:

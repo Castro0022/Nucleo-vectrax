@@ -4,35 +4,43 @@
   "event_types": {
     "quote_request": {
       "text_template": "Quote requested: {origin}→{destination} | {weight_kg}kg | carrier={carrier} | rate=${rate_usd}",
-      "fields": ["origin", "destination", "weight_kg", "carrier", "rate_usd", "region"]
+      "fields": ["origin", "destination", "weight_kg", "carrier", "rate_usd", "region"],
+      "signature_fields": ["region", "carrier"]
     },
     "load_booking": {
       "text_template": "Load booked: {origin}→{destination} | carrier={carrier} | rate=${rate_usd} | trucks={trucks_available}",
-      "fields": ["origin", "destination", "carrier", "rate_usd", "trucks_available", "region"]
+      "fields": ["origin", "destination", "carrier", "rate_usd", "trucks_available", "region"],
+      "signature_fields": ["region", "carrier"]
     },
     "delivery_complete": {
       "text_template": "Delivered: {origin}→{destination} | carrier={carrier} | {transit_days}d transit | on_time={on_time}",
-      "fields": ["origin", "destination", "carrier", "transit_days", "on_time", "region"]
+      "fields": ["origin", "destination", "carrier", "transit_days", "on_time", "region"],
+      "signature_fields": ["region", "on_time"]
     },
     "delay_reported": {
       "text_template": "Delay: {origin}→{destination} | carrier={carrier} | +{delay_hours}h | cause={cause}",
-      "fields": ["origin", "destination", "carrier", "delay_hours", "cause", "region"]
+      "fields": ["origin", "destination", "carrier", "delay_hours", "cause", "region"],
+      "signature_fields": ["region", "cause"]
     },
     "rate_change": {
       "text_template": "Rate change: {lane} | ${old_rate}→${new_rate} ({change_pct:+.1f}%) | demand={demand_level}",
-      "fields": ["lane", "old_rate", "new_rate", "change_pct", "demand_level", "region"]
+      "fields": ["lane", "old_rate", "new_rate", "change_pct", "demand_level", "region"],
+      "signature_fields": ["region", "demand_level"]
     },
     "capacity_update": {
       "text_template": "Capacity: {region} | trucks={trucks_available}/{trucks_total} | utilization={utilization_pct:.0f}%",
-      "fields": ["region", "trucks_available", "trucks_total", "utilization_pct"]
+      "fields": ["region", "trucks_available", "trucks_total", "utilization_pct"],
+      "signature_fields": ["region"]
     },
     "weather_event": {
       "text_template": "Weather: {event_type} in {region} | severity={severity} | affected_lanes={affected_lanes}",
-      "fields": ["event_type", "region", "severity", "affected_lanes", "duration_hours"]
+      "fields": ["event_type", "region", "severity", "affected_lanes", "duration_hours"],
+      "signature_fields": ["region", "severity"]
     },
     "empty_miles": {
       "text_template": "Empty miles: {origin}→{destination} | carrier={carrier} | {miles}mi empty | load_density={load_density}",
-      "fields": ["origin", "destination", "carrier", "miles", "load_density", "region"]
+      "fields": ["origin", "destination", "carrier", "miles", "load_density", "region"],
+      "signature_fields": ["region"]
     }
   }
 }
