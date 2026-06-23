@@ -1068,7 +1068,8 @@ def run_worker() -> None:
                 logger.debug("Market learn error (passthrough): %s", _ml)
                 last_market_learn = time.time()
 
-            # Continuity reentry — one message after 12-20h silence (every 10 min)
+            # Presence nudges — 3-nudge state machine per user (every 10 min)
+            # nudge #1: 12-20h silence | nudge #2: 3-5d | nudge #3: 21-30d → DORMANT
             try:
                 from core.continuity_reentry import check_reentry
                 from core.sovereignty import SendReason as _SR3
