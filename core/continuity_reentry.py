@@ -15,9 +15,11 @@ Persistencia: SQLite en vault/continuity_reentry.db
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
+import re
 import sqlite3
 import time
 from datetime import datetime
@@ -285,6 +287,180 @@ _TONE_DIRECTIVES = {
 }
 
 
+# Session detection parameters
+_SESSION_GAP_HOURS  = 8    # gap > 8h between interactions = new session
+_SESSION_MAX_TURNS  = 5    # max turns to include from the session
+_SESSION_MAX_DAYS   = 7    # don't look back more than 7 days
+_TURN_CHAR_LIMIT    = 150  # truncate each turn to avoid token bloat
+
+# Gravity topic parameters
+_GRAVITY_TOP_N       = 3    # max topics from deep memory to include
+_GRAVITY_TOPIC_LIMIT = 100  # chars per topic summary injected into prompt
+_GRAVITY_CANDIDATE_N = 25   # fetch more, then filter sensitive ones out
+
+# ---------------------------------------------------------------------------
+# Sensitive topic filter (Regla 3)
+# ---------------------------------------------------------------------------
+# Topics tagged or containing these signals are NEVER used in nudge context.
+# Two layers: tag-based (fast, exact) + keyword regex (defensive fallback).
+
+_SENSITIVE_TAGS: frozenset[str] = frozenset({
+    # Emotional (MassKind.EMOCION already uses this tag)
+    "emocion", "emocional", "emotional", "emotion",
+    "crisis", "llanto", "tristeza", "alegria", "alegría",
+    # Health (no MassKind exists yet — captured here as defensive layer)
+    "salud", "health", "médico", "medico", "doctor",
+    "enfermedad", "illness", "hospital", "terapia", "therapy",
+    "psicolog", "psicólog", "ansiedad", "anxiety",
+    "depresion", "depresión", "depression",
+})
+
+_SENSITIVE_KEYWORDS = re.compile(
+    r"\b(?:"
+    r"doctor|médic[oa]|medic[oa]|enferm(?:edad|[oa])|hospital"
+    r"|salud|health"
+    r"|dolor|agon[ií]a"
+    r"|crisis|pánico|panico"
+    r"|ansiedad|anxiety"
+    r"|depres(?:i[oó]n|ivo)"
+    r"|tristeza|llorando|llor[eé]"
+    r"|suicid"
+    r"|terapia|therapy|psic[oó]log"
+    r"|psiquiatr"
+    r"|medicamento|fármaco|farmaco"
+    r"|diagn[oó]stico|diagn[oó]s"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_sensitive_topic(record: dict) -> bool:
+    """True si el record toca salud o emocional — nunca se usa en contexto de nudge."""
+    # Layer 1: tag match
+    tags = {str(t).lower() for t in (record.get("tags") or [])}
+    if tags & _SENSITIVE_TAGS:
+        return True
+    # Layer 2: keyword scan on text
+    text = f"{record.get('raw_text', '')} {record.get('summary', '')}" 
+    if _SENSITIVE_KEYWORDS.search(text):
+        return True
+    return False
+
+
+def _load_gravity_topics(
+    user_id: str,
+    top_n: int = _GRAVITY_TOP_N,
+) -> list[str]:
+    """
+    Devuelve los top `top_n` temas de alta gravedad del usuario,
+    excluyendo cualquier tema sensible (salud / emocional).
+
+    Usa la DB de gravity directamente — sin embeddings, sin red.
+    Score compuesto: mass + gravity_score*2 + retrieval_count*0.5
+
+    Retorna lista de strings (summary o raw_text truncado).
+    Retorna [] si la DB no existe, falla, o todos los temas son sensibles.
+    """
+    gravity_db = os.environ.get(
+        "VECTRAX_GRAVITY_DB",
+        os.path.join(os.path.expanduser("~"), ".vectrax", "gravity.db"),
+    )
+    if not os.path.exists(gravity_db):
+        return []
+
+    try:
+        conn = sqlite3.connect(gravity_db, timeout=2)
+        rows = conn.execute(
+            """
+            SELECT raw_text, summary, tags_json,
+                   COALESCE(mass, 0) + COALESCE(gravity_score, 0) * 2
+                   + COALESCE(retrieval_count, 0) * 0.5  AS composite
+            FROM deep_memory
+            WHERE user_id = ?
+              AND COALESCE(memory_status, 'ACTIVE') = 'ACTIVE'
+            ORDER BY composite DESC
+            LIMIT ?
+            """,
+            (user_id, _GRAVITY_CANDIDATE_N),
+        ).fetchall()
+        conn.close()
+    except Exception as exc:
+        logger.debug("_load_gravity_topics failed: %s", exc)
+        return []
+
+    topics: list[str] = []
+    seen: set[str] = set()
+    for raw_text, summary, tags_json, _score in rows:
+        try:
+            tags = json.loads(tags_json) if tags_json else []
+        except Exception:
+            tags = []
+        record = {"raw_text": raw_text or "", "summary": summary or "", "tags": tags}
+        if _is_sensitive_topic(record):
+            continue
+        text = (summary or raw_text or "").strip()[:_GRAVITY_TOPIC_LIMIT]
+        if text and text not in seen:
+            seen.add(text)
+            topics.append(text)
+        if len(topics) >= top_n:
+            break
+
+    return topics
+
+
+def _load_last_session(
+    conn: sqlite3.Connection,
+    user_id: str,
+) -> list[dict]:
+    """
+    Carga el bloque de turnos de la última sesión del usuario.
+
+    Una sesión termina cuando hay un silencio > _SESSION_GAP_HOURS entre dos
+    interacciones consecutivas. Se devuelven máximo _SESSION_MAX_TURNS turnos
+    en orden cronológico, sin retroceder más de _SESSION_MAX_DAYS días.
+    """
+    cutoff = time.time() - _SESSION_MAX_DAYS * 86400
+    # Fetch more rows than needed to detect the session boundary reliably
+    rows = conn.execute(
+        "SELECT user_input, bot_output, timestamp FROM interactions "
+        "WHERE user_id = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT ?",
+        (user_id, cutoff, _SESSION_MAX_TURNS * 4),
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    # Walk DESC from most recent; break when gap > session threshold
+    session_gap_secs = _SESSION_GAP_HOURS * 3600
+    session = [rows[0]]
+    for i in range(1, len(rows)):
+        gap = rows[i - 1][2] - rows[i][2]   # earlier_ts - later_ts (both DESC)
+        if gap > session_gap_secs:
+            break
+        session.append(rows[i])
+
+    # Reverse to chronological order, keep at most _SESSION_MAX_TURNS
+    session.reverse()
+    return [
+        {"user": r[0] or "", "bot": r[1] or ""}
+        for r in session[-_SESSION_MAX_TURNS:]
+    ]
+
+
+def _format_session(turns: list[dict], name: str = "") -> str:
+    """Formatea los turnos como un hilo de conversación legible para el LLM."""
+    user_label = name or "Usuario"
+    lines = []
+    for t in turns:
+        u = t["user"].strip()[:_TURN_CHAR_LIMIT]
+        b = t["bot"].strip()[:_TURN_CHAR_LIMIT]
+        if u:
+            lines.append(f"{user_label}: {u}")
+        if b:
+            lines.append(f"Vectrax: {b}")
+    return "\n".join(lines)
+
+
 def _build_reentry_message(user_id: str, nudge_number: int = 1) -> str | None:
     """Genera un nudge de presencia vía LLM con tono específico por número de nudge."""
     user_db = os.path.join(
@@ -292,40 +468,51 @@ def _build_reentry_message(user_id: str, nudge_number: int = 1) -> str | None:
         "vault", "user_memory.db",
     )
 
-    name, lang, last_input, last_output = "", "es", "", ""
+    name, lang, session_context = "", "es", ""
     try:
         conn = sqlite3.connect(user_db, timeout=2)
+
+        # Profile
         row = conn.execute(
             "SELECT name, language FROM profiles WHERE user_id = ?", (user_id,)
         ).fetchone()
         if row:
             name = (row[0] or "").split()[0] if row[0] else ""
             lang = row[1] or "es"
-        row2 = conn.execute(
-            "SELECT user_input, bot_output FROM interactions "
-            "WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1",
-            (user_id,),
-        ).fetchone()
-        if row2:
-            last_input = (row2[0] or "")[:200]
-            last_output = (row2[1] or "")[:200]
+
+        # Last session (multi-turn)
+        turns = _load_last_session(conn, user_id)
+        if turns:
+            session_context = _format_session(turns, name=name)
+
         conn.close()
     except Exception:
         pass
+
+    # Gravity topics — top non-sensitive memories by gravitational weight
+    gravity_topics = _load_gravity_topics(user_id)
 
     tone = _TONE_DIRECTIVES.get(nudge_number, _TONE_DIRECTIVES[1])
     context_parts = []
     if name:
         context_parts.append(f"Nombre: {name}")
-    if last_input:
-        context_parts.append(f"Último mensaje del usuario: {last_input}")
-    if last_output:
-        context_parts.append(f"Última respuesta de Vectrax: {last_output}")
+    if session_context:
+        context_parts.append(f"Última sesión ({len(turns)} turnos):\n{session_context}")
+    if gravity_topics:
+        topics_str = "\n".join(f"- {t}" for t in gravity_topics)
+        context_parts.append(f"Temas de alta gravedad en su memoria:\n{topics_str}")
 
-    context_block = "\n".join(context_parts) if context_parts else "(sin contexto previo)"
+    context_block = "\n".join(context_parts) if context_parts else "(sin historial previo)"
+
+    gravity_instruction = (
+        "Si hay temas de alta gravedad, menciónalos de forma casual y breve — "
+        "sin recapitular lo que el usuario dijo, como si simplemente los tuvieras en mente. "
+        "Nunca suenes a 'te estoy vigilando'. "
+    ) if gravity_topics else ""
 
     prompt = (
         f"Eres Vectrax (nudge #{nudge_number} de 3). {tone} "
+        f"{gravity_instruction}"
         f"Máximo 2 frases. Idioma: {lang}.\n\n"
         f"Contexto:\n{context_block}\n\n"
         "Mensaje de presencia:"

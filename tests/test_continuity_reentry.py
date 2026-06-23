@@ -12,6 +12,7 @@ Tests obligatorios:
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 
@@ -318,3 +319,148 @@ def test_send_window_boundaries():
     assert _in_send_window(_ts(20)) is True
     assert _in_send_window(_ts(21)) is False
     assert _in_send_window(_ts(23)) is False
+
+
+# ---------------------------------------------------------------------------
+# Gravity context tests
+# ---------------------------------------------------------------------------
+
+def _make_gravity_db(path: str, user_id: str, records: list[dict]) -> None:
+    """Helper: create a minimal deep_memory table with given records."""
+    conn = sqlite3.connect(path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS deep_memory (
+            id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+            raw_text TEXT NOT NULL, summary TEXT,
+            embedding_json TEXT NOT NULL DEFAULT '[]',
+            tags_json TEXT, mass REAL DEFAULT 0,
+            ts REAL NOT NULL,
+            gravity_score REAL DEFAULT 1.0,
+            retrieval_count INTEGER DEFAULT 0,
+            memory_status TEXT DEFAULT 'ACTIVE'
+        )
+    """)
+    for r in records:
+        conn.execute(
+            "INSERT INTO deep_memory "
+            "(id, user_id, raw_text, summary, embedding_json, tags_json, "
+            " mass, ts, gravity_score, retrieval_count, memory_status) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                r["id"], user_id, r["raw_text"],
+                r.get("summary", ""),
+                "[]",
+                json.dumps(r.get("tags", [])),
+                r.get("mass", 5.0),
+                r.get("ts", time.time()),
+                r.get("gravity_score", 1.0),
+                r.get("retrieval_count", 0),
+                r.get("memory_status", "ACTIVE"),
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+
+def test_gravity_topics_not_included_when_no_db(monkeypatch):
+    """User with no gravity DB — _load_gravity_topics returns [] silently."""
+    import core.continuity_reentry as cr
+    monkeypatch.setenv("VECTRAX_GRAVITY_DB", "/nonexistent/path/gravity.db")
+    topics = cr._load_gravity_topics("tg:111")
+    assert topics == []
+
+
+def test_gravity_topics_high_mass_non_sensitive_included(tmp_path, monkeypatch):
+    """High-gravity non-sensitive topic surfaces in the prompt context."""
+    import core.continuity_reentry as cr
+
+    db = str(tmp_path / "gravity.db")
+    monkeypatch.setenv("VECTRAX_GRAVITY_DB", db)
+
+    _make_gravity_db(db, "tg:222", [
+        {"id": "a1", "raw_text": "Proyecto Vectrax lanzamiento Q3",
+         "summary": "Lanzamiento Vectrax Q3", "tags": ["negocio"], "mass": 50.0},
+        {"id": "a2", "raw_text": "Inversión en BTC",
+         "summary": "BTC portfolio", "tags": ["mercado"], "mass": 30.0},
+    ])
+
+    topics = cr._load_gravity_topics("tg:222")
+    assert len(topics) == 2
+    assert any("Vectrax" in t or "vectrax" in t.lower() or "Lanzamiento" in t for t in topics)
+
+
+def test_sensitive_health_topic_excluded(tmp_path, monkeypatch):
+    """Topic with health tag — never surfaces in nudge context."""
+    import core.continuity_reentry as cr
+
+    db = str(tmp_path / "gravity.db")
+    monkeypatch.setenv("VECTRAX_GRAVITY_DB", db)
+
+    _make_gravity_db(db, "tg:333", [
+        {"id": "b1", "raw_text": "Diagnóstico medico de Mario",
+         "summary": "Resultado consulta médica",
+         "tags": ["salud"], "mass": 100.0},  # very high mass but sensitive
+    ])
+
+    topics = cr._load_gravity_topics("tg:333")
+    assert topics == []  # excluded — never used in nudge
+
+
+def test_sensitive_emotional_topic_excluded_by_keyword(tmp_path, monkeypatch):
+    """Topic detected as sensitive via keyword scan even without tag."""
+    import core.continuity_reentry as cr
+
+    db = str(tmp_path / "gravity.db")
+    monkeypatch.setenv("VECTRAX_GRAVITY_DB", db)
+
+    _make_gravity_db(db, "tg:444", [
+        {"id": "c1", "raw_text": "Me siento con mucha ansiedad últimamente",
+         "tags": [],  # no tag, but keyword triggers filter
+         "mass": 80.0},
+    ])
+
+    topics = cr._load_gravity_topics("tg:444")
+    assert topics == []
+
+
+def test_gravity_query_failure_falls_back_gracefully(monkeypatch):
+    """If _load_gravity_topics raises internally, returns [] — never breaks nudge flow."""
+    import core.continuity_reentry as cr
+
+    # Point to a non-SQLite file to force a DB error
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        f.write(b"this is not sqlite")
+        bad_db = f.name
+
+    monkeypatch.setenv("VECTRAX_GRAVITY_DB", bad_db)
+    topics = cr._load_gravity_topics("tg:555")
+    assert topics == []
+    os.unlink(bad_db)
+
+
+def test_gravity_topics_injected_into_llm_prompt(tmp_path, monkeypatch):
+    """When gravity topics exist, the LLM prompt contains them."""
+    import core.continuity_reentry as cr
+
+    db = str(tmp_path / "gravity.db")
+    monkeypatch.setenv("VECTRAX_GRAVITY_DB", db)
+
+    _make_gravity_db(db, "tg:666", [
+        {"id": "d1", "raw_text": "Proyecto SaaS con Mario",
+         "summary": "SaaS B2B expansion plan", "tags": ["negocio"], "mass": 60.0},
+    ])
+
+    captured: list[str] = []
+    import vectrax.intelligence_bridge as ib
+    monkeypatch.setattr(ib, "is_ready", lambda: True, raising=False)
+    monkeypatch.setattr(
+        ib, "route_single",
+        lambda p: captured.append(p) or {"success": True, "content": "Qué tal va lo del SaaS."},
+        raising=False,
+    )
+
+    cr._build_reentry_message("tg:666", nudge_number=2)
+    assert len(captured) == 1
+    assert "Temas de alta gravedad" in captured[0]
+    assert "SaaS" in captured[0] or "expansion" in captured[0].lower()
