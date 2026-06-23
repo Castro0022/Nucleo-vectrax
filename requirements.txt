@@ -6,3 +6,4 @@ python-dotenv
 numpy
 sentence-transformers
 torch
+alpaca-py>=0.33.0

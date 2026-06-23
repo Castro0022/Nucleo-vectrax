@@ -458,5 +458,129 @@ class TestFullPipeline(FreightPipelineTestBase):
             self.assertEqual(rec.hits, 5)
 
 
+# ---------------------------------------------------------------------------
+# 7. Real Ingest Path — stable conditions signature (regression)
+# ---------------------------------------------------------------------------
+
+class TestRealIngestPath(FreightPipelineTestBase):
+    """Exercise core.domain_ingester.ingest_event end-to-end.
+
+    The earlier suite validated maturation only with hand-built stable
+    fingerprints. These tests guard the *production* path, where the
+    fingerprint is derived from the event data — the path that previously
+    produced a unique star per event and could never mature.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Redirect the gravity singleton used by ingest_event to our temp index.
+        import core.learn.gravity_engine as ge
+        self._ge = ge
+        self._orig_index = ge._index
+        ge._index = self.gi
+
+    def tearDown(self):
+        self._ge._index = self._orig_index
+        super().tearDown()
+
+    def test_recurring_situation_accumulates_hits(self):
+        """Same categorical situation, different raw numbers => one maturing star."""
+        from core.domain_ingester import ingest_event
+        for i in range(20):
+            ingest_event(
+                tenant_id="t_real",
+                domain=DOMAIN,
+                event_type="delay_reported",
+                data={
+                    "origin": "Atlanta", "destination": "Miami",
+                    "carrier": CARRIERS[i % len(CARRIERS)]["name"],  # varies
+                    "delay_hours": 4 + i,                              # varies
+                    "cause": "weather",
+                    "region": "Southeast",
+                },
+            )
+        recs = self.gi.by_domain(DOMAIN)
+        # region+cause are the signature fields => all 20 collapse to one star
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0].hits, 20)
+
+    def test_distinct_situations_create_distinct_stars(self):
+        from core.domain_ingester import ingest_event
+        for region in ("Southeast", "Pacific", "Midwest"):
+            ingest_event(
+                tenant_id="t_real", domain=DOMAIN, event_type="capacity_update",
+                data={"region": region, "trucks_available": 10,
+                      "trucks_total": 100, "utilization_pct": 90.0},
+            )
+        self.assertEqual(len(self.gi.by_domain(DOMAIN)), 3)
+
+    def test_conditions_signature_ignores_raw_numbers(self):
+        from core.domain_ingester import _conditions_signature, _load_template
+        tpl = _load_template(DOMAIN)
+        a = _conditions_signature("delay_reported",
+                                  {"region": "Southeast", "cause": "weather",
+                                   "delay_hours": 7, "carrier": "FastHaul"}, tpl)
+        b = _conditions_signature("delay_reported",
+                                  {"region": "Southeast", "cause": "weather",
+                                   "delay_hours": 41, "carrier": "BudgetMove"}, tpl)
+        self.assertEqual(a, b)
+        self.assertIn("region=Southeast", a)
+        self.assertIn("cause=weather", a)
+
+
+# ---------------------------------------------------------------------------
+# 8. Idempotent Elevation — no fabricated tenants / observations (regression)
+# ---------------------------------------------------------------------------
+
+class TestIdempotentElevation(FreightPipelineTestBase):
+    """Re-elevating the same tenant/pattern must not inflate totals."""
+
+    def test_same_tenant_reelevation_is_idempotent(self):
+        for _ in range(5):
+            result = elevate_pattern(
+                domain=DOMAIN, pattern_type="delay_reported",
+                conditions_signature="region=Southeast|cause=weather",
+                win_rate=70.0, expectancy=0.8,
+                avg_win_pct=1.5, avg_loss_pct=0.4,
+                sample_size=20, tenant_id="t_same",
+            )
+        self.assertEqual(result.contributing_tenants, 1)
+        self.assertEqual(result.sample_size, 20)  # NOT 100
+        self.assertFalse(result.is_strong)  # one tenant only
+
+    def test_growing_sample_updates_not_accumulates(self):
+        elevate_pattern(
+            domain=DOMAIN, pattern_type="rate_change",
+            conditions_signature="region=Pacific|demand_level=high",
+            win_rate=60.0, expectancy=0.5, avg_win_pct=1.0, avg_loss_pct=0.4,
+            sample_size=18, tenant_id="t_a",
+        )
+        result = elevate_pattern(
+            domain=DOMAIN, pattern_type="rate_change",
+            conditions_signature="region=Pacific|demand_level=high",
+            win_rate=62.0, expectancy=0.6, avg_win_pct=1.1, avg_loss_pct=0.4,
+            sample_size=25, tenant_id="t_a",  # same tenant, more observations
+        )
+        self.assertEqual(result.contributing_tenants, 1)
+        self.assertEqual(result.sample_size, 25)  # latest snapshot, not 18+25
+
+    def test_distinct_tenants_still_counted(self):
+        elevate_pattern(
+            domain=DOMAIN, pattern_type="capacity_risk",
+            conditions_signature="region=Mountain",
+            win_rate=66.0, expectancy=0.7, avg_win_pct=1.2, avg_loss_pct=0.4,
+            sample_size=20, tenant_id="t_x",
+        )
+        result = elevate_pattern(
+            domain=DOMAIN, pattern_type="capacity_risk",
+            conditions_signature="region=Mountain",
+            win_rate=70.0, expectancy=0.9, avg_win_pct=1.4, avg_loss_pct=0.3,
+            sample_size=30, tenant_id="t_y",
+        )
+        self.assertEqual(result.contributing_tenants, 2)
+        self.assertEqual(result.sample_size, 50)
+        self.assertTrue(result.is_strong)
+
+
 if __name__ == "__main__":
     unittest.main()

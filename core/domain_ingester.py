@@ -16,9 +16,10 @@ Fecha: 2026-06-15
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("vectrax.domain_ingester")
 
@@ -79,6 +80,72 @@ def event_to_text(event_type: str, data: Dict[str, Any], domain: str = "") -> st
     return ": ".join(parts[:1]) + " " + " | ".join(parts[1:])
 
 
+def _bucket(value: Any) -> str:
+    """Collapse a numeric value into a coarse, stable band.
+
+    Continuous magnitudes (rates, distances, weights, hours...) must NOT each
+    create a unique star — that would prevent pattern maturation. We band by
+    order of magnitude plus a low/mid/hi sub-band so recurring magnitudes
+    share a signature.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if v == 0:
+        return "0"
+    neg = v < 0
+    v = abs(v)
+    exp = int(math.floor(math.log10(v))) if v >= 1 else -1
+    base = 10 ** exp if exp >= 0 else 1.0
+    band = "lo" if v < base * 3 else "mid" if v < base * 6 else "hi"
+    sig = f"e{exp}{band}"
+    return f"-{sig}" if neg else sig
+
+
+def _conditions_signature(
+    event_type: str, data: Dict[str, Any], tpl: Optional[Dict] = None
+) -> str:
+    """Build a stable, low-cardinality signature describing the *kind* of
+    situation an event represents — not its exact values.
+
+    Recurring situations (same region + carrier + cause, etc.) collapse to the
+    same signature, so their gravity star accumulates hits and can mature into
+    an elevatable pattern.
+
+    Field selection priority:
+      1. The event_type's ``signature_fields`` in the domain template — the
+         categorical conditions that define a recurring pattern. Numeric fields
+         listed there are coarse-bucketed.
+      2. Heuristic fallback (no template guidance): keep categorical (str/bool)
+         fields verbatim and bucket numeric fields.
+    """
+    sig_fields: Optional[List[str]] = None
+    if tpl:
+        evt_cfg = tpl.get("event_types", {}).get(event_type, {})
+        sig_fields = evt_cfg.get("signature_fields")
+
+    def render(key: str, value: Any) -> str:
+        if isinstance(value, bool):
+            return f"{key}={value}"
+        if isinstance(value, (int, float)):
+            return f"{key}~{_bucket(value)}"
+        return f"{key}={value}"
+
+    parts: List[str] = []
+    if sig_fields:
+        for k in sig_fields:
+            if k in data:
+                parts.append(render(k, data[k]))
+    else:
+        for k in sorted(data.keys()):
+            parts.append(render(k, data[k]))
+
+    sig = "|".join(parts)
+    # Never return empty (would collapse all events of a type into one star).
+    return sig or _hash_data(data)
+
+
 def ingest_event(
     tenant_id: str,
     domain: str,
@@ -98,7 +165,7 @@ def ingest_event(
     """
     t0 = time.perf_counter()
     text = event_to_text(event_type, data, domain=domain)
-    fingerprint = f"{domain}:{event_type}:{_hash_data(data)}"
+    fingerprint = f"{domain}:{event_type}:{_conditions_signature(event_type, data, _load_template(domain))}"
 
     result: Dict[str, Any] = {
         "success": False,

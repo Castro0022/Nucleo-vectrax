@@ -111,10 +111,16 @@ class GravityIndex:
         intent: str = "",
         outcome: str = "observed",
         summary: str = "",
+        **meta: Any,
     ) -> Tuple[GravityRecord, Optional[str]]:
         """
         Register an event.  Returns (record, promotion) where promotion
         is None or the new tier name if Déjà Vu triggered.
+
+        Extra metadata kwargs (e.g. ``source="domain_prior"``) are accepted
+        and ignored so callers that tag events for provenance — such as
+        ``seed_tenant_priors`` — do not raise. ``GravityRecord`` has no slot
+        for them; the provenance lives in the fingerprint/summary.
         """
         records = self._load()
         now = _now_iso()
