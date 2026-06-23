@@ -23,3 +23,8 @@ watchdog>=6.0.0
 
 # Payments
 stripe>=11.0.0
+
+# Brokers — Alpaca connector (connectors/alpaca/alpaca_client.py).
+# Modern official SDK (module `alpaca`), NOT the legacy `alpaca-trade-api`.
+# Required so BROKER_PROVIDER=alpaca can import the client at runtime.
+alpaca-py>=0.33.0
