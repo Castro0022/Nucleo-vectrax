@@ -200,10 +200,32 @@ def check_reentry(tg_send_fn: Callable[[int, str], bool]) -> int:
                 _advance_state_after_send(user_id, nudge_number, now)
                 sent += 1
                 logger.info("presence_nudge #%d sent | user=%s", nudge_number, user_id[:20])
+            else:
+                # Send blocked (sovereignty, guard, or network) —
+                # back off 6h to avoid hammering the LLM on every cycle.
+                _set_backoff(user_id, now, hours=6)
+                logger.info(
+                    "presence_nudge #%d blocked | user=%s | retry in 6h",
+                    nudge_number, user_id[:20],
+                )
         except Exception as exc:
             logger.debug("check_reentry user %s failed: %s", user_id[:20], exc)
 
     return sent
+
+
+def _set_backoff(user_id: str, now: float, hours: float = 6.0) -> None:
+    """Pospone next_nudge_after sin cambiar nudge_count — usado en send fallido."""
+    try:
+        conn = _conn()
+        conn.execute(
+            "UPDATE reentry_state SET next_nudge_after = ? WHERE user_id = ?",
+            (now + hours * 3600, user_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.debug("_set_backoff failed: %s", exc)
 
 
 def _advance_state_after_send(user_id: str, nudge_number: int, now: float) -> None:
