@@ -882,6 +882,8 @@ def run_worker() -> None:
     last_reentry = 0.0    # última ejecución del reentry check
     last_digest = 0.0     # última ejecución del router digest
     last_market_learn = 0.0  # ciclo de aprendizaje de mercado (cada 30 min)
+    last_freight_learn = 0.0  # freight learning cycle (every 6h)
+    last_trading_conv  = 0.0  # trading convergence learner (every 24h)
     last_mem_check = 0.0  # memory watchdog
     last_stuck_recovery = 0.0  # stuck processing recovery
 
@@ -1067,6 +1069,61 @@ def run_worker() -> None:
             except Exception as _ml:
                 logger.debug("Market learn error (passthrough): %s", _ml)
                 last_market_learn = time.time()
+
+            # Freight learning cycle — pattern accumulation + elevation (every 6h)
+            # Runs in an isolated ThreadPool with 120s timeout.
+            # Provider selected by FREIGHT_FEED_PROVIDER (default: simulator).
+            # Fault-isolated: never crashes the main loop.
+            try:
+                _FREIGHT_LEARN_INTERVAL = 21600  # 6h
+                _FREIGHT_LEARN_TIMEOUT  = 120    # max 2min for the whole cycle
+                if time.time() - last_freight_learn > _FREIGHT_LEARN_INTERVAL:
+                    from concurrent.futures import ThreadPoolExecutor as _FLP, TimeoutError as _FLT
+                    from connectors.freight.learning_cycle import run_learning_cycle as _freight_cycle
+                    with _FLP(max_workers=1) as _fl_pool:
+                        _fl_fut = _fl_pool.submit(_freight_cycle)
+                        try:
+                            _fl_sum = _fl_fut.result(timeout=_FREIGHT_LEARN_TIMEOUT)
+                            logger.info(
+                                "Freight learn: provider=%s ingested=%d stars=%d→%d "
+                                "mature=%d elevated=%d %.1fs",
+                                _fl_sum.get("provider"),
+                                _fl_sum.get("events_ingested", 0),
+                                _fl_sum.get("stars_before", 0),
+                                _fl_sum.get("stars_after", 0),
+                                _fl_sum.get("mature_stars", 0),
+                                _fl_sum.get("patterns_elevated", 0),
+                                _fl_sum.get("elapsed_s", 0),
+                            )
+                        except _FLT:
+                            logger.warning(
+                                "FREIGHT_LEARN_TIMEOUT | cycle exceeded %ds",
+                                _FREIGHT_LEARN_TIMEOUT,
+                            )
+                    last_freight_learn = time.time()
+            except Exception as _fl:
+                logger.debug("Freight learn error (passthrough): %s", _fl)
+                last_freight_learn = time.time()
+
+            # Trading convergence learner — observe drift, generate proposals (every 24h)
+            # Never mutates auto_executor config. Proposals stored in
+            # ~/.vectrax/etoro_learner_proposals.jsonl for creator review.
+            try:
+                _TRADING_CONV_INTERVAL = 86400  # 24h
+                if time.time() - last_trading_conv > _TRADING_CONV_INTERVAL:
+                    from connectors.etoro.convergence_learner import run_observation_cycle as _conv_cycle
+                    _conv_sum = _conv_cycle()
+                    if _conv_sum.get("proposals_generated", 0) > 0:
+                        logger.info(
+                            "Trading convergence learner: %d proposals | drifts=%s | wr=%.1f%%",
+                            _conv_sum["proposals_generated"],
+                            _conv_sum.get("drift_kinds", []),
+                            _conv_sum.get("observed_wr_pct", 0),
+                        )
+                    last_trading_conv = time.time()
+            except Exception as _tc:
+                logger.debug("Trading convergence learner error (passthrough): %s", _tc)
+                last_trading_conv = time.time()
 
             # Presence nudges — 3-nudge state machine per user (every 10 min)
             # nudge #1: 12-20h silence | nudge #2: 3-5d | nudge #3: 21-30d → DORMANT
