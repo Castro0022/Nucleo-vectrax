@@ -120,9 +120,12 @@ def check_reentry(tg_send_fn: Callable[[int, str], bool]) -> int:
             if not user_id.startswith("tg:"):
                 continue
 
-            # Skip creator
+            # Include the creator too (so he receives reentries like users and
+            # can verify the flow end-to-end). Set REENTRY_INCLUDE_CREATOR=0 to
+            # restore the previous 'skip creator' behavior.
             creator_uid = os.environ.get("VX_CREATOR_ID", "2030762343")
-            if user_id.replace("tg:", "") == creator_uid:
+            if (user_id.replace("tg:", "") == creator_uid
+                    and os.environ.get("REENTRY_INCLUDE_CREATOR", "1") != "1"):
                 continue
 
             # Check silence duration
@@ -233,23 +236,33 @@ def _build_reentry_message(user_id: str) -> Optional[str]:
     if lead_context:
         context_parts.append(lead_context)
 
-    if not context_parts:
-        # No context at all — skip reentry for this user
-        return None
-
-    context_block = "\n".join(context_parts)
-
-    prompt = (
-        "Eres Vectrax. Un usuario lleva horas sin hablar contigo. "
-        "Genera UN solo mensaje corto (maximo 2 frases) para retomar "
-        "la conversacion de forma natural, basandote en el contexto real. "
-        "NO uses frases genericas como 'en que puedo ayudarte' ni 'hace rato no hablamos'. "
-        "Continua desde donde quedo la conversacion. "
-        "Si hay un lead pendiente, mencionalo naturalmente. "
-        f"Idioma: {lang}.\n\n"
-        f"Contexto:\n{context_block}\n\n"
-        "Mensaje de continuidad:"
-    )
+    # El nombre y el historial son OPCIONALES: un usuario sin nombre ni
+    # interaccion guardada igual recibe una reentrada ligera (sin plantillas,
+    # generada por LLM). Antes se devolvia None y nunca se enviaba.
+    if context_parts:
+        context_block = "\n".join(context_parts)
+        prompt = (
+            "Eres Vectrax. Un usuario lleva horas sin hablar contigo. "
+            "Genera UN solo mensaje corto (maximo 2 frases) para retomar "
+            "la conversacion de forma natural, basandote en el contexto real. "
+            "NO uses frases genericas como 'en que puedo ayudarte' ni 'hace rato no hablamos'. "
+            "Continua desde donde quedo la conversacion. "
+            "Si hay un lead pendiente, mencionalo naturalmente. "
+            f"Idioma: {lang}.\n\n"
+            f"Contexto:\n{context_block}\n\n"
+            "Mensaje de continuidad:"
+        )
+    else:
+        # Sin contexto rico (sin nombre ni historial): reentrada ligera igual.
+        prompt = (
+            "Eres Vectrax. Un usuario lleva horas sin escribirte y no tienes "
+            "detalles de la ultima conversacion. Genera UN solo mensaje corto "
+            "(maximo 2 frases), calido, humano y natural, que invite a retomar "
+            "el contacto SIN sonar a plantilla ni a soporte. NO uses 'en que "
+            "puedo ayudarte' ni 'hace rato no hablamos'. "
+            f"Idioma: {lang}.\n\n"
+            "Mensaje de continuidad:"
+        )
 
     # ── Generate via LLM ───────────────────────────────────────
     try:

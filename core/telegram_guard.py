@@ -161,12 +161,17 @@ def should_send_to_user(
     # Known automated send reasons — suppressed by default (silent mode).
     # The user chat should feel like a conversation: only direct replies
     # (is_user_reply / reason='user_reply'), critical alerts, and approval
-    # requests reach it automatically. Proactive/scheduled/reentry/digest
-    # sends are automated, not direct replies, so they are gated here. A
-    # user can still pull these via explicit commands (/reporte, /estado...).
+    # requests reach it automatically. Proactive/scheduled/digest sends are
+    # telemetry-like and stay gated here.
+    #
+    # NOTE: 'reentry' is intentionally ALLOWED. The continuity reentry is a
+    # deliberate, single, contextual re-engagement after 12-20h of silence
+    # (see core/continuity_reentry.py) — it IS the product behavior we want
+    # reaching users, not telemetry. Gating it here silently suppressed every
+    # reentry (while _tg_send still returned True), so they never arrived.
     if reason in ("digest", "telemetry", "proactive",
                   "idea_notification", "observation", "metrics",
-                  "market_scheduled", "scheduled", "reentry"):
+                  "market_scheduled", "scheduled"):
         logger.info(
             "TELEGRAM_GUARD blocked (reason=%s): %s...",
             reason, text[:60].replace("\n", " "),

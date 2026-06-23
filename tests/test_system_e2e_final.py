@@ -386,9 +386,11 @@ class TestTelegramGuard:
         from core.telegram_guard import should_send_to_user
         assert should_send_to_user("Resumen semanal", reason="digest") is False
 
-    def test_reentry_reason_blocked(self):
+    def test_reentry_reason_passes(self):
+        # Reentry is a deliberate continuity re-engagement, not telemetry —
+        # it must reach the user (previously it was silently suppressed).
         from core.telegram_guard import should_send_to_user
-        assert should_send_to_user("Hola de nuevo", reason="reentry") is False
+        assert should_send_to_user("Hola de nuevo", reason="reentry") is True
 
     def test_critical_alert_always_passes(self):
         from core.telegram_guard import should_send_to_user
