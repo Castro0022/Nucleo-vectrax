@@ -477,6 +477,53 @@ def build_self_context(lang: str = "es", user_id: str = "") -> str:
     except Exception as _ev_exc:
         logger.debug("Evolution context failed: %s", _ev_exc)
 
+    # Deploy memory — recent commits + modified modules (creator only)
+    if is_creator:
+        try:
+            from core.self_observation.deployment_memory import deploy_summary
+            ds = deploy_summary()
+            lines = ["[MI CÓDIGO — cambios recientes y estructura real]"]
+            if ds.get("current_branch"):
+                lines.append("Rama: %s | HEAD: %s" % (ds["current_branch"], ds.get("current_head","?")))
+            commits = ds.get("recent_commits", [])[:5]
+            if commits:
+                lines.append("\u00daltimos commits:")
+                for c in commits:
+                    lines.append("  [%s] %s (%d archivos)" % (c["sha"], c["subject"][:80], c.get("files_changed",0)))
+            mods = ds.get("modified_modules", [])[:8]
+            if mods:
+                lines.append("Módulos más activos (7d): " + ", ".join(mods))
+            if len(lines) > 1:
+                base += "\n\n" + "\n".join(lines)
+        except Exception as _dm_exc:
+            logger.debug("Deploy memory failed: %s", _dm_exc)
+
+    # Codebase structure — Vectrax knows its own modules (creator only)
+    if is_creator:
+        try:
+            lines = ["[MI ESTRUCTURA — módulos principales en /app]"]
+            import os as _os
+            _categories = {
+                "core/": "Núcleo cognitivo",
+                "connectors/etoro/": "Trading eToro",
+                "connectors/alpaca/": "Trading Alpaca",
+                "connectors/freight/": "Freight Broker",
+                "vectrax/": "Motor principal + gateway",
+                "services/core/": "API REST :8900",
+                "core/gravity/": "Memoria gravitacional",
+                "core/self_observation/": "Auto-observación",
+                "core/operator/": "Operador cognitivo",
+            }
+            _base = "/app"
+            for cat, label in _categories.items():
+                full = _os.path.join(_base, cat)
+                if _os.path.isdir(full):
+                    count = sum(1 for f in _os.listdir(full) if f.endswith(".py"))
+                    lines.append("  %s (%d módulos) — %s" % (cat, count, label))
+            base += "\n\n" + "\n".join(lines)
+        except Exception as _cs_exc:
+            logger.debug("Codebase structure failed: %s", _cs_exc)
+
     # Convergence history — births, deaths, active details
     try:
         from core.learn.convergence_history import build_context as _conv_ctx
