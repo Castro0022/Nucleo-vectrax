@@ -1216,13 +1216,13 @@ class ExternalGateway:
                 from vectrax.engine import ingest_v2
                 ingest_v2(text=_content, user_id=_user_id, topic=_topic)
             except Exception as _e:
-                logger.debug("bg ingest_v2 failed: %s", _e)
+                logger.warning("bg ingest_v2 failed: %s", _e)
             # v1: knowledge star + graph edges + convergences
             try:
                 from vectrax.engine import ingest as ingest_v1
                 ingest_v1(text=_content, channel="user", owner=_user_id)
             except Exception as _e:
-                logger.debug("bg ingest_v1 failed: %s", _e)
+                logger.warning("bg ingest_v1 failed: %s", _e)
         threading.Thread(
             target=_bg_ingest, args=(content, user_id, channel),
             daemon=True,
@@ -2207,11 +2207,15 @@ class ExternalGateway:
             except Exception as exc:
                 logger.warning("Resolver fallback failed: %s", exc)
 
-        # ── Ingest (registrar en memoria como estrella) ────────────────────────────
+        # —— Ingest (registrar en memoria como estrella) —————————————————————————————————————————————
         memory_context = ""
         try:
             from vectrax.engine import ingest
-            star = ingest(text=content, channel=internal_channel, owner=user_id)
+            from vectrax.identity import CHANNEL_CREATOR, CREATOR_OWNER
+            # Normalize owner: the creator channel requires owner="mario", not the Telegram ID.
+            # internal_channel is already "creator" for the creator user (set above).
+            _ingest_owner = CREATOR_OWNER if internal_channel == CHANNEL_CREATOR else user_id
+            star = ingest(text=content, channel=internal_channel, owner=_ingest_owner)
             logger.info(
                 "Pipeline: ingest OK | star=%s layer=%s gravity=%.3f",
                 star.id[:8], star.layer, star.gravity_score,

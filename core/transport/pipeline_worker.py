@@ -883,6 +883,7 @@ def run_worker() -> None:
     last_digest = 0.0     # última ejecución del router digest
     last_market_learn = 0.0  # ciclo de aprendizaje de mercado (cada 30 min)
     last_freight_learn = 0.0  # freight learning cycle (every 6h)
+    last_gravity_sync  = 0.0  # gravity index → vectrax.db sync (every 6h)
     last_trading_conv  = 0.0  # trading convergence learner (every 24h)
     last_mem_check = 0.0  # memory watchdog
     last_stuck_recovery = 0.0  # stuck processing recovery
@@ -1104,6 +1105,26 @@ def run_worker() -> None:
             except Exception as _fl:
                 logger.debug("Freight learn error (passthrough): %s", _fl)
                 last_freight_learn = time.time()
+
+            # Gravity sync — mature domain patterns → vectrax.db stars + mass recompute (every 6h)
+            # Bridges the two star systems: gravity_index.json → visual universe.
+            # Also recomputes stale masses (stuck at MIN_MASS=0.01).
+            try:
+                _GRAVITY_SYNC_INTERVAL = 21600  # 6h
+                if time.time() - last_gravity_sync > _GRAVITY_SYNC_INTERVAL:
+                    from core.gravity_sync import run_sync as _gravity_sync
+                    _gs = _gravity_sync()
+                    if _gs.get("patterns_promoted", 0) > 0 or _gs.get("stars_mass_updated", 0) > 0:
+                        logger.info(
+                            "Gravity sync: promoted=%d mass_updated=%d %.1fs",
+                            _gs.get("patterns_promoted", 0),
+                            _gs.get("stars_mass_updated", 0),
+                            _gs.get("elapsed_s", 0),
+                        )
+                    last_gravity_sync = time.time()
+            except Exception as _gs_exc:
+                logger.debug("Gravity sync error (passthrough): %s", _gs_exc)
+                last_gravity_sync = time.time()
 
             # Trading convergence learner — observe drift, generate proposals (every 24h)
             # Never mutates auto_executor config. Proposals stored in

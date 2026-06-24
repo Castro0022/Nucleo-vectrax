@@ -72,6 +72,27 @@ logger = logging.getLogger("vectrax.engine")
 _CENTROID_WINDOW = 200
 
 
+def _compute_star_mass(star: Star, in_degree: int = 0) -> float:
+    """
+    Compute the gravitational mass of a knowledge star.
+
+    Uses compute_semantic_gravity (connections + coherence + activation).
+    Always returns at least the current star.mass to avoid mass loss.
+    Creator stars are pinned to 1.0.
+    """
+    from vectrax.gravity import compute_semantic_gravity
+    from vectrax.models import MIN_MASS
+    if star.channel == CHANNEL_CREATOR:
+        return 1.0
+    computed = compute_semantic_gravity(
+        star,
+        in_degree=in_degree,
+        neighbor_coherence=0.0,
+    )
+    # Monotonic: mass can only grow, never shrink
+    return max(star.mass or MIN_MASS, computed)
+
+
 # ---------------------------------------------------------------------------
 # Ingest
 # ---------------------------------------------------------------------------
@@ -113,14 +134,20 @@ def ingest(
         star = db.get_star(top_id)
         star.repetition_count += 1
         star.total_count += 1
+        star.activation_count = (star.activation_count or 0) + 1
         if success:
             star.success_count += 1
         # Creator stars never leave the core
         if channel == CHANNEL_CREATOR:
             star.gravity_score = 1.0
+            star.mass = 1.0
         else:
             star.gravity_score = compute_star_gravity(star)
+            # Recompute mass: grows with repetitions, connections, activations
+            in_degree = len(g.get_neighbors(star.id)) if g.get_graph().has_node(star.id) else 0
+            star.mass = _compute_star_mass(star, in_degree)
         star.layer = assign_layer(star.gravity_score)
+        star.distance_to_core = compute_distance_from_mass(star.mass)
         db.update_star(star)
         _post_ingest(star, vec, channel=channel, owner=owner)
         return star
@@ -137,9 +164,12 @@ def ingest(
     )
     if channel == CHANNEL_CREATOR:
         star.gravity_score = 1.0  # foundational — always maximum gravity
+        star.mass = 1.0
     else:
         star.gravity_score = compute_star_gravity(star)
+        star.mass = star.mass  # keeps MIN_MASS on first insert; grows via _post_ingest
     star.layer = assign_layer(star.gravity_score)
+    star.distance_to_core = compute_distance_from_mass(star.mass)
     db.insert_star(star)
     g.add_star(star.id, layer=star.layer, gravity=star.gravity_score,
                channel=channel, owner=owner)
@@ -195,6 +225,18 @@ def _post_ingest(star: Star, vec, channel: str, owner: str) -> None:
         other = db.get_star(other_id)
         if other and other.channel == channel:
             g.link_stars(star.id, other_id, sim)
+            # Update mass of both linked stars — connections add gravitational weight
+            try:
+                for _sid in (star.id, other_id):
+                    _s = db.get_star(_sid)
+                    if _s:
+                        _in_deg = len(g.get_neighbors(_sid)) if g.get_graph().has_node(_sid) else 0
+                        _new_mass = _compute_star_mass(_s, _in_deg)
+                        if _new_mass > _s.mass:
+                            db.update_star_mass(_sid, _new_mass,
+                                                compute_distance_from_mass(_new_mass))
+            except Exception:
+                pass  # non-fatal
 
     # --- 2. Record trajectory point ---
     try:
