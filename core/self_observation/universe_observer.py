@@ -401,10 +401,14 @@ def _collect_gravity_engine(snap: UniverseSnapshot) -> None:
                 _raw = _json.load(_pf)
             _pats = _raw if isinstance(_raw, list) else list(_raw.values())
             _existing_ids = {s["id"] for s in snap.gravity_stars}
-            for _p in _pats:
-                _key = str(_p.get("pattern_key") or "")[:60]
-                _pid = f"etoro:{_key}"
-                if _pid in _existing_ids or not _key:
+            for _i, _p in enumerate(_pats):
+                _key = str(_p.get("pattern_key") or "")
+                if not _key:
+                    continue
+                # Use hash to avoid dedup from long key truncation
+                import hashlib as _hl
+                _pid = "etoro:" + _hl.md5(_key.encode()).hexdigest()[:12]
+                if _pid in _existing_ids:
                     continue
                 _wr  = float(_p.get("win_rate") or 0)
                 _n   = int(_p.get("n_total") or 0)
