@@ -218,12 +218,13 @@ class TestTradingConvergenceLearner:
     """Tests never touch the real ~/.vectrax signals/patterns files."""
 
     def _make_signals(self, n_win: int, n_loss: int, days_old: float = 0.0) -> List[Dict]:
+        """Uses real etoro_signals.jsonl schema: status + outcome_timestamp."""
         ts = time.time() - days_old * 86400
         sigs = []
         for _ in range(n_win):
-            sigs.append({"outcome": "win", "resolved_at": ts})
+            sigs.append({"status": "win", "outcome_timestamp": ts, "return_pct": 0.5})
         for _ in range(n_loss):
-            sigs.append({"outcome": "loss", "resolved_at": ts})
+            sigs.append({"status": "loss", "outcome_timestamp": ts, "return_pct": -0.8})
         return sigs
 
     def _make_patterns(self, n: int, wr: float = 40.0, tier: str = "LOW") -> List[Dict]:

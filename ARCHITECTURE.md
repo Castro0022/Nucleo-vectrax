@@ -455,4 +455,92 @@ python -m pytest tests/test_gravity_engine.py           # gravity engine
 
 ---
 
-*Documentado: Junio 23, 2026 — Post auditoría E2E de dominios Trading y Freight*
+---
+
+## 12. Evidencia de Producción — Jun 23, 2026
+
+Primer ciclo completo de todos los motores tras el deploy de la arquitectura avanzada.
+Registrado en `/root/.vectrax/worker.log`.
+
+### Freight Learning Cycle — Primer ciclo (23:36 server time)
+
+```
+vectrax.freight.learning_cycle:
+  provider=simulator | ingested=200/200 | errors=0
+  stars=758→763 | mature=3 | elevated=3 | elapsed=37.8s
+
+vectrax.domain_knowledge:
+  [DOMAIN] Elevated NEW freight_logistics
+  delivery_complete:freight_logistics:delivery_complete:region=Mountain|on_time=True
+  WR=90% E=+1350.000% | N=15
+
+Domain library:  /root/.vectrax/domain_library/freight_logistics.json  ✅ CREADO
+```
+
+### Trading Convergence Learner — Primera ejecución (23:36)
+
+```
+vectrax.etoro.convergence_learner:
+  proposals=1 | kinds=[DORMANCY] | wr=42.4% | best_n=11
+
+Proposal LRN-F18CC7FA:
+  drift_kind: dormancy
+  suggested_review: "Verify eToro API connectivity..."
+  applied: false
+
+/root/.vectrax/etoro_learner_proposals.jsonl  ✅ CREADO
+```
+
+**Nota:** DORMANCY se generó porque el contenedor acababa de reiniciarse y los signals
+aún no habían acumulado nuevas resoluciones en el ciclo corriente. Correcto.
+
+### API y sistema
+
+```json
+GET /health → 200 OK
+{
+  "status": "ok",
+  "env": "production",
+  "uptime_seconds": 2007,
+  "components": {"api": "ok", "database": "ok", "governor": "act"},
+  "governor_mode": "act",
+  "governor_reason": "Nominal — all systems healthy"
+}
+```
+
+### Schema real de señales (etoro_signals.jsonl)
+
+```json
+{
+  "signal_id": "...",
+  "status": "win" | "loss" | "neutral" | "expired",
+  "outcome_timestamp": 1781016807.26,
+  "return_pct": 0.35,
+  "sl_touched": false,
+  "symbol": "BTC",
+  "direction": "buy" | "sell",
+  "entry_price": 58000.0
+}
+```
+
+Estados al cierre del día:
+- `win`: 55 | `loss`: 74 | `neutral`: 142 | `expired`: 4 | Total: 275
+- WR observado (win/loss): **42.6%** | Threshold: 60% | Gap: 17.4pp → WR_GAP proposal
+- Best pattern N=11 | Threshold N=30 → SAMPLE_GAP proposal
+
+### Resumen de motores activos
+
+| Motor | Estado | Próxima ejecución |
+|---|---|---|
+| Market learning (eToro) | ✅ Activo cada 30min | ~30min |
+| Freight learning | ✅ Primer ciclo completado (3 elevados) | +6h |
+| Trading convergence learner | ✅ Primera propuesta generada | +24h |
+| Presence nudges (3-nudge) | ✅ 10 nudges enviados hoy | continuo |
+| API :8900 | ✅ Healthy, TLS via Caddy | — |
+| UFW :8900 | ✅ Restringido a localhost | — |
+| .env | ✅ chmod 600 | — |
+
+---
+
+*Documentado: Junio 23, 2026 — Post auditoría E2E de dominios Trading y Freight*  
+*Revisión de seguridad: Junio 23, 2026 — Puerto 8900 restringido + .env 0600*

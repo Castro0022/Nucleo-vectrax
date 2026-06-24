@@ -109,17 +109,20 @@ def run_observation_cycle() -> Dict[str, Any]:
         patterns = _load_patterns()
         config   = _load_config()
 
-        resolved = [s for s in signals if s.get("outcome") in ("win", "loss", "neutral", "expired")]
-        wins     = [s for s in resolved if s.get("outcome") == "win"]
-        losses   = [s for s in resolved if s.get("outcome") == "loss"]
+        # etoro_signals.jsonl schema: status=win|loss|neutral|expired, outcome_timestamp
+        # (field is 'status', not 'outcome'; timestamp is 'outcome_timestamp')
+        resolved = [s for s in signals if s.get("status") in ("win", "loss", "neutral", "expired")]
+        wins     = [s for s in resolved if s.get("status") == "win"]
+        losses   = [s for s in resolved if s.get("status") == "loss"]
 
-        observed_wr = (len(wins) / len([s for s in resolved if s.get("outcome") in ("win","loss")]) * 100) \
-                      if any(s.get("outcome") in ("win","loss") for s in resolved) else 0.0
+        tradeable_resolved = [s for s in resolved if s.get("status") in ("win", "loss")]
+        observed_wr = (len(wins) / len(tradeable_resolved) * 100) \
+                      if tradeable_resolved else 0.0
         best_n      = max((p.get("n", 0) for p in patterns), default=0)
         total_w     = sum(p.get("total_wins", 0) for p in patterns)
         total_l     = sum(p.get("total_losses", 0) for p in patterns)
         agg_wr      = (total_w / (total_w + total_l) * 100) if (total_w + total_l) > 0 else 0.0
-        last_ts     = max((s.get("resolved_at", 0) for s in resolved), default=0)
+        last_ts     = max((s.get("outcome_timestamp", 0) for s in resolved), default=0)
         days_since  = (time.time() - last_ts) / 86400 if last_ts else float("inf")
 
         proposals: List[Proposal] = []
@@ -127,7 +130,7 @@ def run_observation_cycle() -> Dict[str, Any]:
         # ── Rule 1: WR_GAP ──────────────────────────────────────────────
         threshold_wr = config.get("min_paper_win_rate", 60.0)
         if len(resolved) >= MIN_RESOLVED:
-            tradeable = [s for s in resolved if s.get("outcome") in ("win","loss")]
+            tradeable = tradeable_resolved
             gap = threshold_wr - observed_wr
             if gap > GAP_TRIGGER_PP:
                 confidence = min(1.0, len(tradeable) / 100)
