@@ -440,7 +440,90 @@ bash scripts/check_reentry.sh
 
 ---
 
-## 11. Tests
+## 11. Flujo de Datos (End-to-End)
+
+### Mensaje de usuario → respuesta
+
+```
+Usuario (Telegram)
+    │
+    ▼
+telegram_gateway.py
+    │  record_activity() — resetea nudge timer
+    │  tier_check()       — verifica límite diario
+    │  enqueue(message)
+    ▼
+message_queue.db (SQLite WAL)
+    │
+    ▼
+pipeline_worker.py (ThreadPoolExecutor, CONCURRENT threads)
+    │
+    ├─ _process_one(msg)
+    │     ├─ total_convergence_cycle()—fases 1-7
+    │     ├─ PresenciaPura.observe()   — capa inhibitoria
+    │     ├─ smart_router()            — intención + ruta
+    │     ├─ memory: resolve_with_memory() primero
+    │     ├─ gravity: deep_memory si hay señales
+    │     ├─ LLM: OpenAI / Gemini / local
+    │     ├─ enforce_final_answer()    — filtro de calidad
+    │     └─ _tg_send()               — sovereignty check + envío
+    │
+    └─ Ciclos background (main loop, separados del pool):
+         ├─ Market learning     cada 30min (ThreadPool, 60s timeout)
+         ├─ Freight learning     cada 6h   (ThreadPool, 120s timeout)
+         ├─ Convergence learner  cada 24h  (inline, no bloqueo)
+         ├─ Presence nudges      cada 10min
+         ├─ Scheduler            cada 60s
+         └─ Memory watchdog      cada 30s  (auto-restart si RAM > 1.2GB)
+```
+
+### Persistencia por capa
+
+```
+Capture de usuario    →  user_memory.db     (profiles, interactions, user_facts)
+Memoria gravitacional →  gravity.db         (deep_memory, context_identities)
+Aprendizaje eToro     →  etoro_signals.jsonl + etoro_patterns.json
+Aprendizaje Freight   →  gravity_index.json + domain_library/freight_logistics.json
+Nudges               →  continuity_reentry.db
+Sobranía             →  sovereignty.db + sovereignty.jsonl
+Ledger               →  ledger.db
+Queue                 →  message_queue.db
+Hearbeat             →  worker_heartbeat, gateway_heartbeat (archivos)
+```
+
+---
+
+## 12. CI/CD
+
+### GitHub Actions (`.github/workflows/ci.yml`)
+
+Quality gate automático en cada push a `main` y en cada PR:
+
+```yaml
+trigger: push(main) | pull_request
+jobs:
+  quality-gate (ubuntu-latest, Python 3.9, timeout 30min)
+    1. Orchestration tests  — fallos de activación rápidos primero
+    2. Full hermetic suite  — pytest tests/ -m "not live" --tb=short
+       Tests marcados 'live' se excluyen (requieren credenciales reales)
+```
+
+El suite es hermético: `tests/conftest.py` neutraliza credenciales externas
+e aúsla todos los stores persistentes. No toca datos reales ni requiere secrets.
+
+### Deploy a producción
+
+```bash
+bash deploy_vultr.sh
+# rsync código (excluye .env, vault/, data/, logs/)
+# docker compose build  (usa cache — solo reconstruye capas modificadas)
+# docker compose up -d  (restart unless-stopped)
+# Verificación: docker compose ps + docker compose logs --tail=15
+```
+
+---
+
+## 13. Tests
 
 ```bash
 # Suite completa relevante
@@ -450,14 +533,13 @@ python -m pytest tests/test_advanced_architecture.py    # 22 tests (interface + 
 python -m pytest tests/test_continuity_reentry.py       # 21 tests (nudges)
 python -m pytest tests/test_gravity_engine.py           # gravity engine
 
-# Total tests relacionados: ~82 passing
+# Total: ~82 passing localmente
+# CI: pytest tests/ -m "not live" (GitHub Actions, cada push a main)
 ```
 
 ---
 
----
-
-## 12. Evidencia de Producción — Jun 23, 2026
+## 14. Evidencia de Producción — Jun 23, 2026
 
 Primer ciclo completo de todos los motores tras el deploy de la arquitectura avanzada.
 Registrado en `/root/.vectrax/worker.log`.
