@@ -677,14 +677,14 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
         const arcBend = 30 * cam.zoom * Math.sin(t * 0.6 + pi * 0.9);
         const cx2 = mx + arcBend, cy2 = my - arcBend;
 
-        // Wide diffuse glow (visible halo)
-        ctx.strokeStyle = `rgba(167,139,250,${0.08 + 0.06 * pulse})`;
-        ctx.lineWidth = (10 + pulse * 8) * cam.zoom;
+        // Wide diffuse glow (visible halo) — INCREASED visibility
+        ctx.strokeStyle = `rgba(167,139,250,${0.18 + 0.12 * pulse})`;
+        ctx.lineWidth = (14 + pulse * 10) * cam.zoom;
         ctx.beginPath(); ctx.moveTo(ax,ay); ctx.quadraticCurveTo(cx2,cy2,bx,by); ctx.stroke();
 
-        // Core energy arc (bright, sharp)
-        ctx.strokeStyle = `rgba(180,160,255,${0.25 + 0.15 * pulse})`;
-        ctx.lineWidth = (2 + pulse * 2) * cam.zoom;
+        // Core energy arc (bright, sharp) — INCREASED visibility
+        ctx.strokeStyle = `rgba(200,180,255,${0.50 + 0.25 * pulse})`;
+        ctx.lineWidth = (3 + pulse * 3) * cam.zoom;
         ctx.beginPath(); ctx.moveTo(ax,ay); ctx.quadraticCurveTo(cx2,cy2,bx,by); ctx.stroke();
 
         // Energy node at midpoint — glowing orb
@@ -1239,15 +1239,18 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
           const isMarket = gs.domain === 'market' || gs.domain === 'user_interest';
           let dist;
           if (isMarket) {
-            dist = 0.85 - gs.cc * 0.75;
+            dist = 0.5 - gs.cc * 0.35; // market stars closer to center, more visible
           } else {
             const rank = gs.weight / maxWeight;
             dist = 0.15 + (1 - rank) * 0.70;
           }
+          // Market stars: minimum mass 0.3 so they're always visible (min 8px radius)
+          const rawMass = Math.min(gs.weight / 200, 1.0);
+          const mass = isMarket ? Math.max(rawMass, 0.3) : rawMass;
           newStars.push({
             id: gs.id,
             content: gs.summary || gs.intent || gs.id,
-            mass: Math.min(gs.weight / 200, 1.0),
+            mass: mass,
             distance_to_core: dist,
             layer: dist < 0.25 ? 'core' : dist < 0.5 ? 'mid' : 'outer',
             star_type: 'primary',
