@@ -268,7 +268,8 @@ def _collect_nucleus(snap: UniverseSnapshot) -> None:
 
 
 def _collect_convergences(snap: UniverseSnapshot) -> None:
-    """Llena convergencias del grafo."""
+    """Llena convergencias: grafo en memoria + convergence_history.db."""
+    # 1. Graph edges (in-memory, built during star linking)
     try:
         from vectrax.graph import get_graph
         g = get_graph()
@@ -277,10 +278,38 @@ def _collect_convergences(snap: UniverseSnapshot) -> None:
                 "star_a": u,
                 "star_b": v,
                 "similarity": round(data.get("weight", 0), 4),
+                "source": "graph",
             })
     except Exception as exc:
-        logger.debug("convergences collection failed: %s", exc)
+        logger.debug("graph convergences failed: %s", exc)
 
+    # 2. convergence_history.db — persistent convergence events
+    # This is the primary source of convergences visible in the panel.
+    try:
+        import sqlite3, os
+        _cdb = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "..", "vault", "convergence_history.db",
+        )
+        _cdb = os.path.normpath(_cdb)
+        if os.path.exists(_cdb):
+            conn = sqlite3.connect(_cdb, timeout=2)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM convergence_events ORDER BY ROWID DESC LIMIT 500"
+            ).fetchall()
+            conn.close()
+            for row in rows:
+                d = dict(row)
+                snap.convergences.append({
+                    "star_a": d.get("star_a") or d.get("node_a") or d.get("source") or "",
+                    "star_b": d.get("star_b") or d.get("node_b") or d.get("target") or "",
+                    "similarity": round(float(d.get("similarity") or d.get("weight") or d.get("strength") or 0.5), 4),
+                    "source": "history",
+                    "type": d.get("type") or d.get("event_type") or "convergence",
+                })
+    except Exception as exc:
+        logger.debug("convergence_history collection failed: %s", exc)
 
 def _collect_operational(snap: UniverseSnapshot) -> None:
     """Llena campos operacionales desde state_collector."""
