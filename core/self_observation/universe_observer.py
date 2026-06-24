@@ -202,8 +202,11 @@ class UniverseSnapshot:
                 "total": self.gravity_total,
                 "stars": self.gravity_stars,
                 "domains": self.gravity_domains,
-                "convergences": self.gravity_convergences,
-                "convergences_total": self.gravity_convergences_total,
+                # Combina: convergencias del gravity_index (cross-domain)
+                # + convergencias históricas de convergence_history.db
+                # El panel lee de gravity.convergences — aquí es donde tiene que estar.
+                "convergences": self.gravity_convergences + self.convergences[:480],
+                "convergences_total": len(self.gravity_convergences) + len(self.convergences),
             },
             "word_gravity": {
                 "words": self.word_gravity_words,
@@ -376,7 +379,7 @@ def _collect_gravity_engine(snap: UniverseSnapshot) -> None:
         # Domain stats
         snap.gravity_domains = gi.domain_stats()
 
-        # Cross-domain convergences
+        # Cross-domain convergences from gravity index
         convs = gi.cross_domain_convergences()
         snap.gravity_convergences_total = len(convs)
         for c in convs[:20]:
@@ -385,6 +388,45 @@ def _collect_gravity_engine(snap: UniverseSnapshot) -> None:
     except Exception as exc:
         logger.debug("gravity engine collection failed: %s", exc)
         snap.signals.append("gravity_engine_unavailable")
+
+    # eToro market patterns — inject as market domain stars
+    # Schema real: {pattern_key, symbol, direction, n_total, n_wins, win_rate, is_usable}
+    try:
+        import json as _json
+        _pat_path = os.path.join(
+            os.path.expanduser("~"), ".vectrax", "etoro_patterns.json"
+        )
+        if os.path.exists(_pat_path):
+            with open(_pat_path) as _pf:
+                _raw = _json.load(_pf)
+            _pats = _raw if isinstance(_raw, list) else list(_raw.values())
+            _existing_ids = {s["id"] for s in snap.gravity_stars}
+            for _p in _pats:
+                _key = str(_p.get("pattern_key") or "")[:60]
+                _pid = f"etoro:{_key}"
+                if _pid in _existing_ids or not _key:
+                    continue
+                _wr  = float(_p.get("win_rate") or 0)
+                _n   = int(_p.get("n_total") or 0)
+                _sym = str(_p.get("symbol") or "market")[:20]
+                _dir = str(_p.get("direction") or "")[:4]
+                _usable = bool(_p.get("is_usable"))
+                _tier = "HIGH" if _usable else ("MEDIUM" if _n >= 10 else "LOW")
+                snap.gravity_stars.append({
+                    "id": _pid,
+                    "domain": "market",
+                    "intent": f"{_sym} {_dir}".strip(),
+                    "tier": "HOT" if _tier == "HIGH" else ("WARM" if _tier == "MEDIUM" else "COLD"),
+                    "hits": _n,
+                    "cc": round(_wr / 100, 3),
+                    "freq": round(_n / max(_n, 1), 3),
+                    "weight": round(_n * (_wr / 100), 2),
+                    "summary": f"{_sym} {_dir} | WR={_wr:.0f}% N={_n}",
+                })
+                _existing_ids.add(_pid)
+            snap.gravity_total = len(snap.gravity_stars)
+    except Exception as _ep:
+        logger.debug("etoro patterns injection failed: %s", _ep)
 
 
 def _collect_word_gravity(snap: UniverseSnapshot) -> None:
