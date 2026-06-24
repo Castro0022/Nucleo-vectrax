@@ -54,6 +54,10 @@ _WORKER_LOG = os.path.join(_RUNTIME, "worker.log")
 _GATEWAY_LOG = os.path.join(_RUNTIME, "gateway.log")
 _MAX_INCIDENTS = 200  # retain last N incidents
 
+# Cooldown entre alertas al creador: evita spam en restarts rápidos
+_ALERT_COOLDOWN_S = 1800   # 30 min entre alertas del mismo tipo
+_LAST_ALERT_FILE = os.path.join(_RUNTIME, "blackbox_last_alert.json")
+
 
 # ── Snapshot capture ──────────────────────────────────────────────────
 
@@ -183,13 +187,18 @@ def diagnose_incident(incident: Dict[str, Any]) -> Dict[str, Any]:
         neg_evidence.append("Sin APIs externas pendientes ni timeouts")
 
     # 3. High memory
-    if ram_mb > 500:
+    # Threshold: 1000MB — Python + sentence_transformers + numpy arranca en ~850MB.
+    # 1200MB es el watchdog de auto-restart. Alertar entre 1000-1200MB.
+    if ram_mb > 1000:
         if cause == "desconocido":
             cause = "memoria_alta"
             confidence = 0.7
-        pos_evidence.append(f"RAM: {ram_mb}MB (alto para un worker)")
+        pos_evidence.append(f"RAM: {ram_mb}MB (sobre umbral de 1000MB)")
         action = "investigar memory leak"
         solution = "Analizar objetos en heap con tracemalloc o reiniciar worker periódicamente"
+    elif ram_mb > 500:
+        # Normal startup range (850-1000MB) — don't flag as high memory
+        neg_evidence.append(f"RAM normal para arranque Python+ML: {ram_mb}MB")
     elif ram_mb > 0:
         neg_evidence.append(f"RAM normal: {ram_mb}MB")
 
@@ -630,8 +639,68 @@ def _log_diagnosis_to_ledger(diag: Dict) -> None:
         pass
 
 
+def _should_alert(cause: str, incident_id: str) -> bool:
+    """
+    Cooldown + deduplication para alertas al creador.
+
+    Reglas:
+    - Mismo 'cause' no se alerta más de 1 vez en _ALERT_COOLDOWN_S segundos
+    - Un reinicio durante deploy (sin tarea activa, RAM normal) genera INFO,
+      no alerta Telegram
+    """
+    try:
+        now = time.time()
+        last: Dict = {}
+        if os.path.exists(_LAST_ALERT_FILE):
+            with open(_LAST_ALERT_FILE) as f:
+                last = json.load(f)
+        last_ts = last.get(cause, 0)
+        if now - last_ts < _ALERT_COOLDOWN_S:
+            remaining = int(_ALERT_COOLDOWN_S - (now - last_ts))
+            logger.info(
+                "BLACKBOX alert suppressed (cooldown %ds) cause=%s id=%s",
+                remaining, cause, incident_id,
+            )
+            return False
+        # Update last alert timestamp for this cause
+        last[cause] = now
+        os.makedirs(os.path.dirname(_LAST_ALERT_FILE), exist_ok=True)
+        with open(_LAST_ALERT_FILE, "w") as f:
+            json.dump(last, f)
+        return True
+    except Exception:
+        return True  # fail-open: si algo falla, sí alertar
+
+
 def _alert_creator(incident: Dict, diag: Dict) -> None:
-    """Send Telegram alert with incident + diagnosis to creator."""
+    """Send Telegram alert with incident + diagnosis to creator.
+
+    Con cooldown de 30 min por tipo de causa para evitar spam en
+    restarts rápidos (deploys, memory watchdog, reintentos).
+    """
+    cause = diag.get("causa_probable", "desconocido")
+    inc_id = incident.get("incident_id", "?")
+
+    # Si es un restart limpio durante deploy (sin tarea, RAM normal),
+    # solo loggear — no enviar Telegram
+    task = incident.get("active_task", {})
+    ram = incident.get("resources", {}).get("ram_mb", 0)
+    is_clean_restart = (
+        not task.get("msg_id")
+        and ram < 1000
+        and cause in ("memoria_alta", "desconocido")
+    )
+    if is_clean_restart:
+        logger.info(
+            "BLACKBOX %s: clean restart during deploy/memory-watchdog — no Telegram alert",
+            inc_id,
+        )
+        return
+
+    # Cooldown: máx 1 alerta por causa cada 30 min
+    if not _should_alert(cause, inc_id):
+        return
+
     try:
         token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
         chat_id = os.environ.get("TELEGRAM_CREATOR_CHAT_ID", "")
