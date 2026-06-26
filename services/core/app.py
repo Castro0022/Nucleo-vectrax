@@ -55,6 +55,14 @@ def create_app() -> FastAPI:
     """Build and return the FastAPI application."""
     settings = get_settings()
 
+    # Redacción de secretos en logs: este proceso (core_api) instancia el
+    # TelegramGateway en modo webhook y httpx loguea la URL con el bot token.
+    try:
+        from core.log_redaction import install_redaction
+        install_redaction()
+    except Exception:
+        pass
+
     app = FastAPI(
         title="Vectrax Core",
         version="1.0.0",
@@ -116,6 +124,18 @@ def create_app() -> FastAPI:
             logger.info("Database initialized")
         except Exception as exc:
             logger.warning("Database init skipped: %s", exc)
+
+        # --- Seed AI provider presence stars (universe visibility) ---
+        # External AI providers are citizens of the universe even before first
+        # use. Idempotent and SEPARATE from interaction stars (fingerprint
+        # ai:{provider}:presence, source="provider_presence").
+        try:
+            from core.learn.provider_stars import seed_provider_stars
+            _seeded = seed_provider_stars()
+            if _seeded:
+                logger.info("Seeded AI provider presence stars: %s", _seeded)
+        except Exception as exc:
+            logger.warning("Provider presence seeding skipped (non-fatal): %s", exc)
 
         # Init TelegramGateway for webhook mode (USE_WEBHOOK=1).
         # Instantiated without calling .run() — we only need handlers + pool.

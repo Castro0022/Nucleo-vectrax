@@ -215,6 +215,62 @@ def record_interaction(
 
 
 # ---------------------------------------------------------------------------
+# Presencia de proveedores (estrellas de presencia — separadas de interacción)
+# ---------------------------------------------------------------------------
+
+# Proveedores de IA externos que son ciudadanos del universo aunque todavía no
+# se hayan usado. Se siembran con masa mínima para que sean visibles.
+DEFAULT_PRESENCE_PROVIDERS = ("openai", "gemini", "anthropic")
+_PRESENCE_TASK = "presence"
+_PRESENCE_SOURCE = "provider_presence"
+
+
+def seed_provider_stars(
+    providers=DEFAULT_PRESENCE_PROVIDERS,
+    quality: float = 0.5,
+) -> List[str]:
+    """Crea una estrella de PRESENCIA por proveedor si aún no existe.
+
+    Idempotente y separada de las estrellas de interacción: usa el fingerprint
+    ``ai:{provider}:presence`` y ``source="provider_presence"``, de modo que la
+    presencia (visibilidad en el universo) NO se mezcla con la experiencia real
+    acumulada en ``ai:{provider}:{capability}``. El intent "presence" no es una
+    capacidad de routing, así que no afecta la selección de proveedor ni las
+    convergencias.
+
+    Best-effort: nunca lanza. Devuelve la lista de proveedores recién sembrados.
+    """
+    seeded: List[str] = []
+    try:
+        from core.learn.gravity_engine import get_gravity_index
+        gi = get_gravity_index()
+    except Exception as exc:
+        logger.debug("seed_provider_stars: gravity index unavailable: %s", exc)
+        return seeded
+
+    for p in providers:
+        pn = _norm(p)
+        if not pn:
+            continue
+        fp = provider_fingerprint(pn, _PRESENCE_TASK)
+        try:
+            if gi.get(fp) is not None:
+                continue  # ya existe — idempotente, no re-sembrar
+        except Exception:
+            pass
+        if record_provider_experience(
+            pn,
+            _PRESENCE_TASK,
+            outcome="success",
+            quality=quality,
+            route_source="seed",
+            source=_PRESENCE_SOURCE,
+        ):
+            seeded.append(pn)
+    return seeded
+
+
+# ---------------------------------------------------------------------------
 # Lectura: afinidad, constelación, inventario
 # ---------------------------------------------------------------------------
 
