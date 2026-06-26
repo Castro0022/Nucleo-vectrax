@@ -48,7 +48,7 @@ The registry tracks 8 capabilities per model:
 - `openai:gpt-4o` — all capabilities (128K ctx) — requires `OPENAI_API_KEY`
 - `openai:gpt-4o-mini` — most capabilities (128K ctx) — requires `OPENAI_API_KEY`
 - `gemini:gemini-2.0-flash` — most capabilities (1M ctx) — requires `GEMINI_API_KEY`
-- `anthropic:claude-sonnet-4-20250514` — most capabilities (200K ctx) — requires `ANTHROPIC_API_KEY`
+- `anthropic:claude-opus-4-7` — most capabilities (1M ctx) — requires `ANTHROPIC_API_KEY`
 
 ## Task Classification
 

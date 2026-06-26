@@ -11,8 +11,7 @@ dependencies = [
     # CLI & display
     "click>=8.1",
     "rich>=13.0",
-    # AI / LLM
-    "anthropic>=0.20",
+    # AI / LLM (Anthropic is integrated over raw httpx — no SDK dependency)
     "litellm>=1.30",
     # Embeddings & graph
     "sentence-transformers>=2.7",

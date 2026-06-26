@@ -196,16 +196,16 @@ def _build_default_registry() -> Dict[str, ModelProfile]:
         # Anthropic — fortaleza: razonamiento, seguridad, planificación
         ModelProfile(
             provider="anthropic",
-            model="claude-sonnet-4-20250514",
+            model="claude-opus-4-7",
             capabilities={
                 Capability.REASONING, Capability.SAFETY, Capability.PLANNING,
                 Capability.CODING, Capability.SUMMARIZATION,
                 Capability.TRANSLATION, Capability.STRUCTURED_EXTRACTION,
                 Capability.LONG_CONTEXT, Capability.TOOL_USE,
             },
-            cost_per_1k_tokens=0.003,
+            cost_per_1k_tokens=0.005,
             avg_latency_ms=2500,
-            max_context_tokens=200000,
+            max_context_tokens=1000000,
             modalities={"text"},
             priority=30,
             available=anthropic_available,

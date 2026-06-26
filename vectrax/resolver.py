@@ -1045,6 +1045,26 @@ GATHERED INFORMATION:
 INTELLIGENT RESPONSE:"""
 
 
+def _record_provider_xp(provider: str, query: str, outcome: str, quality: float) -> None:
+    """Best-effort: registra una experiencia de IA externa como estrella en el
+    universo gravitacional. Nunca lanza — no debe afectar la resolución."""
+    if not provider:
+        return
+    try:
+        from core.learn.provider_stars import (
+            record_provider_experience,
+            infer_task_type,
+        )
+        record_provider_experience(
+            provider=provider,
+            task_type=infer_task_type(query),
+            outcome=outcome,
+            quality=quality,
+        )
+    except Exception:
+        pass
+
+
 def _interpret_with_llm(
     query: str,
     snippets: List[str],
@@ -1074,6 +1094,9 @@ def _interpret_with_llm(
                     "Intelligent interpretation via %s | len=%d",
                     result.get("provider", "?"), len(interpreted),
                 )
+                # La experiencia de proveedor (provider_stars) se registra una
+                # sola vez a nivel del IntelligenceRouter para esta ruta
+                # (route_single → router.route). No duplicar aquí.
                 return interpreted
     except Exception as exc:
         logger.debug("Intelligence Bridge unavailable for interpretation: %s", exc)
@@ -1115,6 +1138,7 @@ def _interpret_with_llm(
                 except Exception:
                     pass
                 logger.warning("Interpretation: OpenAI 429")
+                _record_provider_xp("openai", query, "rate_limited", 0.0)
                 return ""
             try:
                 record_success("openai")
@@ -1123,9 +1147,11 @@ def _interpret_with_llm(
             resp.raise_for_status()
             content = resp.json()["choices"][0]["message"]["content"]
             logger.info("Intelligent interpretation via OpenAI direct | len=%d", len(content))
+            _record_provider_xp("openai", query, "success", 0.85)
             return content.strip()
     except Exception as exc:
         logger.debug("OpenAI direct interpretation failed: %s", exc)
+        _record_provider_xp("openai", query, "fail", 0.05)
 
     return ""
 

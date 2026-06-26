@@ -5,9 +5,10 @@ pydantic==2.9.0
 pydantic-settings==2.5.0
 
 # LLM Providers
+# NOTE: Anthropic is integrated over raw httpx (no SDK dependency) —
+# see core/providers/anthropic_stub.py.
 ollama==0.4.4
 openai==1.54.0
-anthropic==0.39.0
 litellm==1.52.0
 
 # Vector Database
