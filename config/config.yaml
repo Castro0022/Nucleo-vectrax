@@ -29,10 +29,15 @@ providers:
     
   anthropic:
     type: anthropic
-    enabled: false
+    enabled: true
     priority: 11
+    api_key_env: ANTHROPIC_API_KEY
     models:
-      claude: claude-3-5-sonnet-20241022
+      default: claude-opus-4-7
+      opus: claude-opus-4-7
+      sonnet: claude-sonnet-4-6
+      haiku: claude-haiku-4-5
+    timeout: 60
 
   gemini:
     type: gemini

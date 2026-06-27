@@ -188,78 +188,167 @@ class IntelligenceRouter:
         provider_name = decision.primary.provider
         model_name = decision.primary.model
 
-        # Get provider instance
-        provider = self._registry.get(provider_name)
-        if provider is None:
-            # Try fallback
-            if decision.fallback:
-                provider_name = decision.fallback.provider
-                model_name = decision.fallback.model
-                provider = self._registry.get(provider_name)
+        # Interaction-learning state — recorded EXACTLY ONCE in `finally`,
+        # after the provider/fallback path completes (router-level SSOT for
+        # provider_stars; providers are not instrumented individually).
+        learn = {
+            "provider": provider_name,
+            "model": model_name,
+            "outcome": "fail",
+            "fallback_used": False,
+            "error_type": None,
+            "response": None,
+        }
 
-        if provider is None:
-            return SingleQueryResult(
-                routing_decision=decision,
-                error=f"No provider available for {decision.primary.provider}",
-                latency_ms=(time.time() - t0) * 1000,
-            )
-
-        # Execute — identity injected at provider level
         try:
-            request = GenerateRequest(
+            # Get provider instance
+            provider = self._registry.get(provider_name)
+            if provider is None:
+                # Try fallback
+                if decision.fallback:
+                    provider_name = decision.fallback.provider
+                    model_name = decision.fallback.model
+                    provider = self._registry.get(provider_name)
+                    learn["provider"] = provider_name
+                    learn["model"] = model_name
+                    learn["fallback_used"] = True
+
+            if provider is None:
+                learn["error_type"] = "NoProviderAvailable"
+                return SingleQueryResult(
+                    routing_decision=decision,
+                    error=f"No provider available for {decision.primary.provider}",
+                    latency_ms=(time.time() - t0) * 1000,
+                )
+
+            # Execute — identity injected at provider level
+            try:
+                request = GenerateRequest(
+                    prompt=prompt,
+                    model=model_name,
+                    system_prompt=system_prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                response = await provider.generate(request)
+                latency = (time.time() - t0) * 1000
+
+                self._cb.record_success(provider_name)
+                self._audit("route_single", decision, provider_name, model_name, True)
+
+                learn["outcome"] = "success"
+                learn["response"] = response
+
+                return SingleQueryResult(
+                    routing_decision=decision,
+                    response=response,
+                    latency_ms=latency,
+                    success=True,
+                )
+
+            except Exception as exc:
+                latency = (time.time() - t0) * 1000
+                self._cb.record_failure(provider_name, exc)
+                self._audit("route_single", decision, provider_name, model_name, False)
+
+                learn["outcome"] = self._outcome_from_exc(exc)
+                learn["error_type"] = type(exc).__name__
+
+                # Attempt fallback
+                if decision.fallback and decision.fallback.provider != provider_name:
+                    fb_provider = self._registry.get(decision.fallback.provider)
+                    if fb_provider:
+                        learn["provider"] = decision.fallback.provider
+                        learn["model"] = decision.fallback.model
+                        learn["fallback_used"] = True
+                        try:
+                            request = GenerateRequest(
+                                prompt=prompt,
+                                model=decision.fallback.model,
+                                system_prompt=system_prompt,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                            )
+                            response = await fb_provider.generate(request)
+                            latency = (time.time() - t0) * 1000
+                            self._cb.record_success(decision.fallback.provider)
+                            learn["outcome"] = "success"
+                            learn["error_type"] = None
+                            learn["response"] = response
+                            return SingleQueryResult(
+                                routing_decision=decision,
+                                response=response,
+                                latency_ms=latency,
+                                success=True,
+                            )
+                        except Exception as fb_exc:
+                            self._cb.record_failure(decision.fallback.provider)
+                            learn["outcome"] = self._outcome_from_exc(fb_exc)
+                            learn["error_type"] = type(fb_exc).__name__
+
+                return SingleQueryResult(
+                    routing_decision=decision,
+                    error=f"{type(exc).__name__}: {exc}",
+                    latency_ms=latency,
+                )
+        finally:
+            # SSOT: one provider_stars interaction per resolved request.
+            self._learn_interaction(
                 prompt=prompt,
-                model=model_name,
-                system_prompt=system_prompt,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            response = await provider.generate(request)
-            latency = (time.time() - t0) * 1000
-
-            self._cb.record_success(provider_name)
-            self._audit("route_single", decision, provider_name, model_name, True)
-
-            return SingleQueryResult(
-                routing_decision=decision,
-                response=response,
-                latency_ms=latency,
-                success=True,
+                latency_ms=(time.time() - t0) * 1000,
+                **learn,
             )
 
-        except Exception as exc:
-            latency = (time.time() - t0) * 1000
-            self._cb.record_failure(provider_name, exc)
-            self._audit("route_single", decision, provider_name, model_name, False)
+    # -- Interaction learning (router-level SSOT) ---------------------------
 
-            # Attempt fallback
-            if decision.fallback and decision.fallback.provider != provider_name:
-                fb_provider = self._registry.get(decision.fallback.provider)
-                if fb_provider:
-                    try:
-                        request = GenerateRequest(
-                            prompt=prompt,
-                            model=decision.fallback.model,
-                            system_prompt=system_prompt,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                        )
-                        response = await fb_provider.generate(request)
-                        latency = (time.time() - t0) * 1000
-                        self._cb.record_success(decision.fallback.provider)
-                        return SingleQueryResult(
-                            routing_decision=decision,
-                            response=response,
-                            latency_ms=latency,
-                            success=True,
-                        )
-                    except Exception:
-                        self._cb.record_failure(decision.fallback.provider)
+    @staticmethod
+    def _outcome_from_exc(exc: Exception) -> str:
+        """Map an exception to an abstract provider_stars outcome token."""
+        name = type(exc).__name__.lower()
+        text = str(exc).lower()
+        if "timeout" in name or "timeout" in text:
+            return "timeout"
+        if "429" in text or "ratelimit" in name or "rate limit" in text or "rate_limit" in text:
+            return "rate_limited"
+        return "fail"
 
-            return SingleQueryResult(
-                routing_decision=decision,
-                error=f"{type(exc).__name__}: {exc}",
-                latency_ms=latency,
+    def _learn_interaction(
+        self,
+        *,
+        provider: str,
+        model: Optional[str],
+        prompt: str,
+        outcome: str,
+        latency_ms: float,
+        fallback_used: bool = False,
+        error_type: Optional[str] = None,
+        response=None,
+    ) -> None:
+        """Record ONE provider interaction experience (router-level SSOT).
+
+        Best-effort: never affects routing. Captures the resolved provider,
+        model, route source, outcome, latency, fallback usage, error type, and
+        response/token size. Providers are not instrumented individually.
+        """
+        try:
+            from core.learn.provider_stars import record_interaction
+            tokens = getattr(response, "total_tokens", None) if response is not None else None
+            content = getattr(response, "content", None) if response is not None else None
+            response_chars = len(content) if isinstance(content, str) else None
+            record_interaction(
+                provider=provider,
+                model=model,
+                prompt=prompt,
+                route_source="intelligence_router",
+                outcome=outcome,
+                latency_ms=latency_ms,
+                fallback_used=fallback_used,
+                error_type=error_type,
+                tokens=tokens,
+                response_chars=response_chars,
             )
+        except Exception:
+            pass
 
     # -- Mode 2: Parallel multi-model query ---------------------------------
 

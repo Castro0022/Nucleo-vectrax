@@ -242,6 +242,81 @@ def enforce_law_7_generacion(
 
 
 # ---------------------------------------------------------------------------
+# Colectores de señal real (defensivos, fail-safe)
+# ---------------------------------------------------------------------------
+# Conectan las leyes con el ESTADO REAL del sistema en vez de defaults fijos.
+# Todos son best-effort: si no pueden determinar el estado, devuelven el valor
+# que NO genera una violación falsa (fail-safe). Se llaman desde los call sites
+# de producción (p.ej. external_gateway); enforce_all_laws conserva sus defaults
+# para que los tests sigan siendo deterministas.
+
+_RECOVER_MODES: frozenset = frozenset({"recover", "recovery", "recovering"})
+_HEARTBEAT_FRESH_S = 120.0
+
+
+def detect_active_cycles() -> bool:
+    """LEY 3 (Vibración): ¿el sistema tiene ciclos activos?
+
+    Lee los heartbeats reales (worker/gateway). Fail-safe True: solo retorna
+    False si CONFIRMA estancamiento (heartbeats presentes pero todos viejos).
+    Si no hay información, asume que vibra (no genera falsos positivos).
+    """
+    try:
+        from core.self_observation.state_collector import collect_state
+        st = collect_state()
+        ages = [
+            getattr(st, "worker_heartbeat_age_s", None),
+            getattr(st, "gateway_heartbeat_age_s", None),
+        ]
+        fresh = [a for a in ages if a is not None and a < _HEARTBEAT_FRESH_S]
+        if fresh:
+            return True
+        known = [a for a in ages if a is not None]
+        if known:  # heartbeats existen pero todos viejos → estancamiento real
+            return False
+    except Exception:
+        pass
+    return True  # indeterminado → fail-safe
+
+
+def detect_governor_mode() -> str:
+    """LEY 5 (Ritmo): modo real del Governor. Fail-safe 'observe'."""
+    try:
+        from core.governor import get_current_policy
+        return str(get_current_policy().get("mode", "observe") or "observe")
+    except Exception:
+        return "observe"
+
+
+def detect_forcing_during_recovery(governor_mode: Optional[str] = None) -> bool:
+    """LEY 5 (Ritmo): ¿se está forzando operación durante recovery?
+
+    True cuando el Governor está en un modo de recuperación (cualquier
+    operación que prosiga rompe el ritmo natural). Fail-safe False.
+    """
+    mode = (governor_mode if governor_mode is not None else detect_governor_mode())
+    return (mode or "").strip().lower() in _RECOVER_MODES
+
+
+def detect_knowledge_verified() -> bool:
+    """LEY 7 (Generación): ¿el último conocimiento integrado fue verificado?
+
+    Best-effort sobre el verification engine del ciclo de aprendizaje.
+    Fail-safe True (no bloquea si no hay información).
+    """
+    try:
+        from core.learning_cycle import verification_engine as _ve
+        getter = getattr(_ve, "last_verification_passed", None)
+        if callable(getter):
+            v = getter()
+            if v is not None:
+                return bool(v)
+    except Exception:
+        pass
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Enforcement completo
 # ---------------------------------------------------------------------------
 
@@ -258,6 +333,7 @@ def enforce_all_laws(
     has_counter_evidence: bool = True,
     is_learning_context: bool = False,
     knowledge_verified: bool = True,
+    system_has_active_cycles: bool = True,
 ) -> LawEnforcementResult:
     """
     Pasa una decisión por las 7 Leyes Fundamentales.
@@ -273,7 +349,9 @@ def enforce_all_laws(
         enforce_law_2_correspondencia(
             interaction_recorded=interaction_recorded,
         ),
-        enforce_law_3_vibracion(),
+        enforce_law_3_vibracion(
+            system_has_active_cycles=system_has_active_cycles,
+        ),
         enforce_law_4_polaridad(
             has_counter_evidence=has_counter_evidence,
             is_hypothesis_context=is_hypothesis_context,

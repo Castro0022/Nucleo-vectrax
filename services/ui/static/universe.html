@@ -130,6 +130,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   <label><input type="checkbox" data-filter="dom-market" checked> <span style="color:#06d6a0">●</span> Mercado <span class="cnt" id="cnt-market"></span></label>
   <label><input type="checkbox" data-filter="dom-interest" checked> <span style="color:#22d3ee">●</span> Interés <span class="cnt" id="cnt-interest"></span></label>
   <label><input type="checkbox" data-filter="dom-users" checked> <span style="color:#fbbf24">●</span> Usuarios <span class="cnt" id="cnt-users"></span></label>
+  <label><input type="checkbox" data-filter="dom-ai" checked> <span style="color:#a3e635">●</span> IA (proveedores) <span class="cnt" id="cnt-ai"></span></label>
   <div class="sep"></div>
   <div class="filter-title">Vista</div>
   <label><input type="checkbox" data-filter="show-edges" checked> Conexiones</label>
@@ -153,6 +154,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   <div class="legend-row"><div class="legend-dot" style="background:#06d6a0"></div> Mercado</div>
   <div class="legend-row"><div class="legend-dot" style="background:#22d3ee"></div> Interés usuario</div>
   <div class="legend-row"><div class="legend-dot" style="background:#fbbf24"></div> Usuarios</div>
+  <div class="legend-row"><div class="legend-dot" style="background:#a3e635"></div> IA (proveedores)</div>
   <div class="sep" style="height:1px;background:var(--border);margin:6px 0"></div>
   <div class="legend-row"><div class="legend-ring" style="border-color:var(--convergence)"></div> Arco de convergencia</div>
   <div class="sep" style="height:1px;background:var(--border);margin:6px 0"></div>
@@ -208,6 +210,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   let filters = {
     'layer-core': true, 'layer-mid': true, 'layer-outer': true,
     'dom-cognitive': true, 'dom-market': true, 'dom-interest': true, 'dom-users': true,
+    'dom-ai': true,
     'show-edges': true, 'show-convergences': true, 'show-constellations': true,
     'show-labels': true, 'show-word-gravity': true, 'show-orbits': false,
     'show-quality': true,
@@ -219,6 +222,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   const DOMAIN_COLORS = {
     market: '#06d6a0', user_interest: '#22d3ee', unknown: '#4f8ff7',
     services: '#a78bfa', tests: '#6b7280',
+    ai_provider: '#a3e635',   // IA (proveedores) — lime, distinto del resto
   };
   const CONSTELLATION_COLORS = [
     'rgba(79,143,247,0.08)', 'rgba(167,139,250,0.08)', 'rgba(6,214,160,0.08)',
@@ -315,6 +319,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       if (dom === 'market' && !filters['dom-market']) vis = false;
       if (dom === 'user_interest' && !filters['dom-interest']) vis = false;
       if ((dom === 'unknown' || dom === 'services' || dom === 'tests') && !filters['dom-cognitive']) vis = false;
+      if (dom === 'ai_provider' && !filters['dom-ai']) vis = false;
       // User stars (no _domain = legacy gravitational user stars)
       if (!dom && s.star_type !== 'convergence' && !filters['dom-users']) vis = false;
       s._visible = vis;
@@ -324,7 +329,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   }
 
   function _updateCounts() {
-    const counts = { core: 0, mid: 0, outer: 0, cognitive: 0, market: 0, interest: 0, users: 0 };
+    const counts = { core: 0, mid: 0, outer: 0, cognitive: 0, market: 0, interest: 0, users: 0, ai: 0 };
     for (const s of stars) {
       if (!s._visible) continue;
       if (s.layer === 'core') counts.core++;
@@ -333,6 +338,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       const dom = s._domain || '';
       if (dom === 'market') counts.market++;
       else if (dom === 'user_interest') counts.interest++;
+      else if (dom === 'ai_provider') counts.ai++;
       else if (dom) counts.cognitive++;
       else counts.users++;
     }

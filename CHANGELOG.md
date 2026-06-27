@@ -2,6 +2,24 @@
 
 All notable changes to Vectrax are documented in this file.
 
+## [2026-06-27] — 7 Leyes con señales reales + guard anti-web del resolver
+### Las 7 Leyes Fundamentales leen estado real del sistema (no defaults)
+- `core/operator/law_enforcement.py`: nuevos colectores defensivos (fail-safe) que conectan las leyes al estado REAL en vez de valores fijos:
+  - `detect_active_cycles()` (Ley 3 — Vibración): lee heartbeats reales (worker/gateway); marca estancamiento solo si los heartbeats existen pero están viejos; indeterminado → no genera falsa alarma.
+  - `detect_governor_mode()` + `detect_forcing_during_recovery()` (Ley 5 — Ritmo): modo real del Governor; "forcing" = operar en modo recover/recovery.
+  - `detect_knowledge_verified()` (Ley 7 — Generación): hook al verification engine (fail-safe True).
+  - `enforce_all_laws()` acepta `system_has_active_cycles` (default `True`, backward-compatible) cableado a la Ley 3. Los demás defaults quedan intactos → los tests e2e siguen siendo deterministas.
+- `core/operator/external_gateway.py` (call site de producción) ahora pasa señales reales:
+  - Ley 1 (Mentalismo): `input_classified` = clasificación real del router (incluye `memory`) → elimina las falsas violaciones en respuestas resueltas por memoria.
+  - Ley 3/5: `system_has_active_cycles`, `governor_mode` y `forcing_during_recovery` desde los colectores.
+### Resolver: auto-referencia y saludos nunca van a la web
+- `vectrax/resolver.py`: `classify()`/`resolve()` enrutan a memoria/identidad (no `online`) cuando el texto menciona el sistema (`vectrax`/`api.vectrax.app`), es un saludo, o pregunta por el creador. Corrige el bug donde "cómo estás vectrax" buscaba en internet la empresa CNC homónima.
+### Tests
+- Nuevo `tests/test_law_collectors.py` (colectores + wiring Ley 3/5, fail-safe).
+- Integración verificada: **393 passed** (`tests/integration/` + e2e + leyes + clasificador), 0 fallos. Warnings preexistentes (urllib3/LibreSSL, matmul sobre memoria vacía) sin relación con estos cambios.
+### Estado
+- Cambios en local (pendientes de deploy a `api.vectrax.app`).
+
 ## [2026-06-22] — Webhook ingress en producción + suite verde + fixes durables
 ### Migración de ingreso Telegram a webhook (fin de incidentes heartbeat stale)
 - Causa raíz: el long-poll abría `multiprocessing.Process` + `mp.Queue` NUEVOS en cada poll; el churn de subprocesos/fds congelaba el propio heartbeat que protegía → incidentes recurrentes la última semana.

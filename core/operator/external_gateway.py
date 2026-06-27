@@ -1111,24 +1111,30 @@ class ExternalGateway:
         # ENFORCEMENT DE LAS 7 LEYES FUNDAMENTALES
         # ══════════════════════════════════════════════════════════════
         try:
-            from core.operator.law_enforcement import enforce_all_laws
-            _smart_classified = bool(
-                not memory_resolved and response_text
+            from core.operator.law_enforcement import (
+                enforce_all_laws,
+                detect_active_cycles,
+                detect_governor_mode,
+                detect_forcing_during_recovery,
             )
-            _gov_mode = "observe"
-            try:
-                from core.governor import get_current_policy
-                _gov_mode = get_current_policy().get("mode", "observe")
-            except Exception:
-                pass
+            # Ley 1 (Mentalismo): el input SIEMPRE pasa por la clasificación del
+            # router — la señal real es la clasificación asignada (incluido
+            # 'memory'), no el heurístico previo "hubo respuesta" que marcaba
+            # falsas violaciones en las resoluciones por memoria.
+            _classification = source_path if not memory_resolved else "memory"
+            # Leyes 3 y 5: señales reales del sistema (ciclos activos, modo del
+            # Governor, forcing durante recovery) en vez de defaults fijos.
+            _gov_mode = detect_governor_mode()
 
             law_result = enforce_all_laws(
-                input_classified=_smart_classified,
-                classification=source_path if not memory_resolved else "memory",
+                input_classified=bool(_classification),
+                classification=_classification or "unknown",
                 interaction_recorded=True,  # store_memory se llama abajo
                 action_logged=True,         # ledger se registra abajo
                 has_correlation_id=bool(correlation_id),
                 governor_mode=_gov_mode,
+                forcing_during_recovery=detect_forcing_during_recovery(_gov_mode),
+                system_has_active_cycles=detect_active_cycles(),
             )
             if not law_result.all_passed:
                 logger.info(
