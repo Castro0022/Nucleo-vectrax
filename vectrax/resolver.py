@@ -94,6 +94,38 @@ _LOCAL_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# Self-name references → the system ITSELF, never the web. There is an unrelated
+# CNC company also called "Vectrax"; searching the web for the name returns it.
+# Rule: no internet for self/identity queries.
+_SELF_NAME = re.compile(r"\bvectrax\b|api\.vectrax\.app", re.IGNORECASE)
+
+# Greetings / social smalltalk → conversational, never a factual web query.
+_GREETING = re.compile(
+    r"^\s*(?:hola+|hol[ai]|buenas|buenos\s+d[ií]as|buenas\s+tardes|"
+    r"buenas\s+noches|qu[eé]\s+tal|qu[eé]\s+onda|qu[eé]\s+hubo|"
+    r"c[oó]mo\s+est[aá]s|como\s+estas|c[oó]mo\s+vas|c[oó]mo\s+te\s+va|"
+    r"c[oó]mo\s+andas|hey+|hello+|\bhi\b|saludos|gracias|buen[ao]s)\b",
+    re.IGNORECASE,
+)
+
+# Creator / identity questions → answered from identity, never the web.
+_CREATOR = re.compile(
+    r"\bqui[eé]n\s+te\s+(?:cre[oó]|hizo|dise[nñ][oó]|construy[oó])\b"
+    r"|\bwho\s+(?:created|made|built)\s+you\b"
+    r"|\btu\s+creador\b|\byour\s+creator\b",
+    re.IGNORECASE,
+)
+
+
+def _is_conversational(text: str) -> bool:
+    """True for self-reference (the system itself), greetings, or creator/identity.
+
+    These must resolve from identity/memory and NEVER trigger a web search
+    (avoids confusing Vectrax-the-system with the unrelated CNC company).
+    """
+    t = (text or "").strip()
+    return bool(_SELF_NAME.search(t) or _GREETING.match(t) or _CREATOR.search(t))
+
 
 def classify(text: str) -> str:
     """
@@ -123,6 +155,13 @@ def classify(text: str) -> str:
         has_query_intent, has_local_keywords, is_question,
     )
 
+    # Self-reference (the system itself), greetings, and creator/identity
+    # questions are conversational: resolve from identity/memory, NEVER from
+    # the web. This prevents a self query like "cómo estás vectrax" from
+    # web-searching the unrelated CNC company "Vectrax".
+    # (Rule: no internet for self/identity/greetings.)
+    if _is_conversational(text_stripped):
+        return "local"
     # Self-memory reference takes priority → LOCAL
     # Local keywords alone are sufficient (user asking about their own data).
     if has_local_keywords:
@@ -1251,8 +1290,11 @@ def resolve(
 
     if mode == "local":
         result = resolve_local(text, channel, owner)
-        # Fallback: no matches OR low-relevance top match
-        if result.context_stars == 0 or result.top_score < _LOCAL_RELEVANCE_THRESHOLD:
+        # Self-reference / greetings must NEVER escalate to a web search, even
+        # when local memory is empty (rule: no internet for self/identity).
+        if not _is_conversational(text) and (
+            result.context_stars == 0 or result.top_score < _LOCAL_RELEVANCE_THRESHOLD
+        ):
             logger.info(
                 "Resolver: local insufficient (stars=%d, top_score=%.2f), "
                 "falling back to online",
