@@ -206,7 +206,11 @@ class UniverseSnapshot:
                 # + convergencias históricas de convergence_history.db
                 # El panel lee de gravity.convergences — aquí es donde tiene que estar.
                 "convergences": self.gravity_convergences + self.convergences[:480],
-                "convergences_total": len(self.gravity_convergences) + len(self.convergences),
+                # convergences_total = SSOT (census.convergences = gravity_index
+                # cross-domain). El conteo del panel debe ser la verdad del censo;
+                # NO len(lista mostrada), que mezcla edges del grafo + history y
+                # producía 2195 en el canvas frente a 1242 en el SPA/censo.
+                "convergences_total": _conv_total,
             },
             "word_gravity": {
                 "words": self.word_gravity_words,
