@@ -795,8 +795,19 @@ Real-time unified view of the Vectrax cognitive universe.
 
 The `/v1/universe` endpoint returns both star types:
 - `knowledge_star_count` — Knowledge nodes from the `stars` table (gravitational graph)
-- `star_count` — User stars from the `user_stars` table (one per user)
+- `star_count` — **Materialized stars** from the `user_stars` table (one per user that has materialized as a gravitational star)
 - `pattern_count` — Individual interaction patterns that feed user stars
+
+### Dashboard labels: USERS vs Materialized stars
+
+Two distinct user metrics appear on the dashboard and **must not be confused** — they read different sources:
+
+| Label (UI) | Field | Source | Meaning |
+|---|---|---|---|
+| **USERS** (top bar) · **Usuarios → Total** | `census.users_total` | `vault/user_memory.db` → `COUNT(DISTINCT user_id) FROM profiles WHERE user_id NOT LIKE 'test:%'` | Real distinct Telegram accounts that have interacted |
+| **Materialized stars** (Universo card; formerly "User stars") | `census.users` / `legacy.user_stars` | `vectrax.db` → `COUNT(*) FROM user_stars` | User stars materialized in the gravitational universe |
+
+They legitimately differ: not every Telegram account has crossed the threshold to become a materialized user star (e.g. 34 accounts → 23 materialized stars). Expected invariant: `USERS ≥ Materialized stars`.
 
 ## ⭐ Ingest Pipeline
 

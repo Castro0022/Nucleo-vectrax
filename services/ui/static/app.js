@@ -325,7 +325,7 @@ async function loadOverview() {
       <div class="kv"><span class="dim">Total estrellas</span><span><strong>${obs.total_stars ?? 0}</strong></span></div>
       <div class="kv"><span class="dim">Gravity engine</span><span>${grav.total ?? 0}</span></div>
       <div class="kv"><span class="dim">Knowledge stars</span><span>${legacy.knowledge_stars ?? 0}</span></div>
-      <div class="kv"><span class="dim">User stars</span><span>${legacy.user_stars ?? 0}</span></div>
+      <div class="kv"><span class="dim">Materialized stars</span><span>${legacy.user_stars ?? 0}</span></div>
       <div class="kv"><span class="dim">Patrones</span><span>${legacy.patterns ?? 0}</span></div>
       <div class="kv"><span class="dim">Constelaciones</span><span>${legacy.constellations ?? 0}</span></div>
     </div>`;
@@ -818,7 +818,7 @@ async function loadOperator() {
       <div class="card">
         <div class="card-head">🌌 Universo</div>
         <div class="kv"><span class="dim">Knowledge Stars</span><span>${u.knowledge_stars ?? 0}</span></div>
-        <div class="kv"><span class="dim">User Stars</span><span>${u.user_stars ?? 0}</span></div>
+        <div class="kv"><span class="dim">Materialized stars</span><span>${u.user_stars ?? 0}</span></div>
         <div class="kv"><span class="dim">Masa total</span><span>${u.total_mass ?? 0}</span></div>
         <div class="kv"><span class="dim">Patrones</span><span>${u.pattern_count ?? 0}</span></div>
         <div class="kv"><span class="dim">Convergencias</span><span>${u.convergences ?? 0}</span></div>

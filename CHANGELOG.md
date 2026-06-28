@@ -2,6 +2,21 @@
 
 All notable changes to Vectrax are documented in this file.
 
+## [2026-06-28] — Auditoría del dashboard: SSOT del canvas + claridad de métricas de usuario
+### Canvas alineado al censo (SSOT) — auditoría A–E
+- `core/self_observation/universe_observer.py`: `gravity.convergences_total` usa el valor del censo (1242) en vez de `len(edges del grafo + history)`, que mostraba 2195 en el canvas. La lista de convergencias para dibujar arcos no cambia.
+- `services/ui/static/universe.html`: el HUD lee `total_stars`/`star_breakdown` de `/v1/universe` (censo = SSOT) y etiqueta los nodos dibujados como subconjunto ("mostrando N nodos"); "palabras" usa `word_gravity.stats.global_words` (total real) en vez del tope de render (30); `strategic_asset` recibe color propio (`#e879f9`) + filtro + leyenda + contador.
+- Validado en producción: `/v1/universe`, `/v1/dashboard/observatory` y `/v1/census` coinciden (824 estrellas, 1242 convergencias). Commit `b2ff112`.
+### Claridad de métricas de usuario (USERS vs estrellas)
+- `services/ui/static/app.js`: la etiqueta "User stars" del panel Universo (cards Overview y Operador) se renombra a **"Materialized stars"** para no confundirla con **USERS** de la barra superior. Solo cambia la etiqueta; las fuentes no se tocan.
+- Son dos métricas DISTINTAS y ambas correctas:
+  - **USERS** (barra superior · Usuarios → Total) = `census.users_total` = `COUNT(DISTINCT user_id) FROM profiles WHERE user_id NOT LIKE 'test:%'` en `vault/user_memory.db` → cuentas reales de Telegram (34).
+  - **Materialized stars** (panel Universo) = `census.users` / `legacy.user_stars` = `COUNT(*) FROM user_stars` en `vectrax.db` → estrellas-usuario materializadas en el universo gravitacional (23).
+  - Difieren legítimamente: no toda cuenta de Telegram cruzó el umbral de materialización. Invariante esperado: `USERS ≥ Materialized stars`.
+- Doc: sección "Universe Observer" del `README.md` actualizada con la distinción.
+### Estado
+- Rename + docs en local (pendiente de deploy). El canvas SSOT (`b2ff112`) ya está en producción.
+
 ## [2026-06-27] — 7 Leyes con señales reales + guard anti-web del resolver
 ### Las 7 Leyes Fundamentales leen estado real del sistema (no defaults)
 - `core/operator/law_enforcement.py`: nuevos colectores defensivos (fail-safe) que conectan las leyes al estado REAL en vez de valores fijos:
