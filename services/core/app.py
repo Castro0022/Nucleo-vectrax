@@ -137,6 +137,18 @@ def create_app() -> FastAPI:
         except Exception as exc:
             logger.warning("Provider presence seeding skipped (non-fatal): %s", exc)
 
+        # --- Seed strategic asset stars (living documents as universe citizens) ---
+        # Strategic documents (e.g. the Asset Evidence Map) are legitimate
+        # universe content — unlike the 7 Laws, which are pre-decision selection
+        # bias and must NEVER become stars. Idempotent and best-effort.
+        try:
+            from core.learn.strategic_assets import seed_strategic_asset_stars
+            _seeded_assets = seed_strategic_asset_stars()
+            if _seeded_assets:
+                logger.info("Seeded strategic asset stars: %s", _seeded_assets)
+        except Exception as exc:
+            logger.warning("Strategic asset seeding skipped (non-fatal): %s", exc)
+
         # Init TelegramGateway for webhook mode (USE_WEBHOOK=1).
         # Instantiated without calling .run() — we only need handlers + pool.
         import os as _os
