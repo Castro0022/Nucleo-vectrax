@@ -44,12 +44,19 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("vectrax.blackbox")
 
-_VAULT = os.environ.get(
-    "VECTRAX_VAULT_DIR",
-    os.path.join(os.path.expanduser("~"), "Vectrax", "vault"),
-)
-_INCIDENTS_FILE = os.path.join(_VAULT, "worker_incidents.jsonl")
+# Project root (…/Vectrax) derivado de la ubicación de este archivo, para que la
+# ruta del vault sea correcta sin depender de $HOME. En el contenedor home=/root
+# y NO existe ~/Vectrax: antes _VAULT apuntaba a una ruta inexistente y
+# _get_active_task / _get_queue_state leían la cola del lugar equivocado, dejando
+# el diagnóstico ciego (siempre "proceso_muerto").
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _RUNTIME = os.path.join(os.path.expanduser("~"), ".vectrax")
+_VAULT = os.environ.get("VECTRAX_VAULT_DIR", str(_PROJECT_ROOT / "vault"))
+# Los incidentes forenses son estado de RUNTIME → viven en ~/.vectrax (volumen
+# persistente del contenedor), junto a worker_heartbeat / gravity_index /
+# blackbox_last_alert.json. Antes iban a vault/ (no persistente y ruta errónea
+# en el server), por eso worker_incidents.jsonl nunca aparecía.
+_INCIDENTS_FILE = os.path.join(_RUNTIME, "worker_incidents.jsonl")
 _WORKER_LOG = os.path.join(_RUNTIME, "worker.log")
 _GATEWAY_LOG = os.path.join(_RUNTIME, "gateway.log")
 _MAX_INCIDENTS = 200  # retain last N incidents

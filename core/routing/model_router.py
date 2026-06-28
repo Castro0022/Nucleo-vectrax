@@ -301,6 +301,15 @@ class ModelRouter:
                 + priority_score * W_PRIORITY
             )
 
+            # Experience-based gravitational tilt (gated by VX_PROVIDER_GRAVITY;
+            # 0.0 by default → unchanged behavior). Aligns the modern router with
+            # the same provider-star mass used by SmartRouter.
+            try:
+                from core.learn.provider_stars import affinity_bonus
+                total += affinity_bonus(profile.provider, [required_cap.value])
+            except Exception:
+                pass
+
             scored.append((profile, round(total, 4)))
 
         # Sort by score descending, then by priority ascending for tiebreak

@@ -63,6 +63,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger("vectrax.supervisor")
 
+# Redacción de secretos en logs (token de Telegram en URLs de httpx, etc.).
+# Se instala tras configurar el logging del supervisor.
+try:
+    from core.log_redaction import install_redaction
+    install_redaction()
+except Exception:
+    pass
+
 # ---------------------------------------------------------------------------
 # Service definitions
 # ---------------------------------------------------------------------------

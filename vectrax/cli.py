@@ -1033,6 +1033,21 @@ def creator_chat():
             # Guardar respuesta de Vectrax
             db.insert_message(session_id, "vectrax", response)
 
+            # ── Gravity Kernel — shadow (read-only, gated, never raises) ──
+            try:
+                from core import gravity_kernel
+                if gravity_kernel.is_enabled():
+                    gravity_kernel.observe(
+                        content=text,
+                        user_id=CREATOR_OWNER,
+                        result_source=None,
+                        response_sent=bool(response),
+                        response_len=len(response or ""),
+                        source="creator_chat",
+                    )
+            except Exception:
+                pass
+
             # Mostrar respuesta (con info de convergencia si disponible)
             conv_line = ""
             if conv_record:

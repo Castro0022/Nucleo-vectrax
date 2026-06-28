@@ -118,15 +118,31 @@ def _load_library(domain: str) -> Dict[str, AbstractPattern]:
 
 
 def _save_library(domain: str, lib: Dict[str, AbstractPattern]) -> None:
+    """Persiste una librería de dominio de forma ATÓMICA.
+
+    Escribe a un archivo temporal y hace os.replace (rename atómico) para que un
+    lector concurrente (_load_library / get_domain_priors / seed_tenant_priors)
+    NUNCA vea un archivo truncado a medio escribir. Antes era open(path,'w')
+    directo: el freight/domain ingester reescribía el JSON (~65KB) mientras otro
+    proceso lo leía → 'Expecting value: line 1 column 1 (char 0)'.
+    """
+    path = _library_path(domain)
+    tmp = f"{path}.tmp.{os.getpid()}"
     try:
         os.makedirs(_LIBRARY_DIR, exist_ok=True)
-        with open(_library_path(domain), "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(
                 {k: p.to_dict() for k, p in lib.items()},
                 f, indent=2, ensure_ascii=False,
             )
+        os.replace(tmp, path)  # rename atómico: el lector ve el archivo completo o nada
     except Exception as exc:
         logger.error("save domain library %s failed: %s", domain, exc)
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

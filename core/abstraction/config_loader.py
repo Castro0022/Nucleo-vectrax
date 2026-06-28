@@ -9,7 +9,10 @@ from typing import Dict, Any, Optional
 
 from .registry import ProviderRegistry, ProviderConfig
 from .base import ProviderType
-from ..providers.ollama_provider import OllamaProvider
+# NOTE: OllamaProvider is imported lazily inside _create_provider() (like the
+# other providers) to avoid a circular import: core.providers.ollama_provider
+# imports core.abstraction, which would otherwise re-enter this module before
+# ollama_provider finished initialising.
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +147,7 @@ class ConfigLoader:
             Provider instance
         """
         if provider_type == "ollama":
+            from ..providers.ollama_provider import OllamaProvider
             return OllamaProvider(
                 endpoint=config.endpoint or "http://localhost:11434",
                 timeout=config.timeout

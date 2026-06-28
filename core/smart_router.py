@@ -1307,9 +1307,26 @@ class SmartRouter:
             elif profile.avg_latency_ms > 2200:
                 score -= 0.05
 
+            # Afinidad gravitacional acumulada (experiencia real).
+            # Gated por VX_PROVIDER_GRAVITY (default 0 = sin cambio de conducta).
+            score += self._provider_gravity_bonus(prov_name, required)
+
             scores[prov_name] = round(score, 4)
 
         return scores
+
+    @staticmethod
+    def _provider_gravity_bonus(provider: str, required_caps: set) -> float:
+        """Empuje por experiencia: masa gravitacional acumulada del proveedor
+        para las capacidades requeridas. Devuelve 0.0 salvo que
+        VX_PROVIDER_GRAVITY tenga un peso positivo, así la conducta por defecto
+        no cambia. Best-effort: nunca rompe el scoring.
+        """
+        try:
+            from core.learn.provider_stars import affinity_bonus
+            return affinity_bonus(provider, list(required_caps))
+        except Exception:
+            return 0.0
 
     def _detect_required_capabilities(
         self, topic: str, text: str = "",

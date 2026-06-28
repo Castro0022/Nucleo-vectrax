@@ -93,12 +93,26 @@ class GravityIndex:
             return {}
 
     def _save(self, records: Dict[str, GravityRecord]) -> None:
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump(
-                {k: v.to_dict() for k, v in records.items()},
-                f, indent=2, ensure_ascii=False,
-            )
-            f.write("\n")
+        # Escritura ATÓMICA (tmp + os.replace): el gravity index se reescribe en
+        # cada record_event y es leído concurrentemente por census / observer /
+        # provider_affinity. Sin esto, un lector podía ver el archivo truncado a
+        # medio escribir → JSONDecodeError y "amnesia" transitoria del universo.
+        tmp = f"{self.path}.tmp.{os.getpid()}"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(
+                    {k: v.to_dict() for k, v in records.items()},
+                    f, indent=2, ensure_ascii=False,
+                )
+                f.write("\n")
+            os.replace(tmp, self.path)
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+            raise
 
     # -- Law 1: absolute registration ---------------------------------------
 

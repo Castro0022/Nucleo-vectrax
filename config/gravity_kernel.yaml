@@ -1,0 +1,113 @@
+# ─── Gravity Kernel — Fase 1 (shadow mode) ─────────────────────────────────
+# Toda tabla/peso/umbral vive aquí (no hardcodeado dentro de funciones).
+# Solo se usan Ritmo y Causa/Efecto en Fase 1. El resto de ejes NO está activo.
+
+# Tabla explícita de riesgo por tipo de acción (cost_of_error / domain_risk_level).
+# Valores 0.0–1.0. Fuente de Causa/Efecto.
+domain_risk_table:
+  real_money_trade:         {cost_of_error: 0.80, domain_risk_level: 0.85, reversibility: 0.10}
+  paper_trade:              {cost_of_error: 0.25, domain_risk_level: 0.50, reversibility: 0.80}
+  conversation_reply:       {cost_of_error: 0.20, domain_risk_level: 0.20, reversibility: 0.90}
+  legal_or_financial_advice: {cost_of_error: 0.85, domain_risk_level: 0.90, reversibility: 0.30}
+  memory_write:             {cost_of_error: 0.60, domain_risk_level: 0.55, reversibility: 0.50}
+  delete_or_overwrite:      {cost_of_error: 0.90, domain_risk_level: 0.80, reversibility: 0.10}
+
+# Mapea result.source (lo que produjo el pipeline) → clave de domain_risk_table.
+# Cualquier source no listado cae en default_action.
+source_to_action:
+  memory:        conversation_reply
+  online:        conversation_reply
+  online_search: conversation_reply
+  llm:           conversation_reply
+  place_search:  conversation_reply
+  identity:      conversation_reply
+  error:         conversation_reply
+default_action: conversation_reply
+
+# Marcadores observables en el texto del usuario (Fase 1, verificable por texto).
+# system_misread / correcciones se infieren de la REACCIÓN del usuario, nunca
+# de autoevaluación del LLM.
+correction_markers:
+  - "no es eso"
+  - "no entendiste"
+  - "te equivocas"
+  - "no me refiero a"
+  - "estamos hablando de"
+  - "enfócate"
+  - "olvídalo"
+  - "eso no"
+  - "no cambies"
+  - "te fuiste"
+  - "no corrijas"
+  - "lo que quiero decir"
+frustration_markers:
+  - "me cansa"
+  - "no es eso"
+  - "te equivocas"
+  - "no entendiste"
+  - "ya te dije"
+  - "otra vez"
+clarity_markers:
+  - "exacto"
+  - "esto es"
+  - "la pregunta concreta"
+  - "voy directo"
+
+# Pesos de la fórmula de Ritmo (rhythm_score). Ver core/gravity_kernel/rhythm.py.
+rhythm_weights:
+  base: 1.0
+  correction_unit: 0.15
+  correction_cap: 0.45
+  frustration_unit: 0.20
+  frustration_cap: 0.50
+  topic_switch_unit: 0.10
+  topic_switch_cap: 0.30
+  misread_unit: 0.20
+  misread_cap: 0.60
+  same_axis_unit: 0.08
+  same_axis_cap: 0.24
+  unanswered_confusion_penalty: 0.25
+
+# Bandas de decisión de Ritmo (límite inferior inclusivo).
+rhythm_bands:
+  advance: 0.75
+  respond_short_and_anchor: 0.50
+  pause_and_calibrate: 0.30
+  stop_generation_and_ask_axis: 0.0
+
+# Pesos de Causa/Efecto. NOTA: win_rate e historical_success_rate se unifican
+# en UNA sola señal de éxito (corrección del doble conteo del documento).
+cause_effect_weights:
+  base: 0.50
+  win_rate_coeff: 0.40
+  expectancy_coeff: 0.30
+  confidence_coeff: 0.25
+  cost_of_error_coeff: 0.35
+  domain_risk_coeff: 0.20
+  reversibility_coeff: 0.15
+  correction_history_unit: 0.05
+  correction_history_cap: 0.25
+
+# Bandas de decisión de Causa/Efecto (límite inferior inclusivo).
+cause_effect_bands:
+  execute: 0.80
+  execute_with_audit: 0.65
+  simulate_or_ask_confirmation: 0.45
+  hold_and_collect_more_evidence: 0.25
+  block: 0.0
+
+# Defaults neutros cuando una señal no es observable en Fase 1.
+neutral_defaults:
+  win_rate: 0.50
+  expectancy: 0.0
+  confidence: 0.50
+
+# Jerarquía de decisión documentada para fases FUTURAS (no se aplica gating en
+# Fase 1). WAIT/CALIBRATE != silencio: significa "no generar contenido nuevo sin
+# eje", permitiendo una respuesta mínima. Respeta "VECTRAX nunca bloquea".
+future_decision_hierarchy:
+  - sovereign_memory
+  - safety_high_cost_of_error
+  - calibrate_before_generation
+  - minimal_useful_response
+  - full_generation

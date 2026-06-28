@@ -75,6 +75,15 @@ try:
 except Exception as _e:
     print(f"[worker] could not attach FileHandler: {_e}", file=sys.stderr)
 
+# Redacción de secretos en logs: httpx loguea la URL completa de cada request y
+# las llamadas a Telegram llevan el bot token en la ruta. Esto lo enmascara en
+# stdout y en worker.log (se instala tras adjuntar el FileHandler).
+try:
+    from core.log_redaction import install_redaction
+    install_redaction()
+except Exception:
+    pass
+
 POLL_INTERVAL = 0.3
 CLEANUP_INTERVAL = 60
 # Real-world worst case: vision+LLM+TTS takes 16-30s legitimately.
@@ -704,6 +713,24 @@ def _process_one(msg):
             except Exception as _re:
                 logger.debug("record_response skipped: %s", _re)
 
+        # === GRAVITY KERNEL — SHADOW MODE (opt-in, read-only, no-fatal) ===
+        # Observa la interacción ya resuelta y registra la evaluación del
+        # kernel (Ritmo + Causa/Efecto) comparada con la acción real. NO altera
+        # la respuesta. Desactivado por defecto: VX_GRAVITY_KERNEL_SHADOW=1.
+        try:
+            from core import gravity_kernel
+            if gravity_kernel.is_enabled():
+                gravity_kernel.observe(
+                    content=msg.content or "",
+                    user_id=str(msg.user_id),
+                    result_source=(result.source if result else None),
+                    response_sent=bool(sent),
+                    response_len=len(response or ""),
+                    source="telegram_worker",
+                )
+        except Exception as _gke:
+            logger.debug("gravity_kernel shadow skipped: %s", _gke)
+
         # === MAPAS DE LUGARES ===
         try:
             from vectrax.integrations.place_search import detect_place_intent
@@ -877,16 +904,26 @@ def run_worker() -> None:
     signal.signal(signal.SIGINT, _stop)
 
     last_heartbeat = 0.0
-    last_proactive = 0.0  # última ejecución del motor proactivo
-    last_scheduler = 0.0  # última ejecución del scheduler
-    last_reentry = 0.0    # última ejecución del reentry check
-    last_digest = 0.0     # última ejecución del router digest
-    last_market_learn = 0.0  # ciclo de aprendizaje de mercado (cada 30 min)
-    last_freight_learn = 0.0  # freight learning cycle (every 6h)
-    last_gravity_sync  = 0.0  # gravity index → vectrax.db sync (every 6h)
-    last_trading_conv  = 0.0  # trading convergence learner (every 24h)
-    last_mem_check = 0.0  # memory watchdog
-    last_stuck_recovery = 0.0  # stuck processing recovery
+    # FIX (cuelgue crónico del worker): los timers periódicos se inicializan en
+    # el momento de ARRANQUE, no en 0.0. Con 0.0, en la PRIMERA iteración del
+    # main loop disparaban TODOS a la vez (market_learn + freight_learn +
+    # gravity_sync + trading_conv + reentry + digest + scheduler) de forma
+    # síncrona, bloqueando el main loop ~39s — más que WORKER_HEARTBEAT_MAX_AGE
+    # (30s) — así que el supervisor mataba al worker antes de estabilizarlo y el
+    # ciclo se repetía cada ~53s indefinidamente (martilleando además eToro en
+    # cada reinicio). Inicializando en _startup, cada motor espera su intervalo
+    # completo y el worker alcanza estado estable de inmediato.
+    _startup = time.time()
+    last_proactive = _startup  # última ejecución del motor proactivo
+    last_scheduler = _startup  # última ejecución del scheduler
+    last_reentry = _startup    # última ejecución del reentry check
+    last_digest = _startup     # última ejecución del router digest
+    last_market_learn = _startup  # ciclo de aprendizaje de mercado (cada 30 min)
+    last_freight_learn = _startup  # freight learning cycle (every 6h)
+    last_gravity_sync  = _startup  # gravity index → vectrax.db sync (every 6h)
+    last_trading_conv  = _startup  # trading convergence learner (every 24h)
+    last_mem_check = _startup  # memory watchdog
+    last_stuck_recovery = _startup  # stuck processing recovery
 
     # Start main loop watchdog thread
     _wd = _wd_threading.Thread(
@@ -1198,6 +1235,13 @@ def run_worker() -> None:
             except Exception as _se:
                 logger.debug("Scheduler error (passthrough): %s", _se)
                 last_scheduler = time.time()
+
+            # Heartbeat refresh tras la batería de motores periódicos: si un
+            # ciclo periódico tardó varios segundos, evita que el supervisor lo
+            # confunda con un cuelgue (el main loop sí avanzó esta iteración).
+            if time.time() - last_heartbeat > HEARTBEAT_INTERVAL:
+                _write_heartbeat()
+                last_heartbeat = time.time()
 
             # === MEMORY WATCHDOG (every 30s) ==============================
             # check_worker_memory() existed in scalability_guard but was

@@ -96,7 +96,9 @@ class TestDiagnosisCauses(unittest.TestCase):
 
     @patch.object(bb, '_alert_creator')
     def test_memoria_alta(self, mock_alert):
-        inc = _make_incident(resources={"ram_mb": 800, "threads": 5})
+        # Umbral real de memoria_alta es >1000MB (Python+ML arranca en ~850MB,
+        # que es rango NORMAL y no debe marcarse como alto). 1100MB sí lo supera.
+        inc = _make_incident(resources={"ram_mb": 1100, "threads": 5})
         diag = bb.diagnose_incident(inc)
         self.assertEqual(diag["causa_probable"], "memoria_alta")
 

@@ -78,6 +78,9 @@ async def chat(
             # Log learning
             _log_learning(body.text, "memory", [], "", ctx.channel, ctx.owner)
 
+            _shadow_observe(body.text, "memory", sovereign, ctx.owner)
+            _maybe_speak(sovereign)
+
             return ChatResponse(
                 star_id=star.id,
                 content=star.content,
@@ -118,6 +121,9 @@ async def chat(
             ctx.channel, ctx.owner,
         )
 
+        _shadow_observe(body.text, mode, resolution.sovereign_answer, ctx.owner)
+        _maybe_speak(resolution.sovereign_answer)
+
         return ChatResponse(
             content=body.text,
             channel=ctx.channel,
@@ -157,6 +163,42 @@ def _audit_online(
         )
     except Exception as exc:
         logger.warning("Audit record failed (non-fatal): %s", exc)
+
+
+def _maybe_speak(text: str) -> None:
+    """Speak the answer via macOS TTS when VX_CHAT_VOICE=1 (gated, non-fatal).
+
+    core_api corre localmente, así que ``say`` suena en el Mac. Desactivado por
+    defecto para respetar la preferencia de "sin audio"; se activa con el flag.
+    """
+    try:
+        import os
+        if os.environ.get("VX_CHAT_VOICE", "0") != "1" or not (text or "").strip():
+            return
+        from vectrax.comm.voice import speak_core_async
+        speak_core_async(text)
+    except Exception as exc:
+        logger.debug("chat voice skipped: %s", exc)
+
+
+def _shadow_observe(text: str, mode: str, resp_text: str, owner: str) -> None:
+    """Gravity Kernel shadow observation (read-only, gated, never raises).
+
+    No altera la respuesta del API. Gateada por VX_GRAVITY_KERNEL_SHADOW.
+    """
+    try:
+        from core import gravity_kernel
+        if gravity_kernel.is_enabled():
+            gravity_kernel.observe(
+                content=text,
+                user_id=owner or "",
+                result_source=mode,
+                response_sent=bool(resp_text),
+                response_len=len(resp_text or ""),
+                source="web_chat",
+            )
+    except Exception as exc:
+        logger.debug("gravity_kernel shadow skipped (web_chat): %s", exc)
 
 
 def _log_learning(
