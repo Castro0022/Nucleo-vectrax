@@ -227,6 +227,14 @@ async def pattern_performance() -> Dict[str, Any]:
     except Exception:
         result["pending_signals"] = 0
 
+    # === 8. PAPER-SHADOW (observational — SEPARATE from the real executor) ===
+    # Does NOT advance LIVE progress and is NOT counted as real paper_trades.
+    try:
+        from connectors.etoro.paper_shadow import get_shadow_stats
+        result["shadow"] = get_shadow_stats()
+    except Exception as exc:
+        result["shadow"] = {"enabled": False, "error": str(exc)}
+
     _cache["data"] = result
     _cache["ts"] = now
     return result

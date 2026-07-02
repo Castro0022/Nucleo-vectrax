@@ -597,6 +597,27 @@ async function _renderPatterns() {
       html += '</div>';
     }
 
+    // PAPER-shadow (observacional — SEPARADO del Auto-Executor real de arriba)
+    const sh = d.shadow || {};
+    if (sh.enabled) {
+      const shExpCls = (sh.shadow_expectancy || 0) > 0 ? 'tag-ok' : 'tag-err';
+      const ready = sh.ready_for_promotion || [];
+      html += '<div class="card" style="margin-top:12px;border:1px solid #a78bfa55">';
+      html += '<div class="card-head">\uD83E\uDDEA PAPER-shadow (observacional \u2014 NO ejecuta, NO avanza LIVE)</div>';
+      html += '<div class="kv"><span class="dim">Shadow candidates</span><span>' + (sh.candidates_total || 0) + ' (' + (sh.pending || 0) + ' pend / ' + (sh.resolved || 0) + ' res)</span></div>';
+      html += '<div class="kv"><span class="dim">Shadow WR</span><span>' + (sh.shadow_win_rate || 0).toFixed(1) + '% (' + (sh.wins || 0) + 'W/' + (sh.losses || 0) + 'L)</span></div>';
+      html += '<div class="kv"><span class="dim">Shadow expectancy</span><span class="tag ' + shExpCls + '">' + ((sh.shadow_expectancy || 0) > 0 ? '+' : '') + (sh.shadow_expectancy || 0).toFixed(3) + '%</span></div>';
+      html += '<div class="kv"><span class="dim">READY_FOR_MANUAL_PROMOTION</span><span class="tag ' + (ready.length ? 'tag-ok' : 'tag-dim') + '">' + ready.length + '</span></div>';
+      ready.slice(0, 5).forEach(pk => { html += '<div class="dim" style="font-size:11px">\u2022 ' + esc(pk) + '</div>'; });
+      const rr = sh.top_reject_reasons || [];
+      if (rr.length) {
+        html += '<div style="margin-top:6px;font-size:11px;color:#5a6374">Razones de rechazo del gate real:</div>';
+        rr.forEach(r => { html += '<div class="dim" style="font-size:11px">\u2022 ' + esc(r.reason) + ' \u00d7' + r.count + '</div>'; });
+      }
+      html += '<div style="margin-top:6px;font-size:10px;color:#5a6374">' + esc(sh.note || '') + '</div>';
+      html += '</div>';
+    }
+
     el.innerHTML = html;
   } catch (e) { el.innerHTML = '<p class="err">' + esc(e.message) + '</p>'; }
 }
