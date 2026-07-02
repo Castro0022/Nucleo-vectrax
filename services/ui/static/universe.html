@@ -129,7 +129,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   <label><input type="checkbox" data-filter="dom-cognitive" checked> <span style="color:#4f8ff7">●</span> Cognitivo <span class="cnt" id="cnt-cognitive"></span></label>
   <label><input type="checkbox" data-filter="dom-market" checked> <span style="color:#06d6a0">●</span> Mercado <span class="cnt" id="cnt-market"></span></label>
   <label><input type="checkbox" data-filter="dom-interest" checked> <span style="color:#22d3ee">●</span> Interés <span class="cnt" id="cnt-interest"></span></label>
-  <label><input type="checkbox" data-filter="dom-users" checked> <span style="color:#fbbf24">●</span> Usuarios <span class="cnt" id="cnt-users"></span></label>
+  <label><input type="checkbox" data-filter="dom-users" checked> <span style="color:#fbbf24">●</span> Materializadas <span class="cnt" id="cnt-users"></span></label>
   <label><input type="checkbox" data-filter="dom-ai" checked> <span style="color:#a3e635">●</span> IA (proveedores) <span class="cnt" id="cnt-ai"></span></label>
   <label><input type="checkbox" data-filter="dom-strategic" checked> <span style="color:#e879f9">●</span> Activo estratégico <span class="cnt" id="cnt-strategic"></span></label>
   <div class="sep"></div>
@@ -154,7 +154,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   <div class="legend-row"><div class="legend-dot" style="background:#4f8ff7"></div> Cognitivo</div>
   <div class="legend-row"><div class="legend-dot" style="background:#06d6a0"></div> Mercado</div>
   <div class="legend-row"><div class="legend-dot" style="background:#22d3ee"></div> Interés usuario</div>
-  <div class="legend-row"><div class="legend-dot" style="background:#fbbf24"></div> Usuarios</div>
+  <div class="legend-row"><div class="legend-dot" style="background:#fbbf24"></div> Estrellas materializadas</div>
   <div class="legend-row"><div class="legend-dot" style="background:#a3e635"></div> IA (proveedores)</div>
   <div class="legend-row"><div class="legend-dot" style="background:#e879f9"></div> Activo estratégico</div>
   <div class="sep" style="height:1px;background:var(--border);margin:6px 0"></div>
@@ -1330,7 +1330,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       `<b>${edges.length}</b> conexiones`;
     if (nGravity) statsHtml += ` · <span style="color:#60a0ff"><b>${nGravity}</b> gravitacionales</span>`;
     if (nKnowledge) statsHtml += ` · <b>${nKnowledge}</b> knowledge`;
-    if (nUsers) statsHtml += ` · <span style="color:#fbbf24"><b>${nUsers}</b> usuarios</span>`;
+    if (nUsers) statsHtml += ` · <span style="color:#fbbf24"><b>${nUsers}</b> materializadas</span>`;
     if (nMarket) statsHtml += ` · <span style="color:#06d6a0"><b>${nMarket}</b> mercado</span>`;
     if (nInterest) statsHtml += ` · <span style="color:#22d3ee"><b>${nInterest}</b> interés</span>`;
     if (nConv) statsHtml += ` · <span style="color:#a78bfa"><b>${nConv}</b> convergencias</span>`;
