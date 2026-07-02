@@ -1829,6 +1829,107 @@ Files:
 
 ---
 
+## 🧪 PAPER-shadow — Observational Trade Learning (non-executing)
+
+PAPER-shadow records the trades VECTRAX *would* have taken under a more flexible
+experimental gate — **without executing them, without counting them as real
+paper trades, and without advancing "Progreso a LIVE"**. It accumulates evidence
+about borderline patterns that the real gate correctly rejects, so promotion is
+data-driven instead of lowering the real threshold blindly.
+
+### Background: the `is_usable` correctness fix
+
+`PatternStats.is_usable` now measures the **decisive** sample (`n_wins + n_losses`),
+not `n_total` (which was inflated by `neutral`/`expired` outcomes that do not
+inform win-rate or expectancy). This is a **correctness** fix, not a loosening —
+no threshold was lowered; the real gate stays closed until enough decisive
+outcomes exist.
+
+### Real gate vs shadow gate
+
+| Gate | Decisive sample | Win rate | Expectancy | Effect |
+|---|---|---|---|---|
+| **Real** (`PatternStats.is_usable`) | ≥15 | ≥55% | >0 | Allows execution (PAPER/LIVE) |
+| **Shadow** (`paper_shadow.evaluate_shadow_gate`) | ≥5 | ≥50% | >0 | Records a hypothetical candidate only |
+
+A signal becomes a **shadow candidate** when its pattern **fails the real gate
+but passes the shadow gate**.
+
+### Flow — Step 9 of the learning cycle
+
+```
+run_learning_cycle()  (connectors/etoro/learning_engine.py)
+    ├─ Steps 1-8: observe → resolve → patterns → proposals → real auto-exec (unchanged)
+    └─ Step 9: paper_shadow.run_shadow_cycle()
+        ├─ for each pattern that (real-reject ∧ shadow-accept):
+        │     record_shadow_candidate()   → INSERT OR IGNORE (one per signal_id)
+        ├─ resolve_shadow_trades()         → inherit the REAL signal outcome
+        └─ check_promotions()              → flag READY_FOR_MANUAL_PROMOTION (never auto)
+```
+
+**Resolution reuses the single classifier.** Shadow trades never re-derive
+win/loss/neutral — they inherit the underlying real signal's status, produced by
+`outcome_tracker.classify_outcome` (the single source of truth for
+W/L/neutral/expired).
+
+### Storage — `<vault>/paper_shadow.db` (auto-created, idempotent)
+
+- `paper_shadow_trades` — one row per hypothetical trade: `timestamp, symbol,
+  direction, pattern_id, signal_id (unique), n_decisive, win_rate, expectancy,
+  real_reject_reason, shadow_accept_reason, status, return_pct, pnl_sim, resolved_at`.
+- `paper_shadow_promotions` — one row per flagged pattern: `pattern_id, marked_at, evidence`.
+
+### Logs
+
+| Event | When |
+|---|---|
+| `SHADOW_CANDIDATE_CREATED` | a hypothetical trade is recorded |
+| `SHADOW_TRADE_RESOLVED` | its underlying real signal resolved |
+| `SHADOW_FEEDBACK_RECORDED` | outcome persisted |
+| `SHADOW_READY_FOR_PROMOTION` | a pattern reached the real gate (manual review) |
+
+### Promotion (manual only)
+
+A shadow pattern is flagged **`READY_FOR_MANUAL_PROMOTION`** only when its REAL
+`PatternStats.is_usable` passes (decisive≥15 ∧ WR≥55% ∧ E>0). Promotion is
+**never automatic** — it is a suggestion for human review; nothing connects it to
+real execution.
+
+### Dashboard (separated from the real executor)
+
+`GET /v1/market/patterns` returns a dedicated `shadow` block, and the SPA
+**Patterns** tab shows a separate PAPER-shadow card:
+- **Real:** `Paper trades: 0/30` (unchanged, from `auto_executor`).
+- **Shadow:** candidates, shadow WR, shadow expectancy, top real-reject reasons,
+  patterns ready for promotion.
+
+Live production example (2026-07-02):
+```
+Paper trades reales : 0/30           ← real executor (does not advance)
+Shadow candidates   : 69 (69 resolved)
+Shadow WR           : 55.3 %
+Shadow expectancy   : +0.195 %
+Ready for promotion : []             ← no pattern reaches the real gate yet
+```
+
+### Hard boundaries (enforced by tests)
+
+- Never calls the real Auto-Executor; never increments `paper_trades_total`;
+  never advances LIVE progress.
+- Reuses `classify_outcome` — no duplicated win/loss definition.
+- `READY_FOR_MANUAL_PROMOTION` requires the real gate; promotion is suggestion-only.
+
+Files:
+- `connectors/etoro/paper_shadow.py` — shadow gate, recording, resolution, promotions, stats
+- `connectors/etoro/outcome_tracker.py` — `classify_outcome` (single shared classifier)
+- `connectors/etoro/pattern_memory.py` — `is_usable` decisive-sample fix
+- `connectors/etoro/learning_engine.py` — Step 9 wiring
+- `services/core/routes/pattern_performance.py` — `shadow` block in `/v1/market/patterns`
+- `services/ui/static/app.js` — shadow card in the Patterns tab
+- `tests/test_paper_shadow.py` — 7 tests
+
+---
+
 ## 📊 RAM Monitoring
 
 Layer 7 of the meta_loop records worker RAM to the observation ledger every hour.
@@ -1871,6 +1972,10 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 ---
 
 ## 📋 Changelog
+
+### 2026-07-02
+- **feat: PAPER-shadow (observational)** — Records hypothetical trades under a flexible experimental gate WITHOUT executing, WITHOUT counting as real paper_trades, and WITHOUT advancing LIVE progress. New `connectors/etoro/paper_shadow.py` (+ `paper_shadow_trades` table), Step 9 in `learning_engine`, `shadow` block in `GET /v1/market/patterns`, and a shadow card in the SPA Patterns tab (separate from the real executor 0/30). Resolution reuses `outcome_tracker.classify_outcome` (single classifier). `READY_FOR_MANUAL_PROMOTION` is suggestion-only (real gate). 7 tests. Verified in prod: 69 candidates, shadow WR 55.3%, E +0.195, 0 ready.
+- **fix: is_usable decisive sample** — `PatternStats.is_usable` now measures `n_wins+n_losses` (decisive), not `n_total` (inflated by neutral/expired). Thresholds unchanged (N≥15, WR≥55%, E>0) — the fix aligns the sample with the metric it guards; the real gate stays closed until real evidence exists.
 
 ### 2026-06-17
 - **feat: Domain Knowledge Elevation** — Cross-tenant pattern library. Extracts mature patterns, strips PII, stores as reusable domain-level knowledge. New tenants get industry priors on creation. Weighted-average merging when multiple tenants confirm the same pattern. `core/domain_knowledge.py`, `GET /v1/domain/{domain}/knowledge`. 20 tests.
