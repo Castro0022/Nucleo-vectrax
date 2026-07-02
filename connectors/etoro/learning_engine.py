@@ -654,6 +654,16 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     # Step 8: Check open positions for exit conditions
     positions_closed = _check_positions()
 
+    # Step 9: PAPER-shadow (observational). Records hypothetical trades under a
+    # flexible experimental gate WITHOUT executing, WITHOUT counting as real
+    # paper_trades, and WITHOUT advancing LIVE progress. Fully defensive.
+    shadow: Dict[str, Any] = {}
+    try:
+        from connectors.etoro.paper_shadow import run_shadow_cycle
+        shadow = run_shadow_cycle()
+    except Exception as e:
+        logger.debug("shadow cycle error: %s", e)
+
     elapsed = round(time.time() - t0, 1)
 
     summary = {
@@ -671,6 +681,9 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         "alerts_sent":     alerts_sent,
         "auto_executed":   auto_executed,
         "positions_closed": positions_closed,
+        "shadow_candidates": shadow.get("candidates_created", 0),
+        "shadow_resolved":   shadow.get("resolved", 0),
+        "shadow_ready":      shadow.get("ready_for_promotion", 0),
     }
     logger.info("[LEARN] Cycle complete in %.1fs: %s", elapsed, summary)
     return summary

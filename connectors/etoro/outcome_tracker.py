@@ -28,7 +28,7 @@ MIN_LOSS_PCT  = 0.2    # ≥0.2% move against prediction → LOSS
 # (tighter loss threshold catches reversals earlier)
 
 
-def _classify_outcome(
+def classify_outcome(
     direction: str,
     entry_price: float,
     current_price: float,
@@ -36,7 +36,11 @@ def _classify_outcome(
     window_expired: bool,
 ) -> Tuple[str, float, bool]:
     """
-    Classify the outcome of a signal.
+    Classify the outcome of a signal — SINGLE SOURCE OF TRUTH.
+
+    Reused by BOTH real signal resolution (resolve_pending_signals) and
+    PAPER-shadow resolution (connectors/etoro/paper_shadow.py). Do NOT create a
+    second win/loss/neutral definition anywhere else.
 
     Returns:
         (status, return_pct, sl_touched)
@@ -71,6 +75,11 @@ def _classify_outcome(
         return "expired", move_pct, False
 
     return "neutral", move_pct, False
+
+
+# Backward-compat alias — keep the historical private name pointing at the
+# single canonical implementation so no caller re-defines the logic.
+_classify_outcome = classify_outcome
 
 
 def resolve_pending_signals(max_resolve: int = 50) -> Dict[str, Any]:
@@ -133,7 +142,7 @@ def resolve_pending_signals(max_resolve: int = 50) -> Dict[str, Any]:
                 stats["skipped"] += 1
                 continue
 
-            status, ret_pct, sl_hit = _classify_outcome(
+            status, ret_pct, sl_hit = classify_outcome(
                 direction=sig.direction,
                 entry_price=entry_px,
                 current_price=current_price,

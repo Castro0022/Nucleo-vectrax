@@ -82,8 +82,12 @@ class PatternStats:
 
     @property
     def is_usable(self) -> bool:
+        # Correctness fix: sample size must be measured on DECISIVE outcomes
+        # (wins + losses), NOT n_total. n_total includes neutral/expired, which
+        # do not inform win_rate/expectancy and artificially inflate the sample.
+        decisive = self.n_wins + self.n_losses
         return (
-            self.n_total >= USABLE_SAMPLE
+            decisive >= USABLE_SAMPLE
             and self.win_rate >= USABLE_WIN_RATE
             and self.expectancy > 0
         )
