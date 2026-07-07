@@ -163,6 +163,11 @@ class _CacheEntry:
 class ScaleGovernor:
 
     DEFAULT_CACHE_SIZE = 1024
+    # TTL del mensaje de upgrade cacheado por usuario. Bajo ráfaga, el
+    # rate-limit dispara en CADA mensaje tras agotar el burst; sin cache eso
+    # llamaría a la API de Stripe una vez por mensaje. 30 min << 24h de
+    # validez del Checkout Session, así que el enlace sigue siendo válido.
+    UPGRADE_MSG_TTL = 1800.0
 
     def __init__(
         self,
@@ -175,6 +180,12 @@ class ScaleGovernor:
         self._cache: "OrderedDict[str, _CacheEntry]" = OrderedDict()
         self._cache_lock = threading.Lock()
         self._cache_size = cache_size
+        # Cache de mensajes de upgrade: user_id → (mensaje, expires_at).
+        # Solo se cachea cuando el enlace de Stripe se generó correctamente,
+        # de modo que un fallo transitorio de Stripe se auto-recupere en el
+        # siguiente throttle en lugar de quedar fijado sin enlace.
+        self._upgrade_msg_cache: Dict[str, Tuple[str, float]] = {}
+        self._upgrade_msg_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # 1. Classification
@@ -251,10 +262,8 @@ class ScaleGovernor:
                     load_level=LoadLevel.NORMAL,
                     chosen_model="cheap",
                     rate_limited=True,
-                    rate_limit_message=(
-                        f"Has alcanzado tu l\u00edmite diario "
-                        f"({limits.daily_limit} mensajes/d\u00eda). "
-                        f"Intenta m\u00e1s tarde."
+                    rate_limit_message=self._build_rate_limit_message(
+                        user_id, limits.daily_limit,
                     ),
                     reason_chain=reasons,
                 )
@@ -445,6 +454,8 @@ class ScaleGovernor:
         """Test/admin helper."""
         with self._cache_lock:
             self._cache.clear()
+        with self._upgrade_msg_lock:
+            self._upgrade_msg_cache.clear()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -458,3 +469,44 @@ class ScaleGovernor:
             return Tier(str(t).upper())
         except Exception:
             return Tier.FREE
+
+    def _build_rate_limit_message(self, user_id: str, daily_limit: int) -> str:
+        """Mensaje de rate-limit que incluye el enlace de upgrade.
+
+        Reutiliza core.operator.user_tiers._build_limit_message (la misma
+        fuente que el límite por tier) para no duplicar la lógica de Stripe:
+        genera un Checkout Session y, si Stripe no está disponible, cae a la
+        instrucción /upgrade.
+
+        Memoiza por usuario (UPGRADE_MSG_TTL) para no golpear la API de Stripe
+        en cada mensaje throttled. Solo cachea cuando el enlace real se generó
+        (contiene URL), de modo que un fallo transitorio de Stripe se reintente
+        en el siguiente throttle. Nunca lanza.
+        """
+        now = time.time()
+        # 1) Servir desde cache si sigue vigente.
+        with self._upgrade_msg_lock:
+            cached = self._upgrade_msg_cache.get(user_id)
+            if cached is not None and cached[1] > now:
+                return cached[0]
+
+        # 2) Construir (fuera del lock: la llamada a Stripe puede tardar).
+        try:
+            from core.operator.user_tiers import _build_limit_message
+            message = _build_limit_message(user_id, daily_limit, daily_limit)
+        except Exception as exc:
+            logger.debug("rate_limit upgrade message fallback: %s", exc)
+            return (
+                f"Has alcanzado tu l\u00edmite diario "
+                f"({daily_limit} mensajes/d\u00eda). "
+                f"Escribe /upgrade para activar acceso extendido."
+            )
+
+        # 3) Cachear solo si se generó el enlace real (auto-recuperación ante
+        #    fallo transitorio de Stripe).
+        if "http" in message:
+            with self._upgrade_msg_lock:
+                self._upgrade_msg_cache[user_id] = (
+                    message, now + self.UPGRADE_MSG_TTL,
+                )
+        return message

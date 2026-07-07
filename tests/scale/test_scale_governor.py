@@ -170,6 +170,49 @@ class TestRequiredCases(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Rate-limit message (incluye enlace de upgrade)
+# ---------------------------------------------------------------------------
+
+class TestRateLimitMessage(unittest.TestCase):
+    """El mensaje de rate-limit debe ofrecer una vía de upgrade."""
+
+    def setUp(self):
+        # RateLimiter propio (no el singleton) para aislar el burst por test.
+        self.gov = ScaleGovernor(rate_limiter=RateLimiter())
+        self.gov.cache_clear()
+
+    def _force_rate_limited(self, uid):
+        # FREE burst=5 → el 6º mensaje seguido cae en rate_limited.
+        d = None
+        for _ in range(6):
+            d = self.gov.select_minimal_pipeline(
+                user_id=uid, tier=Tier.FREE, intent="query", message="hola?",
+            )
+            if d.rate_limited:
+                break
+        return d
+
+    def test_rate_limit_message_includes_stripe_link(self):
+        with patch(
+            "services.billing.stripe_billing.create_checkout_session",
+            return_value="https://checkout.stripe.com/c/pay/cs_test_123",
+        ):
+            d = self._force_rate_limited("rl_link_user")
+        self.assertTrue(d.rate_limited)
+        self.assertIn("https://checkout.stripe.com", d.rate_limit_message)
+
+    def test_rate_limit_message_falls_back_to_upgrade(self):
+        # Si Stripe no da URL, el mensaje aún debe ofrecer /upgrade.
+        with patch(
+            "services.billing.stripe_billing.create_checkout_session",
+            return_value=None,
+        ):
+            d = self._force_rate_limited("rl_fallback_user")
+        self.assertTrue(d.rate_limited)
+        self.assertIn("/upgrade", d.rate_limit_message)
+
+
+# ---------------------------------------------------------------------------
 # Pipeline policy tests
 # ---------------------------------------------------------------------------
 
