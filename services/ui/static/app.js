@@ -614,6 +614,20 @@ async function _renderPatterns() {
         html += '<div style="margin-top:6px;font-size:11px;color:#5a6374">Razones de rechazo del gate real:</div>';
         rr.forEach(r => { html += '<div class="dim" style="font-size:11px">\u2022 ' + esc(r.reason) + ' \u00d7' + r.count + '</div>'; });
       }
+      const bv = sh.by_variant || {};
+      const bvf = sh.by_variant_forward || {};
+      const vkeys = Object.keys(bv).filter(k => k !== 'base_all');
+      if (vkeys.length) {
+        html += '<div style="margin-top:6px;font-size:11px;color:#a78bfa">Config r\u00e9gimen \u2014 all(in-sample) vs forward(post-activaci\u00f3n):</div>';
+        vkeys.forEach(k => {
+          const v = bv[k] || {}; const f = bvf[k] || {};
+          const vcls = (v.expectancy || 0) > 0 ? 'tag-ok' : 'tag-err';
+          const fcls = (f.expectancy || 0) > 0 ? 'tag-ok' : 'tag-dim';
+          html += '<div class="kv"><span class="dim">' + esc(k) + '</span><span>' +
+            '<span class="tag ' + vcls + '">all n=' + (v.decisive || 0) + ' E=' + ((v.expectancy || 0) >= 0 ? '+' : '') + (v.expectancy || 0) + '</span> ' +
+            '<span class="tag ' + fcls + '">fwd n=' + (f.decisive || 0) + ' E=' + ((f.expectancy || 0) >= 0 ? '+' : '') + (f.expectancy || 0) + '</span></span></div>';
+        });
+      }
       html += '<div style="margin-top:6px;font-size:10px;color:#5a6374">' + esc(sh.note || '') + '</div>';
       html += '</div>';
     }

@@ -81,6 +81,10 @@ CREATE TABLE IF NOT EXISTS paper_shadow_promotions (
     marked_at   REAL NOT NULL,
     evidence    TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS paper_shadow_meta (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
 """
 
 
@@ -340,11 +344,57 @@ def run_shadow_cycle(
 
     resolved = resolve_shadow_trades(signals)
     ready = check_promotions(patterns)
+
+    # Observability: score the regime variants ALL vs FORWARD (read-only).
+    try:
+        from connectors.etoro.signal_filters import variant_report
+        from connectors.etoro.signal_recorder import load_signals as _ls
+        _sigs = signals if signals is not None else _ls()
+        _cut = get_config_activated_at()
+        _all = variant_report(_sigs)
+        _fwd = variant_report(_sigs, since_ts=_cut)
+        for _name in ("V1_follow_trend", "V2_aggressive"):
+            _a = _all.get(_name, {})
+            _f = _fwd.get(_name, {})
+            logger.info(
+                "SHADOW_VARIANT | %s | all: n=%d E=%+.4f | forward: n=%d E=%+.4f",
+                _name, _a.get("decisive", 0), _a.get("expectancy", 0.0),
+                _f.get("decisive", 0), _f.get("expectancy", 0.0),
+            )
+    except Exception as exc:
+        logger.debug("shadow variant report error: %s", exc)
+
     return {"candidates_created": created, "resolved": resolved.get("resolved", 0),
             "ready_for_promotion": len(ready)}
 
 
-# ── Stats for dashboard ───────────────────────────────────────────────
+# ── Out-of-sample cutoff (regime config activation timestamp) ────────
+
+def get_config_activated_at() -> float:
+    """Timestamp when regime-variant measurement went live (set once).
+
+    Signals created at/after this mark the OUT-OF-SAMPLE (forward) window used
+    to validate the regime config before any promotion to real execution.
+    """
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT value FROM paper_shadow_meta WHERE key='config_activated_at'"
+        ).fetchone()
+        if row:
+            return float(row["value"])
+        ts = time.time()
+        conn.execute(
+            "INSERT OR REPLACE INTO paper_shadow_meta (key, value) VALUES ('config_activated_at', ?)",
+            (str(ts),),
+        )
+        conn.commit()
+        return ts
+    finally:
+        conn.close()
+
+
+# ── Stats for dashboard ──────────────────────────────────────
 
 def get_shadow_stats() -> Dict[str, Any]:
     """Aggregate shadow stats for the dashboard. Separate from the real executor."""
@@ -374,6 +424,21 @@ def get_shadow_stats() -> Dict[str, Any]:
         reasons[r["real_reject_reason"]] = reasons.get(r["real_reject_reason"], 0) + 1
     top_reasons = sorted(reasons.items(), key=lambda x: -x[1])[:5]
 
+    # Regime-variant scoring (read-only, separate from real gate).
+    # by_variant = all signals (incl. in-sample); by_variant_forward = only
+    # signals created after config activation (true out-of-sample evidence).
+    _cut = 0.0
+    try:
+        from connectors.etoro.signal_filters import variant_report
+        from connectors.etoro.signal_recorder import load_signals
+        _sigs = load_signals()
+        _cut = get_config_activated_at()
+        by_variant = variant_report(_sigs)
+        by_variant_forward = variant_report(_sigs, since_ts=_cut)
+    except Exception:
+        by_variant = {}
+        by_variant_forward = {}
+
     return {
         "enabled": True,
         "candidates_total": total,
@@ -387,5 +452,8 @@ def get_shadow_stats() -> Dict[str, Any]:
         "shadow_expectancy": shadow_exp,   # realized avg return % on decisive shadow trades
         "top_reject_reasons": [{"reason": k, "count": v} for k, v in top_reasons],
         "ready_for_promotion": sorted(ready),
+        "by_variant": by_variant,           # V1/V2 over ALL signals (incl. in-sample)
+        "by_variant_forward": by_variant_forward,  # V1/V2 over out-of-sample (post-activation)
+        "config_activated_at": _cut,
         "note": "observational only — no real paper trades, does not advance LIVE progress",
     }
