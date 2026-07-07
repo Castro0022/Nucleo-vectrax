@@ -182,6 +182,32 @@ def test_config_activated_at_persists(shadow_db):
     assert t1 == t2 and t1 > 0  # set once, then stable (out-of-sample cutoff)
 
 
+def test_forward_milestone_fires_once(shadow_db, monkeypatch):
+    import time as _t
+    from connectors.etoro import signal_recorder as sr
+    from connectors.etoro import learning_engine as le
+    monkeypatch.setattr(le, "_tg_notify", lambda text: False)  # never hit real Telegram
+
+    class S:
+        pass
+    def mk(sid, status, ts):
+        s = S()
+        s.signal_id = sid; s.symbol = "AAPL"; s.direction = "sell"
+        s.conditions_names = ["ALINEACION_TEMPORAL", "DIRECCION_TENDENCIA", "VOLUMEN_RELATIVO"]
+        s.conditions_met = 3; s.status = status; s.return_pct = 1.0; s.timestamp = ts
+        return s
+
+    # No post-cutoff signals yet → no alert.
+    monkeypatch.setattr(sr, "load_signals", lambda *a, **k: [])
+    assert paper_shadow.check_forward_milestone() is False
+
+    # First forward signal appears (ts after cutoff) → fires exactly once.
+    future = _t.time() + 3600
+    monkeypatch.setattr(sr, "load_signals", lambda *a, **k: [mk("SIG-F1", "win", future)])
+    assert paper_shadow.check_forward_milestone() is True
+    assert paper_shadow.check_forward_milestone() is False  # idempotent
+
+
 def test_promotion_is_idempotent_and_manual(shadow_db):
     key = _make_key("AAPL", "sell", "Sesion", ["A", "B", "C", "D"])
     paper_shadow.record_shadow_candidate(

@@ -364,6 +364,12 @@ def run_shadow_cycle(
     except Exception as exc:
         logger.debug("shadow variant report error: %s", exc)
 
+    # One-time alert the moment the first forward (post-activation) signals appear.
+    try:
+        check_forward_milestone()
+    except Exception as exc:
+        logger.debug("forward milestone check error: %s", exc)
+
     return {"candidates_created": created, "resolved": resolved.get("resolved", 0),
             "ready_for_promotion": len(ready)}
 
@@ -392,6 +398,82 @@ def get_config_activated_at() -> float:
         return ts
     finally:
         conn.close()
+
+
+def _meta_get(key: str):
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT value FROM paper_shadow_meta WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+    finally:
+        conn.close()
+
+
+def _meta_set(key: str, value: str) -> None:
+    conn = _conn()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO paper_shadow_meta (key, value) VALUES (?, ?)",
+            (key, str(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def check_forward_milestone() -> bool:
+    """One-time alert when the FIRST forward (post-activation) signals are recorded.
+
+    Fires exactly once (persisted flag `forward_first_alerted`). Notifies the
+    creator via Telegram + records an observation + logs SHADOW_FORWARD_FIRST.
+    Fully defensive; observational only. Returns True if it alerted this call.
+    """
+    if _meta_get("forward_first_alerted"):
+        return False
+    try:
+        from connectors.etoro.signal_recorder import load_signals
+        from connectors.etoro import signal_filters as sf
+    except Exception:
+        return False
+    cut = get_config_activated_at()
+    sigs = load_signals()
+    post = [s for s in sigs if float(getattr(s, "timestamp", 0) or 0) >= cut]
+    if not post:
+        return False  # no forward signals yet
+
+    resolved = sum(1 for s in post if getattr(s, "status", "") in ("win", "loss", "neutral", "expired"))
+    decisive = sum(1 for s in post if getattr(s, "status", "") in ("win", "loss"))
+    fwd = sf.variant_report(sigs, since_ts=cut)
+    v1 = fwd.get("V1_follow_trend", {}); v2 = fwd.get("V2_aggressive", {})
+    text = (
+        "\U0001f7e3 PAPER-shadow: primeras se\u00f1ales FORWARD registradas\n\n"
+        f"Post-activaci\u00f3n: {len(post)} se\u00f1ales ({resolved} resueltas, {decisive} decisivas)\n"
+        f"V1 forward: n={v1.get('decisive', 0)} E={v1.get('expectancy', 0):+.3f}\n"
+        f"V2 forward: n={v2.get('decisive', 0)} E={v2.get('expectancy', 0):+.3f}\n\n"
+        "Observacional \u2014 no opera. Compuerta Fase B: V1 decisive\u226530, E>0, WilsonLB\u226550%."
+    )
+    sent = False
+    try:
+        from connectors.etoro.learning_engine import _tg_notify
+        sent = _tg_notify(text)
+    except Exception:
+        pass
+    try:
+        from core.self_observation.observation_ledger import record
+        record(
+            domain="market", obs_type="shadow_forward_first",
+            summary=f"Primeras se\u00f1ales forward: {len(post)} ({decisive} decisivas)",
+            star_id="market:shadow", severity="info",
+            evidence={"post": len(post), "decisive": decisive, "v1_decisive": v1.get("decisive", 0)},
+        )
+    except Exception:
+        pass
+    logger.info(
+        "SHADOW_FORWARD_FIRST | post=%d resolved=%d decisive=%d v1_n=%d v1_E=%+.4f | tg_sent=%s",
+        len(post), resolved, decisive, v1.get("decisive", 0), v1.get("expectancy", 0.0), sent,
+    )
+    _meta_set("forward_first_alerted", "1")
+    return True
 
 
 # ── Stats for dashboard ──────────────────────────────────────
