@@ -176,6 +176,12 @@ def test_ready_for_manual_promotion_flagged_but_not_auto(shadow_db, isolated_exe
     assert auto_executor.get_config().get("paper_trades_total", 0) == 0
 
 
+def test_config_activated_at_persists(shadow_db):
+    t1 = paper_shadow.get_config_activated_at()
+    t2 = paper_shadow.get_config_activated_at()
+    assert t1 == t2 and t1 > 0  # set once, then stable (out-of-sample cutoff)
+
+
 def test_promotion_is_idempotent_and_manual(shadow_db):
     key = _make_key("AAPL", "sell", "Sesion", ["A", "B", "C", "D"])
     paper_shadow.record_shadow_candidate(
