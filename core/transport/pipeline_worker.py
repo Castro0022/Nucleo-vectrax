@@ -845,6 +845,39 @@ def _watchdog_thread(timeout: float) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Async heartbeat — desacopla el latido del main loop
+# ---------------------------------------------------------------------------
+
+def _heartbeat_thread(interval: float, stop_event=None) -> None:
+    """Refresca el heartbeat en background, independiente del main loop.
+
+    Antes el heartbeat se escribía DENTRO del main loop, así que cualquier tarea
+    periódica que bloqueara el loop más de WORKER_HEARTBEAT_MAX_AGE del
+    supervisor (30s) — p.ej. gravity_sync + freight_learn, que corren juntas cada
+    6h — dejaba el heartbeat viejo y el supervisor mataba al worker con un falso
+    'heartbeat_stale' (diagnosticado como 'proceso_muerto'), reiniciándolo cada
+    ~6h.
+
+    Ahora este hilo daemon escribe el heartbeat cada `interval`s mientras el
+    proceso viva. Los cuelgues REALES del main loop los sigue cortando el
+    MAIN_LOOP_WATCHDOG (_watchdog_thread), que hace os._exit(1) si el loop no
+    llama a _watchdog_tick() en MAIN_LOOP_WATCHDOG_TIMEOUT s. Resultado: los
+    bloqueos transitorios de mantenimiento (<60s) dejan de ser falsos positivos,
+    pero los deadlocks reales se detectan y reinician limpio.
+
+    `stop_event` (opcional) permite terminar el hilo en tests; en producción se
+    omite y el hilo corre indefinidamente.
+    """
+    while True:
+        _write_heartbeat()
+        if stop_event is not None:
+            if stop_event.wait(interval):
+                return
+        else:
+            time.sleep(interval)
+
+
+# ---------------------------------------------------------------------------
 # Stuck processing recovery
 # ---------------------------------------------------------------------------
 
@@ -903,7 +936,6 @@ def run_worker() -> None:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    last_heartbeat = 0.0
     # FIX (cuelgue crónico del worker): los timers periódicos se inicializan en
     # el momento de ARRANQUE, no en 0.0. Con 0.0, en la PRIMERA iteración del
     # main loop disparaban TODOS a la vez (market_learn + freight_learn +
@@ -934,6 +966,18 @@ def run_worker() -> None:
     )
     _wd.start()
     logger.info("Main loop watchdog started (timeout=%ds)", MAIN_LOOP_WATCHDOG_TIMEOUT)
+
+    # Start async heartbeat thread — desacoplado del main loop (ver
+    # _heartbeat_thread). Evita falsos 'heartbeat_stale' cuando una tarea
+    # periódica bloquea el loop por debajo de MAIN_LOOP_WATCHDOG_TIMEOUT.
+    _hb = _wd_threading.Thread(
+        target=_heartbeat_thread,
+        args=(HEARTBEAT_INTERVAL,),
+        daemon=True,
+        name="heartbeat",
+    )
+    _hb.start()
+    logger.info("Async heartbeat thread started (interval=%ds)", HEARTBEAT_INTERVAL)
 
     # Discard stale messages from previous sessions (>90s old)
     _STALE_AGE = 90  # was 300s — lowered to catch crash-orphaned messages faster
@@ -1031,10 +1075,9 @@ def run_worker() -> None:
                 # All threads busy — don't block, just wait
                 time.sleep(0.1)
 
-            # Heartbeat
-            if time.time() - last_heartbeat > HEARTBEAT_INTERVAL:
-                _write_heartbeat()
-                last_heartbeat = time.time()
+            # Heartbeat: lo escribe el hilo daemon _heartbeat_thread (async),
+            # desacoplado de este loop. Aquí ya no se escribe para que el
+            # mantenimiento periódico no cause falsos 'heartbeat_stale'.
 
             # Cleanup
             if time.time() - last_cleanup > CLEANUP_INTERVAL:

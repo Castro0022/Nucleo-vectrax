@@ -304,3 +304,55 @@ class TestQueueStatsWithPriority:
         enqueue("u2", 200, "b", priority=PRIORITY_LOW)
         stats = queue_stats()
         assert stats.get("pending", 0) == 2
+
+
+# ===========================================================================
+# Async Heartbeat Tests
+# ===========================================================================
+
+class TestAsyncHeartbeat:
+    """El heartbeat se refresca desde un hilo daemon, desacoplado del main loop."""
+
+    def test_heartbeat_thread_refreshes_file(self, tmp_path):
+        import threading
+        from core.transport import pipeline_worker as pw
+
+        hb_file = str(tmp_path / "worker_heartbeat")
+        stop = threading.Event()
+        with patch("core.transport.pipeline_worker._HEARTBEAT_PATH", hb_file):
+            t = threading.Thread(
+                target=pw._heartbeat_thread, args=(0.05, stop), daemon=True,
+            )
+            t.start()
+            try:
+                time.sleep(0.15)
+                assert os.path.exists(hb_file), "heartbeat file should be written"
+                ts = float(open(hb_file).read().strip())
+                assert time.time() - ts < 5, "heartbeat timestamp should be fresh"
+            finally:
+                stop.set()
+                t.join(timeout=1)
+
+    def test_heartbeat_independent_of_blocking_loop(self, tmp_path):
+        """Aunque el hilo principal se bloquee, el daemon mantiene el heartbeat fresco."""
+        import threading
+        from core.transport import pipeline_worker as pw
+
+        hb_file = str(tmp_path / "worker_heartbeat")
+        stop = threading.Event()
+        with patch("core.transport.pipeline_worker._HEARTBEAT_PATH", hb_file):
+            t = threading.Thread(
+                target=pw._heartbeat_thread, args=(0.05, stop), daemon=True,
+            )
+            t.start()
+            try:
+                # Simula el main loop bloqueado (como gravity_sync/freight_learn)
+                time.sleep(0.3)
+                ts = float(open(hb_file).read().strip())
+                # El daemon lo refrescó durante el 'bloqueo' del hilo principal
+                assert time.time() - ts < 0.2, (
+                    "daemon debe refrescar el heartbeat durante el bloqueo"
+                )
+            finally:
+                stop.set()
+                t.join(timeout=1)
