@@ -333,6 +333,18 @@ class TestAsyncHeartbeat:
                 stop.set()
                 t.join(timeout=1)
 
+    def test_run_worker_has_no_dangling_last_heartbeat(self):
+        """El heartbeat lo maneja _heartbeat_thread; run_worker NO debe
+        referenciar `last_heartbeat`. Una referencia colgante (tras quitar la
+        escritura in-loop) causaba UnboundLocalError en cada iteración del
+        bucle. Chequeo estático via co_varnames (barato, sin ejecutar el loop).
+        """
+        from core.transport.pipeline_worker import run_worker
+        assert "last_heartbeat" not in run_worker.__code__.co_varnames, (
+            "last_heartbeat quedó referenciado en run_worker; "
+            "el heartbeat lo maneja _heartbeat_thread"
+        )
+
     def test_heartbeat_independent_of_blocking_loop(self, tmp_path):
         """Aunque el hilo principal se bloquee, el daemon mantiene el heartbeat fresco."""
         import threading

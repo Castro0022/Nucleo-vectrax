@@ -1279,12 +1279,9 @@ def run_worker() -> None:
                 logger.debug("Scheduler error (passthrough): %s", _se)
                 last_scheduler = time.time()
 
-            # Heartbeat refresh tras la batería de motores periódicos: si un
-            # ciclo periódico tardó varios segundos, evita que el supervisor lo
-            # confunda con un cuelgue (el main loop sí avanzó esta iteración).
-            if time.time() - last_heartbeat > HEARTBEAT_INTERVAL:
-                _write_heartbeat()
-                last_heartbeat = time.time()
+            # (El heartbeat lo refresca el hilo daemon _heartbeat_thread,
+            # desacoplado del loop — ver run_worker(). Ya no se escribe aquí,
+            # así el mantenimiento periódico no puede dejarlo viejo.)
 
             # === MEMORY WATCHDOG (every 30s) ==============================
             # check_worker_memory() existed in scalability_guard but was
