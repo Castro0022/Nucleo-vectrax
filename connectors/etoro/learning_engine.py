@@ -35,7 +35,14 @@ _PROPOSALS_FILE = os.path.join(
 # Symbols to observe during a learn cycle
 # Note: eToro uses short names for crypto (BTC, ETH), not pairs (BTCUSD).
 # EURUSD removed — eToro search returns instrument_id but rates fail.
-DEFAULT_WATCHLIST = ["BTC", "ETH", "AAPL", "TSLA", "NVDA", "AMZN"]
+# 2026-07-13: added SPY, QQQ, MSFT, GOOGL, META to WIDEN THE EQUITY SAMPLE for
+# per-segment edge reevaluation. Observational only: does not change signal
+# logic, thresholds, REGIME_DIRECTION, or promotion (see observation_ledger
+# ref "shadow_edge_2026_07_11").
+DEFAULT_WATCHLIST = [
+    "BTC", "ETH",
+    "AAPL", "TSLA", "NVDA", "AMZN", "SPY", "QQQ", "MSFT", "GOOGL", "META",
+]
 
 
 # ── Proposal dataclass ────────────────────────────────────────────────
