@@ -136,6 +136,15 @@ _ALERTED_PATTERNS_FILE = os.path.join(
     os.path.expanduser("~"), ".vectrax", "alerted_usable_patterns.json"
 )
 
+# Newly-added watchlist symbols to watch for their FIRST generated signal.
+# One-time creator alert per symbol (observational; widens the equity sample —
+# see observation_ledger ref "shadow_edge_2026_07_11"). Persisted flag lives in
+# ~/.vectrax so it survives restarts/deploys.
+_NEW_SYMBOLS_WATCH = ("SPY", "QQQ", "MSFT", "GOOGL", "META")
+_NEW_SYM_ALERT_FILE = os.path.join(
+    os.path.expanduser("~"), ".vectrax", "new_symbols_first_signal_alerted.json"
+)
+
 
 def _tg_notify(text: str) -> bool:
     """Send a Telegram message to the creator. Fire-and-forget."""
@@ -563,6 +572,103 @@ def _check_positions() -> int:
         return 0
 
 
+# ── New-symbol first-signal alert (one-time per symbol) ───────────────────
+
+def _load_alerted_new_symbols() -> set:
+    try:
+        if os.path.exists(_NEW_SYM_ALERT_FILE):
+            return set(json.load(open(_NEW_SYM_ALERT_FILE)))
+    except Exception:
+        pass
+    return set()
+
+
+def _save_alerted_new_symbols(symbols: set) -> None:
+    try:
+        os.makedirs(os.path.dirname(_NEW_SYM_ALERT_FILE), exist_ok=True)
+        with open(_NEW_SYM_ALERT_FILE, "w") as f:
+            json.dump(sorted(symbols), f)
+    except Exception:
+        pass
+
+
+def check_new_symbols_first_signal() -> List[str]:
+    """Alert the creator the FIRST time each newly-added watchlist symbol
+    produces a recorded signal.
+
+    Fires once per symbol (persisted flag in ~/.vectrax), notifies via Telegram,
+    and records an observation. Since signals for these equities are only
+    recorded while their market is OPEN, the alert naturally fires during the
+    market session. Observational only — does not change trading behavior.
+    Returns the list of symbols alerted on this call.
+    """
+    watch = {s.upper() for s in _NEW_SYMBOLS_WATCH}
+    already = _load_alerted_new_symbols()
+    pending = watch - already
+    if not pending:
+        return []
+
+    try:
+        from connectors.etoro.signal_recorder import load_signals
+        signals = load_signals()
+    except Exception as exc:
+        logger.debug("new-symbol check: load_signals failed: %s", exc)
+        return []
+
+    # First recorded signal per pending symbol (preserve store order).
+    first_seen: Dict[str, Any] = {}
+    for sig in signals:
+        sym = (getattr(sig, "symbol", "") or "").upper()
+        if sym in pending and sym not in first_seen:
+            first_seen[sym] = sig
+
+    newly: List[str] = []
+    for sym in sorted(first_seen):
+        sig = first_seen[sym]
+        direction = str(getattr(sig, "direction", "?")).upper()
+        status = getattr(sig, "status", "?")
+        text = (
+            f"\U0001f4e1 Primera se\u00f1al registrada en {sym}\n\n"
+            f"El s\u00edmbolo nuevo de la watchlist ya genera datos.\n"
+            f"Direcci\u00f3n: {direction} | estado inicial: {status}\n\n"
+            f"Observacional \u2014 ampl\u00eda la muestra de equity "
+            f"(ref shadow_edge_2026_07_11). No opera."
+        )
+        sent = False
+        try:
+            sent = _tg_notify(text)
+        except Exception:
+            pass
+        try:
+            from core.self_observation.observation_ledger import record
+            record(
+                domain="market",
+                obs_type="new_symbol_first_signal",
+                summary=f"Primera se\u00f1al en {sym} (s\u00edmbolo nuevo de watchlist)",
+                star_id=f"market:{sym}",
+                severity="info",
+                evidence={
+                    "symbol": sym,
+                    "direction": direction,
+                    "initial_status": status,
+                    "tg_sent": sent,
+                    "ref": "shadow_edge_2026_07_11",
+                },
+            )
+        except Exception:
+            pass
+        logger.info(
+            "NEW_SYMBOL_FIRST_SIGNAL | %s | dir=%s status=%s | tg_sent=%s",
+            sym, direction, status, sent,
+        )
+        already.add(sym)
+        newly.append(sym)
+
+    if newly:
+        _save_alerted_new_symbols(already)
+    return newly
+
+
 def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     Execute one full learning cycle:
@@ -639,6 +745,14 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     # Step 3.5: Alert creator when a pattern becomes usable for the first time
     _notify_new_usable_patterns()
 
+    # Step 3.6: One-time alert (per symbol) when a newly-added watchlist symbol
+    # generates its FIRST signal. Observational; fires once per symbol.
+    _new_sym_alerts: List[str] = []
+    try:
+        _new_sym_alerts = check_new_symbols_first_signal()
+    except Exception as e:
+        logger.debug("new-symbol first-signal check error: %s", e)
+
     # Step 4: Only generate proposals for open markets
     proposals = _generate_proposals(open_syms) if open_syms else []
 
@@ -691,6 +805,7 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         "shadow_candidates": shadow.get("candidates_created", 0),
         "shadow_resolved":   shadow.get("resolved", 0),
         "shadow_ready":      shadow.get("ready_for_promotion", 0),
+        "new_symbol_alerts": _new_sym_alerts,
     }
     logger.info("[LEARN] Cycle complete in %.1fs: %s", elapsed, summary)
     return summary
