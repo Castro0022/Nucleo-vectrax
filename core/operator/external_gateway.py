@@ -1903,6 +1903,30 @@ class ExternalGateway:
                 logger.debug("Pre-router market intercept failed: %s", _me)
 
         # ══════════════════════════════════════════════════════════════
+        # PRE-ROUTER FREIGHT INTERCEPT (domain: freight_logistics)
+        # ══════════════════════════════════════════════════════════════
+        # Cierra la ruptura auditada: la evidencia freight está persistida y es
+        # consultable por dominio (gravity by_domain, observation_ledger
+        # get_by_domain, domain_library get_domain_priors) pero la capa de
+        # respuesta nunca la leía. Si la consulta es Freight Logistics, responde
+        # SOLO con esa evidencia real, o se abstiene explícitamente. Nunca cae al
+        # LLM (evita conocimiento general sobre freight). Grounded o abstención.
+        if not _topic_locked:
+            try:
+                from intents.freight_intents import (
+                    detect_freight_intent, resolve_freight_query,
+                )
+                if detect_freight_intent(content):
+                    _fr_answer = resolve_freight_query(content)
+                    if _fr_answer:
+                        logger.info(
+                            "Pipeline: PRE-ROUTER FREIGHT intercept | domain=freight_logistics"
+                        )
+                        return _fr_answer, "freight"
+            except Exception as _fre:
+                logger.debug("Pre-router freight intercept failed: %s", _fre)
+
+        # ══════════════════════════════════════════════════════════════
         # SMART ROUTER — clasificación semántica unificada
         # ══════════════════════════════════════════════════════════════
         smart_route = None
