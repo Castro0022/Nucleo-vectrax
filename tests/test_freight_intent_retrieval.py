@@ -157,3 +157,84 @@ def test_abstains_when_insufficient():
     assert "0 stars" in resp
     assert "fulfillment_event" not in resp
     assert "UNIQUE_PATTERN_MARKER" not in resp
+
+
+# ── Regression: the exact route_A incident ────────────────────────────────
+
+_ROUTE_A_QUERY = (
+    "\u00bfPor qu\u00e9 route_A y no route_B o route_C? Defiende esa decisi\u00f3n "
+    "exclusivamente con la evidencia persistida en freight_logistics"
+)
+
+
+def test_detects_underscored_freight_tokens():
+    """Antes evadían la compuerta: `\\b` no matchea tokens con guion bajo."""
+    assert fi.detect_freight_intent("freight_logistics")
+    assert fi.detect_freight_intent("patron de mayor masa en freight_logistics")
+    assert fi.detect_freight_intent(_ROUTE_A_QUERY)
+    # Negativos claros siguen siendo negativos
+    assert not fi.detect_freight_intent("precio de BTC")
+    assert not fi.detect_freight_intent("hola, \u00bfc\u00f3mo est\u00e1s?")
+
+
+def test_abstains_on_unsupported_decisional_subjects():
+    """Caso real: hay evidencia freight (event-type patterns) pero el query exige
+    defender route_A/B/C, que NO existen en la evidencia. Debe abstenerse
+    nombrando los sujetos y SIN reintroducir las afirmaciones fabricadas."""
+    gi = [_grav("load_booking", 77, 0.9), _grav("delivery_complete", 89, 0.9)]
+    ledger = [{
+        "timestamp": "2026-07-14T20:26:00", "obs_type": "ingest_load_booking",
+        "summary": "Load booked: New York->Chicago | carrier=EliteLogistics | rate=$510.45",
+        "domain": "freight_logistics", "star_id": "freight_logistics:load_booking:z",
+    }]
+    priors = [_prior("empty_miles", 90.0, 49.7, 56), _prior("load_booking", 90.0, 42.5, 48)]
+    summary = {"domain": "freight_logistics", "patterns": 2}
+
+    ps = _patches(gi, ledger, priors, summary)
+    for p in ps:
+        p.start()
+    try:
+        resp = fi.resolve_freight_query(_ROUTE_A_QUERY)
+    finally:
+        for p in ps:
+            p.stop()
+
+    low = resp.lower()
+    # Abstención explícita que nombra los sujetos NO soportados por evidencia
+    assert "route_a" in low and "route_b" in low and "route_c" in low
+    assert "me abstengo" in low or "no tengo evidencia" in low
+    assert "freight_logistics" in resp
+    # NO reintroduce ninguna de las afirmaciones fabricadas del incidente
+    for claim in ("repeticiones exitosas", "menor variabilidad",
+                  "m\u00e1s consistentes", "convergencias m\u00e1s"):
+        assert claim not in low
+    # No es el bloque grounded: se abstuvo (no lleva las etiquetas de
+    # procedencia por-sección que solo aparecen en la respuesta grounded)
+    assert "gravity_index.by_domain" not in resp
+    assert "domain_library.get_domain_priors" not in resp
+
+
+def test_grounds_when_subject_is_supported():
+    """Si el sujeto referido SÍ está en la evidencia recuperada, responde
+    grounded (no abstención)."""
+    gi = [_grav("load_booking", 77, 0.9)]
+    ledger = [{
+        "timestamp": "2026-07-14T20:26:00", "obs_type": "ingest_load_booking",
+        "summary": "Load booked", "domain": "freight_logistics", "star_id": "z",
+    }]
+    priors = [_prior("load_booking", 90.0, 42.5, 48)]
+    summary = {"domain": "freight_logistics", "patterns": 1}
+    q = "\u00bfpor qu\u00e9 load_booking tiene tanta masa en freight_logistics?"
+
+    ps = _patches(gi, ledger, priors, summary)
+    for p in ps:
+        p.start()
+    try:
+        resp = fi.resolve_freight_query(q)
+    finally:
+        for p in ps:
+            p.stop()
+
+    assert "load_booking" in resp
+    assert "evidencia observada" in resp.lower()   # grounded, no abstención
+    assert "me abstengo" not in resp.lower()

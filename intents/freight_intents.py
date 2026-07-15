@@ -33,34 +33,51 @@ logger = logging.getLogger("vectrax.freight_intents")
 # domain ingester. Single source of truth for retrieval.
 FREIGHT_DOMAIN = "freight_logistics"
 
-# Detection: freight / logistics vocabulary (EN + ES) plus the canonical event
-# types from config/domain_templates/freight_logistics.json. Whole-word match.
-_FREIGHT_TERMS = [
-    "freight", "flete", "fletes", "fletar",
+# Detection is split so identifier-style tokens are NOT missed. The previous
+# `\b(freight|route|...)\b` approach failed on underscored tokens like
+# `freight_logistics` / `route_A` (underscore is a word char, so there is no
+# boundary between `freight` and `_logistics`) — which let domain queries evade
+# the grounding gate and reach the LLM.
+#
+# Unambiguous markers → matched as SUBSTRINGS (catch underscored identifiers).
+# These are the domain's own schema vocabulary, NOT routes or answer phrases.
+_FREIGHT_SUBSTRINGS = (
+    FREIGHT_DOMAIN,            # "freight_logistics"
+    "freight", "flete", "logíst", "logist",
+    "quote_request", "load_booking", "delivery_complete", "delay_reported",
+    "rate_change", "capacity_update", "empty_miles", "weather_event",
+)
+
+# Ambiguous natural words → matched with WORD boundaries (avoid false positives
+# on "carga" inside "recarga", "route" inside unrelated text, etc.).
+_FREIGHT_WORDS = [
     "carga", "cargas", "cargamento", "cargamentos",
-    "logistica", "logística", "logistico", "logístico", "logistics", "logistic",
     "load", "loads", "shipment", "shipments",
     "carrier", "carriers", "transportista", "transportistas",
     "camion", "camión", "camiones", "truck", "trucks", "trucking",
     "lane", "lanes", "ruta", "rutas", "route", "routes",
     "delivered", "delivery", "entrega", "entregas", "entregado", "entregados",
     "empty miles", "millas vacias", "millas vacías",
-    # canonical event types
-    "quote_request", "load_booking", "delivery_complete", "delay_reported",
-    "rate_change", "capacity_update", "empty_miles", "weather_event",
 ]
-
-_FREIGHT_RE = re.compile(
-    r"\b(?:" + "|".join(re.escape(t) for t in _FREIGHT_TERMS) + r")\b",
+_FREIGHT_WORD_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(t) for t in _FREIGHT_WORDS) + r")\b",
     re.IGNORECASE,
 )
 
 
 def detect_freight_intent(text: str) -> bool:
-    """Return True if the query is about Freight Logistics."""
+    """Return True if the query is about Freight Logistics.
+
+    Robust to identifier-style tokens: `freight_logistics`, `load_booking`, etc.
+    are matched as substrings (a `\\b...\\b` regex missed them because `_` is a
+    word char). Ambiguous natural words still require word boundaries.
+    """
     if not text:
         return False
-    return bool(_FREIGHT_RE.search(text))
+    low = text.lower()
+    if any(s in low for s in _FREIGHT_SUBSTRINGS):
+        return True
+    return bool(_FREIGHT_WORD_RE.search(text))
 
 
 # ---------------------------------------------------------------------------
@@ -207,11 +224,63 @@ def build_grounded_response(ev: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def resolve_freight_query(content: str = "") -> str:
-    """Retrieve freight evidence and return a grounded response or abstention.
+# Identifier-style subject tokens a decision may be pinned on (route_A,
+# freight_routes, load_booking). Extracted from the QUERY dynamically — never
+# hardcoded — to verify the referenced subject is actually supported by the
+# retrieved persisted evidence.
+_SUBJECT_RE = re.compile(r"[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+")
 
-    Always returns a non-empty string when called, so the caller can safely
-    short-circuit BEFORE the LLM (guaranteeing no general-knowledge answer).
+
+def _referenced_subjects(text: str) -> set:
+    subs = {m.group(0).lower() for m in _SUBJECT_RE.finditer(text or "")}
+    subs.discard(FREIGHT_DOMAIN)  # the domain key is context, not a decision subject
+    return subs
+
+
+def _evidence_corpus(ev: Dict[str, Any]) -> str:
+    """All tokens present in the retrieved evidence (lowercased)."""
+    parts: List[str] = []
+    for g in ev.get("gravity", []):
+        parts += [g.get("intent", ""), g.get("fingerprint", ""), g.get("summary", "")]
+    for o in ev.get("ledger", []):
+        parts += [o.get("obs_type", ""), o.get("summary", ""), o.get("star_id", "")]
+    for p in ev.get("priors", []):
+        parts.append(p.get("pattern_type", ""))
+    return " ".join(x for x in parts if x).lower()
+
+
+def _abstain_unsupported(ev: Dict[str, Any], subjects: List[str]) -> str:
+    """Abstention when the query pins subjects absent from retrieved evidence."""
+    domain = ev.get("domain", FREIGHT_DOMAIN)
+    c = ev.get("counts", {})
+    return (
+        f"No tengo evidencia persistida en el dominio {domain} que respalde una "
+        f"decisi\u00f3n sobre: {', '.join(subjects)}.\n"
+        f"La evidencia recuperada (gravity_index: {c.get('gravity', 0)} | "
+        f"observation_ledger: {c.get('ledger', 0)} | domain_library: "
+        f"{c.get('priors', 0)}) no contiene esas entidades, as\u00ed que no puedo "
+        f"sustentar una comparaci\u00f3n entre ellas.\n"
+        f"Me abstengo: sin evidencia observada para esas entidades no genero afirmaciones."
+    )
+
+
+def resolve_freight_query(content: str = "") -> str:
+    """Retrieve freight evidence and return a response BOUND to that evidence,
+    or an explicit abstention.
+
+    Evidence-binding criterion: if the query pins specific subject entities
+    (e.g. route_A) and NONE of them appear in the retrieved persisted evidence,
+    abstain — never emit unsupported decisional/comparative claims. Otherwise
+    return the grounded response (which is itself built only from evidence).
+
+    Always returns a non-empty string, so the caller can short-circuit BEFORE
+    the LLM (guaranteeing no general-knowledge / fabricated answer).
     """
     ev = retrieve_freight_evidence()
+    subjects = _referenced_subjects(content)
+    if subjects:
+        corpus = _evidence_corpus(ev)
+        supported = {s for s in subjects if s in corpus}
+        if not supported:
+            return _abstain_unsupported(ev, sorted(subjects))
     return build_grounded_response(ev)

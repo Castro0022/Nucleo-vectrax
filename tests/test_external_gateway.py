@@ -313,3 +313,74 @@ class TestGatewayBusHistory:
         types = [e.event_type for e in history]
         assert "external.message_received" in types
         assert "external.message_response" in types
+
+
+# ---------------------------------------------------------------------------
+# 10. DOMAIN-EVIDENCE GATE precedence (freight_logistics) over self-aware
+# ---------------------------------------------------------------------------
+
+class TestFreightDomainGatePrecedence:
+    """Reproduce el incidente route_A a nivel receive_message: una consulta de
+    freight_logistics debe resolverse por la compuerta de evidencia de dominio
+    (grounded/abstención) ANTES de que el narrador SELF-AWARE pueda autorar
+    afirmaciones no soportadas. Verifica la PRECEDENCIA de la compuerta.
+    """
+
+    _ROUTE_A_QUERY = (
+        "\u00bfPor qu\u00e9 route_A y no route_B o route_C? Defiende esa "
+        "decisi\u00f3n exclusivamente con la evidencia persistida en freight_logistics"
+    )
+
+    def test_freight_gate_precedes_self_aware(self):
+        from unittest.mock import patch
+
+        gw = ExternalGateway()
+        FREIGHT = "FREIGHT_GROUNDED_SENTINEL"
+        SELFAWARE = "SELF_AWARE_FABRICATION_SENTINEL"
+
+        # detect_freight_intent NO se parchea: corre real sobre la consulta con
+        # `freight_logistics` (token con guion bajo) → debe detectar True.
+        # resolve_freight_query se parchea a un sentinel determinista.
+        # is_self_referential/resolve_self_aware simulan que el narrador
+        # self-aware SÍ dispararía (como en el incidente).
+        # Los post-procesos (auditor/presence/language) se hacen passthrough
+        # para aislar la decisión de precedencia.
+        with patch("intents.freight_intents.resolve_freight_query", return_value=FREIGHT), \
+             patch("vectrax.self_context.is_self_referential", return_value=True), \
+             patch("vectrax.self_context.resolve_self_aware", return_value=SELFAWARE), \
+             patch("vectrax.response_auditor.run_audit", side_effect=lambda **kw: kw.get("response", "")), \
+             patch("core.language_gate.enforce_language", side_effect=lambda text, *a, **k: text), \
+             patch("core.conversation.presence_policy.apply_presence_policy", side_effect=lambda text, *a, **k: (text, False)):
+            result = gw.receive_message(
+                user_id="tg:test_freight_gate",
+                content=self._ROUTE_A_QUERY,
+                channel="telegram",
+            )
+
+        # La compuerta de dominio ganó: respuesta grounded, NO la del narrador.
+        assert FREIGHT in result.response, (
+            "la compuerta freight no resolvi\u00f3 la consulta"
+        )
+        assert SELFAWARE not in result.response, (
+            "el narrador self-aware autor\u00f3 la respuesta (precedencia rota)"
+        )
+
+    def test_non_freight_query_still_reaches_self_aware(self):
+        """Una consulta self-referencial NO-freight sigue yendo al narrador
+        self-aware (la compuerta no secuestra consultas ajenas al dominio).
+        """
+        from unittest.mock import patch
+
+        gw = ExternalGateway()
+        SELFAWARE = "SELF_AWARE_OK_SENTINEL"
+        with patch("vectrax.self_context.is_self_referential", return_value=True), \
+             patch("vectrax.self_context.resolve_self_aware", return_value=SELFAWARE), \
+             patch("vectrax.response_auditor.run_audit", side_effect=lambda **kw: kw.get("response", "")), \
+             patch("core.language_gate.enforce_language", side_effect=lambda text, *a, **k: text), \
+             patch("core.conversation.presence_policy.apply_presence_policy", side_effect=lambda text, *a, **k: (text, False)):
+            result = gw.receive_message(
+                user_id="tg:test_selfaware",
+                content="\u00bfqu\u00e9 son tus convergencias?",
+                channel="telegram",
+            )
+        assert SELFAWARE in result.response
