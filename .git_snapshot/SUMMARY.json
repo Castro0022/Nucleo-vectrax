@@ -1,73 +1,73 @@
 {
-  "head": "8ee93ff",
+  "head": "19d43e6",
   "branch": "main",
   "recent_commits": [
     {
-      "sha": "8ee93ff4",
-      "subject": "feat(asset-map): Asset Evidence Map doc + strategic_asset star + 7-laws non-leak guard",
-      "author": "Mario Bravo Castro",
-      "ts": 1782608056,
-      "files_changed": 5
-    },
-    {
-      "sha": "da9bd3c8",
-      "subject": "Merge pull request #23 from Castro0022/feat/ai-providers-and-7-laws",
+      "sha": "19d43e65",
+      "subject": "Merge pull request #32 from Castro0022/feat/register-criterion-engine",
       "author": "Nucleo-vectrax",
-      "ts": 1782598234,
+      "ts": 1784139820,
       "files_changed": 0
     },
     {
-      "sha": "1d6b547c",
-      "subject": "feat(laws): connect 7 Fundamental Laws to real-time system signals",
+      "sha": "0e8c9dce",
+      "subject": "feat: registrar Motor de Criterio Aprendido en engine_registry (#48)",
       "author": "Mario Bravo Castro",
-      "ts": 1782595212,
+      "ts": 1784139785,
+      "files_changed": 3
+    },
+    {
+      "sha": "86b4aa8e",
+      "subject": "Merge pull request #31 from Castro0022/feat/motor-criterio-aprendido",
+      "author": "Nucleo-vectrax",
+      "ts": 1784136957,
+      "files_changed": 0
+    },
+    {
+      "sha": "a5a046f1",
+      "subject": "feat: Motor de Criterio Aprendido (cross-dominio)",
+      "author": "Mario Bravo Castro",
+      "ts": 1784136632,
+      "files_changed": 5
+    },
+    {
+      "sha": "ab3271a6",
+      "subject": "Merge pull request #30 from Castro0022/fix/freight-decisional-grounding",
+      "author": "Nucleo-vectrax",
+      "ts": 1784078345,
+      "files_changed": 0
+    },
+    {
+      "sha": "66a3f825",
+      "subject": "fix(freight): grounding decisional por evidencia + compuerta de precedencia sobre self-aware",
+      "author": "Mario Bravo Castro",
+      "ts": 1784078234,
       "files_changed": 4
     },
     {
-      "sha": "ae35ae66",
-      "subject": "fix(resolver): self-reference, greetings and creator questions never web-search",
-      "author": "Mario Bravo Castro",
-      "ts": 1782595192,
-      "files_changed": 1
+      "sha": "c7635633",
+      "subject": "Merge pull request #29 from Castro0022/feat/freight-logistics-retrieval",
+      "author": "Nucleo-vectrax",
+      "ts": 1784075590,
+      "files_changed": 0
     },
     {
-      "sha": "a7b52135",
-      "subject": "Sync .env.example with all required env keys (empty values)",
+      "sha": "96caa576",
+      "subject": "fix(freight): conectar dominio freight_logistics a la capa de respuesta de Telegram",
       "author": "Mario Bravo Castro",
-      "ts": 1782521678,
-      "files_changed": 1
-    },
-    {
-      "sha": "c5f41544",
-      "subject": "feat(universe): seed AI provider presence stars (separate from interaction)",
-      "author": "Mario Bravo Castro",
-      "ts": 1782472341,
-      "files_changed": 2
-    },
-    {
-      "sha": "7d6c88ae",
-      "subject": "feat: Anthropic provider (httpx, no SDK) + per-interaction learning + AI stars in universe",
-      "author": "Mario Bravo Castro",
-      "ts": 1782466618,
-      "files_changed": 11
-    },
-    {
-      "sha": "b19dab54",
-      "subject": "fix(panel): make market stars + convergence arcs visually prominent",
-      "author": "Mario Bravo Castro",
-      "ts": 1782322198,
-      "files_changed": 1
+      "ts": 1784075475,
+      "files_changed": 3
     }
   ],
   "modified_modules": [
-    "core/self_observation/universe_observer.py",
+    "core/operator/external_gateway.py",
+    "tests/test_external_gateway.py",
+    "intents/freight_intents.py",
+    "tests/test_freight_intent_retrieval.py",
+    "connectors/etoro/learning_engine.py",
     "core/transport/pipeline_worker.py",
-    "services/core/app.py",
-    ".env.example",
-    "pyproject.toml",
-    "services/ui/static/universe.html",
-    "core/continuity_reentry.py",
-    "core/operator/external_gateway.py"
+    "tests/test_worker_hardening.py",
+    "core/orchestration/engine_registry.py"
   ],
-  "generated_at": 1782608781
+  "generated_at": 1784139844
 }
