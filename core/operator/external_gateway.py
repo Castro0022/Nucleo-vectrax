@@ -793,6 +793,32 @@ class ExternalGateway:
         except Exception as _sr_exc:
             logger.debug("Self-reference layer failed (passthrough): %s", _sr_exc)
 
+        # ══════════════════════════════════════════════════════════════
+        # STEP 4.2a3: DOMAIN-EVIDENCE GATE — freight_logistics
+        # ══════════════════════════════════════════════════════════════
+        # Precedencia sobre el narrador SELF-AWARE y sobre el LLM: una consulta
+        # sobre un dominio PERSISTIDO debe responderse desde la evidencia
+        # recuperada (o abstenerse), nunca ser redactada por el LLM. Esto liga
+        # toda afirmación decisional de dominio a evidencia persistida. Sin
+        # tocar prompts ni hardcodear rutas/frases; grounded o abstención.
+        _freight_resolved = False
+        if not response_text:
+            try:
+                from intents.freight_intents import (
+                    detect_freight_intent, resolve_freight_query,
+                )
+                if detect_freight_intent(content):
+                    _fr_ans = resolve_freight_query(content)
+                    if _fr_ans:
+                        response_text = _fr_ans
+                        _freight_resolved = True
+                        logger.info(
+                            "Pipeline: DOMAIN-EVIDENCE GATE freight | grounded/abstain | user=%s",
+                            user_id[:20],
+                        )
+            except Exception as _fg_exc:
+                logger.debug("freight domain gate failed (passthrough): %s", _fg_exc)
+
         # 4.2b Auto-contexto — Vectrax se observa a sí mismo
         _self_resolved = False
         if not response_text:
@@ -897,6 +923,7 @@ class ExternalGateway:
         _resolve_start = time.time()
         _final_source = (
             "memory" if memory_resolved
+            else "freight" if _freight_resolved
             else "self_aware" if _self_resolved
             else ""
         )
@@ -912,6 +939,11 @@ class ExternalGateway:
                 )
             except Exception:
                 pass
+        elif _freight_resolved:
+            # Evidencia de dominio grounded (o abstención explícita). Se preserva
+            # verbatim: NO se reescribe vía LLM/identity layer, para que no puedan
+            # reintroducirse afirmaciones no soportadas.
+            source_path = "freight"
         elif _self_resolved:
             # Auto-aware ya resolvió — aplicar language gate y listo
             source_path = "self_aware"
