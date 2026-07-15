@@ -58,6 +58,7 @@ Vectrax is a **local-first autonomous AI infrastructure** with a platform archit
 - **PolicyGates** — Named gates for change categories
 - **AuditLedger** — Append-only SQLite audit trail
 - **Roles** — owner, operator, viewer with permission maps
+- **Criterion Engine** (`core/learn/criterion.py`) — cross-domain learned opinion from persisted evidence (grounded, never fabricates); registered engine #48 in `core/orchestration/engine_registry.py`
 
 ### Observability (`observability/`)
 - Stable JSON event schema (VectraxEvent)

@@ -70,7 +70,8 @@ vectrax/
 │   ├── continuity_reentry.py      Máquina de estados 3 nudges
 │   ├── tenant.py                  Gestión de tenants y dominios
 │   ├── learn/
-│   │   └── gravity_engine.py      GravityIndex (stars, convergencias)
+│   │   ├── gravity_engine.py      GravityIndex (stars, convergencias)
+│   │   └── criterion.py           Motor de Criterio Aprendido #48 (opinión cross-dominio, grounded)
 │   └── nucleus/
 │       ├── presencia_pura.py      Capa inhibitoria (Sovereignty)
 │       └── convergence_learner.py Learner operacional (PresenciaPura)
