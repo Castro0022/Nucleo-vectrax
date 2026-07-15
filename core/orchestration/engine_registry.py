@@ -219,6 +219,10 @@ def _register_defaults() -> None:
                    gated_by="VECTRAX_ROUTER_LEARNING",
                    activate=_call("core.router_learning_cycle", "get_learning_cycle"),
                    health=_available("core.router_learning_cycle", "get_learning_cycle")),
+        EngineSpec("criterion", "aprendizaje", Tier.OBSERVE,
+                   "Motor de Criterio Aprendido: opinión propia cross-dominio "
+                   "desde evidencia persistida (grounded, sin fabricar).",
+                   health=_available("core.learn.criterion", "build_criterion")),
 
         # ---- Routing ----
         EngineSpec("smart_router", "routing", Tier.CORE,
