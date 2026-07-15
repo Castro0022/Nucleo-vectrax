@@ -58,6 +58,14 @@ class TestDefaultRegistry:
         for s in reg.by_group("mercado"):
             assert s.tier == Tier.EXTERNAL
 
+    def test_criterion_engine_registered(self):
+        """El Motor de Criterio Aprendido está dado de alta (motor #48)."""
+        spec = reg.get("criterion")
+        assert spec is not None
+        assert spec.group == "aprendizaje"
+        assert spec.tier == Tier.OBSERVE
+        assert spec.health is not None
+
 
 # ---------------------------------------------------------------------------
 # activate_all behaviour (fake registry)

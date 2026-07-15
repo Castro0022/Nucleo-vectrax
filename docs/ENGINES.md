@@ -5,7 +5,7 @@ módulo se toma de su propio docstring/API; el estado se deduce del cableado rea
 (`core/meta_loop.py`, arranque de `services/core/app.py`, flags de entorno).
 
 > Rama de referencia: `arch/system-quality-universe`.
-> Evidencia: smoke import/carga de **44/44 motores OK** y suite hermética **2856 passed, 0 failed**.
+> Evidencia: smoke import/carga de **48/48 motores OK** y suite hermética **2856 passed, 0 failed**.
 
 ## Leyenda de estado
 - 🟢 **Activo** — cableado para correr automáticamente (en cada mensaje vía `total_convergence`, o en cada ciclo del `meta_loop` de 8 capas).
@@ -36,7 +36,7 @@ módulo se toma de su propio docstring/API; el estado se deduce del cableado rea
 meta_loop (8 capas) + observer + universe_observer + ledger + census + evolution + calidad (Pilares C/D).
 
 ### 4. Aprendizaje
-- 🟢 **Learning Gate** · 🟢 **Pattern Refinement** · 🟢 **Observation Bias** · 🔵 ciclo **Anomaly→Investigation→Verification→Integrator**.
+- 🟢 **Learning Gate** · 🟢 **Pattern Refinement** · 🟢 **Observation Bias** · 🔵 ciclo **Anomaly→Investigation→Verification→Integrator** · ⚪ **Criterion** (criterio propio cross-dominio).
 > Detalle completo: ver §Aprendizaje (en progreso).
 
 ### 5. Routing
@@ -140,6 +140,9 @@ Flujo: `pipeline.process_event()` → ANOMALY → INVESTIGATION → VERIFICATION
 ### C. Auto-aprendizaje del Router
 - 🟢 **Router Learning** · `core/router_learning.py` (927 loc) — aprendizaje **pasivo**: observa decisiones del SmartRouter, evalúa calidad, clasifica errores y sugiere ajustes de umbral con reporte. API: `RouterLearningEngine` (`analyze`, `classify_errors`, `suggest_threshold_adjustments`, `generate_report`), `RouterDecisionLedger`, `PostResolutionEvaluator`, `get_ledger()`.
 - 🟡 **Router Learning Cycle** · `core/router_learning_cycle.py` (444 loc) — ciclo continuo que detecta conflictos recurrentes (semántico vs regex) y genera **propuestas** de mejora (no aplica sin aprobación). API: `RouterLearningCycle` (`activate`, `deactivate`, `is_active`, `run_cycle`, `get_pending_proposals`).
+
+### D. Criterio aprendido (opinión propia)
+- ⚪ **Criterion** · `core/learn/criterion.py` — forma y expresa criterio propio **cross-dominio** (market, freight_logistics, …) desde evidencia persistida (WR/E/Wilson/N/confianza/masa); entiende el **tema concreto** de la pregunta y se abstiene de forma constructiva si no hay experiencia relacionada, sin fabricar. Read-only; cableado como compuerta en `external_gateway` (STEP 4.2a3, precede al narrador self-aware). API: `build_criterion(domain, query)`, `detect_criterion_request`, `detect_domain`, `strongest_domain`, `rank_domain_evidence`.
 
 **Estado del grupo:** el aprendizaje selectivo (gate/refinement/bias) está activo en el flujo de ingest. El ciclo continuo y los orquestadores (active_learning, router_learning_cycle) son activables/on-demand y **generan propuestas sin aplicar cambios** sin autorización — coherente con "aprender solo de patrones confirmados".
 
