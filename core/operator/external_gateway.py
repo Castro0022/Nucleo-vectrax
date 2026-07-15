@@ -794,14 +794,38 @@ class ExternalGateway:
             logger.debug("Self-reference layer failed (passthrough): %s", _sr_exc)
 
         # ══════════════════════════════════════════════════════════════
-        # STEP 4.2a3: DOMAIN-EVIDENCE GATE — freight_logistics
+        # STEP 4.2a3: DOMAIN CRITERION / EVIDENCE GATE (cross-dominio)
         # ══════════════════════════════════════════════════════════════
-        # Precedencia sobre el narrador SELF-AWARE y sobre el LLM: una consulta
-        # sobre un dominio PERSISTIDO debe responderse desde la evidencia
-        # recuperada (o abstenerse), nunca ser redactada por el LLM. Esto liga
-        # toda afirmación decisional de dominio a evidencia persistida. Sin
-        # tocar prompts ni hardcodear rutas/frases; grounded o abstención.
-        _freight_resolved = False
+        # Precedencia sobre el narrador SELF-AWARE y sobre el LLM. Dos vías,
+        # ambas grounded en aprendizaje persistido (nunca fabrican):
+        #  (a) pedido de OPINIÓN/criterio → build_criterion(dominio): Vectrax
+        #      expresa su criterio desde sus métricas aprendidas (cualquier
+        #      dominio; si no se nombra, usa el más fuerte).
+        #  (b) consulta de EVIDENCIA freight → resolve_freight_query (grounded/
+        #      abstención), como sub-caso.
+        # Solo lectura de evidencia; no toca aprendizaje/thresholds/datos.
+        _domain_resolved = False
+        _domain_source = ""
+        if not response_text:
+            try:
+                from core.learn.criterion import (
+                    detect_criterion_request, detect_domain, strongest_domain,
+                    build_criterion,
+                )
+                if detect_criterion_request(content):
+                    _dom = detect_domain(content) or strongest_domain()
+                    if _dom:
+                        _crit = build_criterion(_dom, content)
+                        if _crit:
+                            response_text = _crit
+                            _domain_resolved = True
+                            _domain_source = "criterion"
+                            logger.info(
+                                "Pipeline: DOMAIN-CRITERION gate | domain=%s | user=%s",
+                                _dom, user_id[:20],
+                            )
+            except Exception as _cg_exc:
+                logger.debug("criterion gate failed (passthrough): %s", _cg_exc)
         if not response_text:
             try:
                 from intents.freight_intents import (
@@ -811,9 +835,10 @@ class ExternalGateway:
                     _fr_ans = resolve_freight_query(content)
                     if _fr_ans:
                         response_text = _fr_ans
-                        _freight_resolved = True
+                        _domain_resolved = True
+                        _domain_source = "freight"
                         logger.info(
-                            "Pipeline: DOMAIN-EVIDENCE GATE freight | grounded/abstain | user=%s",
+                            "Pipeline: DOMAIN-EVIDENCE gate freight | grounded/abstain | user=%s",
                             user_id[:20],
                         )
             except Exception as _fg_exc:
@@ -923,7 +948,7 @@ class ExternalGateway:
         _resolve_start = time.time()
         _final_source = (
             "memory" if memory_resolved
-            else "freight" if _freight_resolved
+            else _domain_source if _domain_resolved
             else "self_aware" if _self_resolved
             else ""
         )
@@ -939,11 +964,11 @@ class ExternalGateway:
                 )
             except Exception:
                 pass
-        elif _freight_resolved:
-            # Evidencia de dominio grounded (o abstención explícita). Se preserva
-            # verbatim: NO se reescribe vía LLM/identity layer, para que no puedan
-            # reintroducirse afirmaciones no soportadas.
-            source_path = "freight"
+        elif _domain_resolved:
+            # Evidencia/criterio de dominio grounded. Se preserva verbatim: NO se
+            # reescribe vía LLM/identity layer, para no reintroducir afirmaciones
+            # no soportadas.
+            source_path = _domain_source or "criterion"
         elif _self_resolved:
             # Auto-aware ya resolvió — aplicar language gate y listo
             source_path = "self_aware"

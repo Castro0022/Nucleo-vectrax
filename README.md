@@ -1971,7 +1971,53 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 
 ---
 
+## 🧭 Motor de Criterio Aprendido (cross-dominio)
+
+Vectrax forma y **expresa su propio criterio** sobre CUALQUIER dominio de su universo (market, freight_logistics, …) a partir de su aprendizaje persistido — **métricas reales**, no conocimiento general ni respuestas fijas, y **sin fabricar**.
+
+Entiende el **tema concreto** de la pregunta y centra la opinión en la experiencia relacionada con ese tema. Si no tiene experiencia sobre ese tema, lo dice y ofrece lo más cercano que sí observó (abstención constructiva).
+
+### Flujo — precede al narrador self-aware (STEP 4.2a3)
+
+```
+Mensaje → detect_criterion_request(content)?
+    │ sí
+    ├─ dominio = detect_domain(content)  ó  strongest_domain()   (si no se nombra dominio)
+    ├─ rank_domain_evidence(dominio)      ← score = E × wilson_lb × confianza × masa   (read-only)
+    ├─ extract_topic_tokens(content)      ← tema concreto (acentos, stopwords, indicadores, sinónimos ES→esquema)
+    │     ├─ tema CON experiencia → filtra a la evidencia relacionada + centra la opinión
+    │     └─ tema SIN experiencia → "no opino sobre eso; lo más cercano es «…»"   (sin fabricar)
+    ├─ _phrase_with_llm(evidencia)        ← LLM restringido EXCLUSIVAMENTE a la evidencia rankeada
+    │     └─ _verify_grounded()           ← rechaza entidad/porcentaje fuera de la evidencia (±2)
+    └─ fallback determinista si el LLM no está grounded
+```
+
+### Fuentes de evidencia (solo lectura)
+
+| Fuente | Aporta |
+|---|---|
+| `core.domain_knowledge.get_domain_priors(domain)` | win_rate, expectancy, sample_size, confidence, contributing_tenants |
+| `core.learn.gravity_engine.by_domain(domain)` | hits, cc_score, tier |
+
+El score se deriva de forma determinista: `expectancy × wilson_lb_frac × peso_confianza × peso_masa`. El fraseo con LLM es opcional y queda **restringido a la evidencia**; el verificador exige que toda entidad/porcentaje citado exista en ella, y si falla cae al texto determinista.
+
+### Garantías
+
+- **No fabrica**: toda opinión cita evidencia real; ante entidades ausentes (p. ej. `route_A`) reconoce que no las observó y opina sobre lo que sí aprendió.
+- **Read-only**: no toca observación / ingesta / aprendizaje / maduración / thresholds ni datos.
+- **Sin parches de prompt ni rutas/frases hardcodeadas** — el criterio emerge de las métricas.
+
+Files:
+- `core/learn/criterion.py` — detección, dominio, ranking, scoping por tema, opinión grounded + verificador
+- `core/operator/external_gateway.py` — compuerta STEP 4.2a3 (precede al narrador self-aware; freight como sub-caso)
+- `tests/test_criterion.py` — 10 tests · `tests/test_external_gateway.py` — precedencia sobre self-aware
+
+---
+
 ## 📋 Changelog
+
+### 2026-07-15
+- **feat: Motor de Criterio Aprendido (cross-dominio)** — Vectrax forma y expresa su propio criterio sobre cualquier dominio aprendido (market, freight_logistics, …) desde evidencia persistida (WR/E/Wilson/N/confianza/masa), no desde conocimiento general ni respuestas fijas, y sin fabricar. Entiende el tema concreto de la pregunta y centra la opinión en la experiencia relacionada; si no hay experiencia sobre ese tema, lo dice y ofrece lo más cercano observado (abstención constructiva). Fraseo por LLM restringido a la evidencia + verificador de entidades/porcentajes; fallback determinista. Nueva compuerta con precedencia sobre el narrador self-aware (STEP 4.2a3); freight queda como sub-caso. Read-only: no toca observación/ingesta/aprendizaje/maduración/thresholds/datos. `core/learn/criterion.py`, gate en `core/operator/external_gateway.py`. 10 tests criterion + precedencia en `test_external_gateway`.
 
 ### 2026-07-02
 - **feat: PAPER-shadow (observational)** — Records hypothetical trades under a flexible experimental gate WITHOUT executing, WITHOUT counting as real paper_trades, and WITHOUT advancing LIVE progress. New `connectors/etoro/paper_shadow.py` (+ `paper_shadow_trades` table), Step 9 in `learning_engine`, `shadow` block in `GET /v1/market/patterns`, and a shadow card in the SPA Patterns tab (separate from the real executor 0/30). Resolution reuses `outcome_tracker.classify_outcome` (single classifier). `READY_FOR_MANUAL_PROMOTION` is suggestion-only (real gate). 7 tests. Verified in prod: 69 candidates, shadow WR 55.3%, E +0.195, 0 ready.

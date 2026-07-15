@@ -384,3 +384,29 @@ class TestFreightDomainGatePrecedence:
                 channel="telegram",
             )
         assert SELFAWARE in result.response
+
+    def test_criterion_gate_precedes_self_aware(self):
+        """Un pedido de OPINIÓN/criterio de dominio se resuelve por el Motor de
+        Criterio Aprendido ANTES que el narrador self-aware (que antes fabricaba).
+        """
+        from unittest.mock import patch
+
+        gw = ExternalGateway()
+        CRIT = "CRITERION_OPINION_SENTINEL"
+        SELFAWARE = "SELF_AWARE_SENTINEL_2"
+        # detect_criterion_request corre real (True sobre '¿qué opinas...?').
+        # detect_domain/build_criterion se parchean para aislar la precedencia.
+        with patch("core.learn.criterion.detect_domain", return_value="market"), \
+             patch("core.learn.criterion.build_criterion", return_value=CRIT), \
+             patch("vectrax.self_context.is_self_referential", return_value=True), \
+             patch("vectrax.self_context.resolve_self_aware", return_value=SELFAWARE), \
+             patch("vectrax.response_auditor.run_audit", side_effect=lambda **kw: kw.get("response", "")), \
+             patch("core.language_gate.enforce_language", side_effect=lambda text, *a, **k: text), \
+             patch("core.conversation.presence_policy.apply_presence_policy", side_effect=lambda text, *a, **k: (text, False)):
+            result = gw.receive_message(
+                user_id="tg:test_criterion",
+                content="\u00bfqu\u00e9 opinas de la bolsa seg\u00fan lo que aprendiste?",
+                channel="telegram",
+            )
+        assert CRIT in result.response       # el criterio aprendido ganó
+        assert SELFAWARE not in result.response  # el narrador self-aware fue omitido
