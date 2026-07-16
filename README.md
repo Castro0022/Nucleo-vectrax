@@ -571,6 +571,41 @@ python -m pytest tests/ -v
 pytest --cov=core --cov=vectrax --cov-report=html
 ```
 
+## 🔌 Broker Client Injection (dependency injection)
+
+`connectors/broker.py` selecciona el cliente de trading activo (`etoro` | `alpaca`)
+a través de un **seam inyectable**, para que tests y wiring avanzado puedan
+sustituir el cliente sin manipular la maquinaria de imports.
+
+- **La inyección gana**: `set_client(provider, client)` registra cualquier objeto
+  que exponga los métodos del proveedor; `reset_clients()` los limpia.
+- **Resolución por defecto**: sin inyección, el cliente se importa con
+  `importlib.import_module(...)`, que **respeta `sys.modules`**. Ya NO se usa
+  `from connectors.etoro import etoro_client`, que resolvía por el *atributo del
+  paquete* y causaba fallos de tests dependientes del orden (un stub en
+  `sys.modules` quedaba anulado si otro test previo ya había importado el
+  submódulo real).
+- **Producción**: el registry queda vacío → resuelve el cliente real igual que
+  antes (refactor de comportamiento equivalente).
+
+```python
+from connectors import broker
+
+# Tests / wiring: inyecta un stub (sin tocar sys.modules, independiente del orden)
+broker.set_client("etoro", my_stub_client)
+try:
+    broker.health_check()      # rutea a my_stub_client
+finally:
+    broker.reset_clients()     # deja el estado global limpio
+```
+
+El mismo patrón aplica a cualquier proveedor futuro: añade su ruta en
+`_CLIENT_MODULES` y el resto (inyección + resolución) funciona sin cambios.
+
+Files: `connectors/broker.py` (`set_client` / `reset_clients` / `_resolve_client`),
+`tests/test_broker_routing.py` (17 tests: routing, inyección, degradación y
+regresión de contaminación de estado).
+
 ## ⚙️ Configuration
 
 Edit `config/config.yaml` to customize:
@@ -2015,6 +2050,9 @@ Files:
 ---
 
 ## 📋 Changelog
+
+### 2026-07-16
+- **refactor: broker client injection** — `connectors/broker.py` resuelve el cliente activo por un seam inyectable (`set_client`/`reset_clients`/`_resolve_client`) usando `importlib.import_module` en vez de `from connectors.etoro import etoro_client`. Elimina fallos de tests dependientes del orden (el stub de `sys.modules` quedaba anulado por el enlace del atributo del paquete). Comportamiento en prod sin cambios. Tests de broker ahora herméticos e independientes del orden; +cobertura de `get_account`/ramas de fallo (broker.py 61%→78%). `tests/test_broker_routing.py`.
 
 ### 2026-07-15
 - **feat: Motor de Criterio Aprendido (cross-dominio)** — Vectrax forma y expresa su propio criterio sobre cualquier dominio aprendido (market, freight_logistics, …) desde evidencia persistida (WR/E/Wilson/N/confianza/masa), no desde conocimiento general ni respuestas fijas, y sin fabricar. Entiende el tema concreto de la pregunta y centra la opinión en la experiencia relacionada; si no hay experiencia sobre ese tema, lo dice y ofrece lo más cercano observado (abstención constructiva). Fraseo por LLM restringido a la evidencia + verificador de entidades/porcentajes; fallback determinista. Nueva compuerta con precedencia sobre el narrador self-aware (STEP 4.2a3); freight queda como sub-caso. Read-only: no toca observación/ingesta/aprendizaje/maduración/thresholds/datos. `core/learn/criterion.py`, gate en `core/operator/external_gateway.py`. 10 tests criterion + precedencia en `test_external_gateway`.
