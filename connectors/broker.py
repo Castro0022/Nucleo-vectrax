@@ -33,6 +33,7 @@ Design rules
 """
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 from typing import Any, Dict
@@ -68,19 +69,73 @@ def is_provider(name: str) -> bool:
     return get_provider() == name.strip().lower()
 
 
+# ── Client resolution (dependency injection) ─────────────────────
+#
+# Contamination fix (2026-07-16): the router bound the client with
+# ``from connectors.etoro import etoro_client``, which resolves via the
+# ``connectors.etoro`` package ATTRIBUTE. A test stubbing only the
+# ``sys.modules`` entry got bypassed once another test had imported the real
+# submodule (leaving the real object bound as a package attribute) — producing
+# order-dependent failures in the full suite.
+#
+# The client is now resolved through a single injectable seam:
+#   * an explicitly injected client wins (``set_client`` — tests / wiring),
+#   * otherwise it is imported via ``importlib.import_module`` (which honors
+#     ``sys.modules`` and does NOT depend on package-attribute state).
+
+_CLIENT_MODULES: Dict[str, str] = {
+    ETORO: "connectors.etoro.etoro_client",
+    ALPACA: "connectors.alpaca.alpaca_client",
+}
+
+# Explicitly injected clients keyed by provider. Empty in production.
+_INJECTED_CLIENTS: Dict[str, Any] = {}
+
+
+def set_client(provider: str, client: Any) -> None:
+    """Inject the client object for a provider (dependency injection).
+
+    Any object exposing the provider's methods works. Pass ``client=None`` to
+    clear a single provider's injection. Intended for tests and advanced
+    wiring; production leaves this empty and resolves clients by import.
+    """
+    key = provider.strip().lower()
+    if client is None:
+        _INJECTED_CLIENTS.pop(key, None)
+    else:
+        _INJECTED_CLIENTS[key] = client
+
+
+def reset_clients() -> None:
+    """Clear ALL injected clients (restore default import-based resolution)."""
+    _INJECTED_CLIENTS.clear()
+
+
+def _resolve_client(provider: str) -> Any:
+    """Return the client for ``provider``: an injected one if present, else the
+    module imported via importlib (honors ``sys.modules``; no static
+    ``from package import submodule``, so no package-attribute contamination).
+    """
+    if provider in _INJECTED_CLIENTS:
+        return _INJECTED_CLIENTS[provider]
+    module_path = _CLIENT_MODULES.get(provider)
+    if not module_path:
+        raise ModuleNotFoundError(f"proveedor sin cliente registrado: {provider}")
+    return importlib.import_module(module_path)
+
+
 # ── Normalized operations ─────────────────────────────────────────────
 
 def health_check() -> Dict[str, Any]:
     """Provider-agnostic connectivity check for the active broker."""
     provider = get_provider()
     try:
+        client = _resolve_client(provider)
         if provider == ETORO:
-            from connectors.etoro import etoro_client
-            r = etoro_client.healthcheck()
+            r = client.healthcheck()
             return {"provider": ETORO, **r}
         if provider == ALPACA:
-            from connectors.alpaca import alpaca_client
-            r = alpaca_client.health_check()
+            r = client.health_check()
             return {"provider": ALPACA, **r}
     except ModuleNotFoundError as exc:
         # alpaca-py not installed, etc.
@@ -101,13 +156,13 @@ def get_price(symbol: str) -> Dict[str, Any]:
     """Provider-agnostic latest quote. Returns normalized bid/ask/mid/last."""
     provider = get_provider()
     try:
+        client = _resolve_client(provider)
         if provider == ETORO:
-            from connectors.etoro import etoro_client
-            iid = etoro_client.get_instrument_id(symbol)
+            iid = client.get_instrument_id(symbol)
             if not iid:
                 return {"provider": ETORO, "success": False, "symbol": symbol,
                         "error": f"instrument_id no encontrado para {symbol}"}
-            r = etoro_client.get_price(iid)
+            r = client.get_price(iid)
             if not r.get("success"):
                 return {"provider": ETORO, "symbol": symbol, **r}
             return {
@@ -117,8 +172,7 @@ def get_price(symbol: str) -> Dict[str, Any]:
                 "latency_ms": r.get("latency_ms"),
             }
         if provider == ALPACA:
-            from connectors.alpaca import alpaca_client
-            r = alpaca_client.get_price(symbol)
+            r = client.get_price(symbol)
             if not r.get("success"):
                 return {"provider": ALPACA, "symbol": symbol, **r}
             return {
@@ -145,9 +199,9 @@ def get_account() -> Dict[str, Any]:
     """Provider-agnostic account summary (equity/cash where available)."""
     provider = get_provider()
     try:
+        client = _resolve_client(provider)
         if provider == ETORO:
-            from connectors.etoro import etoro_client
-            r = etoro_client.get_portfolio()
+            r = client.get_portfolio()
             if not r.get("success"):
                 return {"provider": ETORO, **r}
             return {
@@ -159,8 +213,7 @@ def get_account() -> Dict[str, Any]:
                 "environment": r.get("environment"),
             }
         if provider == ALPACA:
-            from connectors.alpaca import alpaca_client
-            r = alpaca_client.get_account()
+            r = client.get_account()
             return {"provider": ALPACA, **r}
     except ModuleNotFoundError as exc:
         return {"provider": provider, "success": False,
