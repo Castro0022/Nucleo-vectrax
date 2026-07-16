@@ -153,3 +153,71 @@ def test_resolve_honors_sys_modules_not_package_attr(monkeypatch):
     fake = types.SimpleNamespace(healthcheck=lambda: {"success": True, "stub": True})
     monkeypatch.setitem(sys.modules, "connectors.etoro.etoro_client", fake)
     assert broker._resolve_client("etoro") is fake
+
+
+# ── get_account + ramas de fallo/degradación (cubre lo que tocó el refactor) ──
+
+def test_get_account_routes_to_etoro(monkeypatch):
+    monkeypatch.setenv("BROKER_PROVIDER", "etoro")
+    broker.set_client("etoro", types.SimpleNamespace(
+        get_portfolio=lambda: {
+            "success": True, "equity": 1000.0, "credit": 250.0,
+            "invested": 750.0, "pnl": 12.5, "environment": "real",
+        },
+    ))
+    out = broker.get_account()
+    assert out["provider"] == "etoro"
+    assert out["success"] is True
+    assert out["equity"] == 1000.0
+    assert out["cash"] == 250.0        # credit -> cash (normalización)
+    assert out["environment"] == "real"
+
+
+def test_get_account_etoro_failure_surfaces(monkeypatch):
+    monkeypatch.setenv("BROKER_PROVIDER", "etoro")
+    broker.set_client("etoro", types.SimpleNamespace(
+        get_portfolio=lambda: {"success": False, "error": "sin credenciales"},
+    ))
+    out = broker.get_account()
+    assert out["provider"] == "etoro"
+    assert out["success"] is False
+    assert "error" in out
+
+
+def test_get_account_routes_to_alpaca(monkeypatch):
+    monkeypatch.setenv("BROKER_PROVIDER", "alpaca")
+    broker.set_client("alpaca", types.SimpleNamespace(
+        get_account=lambda: {"success": True, "equity": 500.0, "cash": 500.0},
+    ))
+    out = broker.get_account()
+    assert out["provider"] == "alpaca"
+    assert out["success"] is True
+    assert out["equity"] == 500.0
+
+
+def test_get_price_etoro_rate_failure_surfaces(monkeypatch):
+    """Si get_instrument_id resuelve pero get_price falla, se propaga el error."""
+    monkeypatch.setenv("BROKER_PROVIDER", "etoro")
+    broker.set_client("etoro", types.SimpleNamespace(
+        get_instrument_id=lambda symbol: 123,
+        get_price=lambda iid: {"success": False, "error": "rate unavailable"},
+    ))
+    out = broker.get_price("BTC")
+    assert out["provider"] == "etoro"
+    assert out["success"] is False
+    assert out["symbol"] == "BTC"
+    assert "rate unavailable" in out["error"]
+
+
+def test_health_check_surfaces_environment_error(monkeypatch):
+    """Falta de credenciales (EnvironmentError) degrada limpiamente."""
+    monkeypatch.setenv("BROKER_PROVIDER", "etoro")
+
+    def _raise():
+        raise EnvironmentError("ETORO keys missing")
+
+    broker.set_client("etoro", types.SimpleNamespace(healthcheck=_raise))
+    out = broker.health_check()
+    assert out["provider"] == "etoro"
+    assert out["success"] is False
+    assert "ETORO keys" in out["error"]
