@@ -794,15 +794,17 @@ class ExternalGateway:
             logger.debug("Self-reference layer failed (passthrough): %s", _sr_exc)
 
         # ══════════════════════════════════════════════════════════════
-        # STEP 4.2a3: DOMAIN CRITERION / EVIDENCE GATE (cross-dominio)
+        # STEP 4.2a3: DOMAIN CRITERION GATE (cross-dominio) — la divisa de Vectrax
         # ══════════════════════════════════════════════════════════════
-        # Precedencia sobre el narrador SELF-AWARE y sobre el LLM. Dos vías,
-        # ambas grounded en aprendizaje persistido (nunca fabrican):
-        #  (a) pedido de OPINIÓN/criterio → build_criterion(dominio): Vectrax
-        #      expresa su criterio desde sus métricas aprendidas (cualquier
-        #      dominio; si no se nombra, usa el más fuerte).
-        #  (b) consulta de EVIDENCIA freight → resolve_freight_query (grounded/
-        #      abstención), como sub-caso.
+        # Precedencia sobre el narrador SELF-AWARE y sobre el LLM. El objetivo de
+        # Vectrax es APRENDER y DAR CRITERIO en múltiples dominios: cualquier
+        # pregunta de dominio recibe su OPINIÓN grounded (build_criterion), aunque
+        # tenga pocos datos — nunca fabrica, nunca vuelca datos crudos por defecto.
+        #  (b default) dominio detectado o pedido de opinión → build_criterion.
+        #  (a) SOLO si el usuario pide EXPLÍCITAMENTE ver datos crudos →
+        #      resolve_freight_query (volcado de evidencia freight), como sub-caso.
+        # Guard: consultas de PRECIO/datos de mercado sin pedido de opinión las
+        # maneja el intercept de mercado en pipeline_v2 (no las secuestra).
         # Solo lectura de evidencia; no toca aprendizaje/thresholds/datos.
         _domain_resolved = False
         _domain_source = ""
@@ -812,37 +814,49 @@ class ExternalGateway:
                     detect_criterion_request, detect_domain, strongest_domain,
                     build_criterion,
                 )
-                if detect_criterion_request(content):
-                    _dom = detect_domain(content) or strongest_domain()
-                    if _dom:
-                        _crit = build_criterion(_dom, content)
+                from intents.freight_intents import (
+                    detect_freight_intent, detect_evidence_request,
+                    resolve_freight_query,
+                )
+                _crit_req = detect_criterion_request(content)
+                _dom = detect_domain(content)
+                # Guard de precio: solo para market y solo si NO se pide opinión.
+                _price_only = False
+                if (not _crit_req) and _dom in (None, "market"):
+                    try:
+                        from intents.market_intents import detect_market_intent
+                        _price_only = detect_market_intent(content) is not None
+                    except Exception:
+                        _price_only = False
+
+                # (a) Pedido EXPLÍCITO de ver datos crudos → volcado (freight).
+                if detect_evidence_request(content) and detect_freight_intent(content):
+                    _fr_ans = resolve_freight_query(content)
+                    if _fr_ans:
+                        response_text = _fr_ans
+                        _domain_resolved = True
+                        _domain_source = "freight_evidence"
+                        logger.info(
+                            "Pipeline: DOMAIN-EVIDENCE gate (explicit data) | user=%s",
+                            user_id[:20],
+                        )
+
+                # (b) CRITERIO (default, la divisa): pregunta de dominio o pedido
+                #     de opinión → Vectrax opina desde lo aprendido.
+                if not response_text and not _price_only and (_crit_req or _dom):
+                    _target = _dom or strongest_domain()
+                    if _target:
+                        _crit = build_criterion(_target, content)
                         if _crit:
                             response_text = _crit
                             _domain_resolved = True
                             _domain_source = "criterion"
                             logger.info(
                                 "Pipeline: DOMAIN-CRITERION gate | domain=%s | user=%s",
-                                _dom, user_id[:20],
+                                _target, user_id[:20],
                             )
             except Exception as _cg_exc:
-                logger.debug("criterion gate failed (passthrough): %s", _cg_exc)
-        if not response_text:
-            try:
-                from intents.freight_intents import (
-                    detect_freight_intent, resolve_freight_query,
-                )
-                if detect_freight_intent(content):
-                    _fr_ans = resolve_freight_query(content)
-                    if _fr_ans:
-                        response_text = _fr_ans
-                        _domain_resolved = True
-                        _domain_source = "freight"
-                        logger.info(
-                            "Pipeline: DOMAIN-EVIDENCE gate freight | grounded/abstain | user=%s",
-                            user_id[:20],
-                        )
-            except Exception as _fg_exc:
-                logger.debug("freight domain gate failed (passthrough): %s", _fg_exc)
+                logger.debug("domain criterion gate failed (passthrough): %s", _cg_exc)
 
         # 4.2b Auto-contexto — Vectrax se observa a sí mismo
         _self_resolved = False

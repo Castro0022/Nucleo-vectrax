@@ -174,7 +174,20 @@ def test_detects_underscored_freight_tokens():
     assert fi.detect_freight_intent(_ROUTE_A_QUERY)
     # Negativos claros siguen siendo negativos
     assert not fi.detect_freight_intent("precio de BTC")
-    assert not fi.detect_freight_intent("hola, \u00bfc\u00f3mo est\u00e1s?")
+    assert not fi.detect_freight_intent("hola, ¿cómo estás?")
+
+
+def test_detect_evidence_request():
+    """Solo un pedido EXPLÍCITO de ver datos crudos activa el volcado; pedir
+    opinión/criterio NO."""
+    # Pedido explícito de datos (verbo de despliegue + sustantivo de datos)
+    assert fi.detect_evidence_request("muéstrame los datos de freight_logistics")
+    assert fi.detect_evidence_request("dame las observaciones crudas")
+    assert fi.detect_evidence_request("ver los registros raw")
+    # Pedir opinión/criterio NO es pedir datos crudos
+    assert not fi.detect_evidence_request("¿qué opinas de freight logistics?")
+    assert not fi.detect_evidence_request("dime sobre freight logistics")
+    assert not fi.detect_evidence_request(_ROUTE_A_QUERY)
 
 
 def test_abstains_on_unsupported_decisional_subjects():

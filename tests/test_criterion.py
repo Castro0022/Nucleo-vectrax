@@ -120,9 +120,10 @@ def test_build_criterion_expresses_preference():
         for p in ps:
             p.stop()
     low = resp.lower()
-    assert "aapl" in low                        # nombra el patrón real preferido
-    assert ("me inclino" in low or "prefiero" in low)   # expresa criterio
+    assert "aapl" in low                        # ancla la posición en el patrón real
+    assert "emerge" in low                       # posición emergente (no "me inclino"/"elijo")
     assert ("expectancy" in low or "wr" in low)          # cita métrica real
+    assert "no es una regla" in low              # ni regla preprogramada ni elección de menú
 
 
 # ── 5. Abstención constructiva ante entidades ausentes (caso route_A) ─────
@@ -148,8 +149,10 @@ def test_build_criterion_route_a_constructive():
     # Reconoce que route_A/B/C no existen…
     assert "route_a" in low and "route_b" in low and "route_c" in low
     assert "no tengo" in low
-    # …pero igualmente da criterio sobre lo observado
+    assert "no opino" not in low                 # ya NO se calla: siempre da posición
+    # …y AUN ASÍ da su posición emergente sobre lo observado
     assert "empty_miles" in low
+    assert "emerge" in low
     # sin reintroducir las afirmaciones fabricadas del incidente
     for claim in ("repeticiones exitosas", "menor variabilidad", "más consistentes"):
         assert claim not in low
@@ -236,5 +239,25 @@ def test_build_criterion_topic_scoped():
         for p in ps:
             p.stop()
     low = resp.lower()
-    assert "me inclino por «nvda»" in low   # centrado en el tema
+    assert "«nvda»" in low                   # posición centrada en el tema
+    assert "emerge" in low                   # posición emergente
     assert "aapl" not in low                # no arrastra el top global
+
+
+def test_build_criterion_always_opines_low_data():
+    # Con MUY poca evidencia (1 patrón, N bajo, confianza LOW) igual da su
+    # posición — no se abstiene por "datos insuficientes".
+    priors = {"market": [_prior("AAPL", 60.0, 2.0, 3, "LOW")]}
+    gi = _FakeGI(by_domain_map={"market": []}, domain_stats={"market": {}})
+    ps = _patch_stores(priors, ["market"], gi)
+    for p in ps:
+        p.start()
+    try:
+        resp = C.build_criterion("market", "¿qué opinas?")
+    finally:
+        for p in ps:
+            p.stop()
+    low = resp.lower()
+    assert "aapl" in low                         # opina con lo que tiene
+    assert "emerge" in low                        # como posición emergente
+    assert "todavía no tengo datos" not in low    # NO se abstiene
