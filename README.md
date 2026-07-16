@@ -2079,6 +2079,7 @@ Files:
 ## 📋 Changelog
 
 ### 2026-07-16
+- **release `v2026.07.16` → producción (`a15573d`)** — Desplegado a Vultr (`vectrax-core` healthy · 48 motores · `/v1/health` ok · governor `act`). Agrupa lo acumulado desde el último release: **Motor de Criterio Aprendido** cross-dominio (criterio grounded por defecto, posición emergente, motor #48 registrado), refactor de **inyección del broker**, y **UPL observation priority** en `autonomous_observer` (aditiva/read-only, gate `UPL_OBSERVER_INTEGRATION`; boost no-op hasta que la UPL madure hipótesis). Suite: 3037 passed. Release/tag `v2026.07.16-criterion-upl`.
 - **refactor: broker client injection** — `connectors/broker.py` resuelve el cliente activo por un seam inyectable (`set_client`/`reset_clients`/`_resolve_client`) usando `importlib.import_module` en vez de `from connectors.etoro import etoro_client`. Elimina fallos de tests dependientes del orden (el stub de `sys.modules` quedaba anulado por el enlace del atributo del paquete). Comportamiento en prod sin cambios. Tests de broker ahora herméticos e independientes del orden; +cobertura de `get_account`/ramas de fallo (broker.py 61%→78%). `tests/test_broker_routing.py`.
 
 ### 2026-07-15
