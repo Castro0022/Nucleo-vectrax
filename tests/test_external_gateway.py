@@ -331,20 +331,19 @@ class TestFreightDomainGatePrecedence:
         "decisi\u00f3n exclusivamente con la evidencia persistida en freight_logistics"
     )
 
-    def test_freight_gate_precedes_self_aware(self):
+    def test_explicit_evidence_request_returns_raw(self):
+        """SOLO un pedido explícito de ver datos crudos ('muéstrame los datos/
+        observaciones') resuelve por el volcado de evidencia freight, y precede
+        al narrador self-aware. El criterio es el default; el volcado es la
+        excepción bajo pedido explícito.
+        """
         from unittest.mock import patch
 
         gw = ExternalGateway()
-        FREIGHT = "FREIGHT_GROUNDED_SENTINEL"
+        FREIGHT = "FREIGHT_RAW_SENTINEL"
         SELFAWARE = "SELF_AWARE_FABRICATION_SENTINEL"
+        query = "muéstrame los datos y observaciones de freight_logistics"
 
-        # detect_freight_intent NO se parchea: corre real sobre la consulta con
-        # `freight_logistics` (token con guion bajo) → debe detectar True.
-        # resolve_freight_query se parchea a un sentinel determinista.
-        # is_self_referential/resolve_self_aware simulan que el narrador
-        # self-aware SÍ dispararía (como en el incidente).
-        # Los post-procesos (auditor/presence/language) se hacen passthrough
-        # para aislar la decisión de precedencia.
         with patch("intents.freight_intents.resolve_freight_query", return_value=FREIGHT), \
              patch("vectrax.self_context.is_self_referential", return_value=True), \
              patch("vectrax.self_context.resolve_self_aware", return_value=SELFAWARE), \
@@ -352,18 +351,38 @@ class TestFreightDomainGatePrecedence:
              patch("core.language_gate.enforce_language", side_effect=lambda text, *a, **k: text), \
              patch("core.conversation.presence_policy.apply_presence_policy", side_effect=lambda text, *a, **k: (text, False)):
             result = gw.receive_message(
-                user_id="tg:test_freight_gate",
-                content=self._ROUTE_A_QUERY,
+                user_id="tg:test_evidence",
+                content=query,
                 channel="telegram",
             )
 
-        # La compuerta de dominio ganó: respuesta grounded, NO la del narrador.
-        assert FREIGHT in result.response, (
-            "la compuerta freight no resolvi\u00f3 la consulta"
-        )
-        assert SELFAWARE not in result.response, (
-            "el narrador self-aware autor\u00f3 la respuesta (precedencia rota)"
-        )
+        assert FREIGHT in result.response, "el pedido explícito de datos no dio el volcado"
+        assert SELFAWARE not in result.response, "el narrador self-aware rompió la precedencia"
+
+    def test_domain_question_resolves_via_criterion(self):
+        """Una pregunta de dominio SIN pedido explícito de datos → CRITERIO
+        (build_criterion), nunca el volcado crudo. El criterio es la divisa.
+        """
+        from unittest.mock import patch
+
+        gw = ExternalGateway()
+        CRIT = "CRITERION_POSITION_SENTINEL"
+        FREIGHT = "FREIGHT_RAW_SHOULD_NOT_APPEAR"
+        with patch("core.learn.criterion.detect_domain", return_value="freight_logistics"), \
+             patch("core.learn.criterion.build_criterion", return_value=CRIT), \
+             patch("intents.freight_intents.resolve_freight_query", return_value=FREIGHT), \
+             patch("vectrax.self_context.is_self_referential", return_value=True), \
+             patch("vectrax.self_context.resolve_self_aware", return_value="SA"), \
+             patch("vectrax.response_auditor.run_audit", side_effect=lambda **kw: kw.get("response", "")), \
+             patch("core.language_gate.enforce_language", side_effect=lambda text, *a, **k: text), \
+             patch("core.conversation.presence_policy.apply_presence_policy", side_effect=lambda text, *a, **k: (text, False)):
+            result = gw.receive_message(
+                user_id="tg:test_domain_crit",
+                content="dime sobre freight logistics",
+                channel="telegram",
+            )
+        assert CRIT in result.response            # criterio (divisa), no volcado
+        assert FREIGHT not in result.response     # el volcado crudo NO aparece
 
     def test_non_freight_query_still_reaches_self_aware(self):
         """Una consulta self-referencial NO-freight sigue yendo al narrador

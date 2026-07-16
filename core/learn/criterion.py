@@ -302,30 +302,47 @@ def rank_domain_evidence(domain: str, limit: int = 8) -> List[Dict[str, Any]]:
 # ── Opinión: determinista (grounded) + LLM restringido (verificado) ───
 
 def _deterministic_opinion(
-    domain: str, ranked: List[Dict[str, Any]], focus: str = "",
+    domain: str, ranked: List[Dict[str, Any]], focus: str = "", note: str = "",
 ) -> str:
+    # El criterio NO es una regla preprogramada ni una elección entre opciones:
+    # es la POSICIÓN que emerge de todo lo observado hasta ahora. Se lee sobre el
+    # conjunto de la evidencia y se ancla en su señal dominante (grounded).
     top = ranked[0]
-    alts = ranked[1:3]
-    out = [
-        f"Por lo que he observado en {domain} {focus}mi criterio: me inclino por "
-        f"«{top['name']}»."
-    ]
-    reason = (
-        f"Razones (evidencia aprendida): expectancy {top['expectancy']:+.2f}, "
-        f"WR {top['win_rate']:.0f}% (LB {top['wilson_lb']:.0f}% sobre "
-        f"{top['sample_size']} obs), confianza {top['confidence'] or 'n/d'}"
+    rest = ranked[1:3]
+    n_pat = len(ranked)
+    n_obs = sum(int(e.get("sample_size", 0) or 0) for e in ranked)
+    anchor = (
+        f"«{top['name']}» (expectancy {top['expectancy']:+.2f}, "
+        f"WR {top['win_rate']:.0f}%, LB {top['wilson_lb']:.0f}% sobre "
+        f"{top['sample_size']} obs, confianza {top['confidence'] or 'n/d'}"
     )
     if top.get("hits"):
-        reason += f", masa {top['hits']} activaciones"
-    out.append(reason + ".")
-    if alts:
-        comp = "; ".join(
-            f"«{a['name']}» (E {a['expectancy']:+.2f}, WR {a['win_rate']:.0f}%)"
-            for a in alts
+        anchor += f", masa {top['hits']} activaciones"
+    anchor += ")"
+    if note:
+        head = (
+            f"{note}de lo observado en {domain} la posición que me emerge se "
+            f"apoya en {anchor}."
         )
-        out.append(f"Lo prefiero sobre {comp}.")
+    else:
+        head = (
+            f"De todo lo que he observado en {domain} {focus}— {n_pat} patrones "
+            f"sobre {n_obs} observaciones — la posición que me emerge se apoya "
+            f"en {anchor}."
+        )
+    out = [head]
+    if rest:
+        field = "; ".join(
+            f"«{o['name']}» (E {o['expectancy']:+.2f}, WR {o['win_rate']:.0f}%)"
+            for o in rest
+        )
+        out.append(
+            f"El resto de lo observado ({field}) pesa en esa misma lectura; "
+            f"no son opciones que elija por separado."
+        )
     out.append(
-        "Es mi lectura desde lo aprendido, no una regla fija: cambia si cambia la evidencia."
+        "No es una regla que me programaron ni una elección de menú: es lo que "
+        "emerge de la evidencia acumulada, y se reconfigura conforme sigo observando."
     )
     return " ".join(out)
 
@@ -374,13 +391,17 @@ def _phrase_with_llm(
     no hay LLM disponible.
     """
     prompt = (
-        "Eres Vectrax. Expresa TU criterio en primera persona respondiendo a la "
-        "pregunta, usando EXCLUSIVAMENTE la evidencia de abajo. NO inventes "
-        "entidades, rutas ni números fuera de la evidencia. Cita las métricas que "
-        "sustentan tu preferencia. Si te preguntan por algo que no está en la "
-        "evidencia, dilo y da tu criterio sobre lo que sí observaste.\n\n"
+        "Eres Vectrax. Da TU criterio en primera persona respondiendo a la "
+        "pregunta. El criterio NO es una regla preprogramada ni una elección "
+        "entre opciones de una lista: es la POSICIÓN que emerge de TODO lo que "
+        "has observado hasta ahora. Exprésalo como una postura propia que surge "
+        "del conjunto de la evidencia de abajo, usándola EXCLUSIVAMENTE como "
+        "fundamento. NO inventes entidades, rutas ni números fuera de la "
+        "evidencia. Cita las métricas que sostienen tu posición. Si te preguntan "
+        "por algo que no observaste, dilo y da igualmente tu posición desde lo "
+        "que sí has aprendido, aunque sea poco.\n\n"
         f"{_evidence_block(domain, ranked)}\n\n"
-        f"PREGUNTA: {query}\n\nMI CRITERIO:"
+        f"PREGUNTA: {query}\n\nMI POSICIÓN (criterio emergente):"
     )
     try:
         if llm is not None:
@@ -401,24 +422,32 @@ def build_criterion(
     query: str = "",
     llm: Optional[Callable[[str], str]] = None,
 ) -> str:
-    """Criterio/opinión de Vectrax sobre `domain`, grounded en lo aprendido.
+    """Criterio de Vectrax sobre `domain`: la POSICIÓN que emerge de todo lo
+    observado, no una regla preprogramada ni una elección entre opciones.
 
-    - Si no hay evidencia suficiente → lo dice (sin inventar).
-    - Si el query nombra entidades ausentes de la evidencia → lo reconoce y AUN
-      ASÍ da su criterio sobre lo observado (abstención constructiva).
+    - Siempre opina desde los datos que tiene, aunque sean pocos (nunca se
+      abstiene por "datos insuficientes"). Solo si el dominio no tiene NINGÚN
+      dato observado lo dice honestamente.
+    - Si el tema concreto no tiene evidencia directa → lo reconoce y AUN ASÍ da
+      su posición desde lo aprendido del dominio (transparente, sin fabricar).
     - Frasea con LLM restringido a la evidencia si está disponible y pasa el
-      verificador; si no, texto determinista. Siempre grounded, nunca fijo/vacío.
+      verificador; si no, texto determinista. Siempre grounded, nunca fabrica.
     """
     ranked = rank_domain_evidence(domain)
     if not ranked:
+        # Único caso sin nada sobre lo que opinar: ausencia TOTAL de evidencia en
+        # el dominio. No es abstención por "datos insuficientes" — es que aún no
+        # hay datos. Se dice honestamente, sin fabricar, invitando a acumular.
         return (
-            f"Todavía no tengo aprendizaje suficiente en el dominio {domain} "
-            f"para formar un criterio. No voy a opinar sin evidencia observada."
+            f"Todavía no tengo datos observados en {domain}, así que aún no puedo "
+            f"formar un criterio propio aquí. En cuanto acumule evidencia te digo "
+            f"lo que pienso."
         )
 
     # Entender el TEMA concreto y quedarnos con la experiencia RELACIONADA.
     topic = extract_topic_tokens(query)
     focus = ""
+    note = ""
     related = ranked
     if topic:
         scored = sorted(
@@ -431,18 +460,17 @@ def build_criterion(
             related = rel
             focus = f"sobre «{label}» "
         else:
-            # Tema sin experiencia relacionada: no opino sobre eso; ofrezco lo
-            # más cercano observado (sin fabricar).
-            top = ranked[0]
-            return (
-                f"No tengo experiencia relacionada con «{label}» en {domain}, "
-                f"así que no opino sobre eso. Lo más cercano que he observado es "
-                f"«{top['name']}» (expectancy {top['expectancy']:+.2f}, WR "
-                f"{top['win_rate']:.0f}% sobre {top['sample_size']} obs), pero no "
-                f"es directamente «{label}»."
+            # Sin experiencia DIRECTA sobre el tema: NO me callo (el criterio es
+            # la divisa de Vectrax). Doy mi criterio con lo que SÍ he aprendido
+            # del dominio — aunque sea poco — marcando la transparencia. Nunca
+            # fabrico datos sobre «{label}»: solo cito lo realmente observado.
+            related = ranked
+            note = (
+                f"Sobre «{label}» todavía no tengo evidencia directa, pero con lo "
+                f"que he aprendido en {domain} te digo lo que pienso: "
             )
 
     phrased = _phrase_with_llm(domain, related, query, llm=llm)
     if phrased and _verify_grounded(phrased, related, domain):
-        return phrased
-    return _deterministic_opinion(domain, related, focus)
+        return (note + phrased) if note else phrased
+    return _deterministic_opinion(domain, related, focus, note=note)

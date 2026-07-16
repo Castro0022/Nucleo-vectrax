@@ -80,6 +80,32 @@ def detect_freight_intent(text: str) -> bool:
     return bool(_FREIGHT_WORD_RE.search(text))
 
 
+# Explicit request to SEE the raw persisted data (NOT an opinion). Only these
+# route to the raw evidence dump; every other domain question gets Vectrax's
+# CRITERION. Requires BOTH a display verb and a data noun to stay conservative.
+_EVIDENCE_VERB_RE = re.compile(
+    r"\b(?:mu[eé]stra(?:me)?|ens[eé][ñn]a(?:me)?|list(?:a|ame|ar)?|dame|ver|"
+    r"visualiz\w*|imprim\w*|volca\w*|dump)\b",
+    re.IGNORECASE,
+)
+_EVIDENCE_NOUN_RE = re.compile(
+    r"\b(?:datos?\s+crudos?|datos|evidencia\s+cruda|observaci[oó]n\w*|"
+    r"registros?|stars?|raw)\b",
+    re.IGNORECASE,
+)
+
+
+def detect_evidence_request(text: str) -> bool:
+    """True only if the user EXPLICITLY asks to see the raw persisted data
+    (e.g. "muéstrame los datos/observaciones"), as opposed to asking for an
+    opinion/criterion. Requires a display verb AND a data noun so normal
+    questions ("defiende con la evidencia", "qué opinas") are NOT captured.
+    """
+    if not text:
+        return False
+    return bool(_EVIDENCE_VERB_RE.search(text) and _EVIDENCE_NOUN_RE.search(text))
+
+
 # ---------------------------------------------------------------------------
 # Retrieval — real persisted evidence, by domain, with provenance
 # ---------------------------------------------------------------------------
