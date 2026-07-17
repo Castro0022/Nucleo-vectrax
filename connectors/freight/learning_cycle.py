@@ -154,7 +154,25 @@ def run_learning_cycle(
         except Exception as exc:
             logger.debug("freight elevation error: %s", exc)
 
-        # ── 8. Stars after + mature ───────────────────────────────────────
+        # ── 7.5 Verificación de resultados (cierre del ciclo) ─────────────
+        # ADITIVO y defensivo: convierte los eventos de resultado ya streameados
+        # (delivery_complete/delay_reported) en Outcomes VERIFICADOS contra la
+        # verdad objetiva del dominio (on_time/delay) y los persiste en el
+        # verification_ledger. Reemplaza el proxy de coherencia como fuente de
+        # DESEMPEÑO. No toca ingest/elevación; si falla, el ciclo continúa igual.
+        if os.environ.get("FREIGHT_VERIFY_ENABLED", "1") == "1":
+            try:
+                from connectors.freight.verification_cycle import verify_events
+                vscore = verify_events(events, record=True)
+                summary["verified_decisive"] = vscore.n_decisive
+                summary["verified_wins"] = vscore.wins
+                summary["verified_losses"] = vscore.losses
+                summary["verified_win_rate"] = vscore.win_rate
+                summary["verified_accuracy"] = vscore.accuracy
+            except Exception as exc:
+                logger.debug("freight verification error: %s", exc)
+
+        # ── 8. Stars after + mature ────────────────────────────────
         summary["stars_after"], summary["mature_stars"] = _count_stars_mature(_DOMAIN)
         summary["success"] = True
         summary["elapsed_s"] = round(time.time() - t0, 2)
