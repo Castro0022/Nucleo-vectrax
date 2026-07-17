@@ -2076,7 +2076,61 @@ Files:
 
 ---
 
+## 🔁 Ciclo de Verificación — OutcomeAdapter (invariante cross-dominio)
+
+El Motor de Criterio (arriba) responde *"¿qué he aprendido?"*. El **ciclo de verificación** responde la otra mitad: **"¿ese criterio fue correcto?"**. Es la segunda mitad del bucle de aprendizaje, y es **domain-agnostic**: el mismo núcleo puntúa `market`, `freight_logistics` o cualquier dominio futuro contra su **verdad objetiva**.
+
+```
+observar → acumular → criterio → VERIFICAR → reaprender
+                          ▲                       │
+                          └───────────────────────┘
+```
+
+La tesis no es tener un dominio fuerte, sino que **la misma arquitectura se demuestra en dominios no relacionados**: el mismo `score_outcomes` puntúa market, freight y devops con matemática idéntica y distinta verdad.
+
+### Núcleo invariante — `core/learn/outcome_adapter.py`
+
+Un contrato único que no sabe nada de ningún dominio:
+- `OutcomeStatus` — `WIN` / `LOSS` / `NEUTRAL` / `PENDING`.
+- `Prediction` / `Outcome` — dataclasses inmutables (qué se predijo · qué pasó).
+- `OutcomeAdapter` (ABC) — cada dominio implementa `resolve(prediction, observation) → Outcome`, traduciendo SU verdad a WIN/LOSS.
+- `ThresholdOutcomeAdapter` — adaptador genérico reutilizable para dominios con verdad numérica (devops / ventas / soporte…).
+- `score_outcomes(...) → DomainScore` — **puntuación invariante**: `n_decisive`, `win_rate`, `expectancy`, `accuracy`, `lift_vs_baseline`.
+- Registro (`register_adapter` / `get_adapter`) + `cross_domain_scoreboard()` — la MISMA métrica lado a lado por dominio.
+
+### Persistencia genérica — `core/learn/verification_ledger.py`
+
+Acumula los `Outcome` verificados de CUALQUIER dominio: un JSONL por dominio en `<vault>/domain_verification/{domain}.jsonl` (path resuelto en runtime vía `VECTRAX_VAULT_DIR`; append-only, sin DB). API: `record_outcome` (ignora `PENDING`), `load_outcomes(domain, subject, limit)`, `domain_score(domain) → DomainScore`, `subject_scores(domain, min_decisive)`. Defensivo: nunca lanza.
+
+### Cableado freight — `connectors/freight/verification_cycle.py`
+
+Cierra la mitad que a freight le faltaba. `verify_events(events)`:
+- Filtra los eventos con verdad objetiva (`delivery_complete` con `on_time`, `delay_reported`).
+- subject = `region|carrier`; predicción favorable = `"on_time"`.
+- Resuelve vía `FreightOutcomeAdapter` (núcleo invariante detrás) y persiste los decisivos en el ledger.
+- Devuelve el `DomainScore` REAL del lote (`verified_score()` lee el acumulado; `verified_subjects()`, las lanes/carriers validadas).
+
+Reemplaza el **proxy de coherencia** (antes `win_rate = cc_score·100`, derivado del conteo de campos en `try_elevate_from_gravity`) por **desempeño REAL contra la verdad del dominio**, sin tocar ingesta / elevación / criterio.
+
+### Hook en el ciclo (freight) — `connectors/freight/learning_cycle.py`
+
+Paso **7.5** (tras la elevación, antes del cierre), **aditivo y defensivo**: reusa los `events` ya streameados, llama a `verify_events`, y añade al summary `verified_decisive/wins/losses/win_rate/accuracy`. Gate `FREIGHT_VERIFY_ENABLED` (default `1`); envuelto en try/except — si falla, el ciclo continúa idéntico.
+
+Files:
+- `core/learn/outcome_adapter.py` — contrato + scoring invariante + registro + scoreboard cross-dominio
+- `connectors/etoro/trading_outcome_adapter.py` — adaptador market (envuelve `classify_outcome`, sin duplicar)
+- `connectors/freight/freight_outcome_adapter.py` — adaptador freight (verdad: on_time / delay)
+- `core/learn/verification_ledger.py` — persistencia genérica de Outcomes verificados
+- `connectors/freight/verification_cycle.py` — cableado end-to-end de freight
+- `connectors/freight/learning_cycle.py` — hook Step 7.5 (gate `FREIGHT_VERIFY_ENABLED`)
+- `tests/test_outcome_adapter.py` — 7 tests (incl. invariancia cross-dominio) · `tests/test_freight_verification.py` — 4 tests
+
+---
+
 ## 📋 Changelog
+
+### 2026-07-17
+- **feat: ciclo de verificación cross-dominio (OutcomeAdapter)** — Segunda mitad del bucle de aprendizaje (*"¿el criterio fue correcto?"*), invariante y domain-agnostic. Núcleo `core/learn/outcome_adapter.py`: contrato `OutcomeAdapter` (`resolve → Outcome` con `OutcomeStatus` WIN/LOSS/NEUTRAL/PENDING), `ThresholdOutcomeAdapter` genérico, `score_outcomes → DomainScore` (`n_decisive`, `win_rate`, `expectancy`, `accuracy`, `lift_vs_baseline`), registro + `cross_domain_scoreboard()`. Persistencia genérica `core/learn/verification_ledger.py` (JSONL por dominio en `<vault>/domain_verification/{domain}.jsonl` vía `VECTRAX_VAULT_DIR`). Cableado freight `connectors/freight/verification_cycle.py` (`verify_events`: `delivery_complete`/`delay_reported` → verdad on_time/delay, subject `region|carrier`) + hook aditivo Step 7.5 en `learning_cycle.py` (gate `FREIGHT_VERIFY_ENABLED`, defensivo). Reemplaza el proxy de coherencia (`win_rate = cc_score·100`) por desempeño REAL sin tocar ingesta/elevación/criterio. Adaptadores `trading_outcome_adapter.py` (market, envuelve `classify_outcome`) y `freight_outcome_adapter.py`. 11 tests (7 outcome_adapter incl. invariancia + 4 freight_verification); suite de integración freight 29 verdes.
 
 ### 2026-07-16
 - **release `v2026.07.16` → producción (`a15573d`)** — Desplegado a Vultr (`vectrax-core` healthy · 48 motores · `/v1/health` ok · governor `act`). Agrupa lo acumulado desde el último release: **Motor de Criterio Aprendido** cross-dominio (criterio grounded por defecto, posición emergente, motor #48 registrado), refactor de **inyección del broker**, y **UPL observation priority** en `autonomous_observer` (aditiva/read-only, gate `UPL_OBSERVER_INTEGRATION`; boost no-op hasta que la UPL madure hipótesis). Suite: 3037 passed. Release/tag `v2026.07.16-criterion-upl`.
