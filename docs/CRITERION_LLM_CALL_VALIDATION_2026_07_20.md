@@ -2,7 +2,7 @@
 
 - **Task:** Investigar por qué el bridge LLM no se invocaba desde Telegram (el criterion siempre caía a determinista) e implementar un util compartido que habilite la presentación por LLM en producción, sin depender del bridge sync-only.
 - **Delivered:** 2026-07-20 · **Status:** ✅ Closed (diagnosticado, implementado, testeado, desplegado, verificado en vivo, documentado)
-- **Branches/merges:** `feat/llm-call-shared-util` → PR #45 → `main` (`1cb0d74`)
+- **Branches/merges:** `feat/llm-call-shared-util` → PR #45 → `main` (`1cb0d74`); `feat/self-context-llm-call-unify` → PR #47 → `main` (`7b78ef6`)
 - **Deploy:** producción (Vultr, `vectrax-core`) en `1cb0d74`
 
 ## 1. Diagnóstico (causa raíz)
@@ -43,10 +43,10 @@ Antes: `origin=deterministic | attempted=False`. **Ahora: `origin=llm_rendered |
 - El criterion ahora hace una llamada LLM real en prod para consultas de dominio/opinión (+tokens/latencia); el determinista es el respaldo ante cualquier fallo.
 - `httpx.post` sync bloquea brevemente el event loop dentro del endpoint async (igual que antes).
 - El `intelligence_bridge` queda como legado del último-recurso del gateway (no eliminado).
-- Follow-up **opcional**: unificar `self_context` (su propio OpenAI-direct) sobre `core.llm_call`.
+- Follow-up: **✅ Completado** — `self_context.resolve_self_aware` (narrador self-aware) unificado sobre `core.llm_call` (PR #47, deploy `7b78ef6`; validado en vivo: `Self-aware response via OpenAI direct`). Ya no quedan llamadas LLM directas duplicadas en el pipeline (criterion, gateway y self_context van todas por `core/llm_call`).
 
 ## 7. Estado
-- **Cerrado.** Causa raíz identificada y resuelta; util compartido implementado, testeado (3092 passed), desplegado y verificado en vivo (`origin=llm_rendered`). Sin ítems bloqueantes abiertos; un follow-up opcional anotado.
+- **Cerrado.** Causa raíz identificada y resuelta; util compartido implementado, testeado (suite 3095 passed), desplegado y verificado en vivo (`origin=llm_rendered`). Unificación de `self_context` completada (PR #47). Documentado en `README.md` (“🔌 Capa de llamada LLM compartida”). **Sin ítems bloqueantes ni follow-ups abiertos.**
 
 ## Referencias
 - Código: `core/llm_call.py`, `core/learn/criterion.py`, `core/operator/external_gateway.py`.
