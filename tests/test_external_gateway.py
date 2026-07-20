@@ -361,15 +361,17 @@ class TestFreightDomainGatePrecedence:
 
     def test_domain_question_resolves_via_criterion(self):
         """Una pregunta de dominio SIN pedido explícito de datos → CRITERIO
-        (build_criterion), nunca el volcado crudo. El criterio es la divisa.
+        (build_criterion_result), nunca el volcado crudo. El criterio es la divisa.
         """
         from unittest.mock import patch
+        from core.learn.criterion import CriterionResult, RenderAttempt
 
         gw = ExternalGateway()
         CRIT = "CRITERION_POSITION_SENTINEL"
         FREIGHT = "FREIGHT_RAW_SHOULD_NOT_APPEAR"
+        _cr = CriterionResult("deterministic", CRIT, None, RenderAttempt(attempted=False))
         with patch("core.learn.criterion.detect_domain", return_value="freight_logistics"), \
-             patch("core.learn.criterion.build_criterion", return_value=CRIT), \
+             patch("core.learn.criterion.build_criterion_result", return_value=_cr), \
              patch("intents.freight_intents.resolve_freight_query", return_value=FREIGHT), \
              patch("vectrax.self_context.is_self_referential", return_value=True), \
              patch("vectrax.self_context.resolve_self_aware", return_value="SA"), \
@@ -413,10 +415,12 @@ class TestFreightDomainGatePrecedence:
         gw = ExternalGateway()
         CRIT = "CRITERION_OPINION_SENTINEL"
         SELFAWARE = "SELF_AWARE_SENTINEL_2"
+        from core.learn.criterion import CriterionResult, RenderAttempt
+        _cr = CriterionResult("deterministic", CRIT, None, RenderAttempt(attempted=False))
         # detect_criterion_request corre real (True sobre '¿qué opinas...?').
-        # detect_domain/build_criterion se parchean para aislar la precedencia.
+        # detect_domain/build_criterion_result se parchean para aislar la precedencia.
         with patch("core.learn.criterion.detect_domain", return_value="market"), \
-             patch("core.learn.criterion.build_criterion", return_value=CRIT), \
+             patch("core.learn.criterion.build_criterion_result", return_value=_cr), \
              patch("vectrax.self_context.is_self_referential", return_value=True), \
              patch("vectrax.self_context.resolve_self_aware", return_value=SELFAWARE), \
              patch("vectrax.response_auditor.run_audit", side_effect=lambda **kw: kw.get("response", "")), \
