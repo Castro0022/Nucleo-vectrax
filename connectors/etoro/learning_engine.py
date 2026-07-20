@@ -572,6 +572,32 @@ def _check_positions() -> int:
         return 0
 
 
+def _verify_market() -> Dict[str, Any]:
+    """Convierte las señales RESUELTAS en Outcomes VERIFICADOS contra la verdad
+    del precio (vía TradingOutcomeAdapter) y los persiste en el
+    verification_ledger genérico (dominio 'market').
+
+    ADITIVO, gated (MARKET_VERIFY_ENABLED, default '1') y defensivo: no toca
+    señales/patrones/proposals/ejecución; si falla, el ciclo continúa igual.
+    La deduplicación por signal_id vive en verification_cycle (verifica una vez).
+    """
+    if os.environ.get("MARKET_VERIFY_ENABLED", "1") != "1":
+        return {}
+    try:
+        from connectors.etoro.verification_cycle import run_market_verification
+        vscore = run_market_verification()
+        return {
+            "verified_decisive": vscore.n_decisive,
+            "verified_wins": vscore.wins,
+            "verified_losses": vscore.losses,
+            "verified_win_rate": vscore.win_rate,
+            "verified_accuracy": vscore.accuracy,
+        }
+    except Exception as e:
+        logger.debug("market verification error: %s", e)
+        return {}
+
+
 # ── New-symbol first-signal alert (one-time per symbol) ───────────────────
 
 def _load_alerted_new_symbols() -> set:
@@ -742,6 +768,11 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     r2 = _resolve_outcomes()
     r3 = _update_patterns()
 
+    # Step 3.4: Verificación de mercado (cierre del ciclo verificado) — aditivo,
+    # gated (MARKET_VERIFY_ENABLED) y defensivo. Convierte señales resueltas en
+    # outcomes reales por símbolo y los persiste en el verification_ledger común.
+    _verified = _verify_market()
+
     # Step 3.5: Alert creator when a pattern becomes usable for the first time
     _notify_new_usable_patterns()
 
@@ -807,6 +838,7 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         "shadow_ready":      shadow.get("ready_for_promotion", 0),
         "new_symbol_alerts": _new_sym_alerts,
     }
+    summary.update(_verified)
     logger.info("[LEARN] Cycle complete in %.1fs: %s", elapsed, summary)
     return summary
 

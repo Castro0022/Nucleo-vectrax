@@ -296,6 +296,7 @@ class TestLearningCycleCircuitCheck(unittest.TestCase):
     @patch("connectors.etoro.learning_engine._generate_proposals", return_value=[])
     @patch("connectors.etoro.learning_engine._feed_gravity", return_value=0)
     @patch("connectors.etoro.learning_engine._check_positions", return_value=0)
+    @patch("connectors.etoro.learning_engine._verify_market", return_value={})
     def test_cycle_runs_when_circuit_closed(self, *mocks):
         """run_learning_cycle should execute normally when circuit is closed."""
         from connectors.etoro.learning_engine import run_learning_cycle
