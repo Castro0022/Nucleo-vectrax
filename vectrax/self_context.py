@@ -137,49 +137,15 @@ def resolve_self_aware(
     except Exception as exc:
         logger.debug("Intelligence Bridge unavailable for self-aware: %s", exc)
 
-    # OpenAI directo (with API gate check)
+    # OpenAI directo vía util compartido (context-agnostic; identidad + api_gate
+    # + circuit centralizados en core.llm_call). Conserva la temperatura/timeout
+    # propios del self-aware (0.4 / 15s).
     try:
-        import os, httpx
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        if not api_key:
-            return ""
-        # Check API gate before calling
-        try:
-            from core.api_gate import check_gate, record_429, record_success
-            if not check_gate("openai"):
-                logger.debug("Self-aware: OpenAI gate closed, skipping")
-                return ""
-        except Exception:
-            pass
-        from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT
-        resp = httpx.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": VECTRAX_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": 500,
-                "temperature": 0.4,
-            },
-            timeout=15.0,
-        )
-        if resp.status_code == 429:
-            try:
-                record_429("openai")
-            except Exception:
-                pass
-            return ""
-        try:
-            record_success("openai")
-        except Exception:
-            pass
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
-        logger.info("Self-aware response via OpenAI direct")
-        return content.strip()
+        from core.llm_call import complete
+        res = complete(prompt, temperature=0.4, timeout=15.0)
+        if res.ok and res.text:
+            logger.info("Self-aware response via OpenAI direct")
+            return res.text
     except Exception as exc:
         logger.debug("OpenAI self-aware failed: %s", exc)
 
