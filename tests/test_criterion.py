@@ -531,3 +531,37 @@ def test_bcr_conclusion_altered_recomendable():
     assert res.origin == "deterministic"
     assert res.render_attempt.preservation_passed is False
     assert res.render_attempt.failure_reason == "conclusion_altered"
+
+
+# ── 14. Guarda de polaridad/negación (gap de negación con ancla+cifras intactas) ──
+
+def test_preserves_rejects_polarity_flip():
+    # Valencia negativa introducida (el determinista es una posición de apoyo).
+    assert not C._preserves_conclusion(
+        "AAPL es la peor lectura, WR 100%.", _DET_AAPL, _RANKED_AAPL)
+    assert not C._preserves_conclusion(
+        "Descartaría AAPL pese a su WR 100%.", _DET_AAPL, _RANKED_AAPL)
+    # Negación del apoyo con ancla + cifras intactas: el gap que este guard cierra.
+    assert not C._preserves_conclusion(
+        "Mi posición no se apoya en AAPL, WR 100%.", _DET_AAPL, _RANKED_AAPL)
+    # Control: apoyo afirmativo con las mismas cifras SÍ pasa.
+    assert C._preserves_conclusion(
+        "Mi posición se apoya en AAPL: WR 100%, LB 98%.", _DET_AAPL, _RANKED_AAPL)
+
+
+def test_bcr_polarity_flip_altered():
+    # Integración: giro de polaridad (grounded, ancla+cifras ok) → conclusion_altered.
+    ps = _market_stores()
+    for p in ps:
+        p.start()
+    try:
+        res = C.build_criterion_result(
+            "market", "¿qué opinas?", llm=lambda p: "AAPL es la peor opción, WR 100%.",
+        )
+    finally:
+        for p in ps:
+            p.stop()
+    assert res.origin == "deterministic"
+    assert res.render_attempt.grounding_passed is True
+    assert res.render_attempt.preservation_passed is False
+    assert res.render_attempt.failure_reason == "conclusion_altered"

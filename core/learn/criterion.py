@@ -393,6 +393,37 @@ _RECOMMENDATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Marcadores de POLARIDAD: el determinista es una posición de APOYO. Si el render
+# introduce valencia negativa o niega el apoyo (ausente en el determinista), es un
+# giro de sentido → se rechaza. Determinista y no-circular; heurística con techo
+# conocido (no captura toda negación semántica), primera línea de defensa.
+_NEGATIVE_VALENCE_RE = re.compile(
+    r"\b(peor(?:es)?|mal[oa]s?|d[eé]bil(?:es)?|floj[oa]s?|evita\w*|descarta\w*|"
+    r"rechaza\w*|desaconseja\w*|contraindicad\w*|riesgos[oa]s?|pierde\w*|perder|"
+    r"negativ[oa]s?|inferior(?:es)?|desfavorable\w*)\b",
+    re.IGNORECASE,
+)
+# Negación de un verbo de APOYO ("no se apoya", "no sostiene", "nunca respalda"…).
+_NEGATED_SUPPORT_RE = re.compile(
+    r"\b(?:no|nunca|jam[aá]s|tampoco)\s+(?:\w+\s+){0,2}?"
+    r"(?:apoy\w*|sostien\w*|respald\w*|favorec\w*|prefier\w*|emerg\w*|sustent\w*)",
+    re.IGNORECASE,
+)
+
+
+def _introduces_polarity_flip(rendered: str, deterministic: str) -> bool:
+    """True si el render introduce negación/antónimos AUSENTES en la conclusión
+    determinista (una posición de apoyo). Determinista y heurístico: cierra el gap
+    de 'negación que conserva ancla y cifras', con techo conocido de blocklist.
+    """
+    rlow, dlow = rendered.lower(), deterministic.lower()
+    for m in _NEGATIVE_VALENCE_RE.finditer(rlow):
+        if m.group(0) not in dlow:            # valencia negativa introducida
+            return True
+    if _NEGATED_SUPPORT_RE.search(rlow) and not _NEGATED_SUPPORT_RE.search(dlow):
+        return True                            # negó el apoyo ("no se apoya"…)
+    return False
+
 
 def _preserves_conclusion(
     rendered: str,
@@ -421,6 +452,8 @@ def _preserves_conclusion(
     if not anchor or anchor not in low:
         return False
     if _RECOMMENDATION_RE.search(rendered):
+        return False
+    if _introduces_polarity_flip(rendered, deterministic):
         return False
     det_pct_vals = {
         round(float(p)) for p in re.findall(r"(\d+(?:\.\d+)?)\s*%", deterministic)

@@ -812,7 +812,7 @@ class ExternalGateway:
             try:
                 from core.learn.criterion import (
                     detect_criterion_request, detect_domain, strongest_domain,
-                    build_criterion,
+                    build_criterion_result,
                 )
                 from intents.freight_intents import (
                     detect_freight_intent, detect_evidence_request,
@@ -846,14 +846,20 @@ class ExternalGateway:
                 if not response_text and not _price_only and (_crit_req or _dom):
                     _target = _dom or strongest_domain()
                     if _target:
-                        _crit = build_criterion(_target, content)
-                        if _crit:
-                            response_text = _crit
+                        _crit = build_criterion_result(_target, content)
+                        if _crit and _crit.text:
+                            response_text = _crit.text
                             _domain_resolved = True
-                            _domain_source = "criterion"
+                            _domain_source = f"criterion:{_crit.origin}"
+                            _ra = _crit.render_attempt
+                            # Trazabilidad: SOLO campos abstractos a logs (nunca texto crudo).
                             logger.info(
-                                "Pipeline: DOMAIN-CRITERION gate | domain=%s | user=%s",
-                                _target, user_id[:20],
+                                "Pipeline: DOMAIN-CRITERION gate | domain=%s | "
+                                "origin=%s | attempted=%s | grounding=%s | "
+                                "preservation=%s | reason=%s | user=%s",
+                                _target, _crit.origin, _ra.attempted,
+                                _ra.grounding_passed, _ra.preservation_passed,
+                                _ra.failure_reason, user_id[:20],
                             )
             except Exception as _cg_exc:
                 logger.debug("domain criterion gate failed (passthrough): %s", _cg_exc)
