@@ -60,6 +60,22 @@ def _patch_stores(priors_map, domains, gi):
     ]
 
 
+@pytest.fixture(autouse=True)
+def _criterion_llm_offline(monkeypatch):
+    """Por defecto, la presentación LLM del criterio NO está disponible (sin red).
+
+    Los tests que ejercen el render inyectan `llm=...` (que no pasa por
+    `complete`) o parchean `core.llm_call.complete` explícitamente. Así los tests
+    sin LLM son deterministas y herméticos aunque el entorno tenga OPENAI_API_KEY.
+    """
+    from core import llm_call
+    monkeypatch.setattr(
+        llm_call, "complete",
+        lambda *a, **k: llm_call.LLMResult(False, "", "no_key"),
+    )
+    yield
+
+
 # ── 1. Detección de pedido de opinión/criterio ────────────────────────────
 
 def test_detect_criterion_request():
@@ -455,12 +471,13 @@ def test_bcr_origin_conclusion_altered():
 
 
 def test_bcr_origin_deterministic_no_llm():
+    # Sin LLM disponible (complete → no_key vía fixture _criterion_llm_offline)
+    # → determinista, attempted=False.
     ps = _market_stores()
     for p in ps:
         p.start()
     try:
-        with patch("vectrax.intelligence_bridge.is_ready", return_value=False):
-            res = C.build_criterion_result("market", "¿qué opinas?")
+        res = C.build_criterion_result("market", "¿qué opinas?")
     finally:
         for p in ps:
             p.stop()
@@ -565,3 +582,84 @@ def test_bcr_polarity_flip_altered():
     assert res.render_attempt.grounding_passed is True
     assert res.render_attempt.preservation_passed is False
     assert res.render_attempt.failure_reason == "conclusion_altered"
+
+
+# ── 15. Integración con core.llm_call (camino de producción del render) ────
+
+def test_bcr_llm_rendered_via_complete(monkeypatch):
+    # complete devuelve un render fiel (grounded, sin flip) → origin llm_rendered.
+    from core import llm_call
+    rendered = "Mi lectura sobre AAPL sostiene la posición: WR 100%, LB 98%."
+    monkeypatch.setattr(
+        llm_call, "complete",
+        lambda *a, **k: llm_call.LLMResult(True, rendered, "ok"),
+    )
+    ps = _market_stores()
+    for p in ps:
+        p.start()
+    try:
+        res = C.build_criterion_result("market", "¿qué opinas?")
+    finally:
+        for p in ps:
+            p.stop()
+    assert res.origin == "llm_rendered"
+    assert res.text == rendered
+    assert res.render_attempt.grounding_passed is True
+    assert res.render_attempt.preservation_passed is True
+
+
+def test_bcr_complete_unavailable_not_attempted(monkeypatch):
+    # complete no disponible (gate_closed) → attempted=False, determinista.
+    from core import llm_call
+    monkeypatch.setattr(
+        llm_call, "complete",
+        lambda *a, **k: llm_call.LLMResult(False, "", "gate_closed"),
+    )
+    ps = _market_stores()
+    for p in ps:
+        p.start()
+    try:
+        res = C.build_criterion_result("market", "¿qué opinas?")
+    finally:
+        for p in ps:
+            p.stop()
+    assert res.origin == "deterministic"
+    assert res.render_attempt.attempted is False
+
+
+def test_bcr_complete_empty_falls_back(monkeypatch):
+    from core import llm_call
+    monkeypatch.setattr(
+        llm_call, "complete",
+        lambda *a, **k: llm_call.LLMResult(False, "", "empty"),
+    )
+    ps = _market_stores()
+    for p in ps:
+        p.start()
+    try:
+        res = C.build_criterion_result("market", "¿qué opinas?")
+    finally:
+        for p in ps:
+            p.stop()
+    assert res.origin == "deterministic"
+    assert res.render_attempt.attempted is True
+    assert res.render_attempt.failure_reason == "empty"
+
+
+def test_bcr_complete_http_error_falls_back(monkeypatch):
+    from core import llm_call
+    monkeypatch.setattr(
+        llm_call, "complete",
+        lambda *a, **k: llm_call.LLMResult(False, "", "http_error", error="500"),
+    )
+    ps = _market_stores()
+    for p in ps:
+        p.start()
+    try:
+        res = C.build_criterion_result("market", "¿qué opinas?")
+    finally:
+        for p in ps:
+            p.stop()
+    assert res.origin == "deterministic"
+    assert res.render_attempt.attempted is True
+    assert res.render_attempt.failure_reason == "llm_error"
