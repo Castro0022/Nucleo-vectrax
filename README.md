@@ -2127,6 +2127,31 @@ Files:
 
 ---
 
+## 🔌 Capa de llamada LLM compartida — `core/llm_call`
+
+Punto único de invocación al proveedor LLM, **síncrono y context-agnostic**: sirve tanto en el worker síncrono de Telegram como llamado dentro del endpoint `async` de FastAPI, **sin depender del Intelligence Bridge** (que es sync-only y por eso nunca se calienta en producción).
+
+### Por qué existe
+El `intelligence_bridge` rehúsa correr dentro de un event loop y solo se inicializaba en el último-recurso del gateway, casi nunca alcanzado (los resolvers upstream cortocircuitan). Resultado: la presentación LLM del criterion nunca corría (`attempted=False`) y cada resolver que necesitaba LLM había duplicado su propio “OpenAI directo”. `core/llm_call` unifica esa lógica en un solo lugar.
+
+### Contrato
+`complete(prompt, *, system_prompt=None, max_tokens=500, temperature=0.7, timeout=30.0) -> LLMResult`
+- **Defensivo**: nunca lanza.
+- `LLMResult(ok, text, status, provider, model, error)` con `status ∈ {ok, no_key, gate_closed, circuit_open, empty, http_error, exception}` y propiedad `available` (distingue “no disponible” de “intento fallido”).
+- Preserva salvaguardas: identidad `effective_system_prompt` → `VECTRAX_SYSTEM_PROMPT`, `api_gate` (backoff 429) y `external_call_guard` (circuit breaker). **No loguea texto crudo.** Overrides `VX_LLM_MODEL` / `VX_LLM_TIMEOUT`.
+
+### Consumidores (sin llamadas LLM directas duplicadas)
+- `core/learn/criterion.py::_call_llm` — presentación del criterio; mapea `available`/`status` → contrato `RenderAttempt` (`attempted`/`failure_reason`).
+- `core/operator/external_gateway.py::_generate_openai_direct` — worker de Telegram (wrapper delgado).
+- `vectrax/self_context.py::resolve_self_aware` — narrador self-aware (temperatura 0.4 / timeout 15s).
+
+Files:
+- `core/llm_call.py` — `complete` + `LLMResult`
+- `tests/test_llm_call.py` — 11 tests (cada status + identidad soberana + overrides de env)
+- Cierre: `docs/CRITERION_LLM_CALL_VALIDATION_2026_07_20.md`
+
+---
+
 ## 📋 Changelog
 
 ### 2026-07-20
