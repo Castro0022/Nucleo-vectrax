@@ -15,6 +15,8 @@ import sys
 import types
 from unittest.mock import patch
 
+import pytest
+
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
@@ -194,20 +196,29 @@ def test_build_criterion_falls_back_when_llm_ungrounded():
 # ── 8. LLM grounded → se usa su fraseo ────────────────────────────────────
 
 def test_build_criterion_uses_grounded_llm():
+    # El LLM es SOLO presentación: re-redacta la conclusión determinista
+    # conservando ancla + cifras y sin recomendaciones → origin llm_rendered.
     priors = {"market": [_prior("AAPL", 100.0, 16.0, 221, "HIGH")]}
     gi = _FakeGI(by_domain_map={"market": []}, domain_stats={"market": {}})
     ps = _patch_stores(priors, ["market"], gi)
     for p in ps:
         p.start()
     try:
-        resp = C.build_criterion(
-            "market", "¿qué opinas de la bolsa?",
-            llm=lambda prompt: "Por lo aprendido, prefiero AAPL (WR 100%).",
+        rendered = "Lo que veo en AAPL sostiene mi lectura: expectancy +16.00, WR 100%."
+        res = C.build_criterion_result(
+            "market", "¿qué opinas de la bolsa?", llm=lambda prompt: rendered,
+        )
+        wrapped = C.build_criterion(
+            "market", "¿qué opinas de la bolsa?", llm=lambda prompt: rendered,
         )
     finally:
         for p in ps:
             p.stop()
-    assert "prefiero AAPL (WR 100%)" in resp
+    assert res.origin == "llm_rendered"
+    assert res.text == rendered
+    assert res.render_attempt.grounding_passed is True
+    assert res.render_attempt.preservation_passed is True
+    assert wrapped == rendered            # el wrapper -> str devuelve el texto autorizado
 
 
 # ── 9. Tema concreto: extracción y criterio centrado en el tema ───────────
@@ -261,3 +272,262 @@ def test_build_criterion_always_opines_low_data():
     assert "aapl" in low                         # opina con lo que tiene
     assert "emerge" in low                        # como posición emergente
     assert "todavía no tengo datos" not in low    # NO se abstiene
+
+
+# ── 10. RenderAttempt.__post_init__ — una rama por cada estado de la tabla ──
+
+def test_render_attempt_not_attempted():
+    # Rama 1: no intentado → todo None.
+    assert C.RenderAttempt(attempted=False).failure_reason is None
+    with pytest.raises(ValueError):
+        C.RenderAttempt(attempted=False, grounding_passed=True)
+    with pytest.raises(ValueError):
+        C.RenderAttempt(attempted=False, rejected_text="x")
+
+
+def test_render_attempt_no_grounding_eval():
+    # Rama 2: intentado sin evaluar grounding → reason ∈ {empty, llm_error}.
+    assert C.RenderAttempt(True, failure_reason="empty").failure_reason == "empty"
+    assert C.RenderAttempt(True, failure_reason="llm_error").failure_reason == "llm_error"
+    with pytest.raises(ValueError):
+        C.RenderAttempt(True)                              # sin reason
+    with pytest.raises(ValueError):
+        C.RenderAttempt(True, failure_reason="not_grounded")  # reason inválida aquí
+
+
+def test_render_attempt_grounding_failed():
+    # Rama 3: grounding falló → preservation=None, reason=not_grounded.
+    ra = C.RenderAttempt(True, grounding_passed=False, failure_reason="not_grounded")
+    assert ra.grounding_passed is False and ra.preservation_passed is None
+    with pytest.raises(ValueError):
+        C.RenderAttempt(True, grounding_passed=False, failure_reason="empty")
+    with pytest.raises(ValueError):
+        C.RenderAttempt(True, grounding_passed=False, preservation_passed=True,
+                        failure_reason="not_grounded")
+
+
+def test_render_attempt_preservation_failed():
+    # Rama 4: grounding True, preservation False → reason=conclusion_altered.
+    ra = C.RenderAttempt(True, grounding_passed=True, preservation_passed=False,
+                         failure_reason="conclusion_altered")
+    assert ra.preservation_passed is False
+    with pytest.raises(ValueError):
+        C.RenderAttempt(True, grounding_passed=True, preservation_passed=False,
+                        failure_reason="not_grounded")
+
+
+def test_render_attempt_both_passed():
+    # Rama 5: ambas True → sin failure_reason.
+    assert C.RenderAttempt(True, grounding_passed=True,
+                           preservation_passed=True).failure_reason is None
+    with pytest.raises(ValueError):
+        C.RenderAttempt(True, grounding_passed=True, preservation_passed=True,
+                        failure_reason="empty")
+    with pytest.raises(ValueError):
+        C.RenderAttempt(True, grounding_passed=True)       # preservation=None inválido
+
+
+# ── 11. CriterionResult — invariantes de origin ────────────────────────────
+
+def _ok_attempt():
+    return C.RenderAttempt(True, grounding_passed=True, preservation_passed=True)
+
+
+def test_criterion_result_text_selection():
+    det, rnd = "Mi posición determinista.", "Mi posición, redactada."
+    assert C.CriterionResult("llm_rendered", det, rnd, _ok_attempt()).text == rnd
+    assert C.CriterionResult("deterministic", det, None,
+                             C.RenderAttempt(attempted=False)).text == det
+
+
+def test_criterion_result_requires_deterministic_conclusion():
+    with pytest.raises(ValueError):
+        C.CriterionResult("deterministic", "   ", None, C.RenderAttempt(attempted=False))
+
+
+def test_criterion_result_llm_rendered_invariants():
+    det = "Mi posición determinista."
+    with pytest.raises(ValueError):                        # sin rendered_text
+        C.CriterionResult("llm_rendered", det, None, _ok_attempt())
+    with pytest.raises(ValueError):                        # verificaciones no pasaron
+        C.CriterionResult("llm_rendered", det, "x",
+                          C.RenderAttempt(True, grounding_passed=True,
+                                          preservation_passed=False,
+                                          failure_reason="conclusion_altered"))
+
+
+def test_criterion_result_deterministic_invariants():
+    det = "Mi posición determinista."
+    with pytest.raises(ValueError):                        # no debe llevar rendered_text
+        C.CriterionResult("deterministic", det, "algo", C.RenderAttempt(attempted=False))
+    with pytest.raises(ValueError):                        # éxito no puede ser deterministic
+        C.CriterionResult("deterministic", det, None, _ok_attempt())
+    r = C.CriterionResult("deterministic", det, None,
+                          C.RenderAttempt(True, grounding_passed=False,
+                                          failure_reason="not_grounded"))
+    assert r.origin == "deterministic"
+
+
+def test_criterion_result_insufficient_invariants():
+    det = "Todavía no tengo datos observados en market..."
+    assert C.CriterionResult("insufficient_evidence", det, None,
+                             C.RenderAttempt(attempted=False)).text == det
+    with pytest.raises(ValueError):                        # no representa intento de render
+        C.CriterionResult("insufficient_evidence", det, None,
+                          C.RenderAttempt(True, failure_reason="empty"))
+
+
+# ── 12. build_criterion_result — los cuatro caminos de falla + ausencia ────
+
+def _raise_llm(_):
+    raise RuntimeError("provider boom")
+
+
+def _market_stores():
+    priors = {"market": [_prior("AAPL", 100.0, 16.0, 221, "HIGH")]}
+    gi = _FakeGI(by_domain_map={"market": []}, domain_stats={"market": {}})
+    return _patch_stores(priors, ["market"], gi)
+
+
+def test_bcr_origin_empty():
+    ps = _market_stores()
+    for p in ps:
+        p.start()
+    try:
+        res = C.build_criterion_result("market", "¿qué opinas?", llm=lambda p: "   ")
+    finally:
+        for p in ps:
+            p.stop()
+    assert res.origin == "deterministic"
+    assert res.render_attempt.attempted is True
+    assert res.render_attempt.failure_reason == "empty"
+    assert res.render_attempt.grounding_passed is None
+    assert "aapl" in res.text.lower()
+
+
+def test_bcr_origin_llm_error():
+    ps = _market_stores()
+    for p in ps:
+        p.start()
+    try:
+        res = C.build_criterion_result("market", "¿qué opinas?", llm=_raise_llm)
+    finally:
+        for p in ps:
+            p.stop()
+    assert res.origin == "deterministic"
+    assert res.render_attempt.failure_reason == "llm_error"
+
+
+def test_bcr_origin_not_grounded():
+    ps = _market_stores()
+    for p in ps:
+        p.start()
+    try:
+        res = C.build_criterion_result(
+            "market", "¿qué opinas?", llm=lambda p: "route_x es superior.",
+        )
+    finally:
+        for p in ps:
+            p.stop()
+    assert res.origin == "deterministic"
+    assert res.render_attempt.grounding_passed is False
+    assert res.render_attempt.failure_reason == "not_grounded"
+    assert res.render_attempt.rejected_text == "route_x es superior."
+    assert "route_x" not in res.text.lower()
+
+
+def test_bcr_origin_conclusion_altered():
+    ps = _market_stores()
+    for p in ps:
+        p.start()
+    try:
+        # grounded (sin ids/% falsos) pero con recomendación → altera la conclusión.
+        res = C.build_criterion_result(
+            "market", "¿qué opinas?", llm=lambda p: "Deberías comprar AAPL ahora.",
+        )
+    finally:
+        for p in ps:
+            p.stop()
+    assert res.origin == "deterministic"
+    assert res.render_attempt.grounding_passed is True
+    assert res.render_attempt.preservation_passed is False
+    assert res.render_attempt.failure_reason == "conclusion_altered"
+
+
+def test_bcr_origin_deterministic_no_llm():
+    ps = _market_stores()
+    for p in ps:
+        p.start()
+    try:
+        with patch("vectrax.intelligence_bridge.is_ready", return_value=False):
+            res = C.build_criterion_result("market", "¿qué opinas?")
+    finally:
+        for p in ps:
+            p.stop()
+    assert res.origin == "deterministic"
+    assert res.render_attempt.attempted is False
+
+
+def test_bcr_origin_insufficient_evidence():
+    gi = _FakeGI(by_domain_map={"market": []}, domain_stats={"market": {}})
+    ps = _patch_stores({}, ["market"], gi)
+    for p in ps:
+        p.start()
+    try:
+        res = C.build_criterion_result("market", "¿qué opinas?")
+    finally:
+        for p in ps:
+            p.stop()
+    assert res.origin == "insufficient_evidence"
+    assert res.render_attempt.attempted is False
+    assert "todavía no tengo datos" in res.text.lower()
+
+
+# ── 13. _preserves_conclusion — gaps de regex cerrados + ancla fail-closed ──
+
+_DET_AAPL = "«AAPL» (expectancy +16.00, WR 100%, LB 98% sobre 221 obs)."
+_RANKED_AAPL = [{"name": "AAPL", "win_rate": 100, "wilson_lb": 98}]
+
+
+def test_preserves_rejects_recomend_root_variants():
+    # Raíz recomend-/suger- (NO recomiend-/sugier-): el gap del regex que cerramos.
+    assert not C._preserves_conclusion(
+        "Sobre AAPL, esto sería recomendable.", _DET_AAPL, _RANKED_AAPL)
+    assert not C._preserves_conclusion(
+        "AAPL: mi recomendación es clara.", _DET_AAPL, _RANKED_AAPL)
+    assert not C._preserves_conclusion(
+        "AAPL: la sugerencia sería clara.", _DET_AAPL, _RANKED_AAPL)
+    # Las formas -iend-/-ier- que ya se cubrían siguen cubiertas.
+    assert not C._preserves_conclusion(
+        "AAPL: te recomiendo esto.", _DET_AAPL, _RANKED_AAPL)
+
+
+def test_preserves_accepts_faithful_render():
+    assert C._preserves_conclusion(
+        "Mi lectura sobre AAPL: WR 100%, LB 98%.", _DET_AAPL, _RANKED_AAPL)
+
+
+def test_preserves_fail_closed_without_anchor():
+    # Punto #4: sin ancla presente (o sin ranked/name) no hay nada que validar
+    # → rechaza (fail-closed), aunque no haya recomendación ni cifras nuevas.
+    assert not C._preserves_conclusion(
+        "Un texto neutral, sin ancla.", _DET_AAPL, _RANKED_AAPL)
+    assert not C._preserves_conclusion("cualquier cosa", _DET_AAPL, [])
+    assert not C._preserves_conclusion("cualquier cosa", _DET_AAPL, [{"name": ""}])
+
+
+def test_bcr_conclusion_altered_recomendable():
+    # Integración: "recomendable" (raíz recomend-) ahora se rechaza end-to-end.
+    ps = _market_stores()
+    for p in ps:
+        p.start()
+    try:
+        res = C.build_criterion_result(
+            "market", "¿qué opinas?", llm=lambda p: "AAPL sería recomendable.",
+        )
+    finally:
+        for p in ps:
+            p.stop()
+    assert res.origin == "deterministic"
+    assert res.render_attempt.preservation_passed is False
+    assert res.render_attempt.failure_reason == "conclusion_altered"

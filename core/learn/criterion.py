@@ -26,7 +26,9 @@ import logging
 import math
 import re
 import unicodedata
-from typing import Any, Callable, Dict, List, Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 logger = logging.getLogger("vectrax.criterion")
 
@@ -378,70 +380,235 @@ def _verify_grounded(text: str, ranked: List[Dict[str, Any]], domain: str) -> bo
     return True
 
 
-def _phrase_with_llm(
-    domain: str,
-    ranked: List[Dict[str, Any]],
-    query: str,
-    llm: Optional[Callable[[str], str]] = None,
-) -> Optional[str]:
-    """Frasea el criterio en primera persona usando SOLO la evidencia rankeada.
+# Léxico de recomendación/consejo: el criterio es una POSICIÓN, no un consejo.
+# RIESGO RESIDUAL CONOCIDO: es una blocklist léxica; cubre las formas frecuentes
+# pero por definición no atrapa toda paráfrasis ("lo ideal sería…", "no estaría
+# de más…"). Es la PRIMERA LÍNEA de defensa, no una garantía semántica completa;
+# ante cualquier duda, build_criterion_result cae a la conclusión determinista.
+# `recomi?end` / `sugi?er` cubren ambas raíces (recomiend-/recomend-, sugier-/
+# suger-), p. ej. "recomendable", "recomendación", "sugerencia", "sugerir".
+_RECOMMENDATION_RE = re.compile(
+    r"\b(deber[ií]as?|deber[ií]amos|recomi?end\w*|aconsej\w*|sugi?er\w*|"
+    r"te\s+conviene|compra\w*|vend\w*|mejor\s+opci[oó]n)\b",
+    re.IGNORECASE,
+)
 
-    `llm` es una función inyectable (prompt -> texto) para tests. En producción,
-    si no se inyecta, usa el Intelligence Bridge si está listo. Devuelve None si
-    no hay LLM disponible.
+
+def _preserves_conclusion(
+    rendered: str,
+    deterministic: str,
+    ranked: List[Dict[str, Any]],
+) -> bool:
+    """La presentación del LLM debe PRESERVAR la conclusión determinista, no
+    reinterpretarla. Conservadora y FAIL-CLOSED: ante la duda devuelve False
+    (→ conclusión determinista).
+
+    Exige: texto no vacío; ancla (top) presente; sin lenguaje de recomendación
+    (el criterio es una posición, no un consejo); y sin introducir porcentajes ni
+    identificadores ausentes de la conclusión determinista.
+
+    LIMITACIÓN: verificación LÉXICA, no semántica (no detecta una negación que
+    conserve ancla y cifras). Primera línea de defensa; el determinista siempre
+    es el respaldo autorizado.
     """
-    prompt = (
-        "Eres Vectrax. Da TU criterio en primera persona respondiendo a la "
-        "pregunta. El criterio NO es una regla preprogramada ni una elección "
-        "entre opciones de una lista: es la POSICIÓN que emerge de TODO lo que "
-        "has observado hasta ahora. Exprésalo como una postura propia que surge "
-        "del conjunto de la evidencia de abajo, usándola EXCLUSIVAMENTE como "
-        "fundamento. NO inventes entidades, rutas ni números fuera de la "
-        "evidencia. Cita las métricas que sostienen tu posición. Si te preguntan "
-        "por algo que no observaste, dilo y da igualmente tu posición desde lo "
-        "que sí has aprendido, aunque sea poco.\n\n"
+    if not rendered.strip():
+        return False
+    # Fail-closed: sin evidencia/ancla no hay conclusión que preservar → rechaza.
+    if not ranked:
+        return False
+    anchor = (ranked[0].get("name", "") or "").lower()
+    low = rendered.lower()
+    if not anchor or anchor not in low:
+        return False
+    if _RECOMMENDATION_RE.search(rendered):
+        return False
+    det_pct_vals = {
+        round(float(p)) for p in re.findall(r"(\d+(?:\.\d+)?)\s*%", deterministic)
+    }
+    for pct in re.findall(r"(\d+(?:\.\d+)?)\s*%", rendered):
+        if round(float(pct)) not in det_pct_vals:
+            return False
+    det_ids = {m.group(0).lower() for m in _SUBJECT_RE.finditer(deterministic)}
+    for m in _SUBJECT_RE.finditer(rendered):
+        if m.group(0).lower() not in det_ids:
+            return False
+    return True
+
+
+def _presentation_prompt(
+    domain: str, ranked: List[Dict[str, Any]], deterministic: str,
+) -> str:
+    """Prompt CERRADO: el LLM solo re-redacta la conclusión ya formada. No se le
+    pide criterio ni posición; recibe una decisión cerrada y una orden estricta.
+    """
+    return (
+        "Reescribe la siguiente CONCLUSIÓN de Vectrax con naturalidad, en 1-3 "
+        "líneas y en primera persona. Es una decisión YA CERRADA: NO cambies "
+        "ninguna cifra ni entidad, NO interpretes, NO recalcules, NO añadas "
+        "recomendaciones ni datos nuevos. Usa EXCLUSIVAMENTE las cifras de la "
+        "evidencia.\n\n"
         f"{_evidence_block(domain, ranked)}\n\n"
-        f"PREGUNTA: {query}\n\nMI POSICIÓN (criterio emergente):"
+        f"CONCLUSIÓN:\n{deterministic}"
     )
+
+
+def _call_llm(
+    prompt: str, llm: Optional[Callable[[str], str]] = None,
+) -> tuple[bool, Optional[str], Optional["FailureReason"]]:
+    """Invoca la presentación. Devuelve (attempted, text, failure_reason).
+
+    - attempted=False: no había LLM disponible (no se intentó presentar).
+    - attempted=True, text=None: se intentó pero quedó vacío ('empty') o el
+      proveedor falló ('llm_error').
+    - attempted=True, text=str: render en crudo (aún sin verificar).
+    """
     try:
         if llm is not None:
             out = llm(prompt)
-            return out.strip() if out else None
+            if not (out and out.strip()):
+                return True, None, "empty"
+            return True, out.strip(), None
         from vectrax.intelligence_bridge import is_ready, route_single
-        if is_ready():
-            res = route_single(prompt)
-            if res.get("success") and res.get("content"):
-                return res["content"].strip()
+        if not is_ready():
+            return False, None, None
+        res = route_single(prompt)
+        if not res.get("success"):
+            return True, None, "llm_error"
+        content = res.get("content")
+        if not (content and content.strip()):
+            return True, None, "empty"
+        return True, content.strip(), None
     except Exception as exc:
-        logger.debug("_phrase_with_llm error: %s", exc)
-    return None
+        logger.debug("criterion render error: %s", exc)
+        return True, None, "llm_error"
 
 
-def build_criterion(
+# ── Contrato de resultado: formación (determinista) vs presentación (LLM) ──
+
+CriterionOrigin = Literal[
+    "deterministic",
+    "llm_rendered",
+    "insufficient_evidence",
+]
+
+FailureReason = Literal[
+    "empty",
+    "llm_error",
+    "not_grounded",
+    "conclusion_altered",
+]
+
+
+@dataclass(frozen=True)
+class RenderAttempt:
+    """Qué ocurrió durante el intento de PRESENTACIÓN por el LLM (sin autoridad
+    decisional). `None` en una verificación significa 'no se llegó a evaluar'.
+    """
+    attempted: bool
+    grounding_passed: Optional[bool] = None
+    preservation_passed: Optional[bool] = None
+    failure_reason: Optional[FailureReason] = None
+    # Texto del LLM cuando fue rechazado; NUNCA se expone como `.text`.
+    rejected_text: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        g, p, r = self.grounding_passed, self.preservation_passed, self.failure_reason
+        if not self.attempted:
+            if any(x is not None for x in (g, p, r, self.rejected_text)):
+                raise ValueError("attempted=False exige el resto en None")
+            return
+        if g is None:                      # ni siquiera se pudo evaluar grounding
+            if p is not None or r not in ("empty", "llm_error"):
+                raise ValueError(
+                    "sin grounding: reason∈{empty,llm_error} y preservation=None"
+                )
+        elif g is False:                   # grounding falló → no se evalúa preservation
+            if p is not None or r != "not_grounded":
+                raise ValueError(
+                    "grounding_passed=False exige preservation=None y reason=not_grounded"
+                )
+        elif p is False:                   # grounding True, preservation falló
+            if r != "conclusion_altered":
+                raise ValueError(
+                    "preservation_passed=False exige reason=conclusion_altered"
+                )
+        elif p is True:                    # ambas verificaciones pasaron
+            if r is not None:
+                raise ValueError("ambas verificaciones True no llevan failure_reason")
+        else:
+            raise ValueError(
+                "grounding_passed=True exige preservation True/False, no None"
+            )
+
+
+@dataclass(frozen=True)
+class CriterionResult:
+    """Resultado del Motor de Criterio con origen trazable.
+
+    `origin` describe QUÉ texto quedó autorizado; `deterministic_conclusion`
+    conserva SIEMPRE la decisión interna; `render_attempt` describe el intento
+    de presentación. `text` autoriza el render SOLO cuando origin==llm_rendered.
+    """
+    origin: CriterionOrigin
+    deterministic_conclusion: str
+    rendered_text: Optional[str]
+    render_attempt: RenderAttempt
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def text(self) -> str:
+        if self.origin == "llm_rendered":
+            return self.rendered_text  # invariante garantiza no-None/no-vacío
+        return self.deterministic_conclusion
+
+    def __post_init__(self) -> None:
+        if not self.deterministic_conclusion.strip():
+            raise ValueError("deterministic_conclusion debe estar siempre presente")
+        ra = self.render_attempt
+        if self.origin == "llm_rendered":
+            if not (self.rendered_text and self.rendered_text.strip()):
+                raise ValueError("llm_rendered requiere rendered_text no vacío")
+            if not (ra.attempted and ra.grounding_passed is True
+                    and ra.preservation_passed is True and ra.failure_reason is None):
+                raise ValueError("llm_rendered requiere ambas verificaciones en True")
+            return
+        # deterministic | insufficient_evidence: el texto autorizado NUNCA es el render
+        if self.rendered_text is not None:
+            raise ValueError(f"{self.origin} no debe contener rendered_text")
+        if self.origin == "insufficient_evidence":
+            if ra.attempted:
+                raise ValueError("insufficient_evidence no representa un intento de render")
+            return
+        # origin == "deterministic"
+        if ra.attempted and ra.failure_reason is None:
+            raise ValueError("deterministic tras un intento exige failure_reason")
+
+
+def build_criterion_result(
     domain: str,
     query: str = "",
     llm: Optional[Callable[[str], str]] = None,
-) -> str:
-    """Criterio de Vectrax sobre `domain`: la POSICIÓN que emerge de todo lo
-    observado, no una regla preprogramada ni una elección entre opciones.
+) -> CriterionResult:
+    """Criterio de Vectrax sobre `domain` con origen trazable.
 
-    - Siempre opina desde los datos que tiene, aunque sean pocos (nunca se
-      abstiene por "datos insuficientes"). Solo si el dominio no tiene NINGÚN
-      dato observado lo dice honestamente.
-    - Si el tema concreto no tiene evidencia directa → lo reconoce y AUN ASÍ da
-      su posición desde lo aprendido del dominio (transparente, sin fabricar).
-    - Frasea con LLM restringido a la evidencia si está disponible y pasa el
-      verificador; si no, texto determinista. Siempre grounded, nunca fabrica.
+    A) FORMACIÓN (determinista, desde evidencia): SIEMPRE ocurre y ANTES del LLM;
+       es la conclusión cerrada y el texto por defecto.
+    B) PRESENTACIÓN (LLM, opcional, sin autoridad): solo re-redacta la conclusión
+       cerrada. Se acepta únicamente si pasa grounding Y preservación; en cualquier
+       otro caso (ausente, vacío, error, no-grounded, alterado) manda el determinista.
     """
     ranked = rank_domain_evidence(domain)
     if not ranked:
-        # Único caso sin nada sobre lo que opinar: ausencia TOTAL de evidencia en
-        # el dominio. No es abstención por "datos insuficientes" — es que aún no
-        # hay datos. Se dice honestamente, sin fabricar, invitando a acumular.
-        return (
-            f"Todavía no tengo datos observados en {domain}, así que aún no puedo "
-            f"formar un criterio propio aquí. En cuanto acumule evidencia te digo "
-            f"lo que pienso."
+        # Ausencia TOTAL de evidencia: no hay criterio que formar. Honesto, sin fabricar.
+        return CriterionResult(
+            origin="insufficient_evidence",
+            deterministic_conclusion=(
+                f"Todavía no tengo datos observados en {domain}, así que aún no puedo "
+                f"formar un criterio propio aquí. En cuanto acumule evidencia te digo "
+                f"lo que pienso."
+            ),
+            rendered_text=None,
+            render_attempt=RenderAttempt(attempted=False),
         )
 
     # Entender el TEMA concreto y quedarnos con la experiencia RELACIONADA.
@@ -460,17 +627,56 @@ def build_criterion(
             related = rel
             focus = f"sobre «{label}» "
         else:
-            # Sin experiencia DIRECTA sobre el tema: NO me callo (el criterio es
-            # la divisa de Vectrax). Doy mi criterio con lo que SÍ he aprendido
-            # del dominio — aunque sea poco — marcando la transparencia. Nunca
-            # fabrico datos sobre «{label}»: solo cito lo realmente observado.
+            # Sin experiencia DIRECTA sobre el tema: NO me callo. Doy mi posición
+            # con lo que SÍ he aprendido del dominio, marcando la transparencia.
             related = ranked
             note = (
                 f"Sobre «{label}» todavía no tengo evidencia directa, pero con lo "
                 f"que he aprendido en {domain} te digo lo que pienso: "
             )
 
-    phrased = _phrase_with_llm(domain, related, query, llm=llm)
-    if phrased and _verify_grounded(phrased, related, domain):
-        return (note + phrased) if note else phrased
-    return _deterministic_opinion(domain, related, focus, note=note)
+    # A) FORMACIÓN — conclusión cerrada, determinista, SIEMPRE y ANTES del LLM.
+    deterministic = _deterministic_opinion(domain, related, focus, note=note)
+
+    # B) PRESENTACIÓN — el LLM solo re-redacta la conclusión cerrada.
+    attempted, rendered_raw, empty_reason = _call_llm(
+        _presentation_prompt(domain, related, deterministic), llm
+    )
+    if not attempted:
+        return CriterionResult(
+            "deterministic", deterministic, None, RenderAttempt(attempted=False),
+        )
+    if rendered_raw is None:
+        return CriterionResult(
+            "deterministic", deterministic, None,
+            RenderAttempt(True, failure_reason=empty_reason),
+        )
+    if not _verify_grounded(rendered_raw, related, domain):
+        return CriterionResult(
+            "deterministic", deterministic, None,
+            RenderAttempt(True, grounding_passed=False,
+                          failure_reason="not_grounded", rejected_text=rendered_raw),
+        )
+    if not _preserves_conclusion(rendered_raw, deterministic, related):
+        return CriterionResult(
+            "deterministic", deterministic, None,
+            RenderAttempt(True, grounding_passed=True, preservation_passed=False,
+                          failure_reason="conclusion_altered", rejected_text=rendered_raw),
+        )
+    return CriterionResult(
+        "llm_rendered", deterministic, rendered_raw,
+        RenderAttempt(True, grounding_passed=True, preservation_passed=True),
+    )
+
+
+def build_criterion(
+    domain: str,
+    query: str = "",
+    llm: Optional[Callable[[str], str]] = None,
+) -> str:
+    """Compat: texto autorizado del criterio (str).
+
+    Se mantiene la firma `-> str` (consumida por external_gateway y tests). La
+    estructura completa con origen trazable está en `build_criterion_result`.
+    """
+    return build_criterion_result(domain, query, llm=llm).text
