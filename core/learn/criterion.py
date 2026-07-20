@@ -490,10 +490,12 @@ def _call_llm(
 ) -> tuple[bool, Optional[str], Optional["FailureReason"]]:
     """Invoca la presentación. Devuelve (attempted, text, failure_reason).
 
-    - attempted=False: no había LLM disponible (no se intentó presentar).
-    - attempted=True, text=None: se intentó pero quedó vacío ('empty') o el
-      proveedor falló ('llm_error').
-    - attempted=True, text=str: render en crudo (aún sin verificar).
+    - `llm` inyectado (tests): se usa tal cual.
+    - Producción: `core.llm_call.complete` (OpenAI directo, context-agnostic; NO
+      depende del Intelligence Bridge sync-only, que nunca se calienta antes de
+      este punto del pipeline). Estados no disponibles (sin key / gate 429 /
+      circuit abierto) → attempted=False (determinista, no un fallo de render);
+      empty → 'empty'; http_error/exception → 'llm_error'.
     """
     try:
         if llm is not None:
@@ -501,16 +503,15 @@ def _call_llm(
             if not (out and out.strip()):
                 return True, None, "empty"
             return True, out.strip(), None
-        from vectrax.intelligence_bridge import is_ready, route_single
-        if not is_ready():
+        from core.llm_call import complete
+        res = complete(prompt)
+        if res.ok and res.text:
+            return True, res.text, None
+        if not res.available:              # no_key / gate_closed / circuit_open
             return False, None, None
-        res = route_single(prompt)
-        if not res.get("success"):
-            return True, None, "llm_error"
-        content = res.get("content")
-        if not (content and content.strip()):
+        if res.status == "empty":
             return True, None, "empty"
-        return True, content.strip(), None
+        return True, None, "llm_error"     # http_error / exception
     except Exception as exc:
         logger.debug("criterion render error: %s", exc)
         return True, None, "llm_error"

@@ -2517,58 +2517,22 @@ class ExternalGateway:
     @staticmethod
     def _generate_openai_direct(prompt: str) -> str:
         """
-        Fallback directo a OpenAI si el Intelligence Router no está disponible.
-        Usa VECTRAX_SYSTEM_PROMPT como único system message (identidad estricta).
-        Checks API gate before calling to respect exponential backoff on 429.
+        Fallback directo a OpenAI vía core.llm_call.complete (context-agnostic).
+
+        Wrapper delgado sobre el util compartido: mantiene la firma y el contrato
+        (str vacío si no disponible o falla). Identidad (VECTRAX_SYSTEM_PROMPT),
+        api_gate (backoff 429) y circuit breaker quedan centralizados en
+        core.llm_call, y sirven igual en contexto sync (Telegram) o async (API).
         """
-        import os
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        if not api_key:
-            return ""
-
-        # Check API gate — skip if rate limited
         try:
-            from core.api_gate import check_gate, record_429, record_success
-            if not check_gate("openai"):
-                logger.debug("OpenAI direct: gate closed, skipping")
-                return ""
-        except Exception:
-            pass
-
-        from vectrax.core_identity import VECTRAX_SYSTEM_PROMPT
-        import httpx
-        resp = httpx.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": VECTRAX_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": 500,
-                "temperature": 0.7,
-            },
-            timeout=30.0,
-        )
-        if resp.status_code == 429:
-            try:
-                record_429("openai")
-            except Exception:
-                pass
-            resp.raise_for_status()
-        try:
-            record_success("openai")
-        except Exception:
-            pass
-        resp.raise_for_status()
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"]
-        logger.info("OpenAI direct fallback: response generated")
-        return content.strip()
+            from core.llm_call import complete
+            res = complete(prompt)
+            if res.ok and res.text:
+                logger.info("OpenAI direct fallback: response generated")
+                return res.text
+        except Exception as exc:
+            logger.warning("OpenAI direct fallback failed: %s", exc)
+        return ""
 
     # -- Ollama local fallback ------------------------------------------------
 
