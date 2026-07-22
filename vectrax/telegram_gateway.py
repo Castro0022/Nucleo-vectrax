@@ -127,6 +127,33 @@ def _save_offset(offset: int) -> None:
         pass
 
 
+def _poll_subprocess(_q, _base, _offset, _timeout, _token):
+    """Run getUpdates in an isolated process.
+
+    IMPORTANT: this MUST be a MODULE-LEVEL function (not nested inside
+    TelegramGateway.run) so it is picklable under the 'spawn' multiprocessing
+    start method, which is the default on macOS. A nested/local function
+    raises "Can't pickle local object" under spawn, which crashes every poll
+    on macOS while still working on Linux (fork). At module scope it works
+    under BOTH fork and spawn, so Linux/Docker behavior is unchanged.
+    """
+    try:
+        import httpx as _hx
+        _c = _hx.Client(
+            timeout=_hx.Timeout(_timeout + 5, connect=5),
+            limits=_hx.Limits(max_connections=2, max_keepalive_connections=0),
+        )
+        _r = _c.post(
+            f"{_base}/getUpdates",
+            json={"offset": _offset, "timeout": _timeout,
+                  "allowed_updates": ["message"]},
+        )
+        _r.raise_for_status()
+        _q.put({"ok": True, "data": _r.json()})
+    except Exception as _e:
+        _q.put({"ok": False, "error": str(_e)})
+
+
 class TelegramGateway:
     def __init__(self, token: str) -> None:
         if not token:
@@ -792,26 +819,10 @@ class TelegramGateway:
                 # at C level and holds the GIL, we kill the subprocess.
                 # The parent process (this one) NEVER blocks on SSL.
                 # Heartbeat keeps writing. Supervisor never detects stale.
+                # _poll_subprocess is a MODULE-LEVEL function (see top of
+                # file) so it stays picklable under 'spawn' (macOS default).
                 # ══════════════════════════════════════════════════════
                 import multiprocessing as _mp
-
-                def _poll_subprocess(_q, _base, _offset, _timeout, _token):
-                    """Run getUpdates in isolated process."""
-                    try:
-                        import httpx as _hx
-                        _c = _hx.Client(
-                            timeout=_hx.Timeout(_timeout + 5, connect=5),
-                            limits=_hx.Limits(max_connections=2, max_keepalive_connections=0),
-                        )
-                        _r = _c.post(
-                            f"{_base}/getUpdates",
-                            json={"offset": _offset, "timeout": _timeout,
-                                  "allowed_updates": ["message"]},
-                        )
-                        _r.raise_for_status()
-                        _q.put({"ok": True, "data": _r.json()})
-                    except Exception as _e:
-                        _q.put({"ok": False, "error": str(_e)})
 
                 _result_q = _mp.Queue(maxsize=1)
                 _proc = _mp.Process(

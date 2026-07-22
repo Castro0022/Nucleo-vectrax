@@ -52,3 +52,6 @@ vault/.fuse_hidden*
 # Archived backups
 archive/
 data/
+
+# local .env backups (contain secrets — never commit)
+.env.bak*

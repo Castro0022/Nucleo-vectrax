@@ -705,6 +705,33 @@ Config: `config/entity.json`
 
 ---
 
+## 💻 Local Access (Mac)
+
+Vectrax runs entirely on the local machine under a launchd agent
+(`com.vectrax.supervisor`, `RunAtLoad` + `KeepAlive`), so it starts on boot and
+auto-restarts if a service dies. The supervisor runs the Telegram gateway
+(long-poll), pipeline worker, Core API, and meta-loop.
+
+Open the app and panels in a browser (Core API listens on port `8900`):
+
+| Surface | URL |
+|---|---|
+| App (login / product UI) | `http://localhost:8900/` |
+| Cognitive Universe (canvas) | `http://localhost:8900/v1/universe/view` |
+| Observatory (system dashboard) | `http://localhost:8900/v1/observatory` |
+| Market (live snapshot, JSON) | `http://localhost:8900/v1/market/live` |
+| Health | `http://localhost:8900/health` |
+
+Notes:
+- **Telegram** runs in long-poll mode locally (`USE_WEBHOOK=0` in `.env`) — no
+  public domain or webhook required. To switch back to a public server, set
+  `USE_WEBHOOK=1` and re-register the webhook (`scripts/set_webhook.py`).
+- `https://api.vectrax.app` resolves to the Vultr host (A record →
+  `140.82.28.181`) and only works while that public server is live. For local
+  use, always use `http://localhost:8900`.
+- Manage the service: `launchctl kickstart -k gui/$(id -u)/com.vectrax.supervisor`
+  to restart; logs live in `~/.vectrax/*.log`.
+
 ## 🚀 Deployment (Vultr)
 
 ```bash
@@ -823,7 +850,8 @@ User sends /upgrade in Telegram
 
 Real-time unified view of the Vectrax cognitive universe.
 
-- **Visual**: `https://api.vectrax.app/universe` — Canvas with stars, HUD, operational panel
+- **Visual (local)**: `http://localhost:8900/v1/universe/view` — Canvas with stars, HUD, operational panel
+- **Visual (public)**: `https://api.vectrax.app/universe` — only while the Vultr server is live
 - **API**: `GET /v1/universe` — JSON snapshot (gravitational + operational)
 - **WebSocket**: `WS /v1/universe/ws` — Pushes snapshot every 2s
 - **LLM-aware**: Universe data is injected into `self_context.py` so Vectrax can describe its own state
@@ -2116,6 +2144,12 @@ Reemplaza el **proxy de coherencia** (antes `win_rate = cc_score·100`, derivado
 
 Paso **7.5** (tras la elevación, antes del cierre), **aditivo y defensivo**: reusa los `events` ya streameados, llama a `verify_events`, y añade al summary `verified_decisive/wins/losses/win_rate/accuracy`. Gate `FREIGHT_VERIFY_ENABLED` (default `1`); envuelto en try/except — si falla, el ciclo continúa idéntico.
 
+### Cableado market — `connectors/etoro/verification_cycle.py`
+
+Cierra la mitad market (espejo de freight). `verify_signals(signals)` convierte las **señales RESUELTAS** (con precio realizado) en Outcomes verificados vía `TradingOutcomeAdapter` —que envuelve el clasificador canónico `outcome_tracker.classify_outcome`, sin duplicar win/loss—; subject = símbolo, verdad = `outcome_price`. `run_market_verification()` **deduplica por `signal_id`** (estado en `<vault>/domain_verification/market_verified.json`) para no doble-contar y persiste los decisivos. Hook `_verify_market()` como **Step 3.4** de `learning_engine.run_learning_cycle` (gate `MARKET_VERIFY_ENABLED`, default `1`; aditivo y defensivo).
+
+Con esto **ambos dominios** (freight y market) alimentan el mismo ledger, habilitando `cross_domain_scoreboard()` con datos reales de los dos lados.
+
 Files:
 - `core/learn/outcome_adapter.py` — contrato + scoring invariante + registro + scoreboard cross-dominio
 - `connectors/etoro/trading_outcome_adapter.py` — adaptador market (envuelve `classify_outcome`, sin duplicar)
@@ -2123,7 +2157,9 @@ Files:
 - `core/learn/verification_ledger.py` — persistencia genérica de Outcomes verificados
 - `connectors/freight/verification_cycle.py` — cableado end-to-end de freight
 - `connectors/freight/learning_cycle.py` — hook Step 7.5 (gate `FREIGHT_VERIFY_ENABLED`)
-- `tests/test_outcome_adapter.py` — 7 tests (incl. invariancia cross-dominio) · `tests/test_freight_verification.py` — 4 tests
+- `connectors/etoro/verification_cycle.py` — cableado end-to-end de market (dedup por `signal_id`)
+- `connectors/etoro/learning_engine.py` — hook Step 3.4 (gate `MARKET_VERIFY_ENABLED`)
+- `tests/test_outcome_adapter.py` — 7 tests (incl. invariancia cross-dominio) · `tests/test_freight_verification.py` — 4 · `tests/test_market_verification.py` — 4
 
 ---
 
@@ -2154,7 +2190,12 @@ Files:
 
 ## 📋 Changelog
 
+### 2026-07-22
+- **fix: el gateway de Telegram arranca en macOS (poll subprocess picklable)** — `TelegramGateway.run` lanzaba `getUpdates` en un `multiprocessing.Process` cuyo target (`_poll_subprocess`) estaba definido **anidado** dentro de `run()`. Bajo el start method `spawn` (default en macOS) ese objeto local no es picklable → cada poll crasheaba con `AttributeError: Can't pickle local object 'TelegramGateway.run.<locals>._poll_subprocess'` y el gateway moría (MAX POLL ERRORS). En Linux/Docker usa `fork` y por eso nunca se manifestó. Fix: `_poll_subprocess` movido a **nivel de módulo** (picklable bajo `spawn` y `fork`; comportamiento en Linux sin cambios). Verificado en vivo: `polls>0, errors=0`, `Hola` recibido y respondido (`sent=True`).
+- **docs: acceso local (Mac)** — Nueva sección *Local Access (Mac)* con las URLs locales (`http://localhost:8900/`, `/v1/universe/view`, `/v1/observatory`, `/v1/market/live`, `/health`). Telegram corre en long-poll local (`USE_WEBHOOK=0`); `api.vectrax.app` (A record → `140.82.28.181`) solo sirve mientras el servidor público esté vivo. Vectrax corre bajo launchd (`com.vectrax.supervisor`, `RunAtLoad`+`KeepAlive`).
+
 ### 2026-07-20
+- **feat: ciclo de verificación de mercado — `TradingOutcomeAdapter` → motor de aprendizaje** (PR #49, desplegado `08ee656`) — Cierra la mitad **market** del ciclo cross-dominio (espejo de freight). Nuevo `connectors/etoro/verification_cycle.py`: `verify_signals()` convierte señales RESUELTAS en Outcomes verificados vía `TradingOutcomeAdapter` (envuelve `outcome_tracker.classify_outcome`, sin duplicar win/loss) → `verification_ledger` dominio `market` (subject=símbolo, verdad=`outcome_price`); `run_market_verification()` deduplica por `signal_id` para no doble-contar. Hook `_verify_market()` Step 3.4 en `learning_engine.run_learning_cycle` (gate `MARKET_VERIFY_ENABLED`, aditivo/defensivo). Ahora market produce outcomes verificados reales (como freight), habilitando el `cross_domain_scoreboard()` con datos de ambos lados. +4 tests (`tests/test_market_verification.py`); suite 3099 passed. Smoke en prod (record=False) vía el adaptador. Cierre: `docs/MARKET_VERIFICATION_2026_07_20.md`.
 - **refactor: `self_context` (narrador self-aware) unificado sobre `core/llm_call`** (PR #47) — La ruta "OpenAI directo" de `resolve_self_aware` deja el `httpx` inline y pasa por `core.llm_call.complete` (conserva su temperatura 0.4 / timeout 15s; centraliza identidad + api_gate + circuit). Cierra el follow-up del util compartido: ya no quedan llamadas LLM directas duplicadas en el pipeline. +3 tests (`tests/test_self_context_llm.py`); suite 3095 passed.
 - **fix: el Motor de Criterio ahora renderiza vía LLM en producción — util compartido `core/llm_call`** (PR #45, desplegado `1cb0d74`) — Causa raíz: el Intelligence Bridge es sync-only y nunca se inicializaba antes del gate, así que el criterion siempre caía a determinista (`attempted=False`). Nuevo `core/llm_call.complete` (síncrono, context-agnostic, defensivo; identidad `effective_system_prompt` + `api_gate` + circuit breaker; `LLMResult` con `status`/`available`) reemplaza las llamadas directas en `criterion._call_llm` y en `external_gateway._generate_openai_direct` (worker de Telegram). Verificado en vivo (`user_id` `test:`): `origin=llm_rendered, attempted=True, grounding=True, preservation=True`, pasando igual por grounding + preservación + polaridad; el determinista sigue de respaldo. `tests/test_llm_call.py` (11) + 4 de integración en `test_criterion.py`; suite 3092 passed. Cierre: `docs/CRITERION_LLM_CALL_VALIDATION_2026_07_20.md`.
 - **release `v2026.07.20` → producción (`2ec4e08`)** — Desplegado a Vultr (`vectrax-core` healthy · 48 motores · `/v1/health` ok · governor `act`). **Monitoreo post-deploy sin anomalías**: arranque limpio (supervisor restart #0 en `pipeline_worker`/`core_api`/`meta_loop`/`audit_cron`; watchdog 60s + heartbeat 10s activos), 0 errores/tracebacks, ciclo de mercado eToro 200 OK (~200ms), 0 `domain criterion gate failed`. Validado en el intérprete desplegado: símbolos del contrato presentes y smoke `build_criterion_result` → `insufficient_evidence` / `attempted=False` conforme al contrato. Suite: 3077 passed. Release/tag `v2026.07.20-criterion-contract`.
