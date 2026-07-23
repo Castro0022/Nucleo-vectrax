@@ -79,7 +79,8 @@ def is_self_referential(text: str) -> bool:
 # Prompt dedicado para preguntas auto-referenciales
 # ---------------------------------------------------------------------------
 
-_SELF_PROMPT_ES = """INSTRUCCIÓN PRIMARIA OBLIGATORIA.
+_SELF_PROMPT_ES = """IDIOMA OBLIGATORIO: responde SIEMPRE y ÚNICAMENTE en español. NUNCA respondas en francés, inglés u otro idioma, aunque el contexto traiga fragmentos en otro idioma.
+INSTRUCCIÓN PRIMARIA OBLIGATORIA.
 Responde Únicamente desde la información real que sigue.
 No completes con teoría genérica. No sugieras "redes sociales" ni "influencers".
 No respondas como asistente genérico. Responde como el sistema que ya existe.
@@ -90,7 +91,8 @@ PREGUNTA DEL USUARIO: {query}
 
 RESPUESTA (desde lo que ya existe, concreto y directo):"""
 
-_SELF_PROMPT_EN = """PRIMARY MANDATORY INSTRUCTION.
+_SELF_PROMPT_EN = """MANDATORY LANGUAGE: respond ONLY in English, never in another language even if the context contains foreign-language fragments.
+PRIMARY MANDATORY INSTRUCTION.
 Respond ONLY from the real information below.
 Do NOT complete with generic theory. Do NOT suggest "social media" or "influencers".
 Do NOT respond as a generic assistant. Respond as the system that already exists.

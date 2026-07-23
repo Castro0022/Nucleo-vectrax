@@ -180,3 +180,47 @@ def should_send_to_user(
 
     # Default: allow
     return True
+
+
+# ---------------------------------------------------------------------------
+# Content policy — strip unsolicited internal metrics (rule XbcteaxE)
+# ---------------------------------------------------------------------------
+
+# The user is explicitly asking for metrics/stats → the reply may include them.
+_METRIC_REQUEST_RE = re.compile(
+    r"(?:cu[aá]nt[oa]s?\s+(?:usuarios|interacciones|estrellas|patrones|"
+    r"convergencias|constelaciones|equipos|mensajes|se[nñ]ales)"
+    r"|m[eé]tricas?|estad[ií]stic|reporte|\bstatus\b|estado\s+del\s+sistema"
+    r"|observatorio|dashboard|censo|/vx|/estado|/reporte|/metricas|/auditoria"
+    # Preguntas sobre el universo/sistema → las métricas SON la respuesta pedida.
+    r"|\bunivers|\bestrellas?\b|\bconvergencias?\b|\bconstelaciones?\b|gravitacional|n[uú]cleo"
+    r"|how\s+many\s+(?:users|stars|patterns|interactions)|\bmetrics\b|\bstats\b)",
+    re.IGNORECASE,
+)
+
+# A clause that leaks an internal count (number + metric noun).
+_METRIC_LEAK_RE = re.compile(
+    r"[^.!?\n]*\b\d[\d.,]*\s*"
+    r"(?:usuarios?|interacci[oó]n(?:es)?|estrellas?|patrones?|convergencias?|"
+    r"constelaciones?|equipos?|se[nñ]ales?|utilisateurs?|users?|interactions?|"
+    r"stars?|patterns?|convergences?|teams?)\b[^.!?\n]*[.!?]*",
+    re.IGNORECASE,
+)
+
+
+def strip_internal_metrics(text: str, user_input: str = "") -> str:
+    """Remove unsolicited internal metrics (user/star/pattern counts) from a
+    user-facing reply (rule XbcteaxE). If the user explicitly asked for
+    metrics/stats/status, the text is returned unchanged. Never returns empty
+    (falls back to the original when stripping would blank the reply).
+    """
+    if not text:
+        return text
+    if user_input and _METRIC_REQUEST_RE.search(user_input):
+        return text  # user asked → allowed
+    if not _METRIC_LEAK_RE.search(text):
+        return text  # nothing to strip
+    cleaned = _METRIC_LEAK_RE.sub("", text)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    cleaned = re.sub(r"\s+([.!?,;])", r"\1", cleaned)
+    return cleaned if cleaned else text

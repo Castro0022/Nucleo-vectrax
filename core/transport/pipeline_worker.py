@@ -733,6 +733,14 @@ def _process_one(msg):
                 msg.id, _is_greeting, msg.user_id,
             )
 
+        # === CONTENT POLICY: no exponer métricas internas sin pedirlo (regla XbcteaxE) ===
+        if response:
+            try:
+                from core.telegram_guard import strip_internal_metrics
+                response = strip_internal_metrics(response, msg.content)
+            except Exception as _cpe:
+                logger.debug("strip_internal_metrics skipped: %s", _cpe)
+
         # === ENVIAR DIRECTO A TELEGRAM ===
         sent = _tg_send(msg.chat_id, response, _is_user_reply=True)
 
