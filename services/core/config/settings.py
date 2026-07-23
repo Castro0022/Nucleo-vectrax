@@ -24,8 +24,8 @@ class Settings:
     host: str = os.getenv("VX_CORE_HOST", "0.0.0.0")
     port: int = int(os.getenv("VX_CORE_PORT", "8900"))
 
-    # Auth
-    api_token: str = os.getenv("VX_API_TOKEN", "vx-dev-token-local")
+    # Auth (no insecure default: legacy owner token is opt-in via VX_API_TOKEN)
+    api_token: str = os.getenv("VX_API_TOKEN", "")
     jwt_secret: str = os.getenv("VX_JWT_SECRET", "vectrax-dev-secret-change-me")
 
     # CORS

@@ -202,13 +202,20 @@ class TokenManager:
     @staticmethod
     def _check_legacy(plain_token: str) -> Optional[TokenInfo]:
         """
-        If the token matches the global VX_API_TOKEN, treat as owner.
-        This provides backwards compatibility for existing agents.
+        If the token matches a STRONG, explicitly-configured VX_API_TOKEN,
+        treat it as the owner (backwards compatibility for existing agents).
+
+        Security: there is NO insecure default. The legacy owner path is
+        DISABLED unless VX_API_TOKEN is set to a non-empty value, and the old
+        hardcoded default ("vx-dev-token-local") is never accepted — it was a
+        backdoor granting owner access to anyone who could reach the API.
         """
         import os
         from vectrax.identity import CHANNEL_CREATOR, CREATOR_OWNER
 
-        legacy = os.getenv("VX_API_TOKEN", "vx-dev-token-local")
+        legacy = os.getenv("VX_API_TOKEN", "").strip()
+        if not legacy or legacy == "vx-dev-token-local":
+            return None
         if plain_token == legacy:
             return TokenInfo(
                 user_id="legacy-owner",

@@ -15,7 +15,7 @@ AGENT_CONFIG_PATH = os.path.join(AGENT_CONFIG_DIR, "agent_config.json")
 @dataclass
 class AgentConfig:
     core_url: str = os.getenv("VX_CORE_URL", "http://localhost:8900")
-    api_token: str = os.getenv("VX_API_TOKEN", "vx-dev-token-local")
+    api_token: str = os.getenv("VX_API_TOKEN", "")
     agent_id: str = os.getenv("VX_AGENT_ID", "local-agent-001")
     mode: str = os.getenv("VX_AGENT_MODE", "online")  # online | offline
     heartbeat_interval: int = 60  # seconds
