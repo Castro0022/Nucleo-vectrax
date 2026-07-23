@@ -426,8 +426,20 @@ def _persist_user_language(user_id: str, lang: str) -> None:
 
 
 def _detect_message_language(user_input: str) -> str:
-    """Detecta el idioma de un mensaje. Usa la detección multilenguaje de
-    conversational_policy si está disponible; si no, heurística local es/en."""
+    """Detecta el idioma de un mensaje para el LOCK de idioma.
+
+    Usa PRIMERO el detector robusto de core.language_gate (tiene
+    desambiguación ES/FR real). El detector de conversational_policy leía mal
+    frases españolas con 'que…que' o 'de mí' como francés (p.ej. 'cuéntame qué
+    eres y qué haces' → fr), envenenando el lock de idioma y forzando TODAS las
+    respuestas al francés. Fallbacks defensivos si no está disponible."""
+    try:
+        from core.language_gate import detect_language as _lg
+        d = _lg(user_input)
+        if d and d != "unknown":
+            return d
+    except Exception:
+        pass
     try:
         from core.operator.conversational_policy import detect_language as _detect_ml
         return _detect_ml(user_input)
