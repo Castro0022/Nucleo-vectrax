@@ -24,6 +24,13 @@ launch.log
 # macOS
 .DS_Store
 
+# Editor / legacy backups (never commit)
+*.bak
+*.orig
+*.tmp
+*.swp
+*.old
+
 # Logs (tracked via git but content rotated)
 logs/*.log
 
