@@ -719,8 +719,15 @@ Open the app and panels in a browser (Core API listens on port `8900`):
 | App (login / product UI) | `http://localhost:8900/` |
 | Cognitive Universe (canvas) | `http://localhost:8900/v1/universe/view` |
 | Observatory (system dashboard) | `http://localhost:8900/v1/observatory` |
+| Trading analytics (patterns · equity · shadow) | `http://localhost:8900/v1/market/patterns/view` |
+| Pipeline Train (trading + cycle history) | `http://localhost:8900/v1/dashboard/train/view` |
 | Market (live snapshot, JSON) | `http://localhost:8900/v1/market/live` |
 | Health | `http://localhost:8900/health` |
+
+Dashboard/analytics endpoints (read-only, no auth):
+- `GET /v1/market/patterns` — trading KPIs, pattern leaderboard, signal timeline, equity curve, executor + paper-shadow stats (HTML view at `/v1/market/patterns/view`).
+- `GET /v1/dashboard/cycles?limit=N` — operational cycle history from the persisted `op_cycles` table (fecha, intent, ruta, source, latencia, verify, success) + summary (success_rate, avg_latency_ms, by_source). HTML view: `/v1/dashboard/train/view`.
+- `GET /v1/dashboard/observatory` — consolidated snapshot (gravity, market, convergences, operator, users).
 
 Notes:
 - **Telegram** runs in long-poll mode locally (`USE_WEBHOOK=0` in `.env`) — no
@@ -2189,6 +2196,12 @@ Files:
 ---
 
 ## 📋 Changelog
+
+### 2026-07-23
+- **feat(dashboard): exponer analítica de trading verificada + historial de ciclos** — Nueva página `GET /v1/dashboard/train/view` (`services/ui/static/pipeline_train.html`): KPIs de trading (WR/expectancy/W-L/señales resueltas/patrones usables) + paper-shadow (WR/E/ready-for-promotion) desde `/v1/market/patterns`, y tabla cronológica **expandible** de ciclos operativos. Nuevo endpoint read-only `GET /v1/dashboard/cycles?limit=N` que expone la tabla `op_cycles` ya persistida (fecha, intent, ruta, source, latencia, verify, success + resumen success_rate/avg_latency/by_source). Enlaces de navegación agregados en Observatory y Pattern Performance (y corregido el link de Observatory que apuntaba al JSON). **Solo expone datos existentes — no recalcula.**
+- **fix(seguridad P1): eliminar token owner por defecto + permisos `.env`** — `services/core/tokens.py::_check_legacy` ya no acepta el default `vx-dev-token-local` (era un backdoor owner); exige `VX_API_TOKEN` no vacío y rechaza siempre el literal débil. Defaults saneados en `services/core/config/settings.py` y `agent/config.py` (→ `""`). `.env` a `600`. Validado en vivo: `Authorization: Bearer vx-dev-token-local` → 403.
+- **fix(P0): pipeline cognitivo en macOS + migración `patterns.status`** (PR #51) — `external_gateway` corría vía `multiprocessing.Process` con target anidado, no picklable bajo `spawn` (macOS) → cada mensaje caía a fallback; ahora corre in-proceso en Darwin (Linux sin cambios). Migración idempotente de `patterns.status`/`value_score` (BD previas rompían `ingest_v2`).
+- **fix(identidad): sync del perfil del creador** — `profile.name` sembrado desde `identity_anchor`; "¿quién soy?" → "Eres Mario Bravo Castro." (`source=memory`) en vez de deflexión genérica.
 
 ### 2026-07-22
 - **fix: el gateway de Telegram arranca en macOS (poll subprocess picklable)** — `TelegramGateway.run` lanzaba `getUpdates` en un `multiprocessing.Process` cuyo target (`_poll_subprocess`) estaba definido **anidado** dentro de `run()`. Bajo el start method `spawn` (default en macOS) ese objeto local no es picklable → cada poll crasheaba con `AttributeError: Can't pickle local object 'TelegramGateway.run.<locals>._poll_subprocess'` y el gateway moría (MAX POLL ERRORS). En Linux/Docker usa `fork` y por eso nunca se manifestó. Fix: `_poll_subprocess` movido a **nivel de módulo** (picklable bajo `spawn` y `fork`; comportamiento en Linux sin cambios). Verificado en vivo: `polls>0, errors=0`, `Hola` recibido y respondido (`sent=True`).

@@ -58,3 +58,5 @@ data/
 
 # local DB backups (operational data — never commit)
 *.db.bak*
+
+vault/domain_verification/

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Query
+from fastapi.responses import HTMLResponse
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 logger = logging.getLogger("vectrax.core.routes.dashboard")
@@ -31,6 +32,8 @@ logger = logging.getLogger("vectrax.core.routes.dashboard")
 _GRAV_DB = Path.home() / ".vectrax" / "vectrax.db"
 _USER_DB = Path(__file__).resolve().parents[3] / "vault" / "user_memory.db"
 _QUEUE_DB = Path(__file__).resolve().parents[3] / "vault" / "message_queue.db"
+_CYCLES_DB = Path(__file__).resolve().parents[3] / "vault" / "operational_cycles.db"
+_TRAIN_HTML = Path(__file__).resolve().parents[2] / "ui" / "static" / "pipeline_train.html"
 
 
 def _grav_conn() -> sqlite3.Connection:
@@ -197,6 +200,59 @@ async def dashboard_constellations(
         return {"constellations": constellations, "total": len(constellations)}
     except Exception as exc:
         return {"constellations": [], "total": 0, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/dashboard/cycles  — Pipeline Train: operational cycle history
+# ---------------------------------------------------------------------------
+
+@router.get("/cycles")
+async def dashboard_cycles(limit: int = Query(100, ge=1, le=1000)) -> Dict[str, Any]:
+    """Recent operational cycles (perceive->interpret->decide->act->verify->respond).
+
+    Read-only exposure of the already-persisted `op_cycles` table — no new
+    computation. Powers the 'Pipeline Train' cycle-history view.
+    """
+    out: Dict[str, Any] = {"ts": time.time(), "total": 0, "summary": {}, "cycles": []}
+    try:
+        conn = sqlite3.connect(str(_CYCLES_DB), timeout=3)
+        conn.row_factory = sqlite3.Row
+        out["total"] = conn.execute("SELECT COUNT(*) FROM op_cycles").fetchone()[0]
+        rows = conn.execute(
+            "SELECT id, timestamp, channel, user_tier, perceive_intent, perceive_lang, "
+            "interpret_action, decide_route, decide_confidence, act_latency_ms, act_fallback, "
+            "verify_ran, verify_passed, respond_len, respond_source, total_latency_ms, success "
+            "FROM op_cycles ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+        n = len(rows)
+        succ = sum(1 for r in rows if r["success"])
+        by_source: Dict[str, int] = {}
+        by_route: Dict[str, int] = {}
+        for r in rows:
+            by_source[r["respond_source"] or "?"] = by_source.get(r["respond_source"] or "?", 0) + 1
+            by_route[r["decide_route"] or "?"] = by_route.get(r["decide_route"] or "?", 0) + 1
+        out["summary"] = {
+            "window": n,
+            "success_rate": round(succ / max(n, 1) * 100, 1),
+            "avg_latency_ms": round(sum((r["total_latency_ms"] or 0) for r in rows) / max(n, 1), 1),
+            "fallbacks": sum(1 for r in rows if r["act_fallback"]),
+            "by_source": by_source,
+            "by_route": by_route,
+        }
+        out["cycles"] = [{k: r[k] for k in r.keys()} for r in rows]
+    except Exception as exc:
+        out["error"] = str(exc)
+    return out
+
+
+@router.get("/train/view", response_class=HTMLResponse)
+async def pipeline_train_view():
+    """Serve the Pipeline Train page (trading analytics + cycle history)."""
+    if _TRAIN_HTML.exists():
+        return HTMLResponse(_TRAIN_HTML.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>pipeline_train.html not found</h1>", status_code=404)
 
 
 # ---------------------------------------------------------------------------

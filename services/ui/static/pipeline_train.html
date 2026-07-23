@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vectrax — Pipeline Train</title>
+<style>
+:root{--bg:#060a10;--surface:#0e1420;--border:#1a2235;--text:#d1d5db;--dim:#5a6374;--accent:#4f8ff7;--green:#10b981;--red:#ef4444;--yellow:#fbbf24;--cyan:#22d3ee;--mono:'SF Mono',Menlo,Consolas,monospace;--font:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;}
+a{color:var(--accent);text-decoration:none;} a:hover{text-decoration:underline;}
+.header{padding:16px 24px;display:flex;align-items:center;gap:16px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(14,20,32,0.95),var(--bg));}
+.header .logo{font-size:18px;font-weight:800;color:var(--cyan);}
+.header .sub{font-size:13px;color:var(--dim);}
+.nav{display:flex;gap:14px;padding:8px 24px;font-size:12px;border-bottom:1px solid var(--border);}
+.nav .ts{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--dim);}
+.section-title{font-size:15px;font-weight:700;color:var(--text);padding:18px 24px 6px;}
+.kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;padding:6px 24px 12px;}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;text-align:center;}
+.kpi .v{font-size:22px;font-weight:800;font-family:var(--mono);}
+.kpi .l{font-size:10px;color:var(--dim);margin-top:4px;text-transform:uppercase;letter-spacing:.04em;}
+.note{color:var(--dim);font-size:11px;padding:0 24px 10px;}
+.wrap{padding:0 24px 28px;}
+table{width:100%;border-collapse:collapse;font-size:12px;}
+th{text-align:left;color:var(--dim);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--border);}
+td{padding:5px 8px;border-bottom:1px solid rgba(26,34,53,.35);font-family:var(--mono);}
+tr.cy{cursor:pointer;} tr.cy:hover{background:rgba(79,143,247,.06);}
+.ok{color:var(--green);} .bad{color:var(--red);} .warn{color:var(--yellow);}
+.detail td{background:var(--surface);color:var(--dim);white-space:pre-wrap;font-size:11px;line-height:1.5;}
+.empty{color:var(--dim);font-style:italic;padding:12px 0;text-align:center;}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <span class="logo">🏋 PIPELINE TRAIN</span>
+  <span class="sub">Analítica verificada + historial de ciclos</span>
+</div>
+<div class="nav">
+  <a href="/v1/market/patterns/view">📊 Trading (completo)</a>
+  <a href="/v1/observatory">🔭 Observatory</a>
+  <a href="/v1/universe/view">🌌 Universe</a>
+  <a href="/">← Vectrax</a>
+  <span class="ts" id="ts"></span>
+</div>
+
+<div class="section-title">📊 Resultados de Trading (verificado)</div>
+<div class="kpi-row" id="trading"><div class="empty">Cargando…</div></div>
+<div class="note" id="trading-note"></div>
+
+<div class="section-title">🧠 Pipeline Train — Historial de ciclos</div>
+<div class="kpi-row" id="cyc-summary"></div>
+<div class="wrap">
+  <table>
+    <thead><tr>
+      <th>Fecha</th><th>Canal</th><th>Intent</th><th>Ruta</th><th>Source</th><th>Lat (ms)</th><th>Verify</th><th>OK</th>
+    </tr></thead>
+    <tbody id="cyc-body"><tr><td colspan="8" class="empty">Cargando…</td></tr></tbody>
+  </table>
+</div>
+
+<script>
+(function(){
+  'use strict';
+  function K(v,l,c){return '<div class="kpi"><div class="v" style="color:var(--'+(c||'accent')+')">'+v+'</div><div class="l">'+l+'</div></div>';}
+  function fdate(ts){ if(!ts) return '—'; try{ return new Date(ts*1000).toLocaleString(); }catch(e){ return '—'; } }
+  function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  document.getElementById('ts').textContent = new Date().toLocaleTimeString();
+
+  // === Trading verificado (datos existentes en /v1/market/patterns) ===
+  fetch('/v1/market/patterns').then(function(r){return r.json();}).then(function(d){
+    var k=d.kpi||{}, s=d.shadow||{}, h='';
+    h+=K((k.global_win_rate!=null?k.global_win_rate+'%':'—'),'Win Rate (real)',(k.global_win_rate>=50?'green':'red'));
+    h+=K((k.avg_expectancy!=null?k.avg_expectancy:'—'),'Expectancy',(k.avg_expectancy>=0?'green':'red'));
+    h+=K((k.total_wins||0)+' / '+(k.total_losses||0),'W / L','accent');
+    h+=K((k.total_signals_resolved||0),'Señales resueltas','cyan');
+    h+=K((k.usable_patterns||0)+' / '+(k.total_patterns||0),'Patrones usables','accent');
+    if(s && s.enabled){
+      h+=K((s.shadow_win_rate!=null?s.shadow_win_rate+'%':'—'),'Shadow WR',(s.shadow_win_rate>=50?'green':'red'));
+      h+=K((s.shadow_expectancy!=null?s.shadow_expectancy:'—'),'Shadow E',(s.shadow_expectancy>=0?'green':'red'));
+      h+=K((s.wins||0)+' / '+(s.losses||0),'Shadow W / L','accent');
+    }
+    document.getElementById('trading').innerHTML=h;
+    var rp=(s&&s.ready_for_promotion)||[];
+    document.getElementById('trading-note').innerHTML='Listos para promoción: '+(rp.length?esc(rp.join(', ')):'—')+' · <a href="/v1/market/patterns/view">Ver analítica completa →</a>';
+  }).catch(function(e){ document.getElementById('trading').innerHTML='<div class="empty">Error trading: '+esc(e)+'</div>'; });
+
+  // === Historial de ciclos (datos existentes en op_cycles) ===
+  fetch('/v1/dashboard/cycles?limit=200').then(function(r){return r.json();}).then(function(d){
+    var sm=d.summary||{}, cy=d.cycles||[], h='';
+    h+=K((d.total||0),'Ciclos totales','accent');
+    h+=K((sm.success_rate!=null?sm.success_rate+'%':'—'),'Éxito (ventana)',(sm.success_rate>=90?'green':'warn'));
+    h+=K((sm.avg_latency_ms!=null?sm.avg_latency_ms:'—'),'Lat. media (ms)','cyan');
+    h+=K((sm.fallbacks||0),'Fallbacks','warn');
+    document.getElementById('cyc-summary').innerHTML=h;
+    var body=document.getElementById('cyc-body');
+    if(!cy.length){ body.innerHTML='<tr><td colspan="8" class="empty">Sin ciclos registrados.</td></tr>'; return; }
+    var rows='';
+    cy.forEach(function(c,i){
+      var okc=c.success?'ok':'bad', okt=c.success?'✓':'✗';
+      var vfy=c.verify_ran?(c.verify_passed?'<span class="ok">✓</span>':'<span class="bad">✗</span>'):'—';
+      rows+='<tr class="cy" data-i="'+i+'">'
+        +'<td>'+fdate(c.timestamp)+'</td>'
+        +'<td>'+esc(c.channel||'—')+'</td>'
+        +'<td>'+esc(c.perceive_intent||'—')+'</td>'
+        +'<td>'+esc(c.decide_route||'—')+'</td>'
+        +'<td>'+esc(c.respond_source||'—')+'</td>'
+        +'<td>'+(c.total_latency_ms!=null?Math.round(c.total_latency_ms):'—')+'</td>'
+        +'<td>'+vfy+'</td>'
+        +'<td class="'+okc+'">'+okt+'</td></tr>';
+      rows+='<tr class="detail" id="det-'+i+'" style="display:none"><td colspan="8">'+esc(JSON.stringify(c,null,1))+'</td></tr>';
+    });
+    body.innerHTML=rows;
+    Array.prototype.forEach.call(body.querySelectorAll('tr.cy'),function(tr){
+      tr.addEventListener('click',function(){
+        var el=document.getElementById('det-'+tr.getAttribute('data-i'));
+        if(el) el.style.display=(el.style.display==='none'?'table-row':'none');
+      });
+    });
+  }).catch(function(e){ document.getElementById('cyc-body').innerHTML='<tr><td colspan="8" class="empty">Error ciclos: '+esc(e)+'</td></tr>'; });
+})();
+</script>
+</body>
+</html>
