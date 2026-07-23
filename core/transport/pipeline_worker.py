@@ -439,6 +439,31 @@ def _stage_timer(name: str, msg_id: str):
     return _timer()
 
 
+def _gw_worker(_q, _uid, _content, _channel):
+    """Subprocess entry for the external_gateway stage (Linux/fork path).
+
+    MODULE-LEVEL (not nested inside _process_one) so it stays picklable under
+    the 'spawn' start method. A nested/local target raises "Can't pickle local
+    object" under spawn (macOS default), which silently disabled the entire
+    cognitive stage (Router → Self Context → Núcleo → OpenAI Direct) and made
+    every reply fall back to graceful degradation. On macOS the in-process path
+    in _process_one is used instead (spawn would also cold-import
+    torch/embeddings per message).
+    """
+    try:
+        from core.operator.external_gateway import ExternalGateway
+        _gw = ExternalGateway()
+        _r = _gw.receive_message(user_id=_uid, content=_content, channel=_channel)
+        _q.put({
+            "response": _r.response,
+            "source": _r.source,
+            "processed": _r.processed,
+            "event_id": _r.event_id,
+        })
+    except Exception as _e:
+        _q.put({"response": "", "source": "error", "error": str(_e)})
+
+
 def _process_one(msg):
     """Process a single queued message: pipeline → send to Telegram."""
     from core.transport.message_queue import mark_done, mark_error
@@ -528,71 +553,81 @@ def _process_one(msg):
                 pass
         # ───────────────────────────────────────────────────────────────────────
 
-        # ── EXTERNAL GATEWAY (subprocess isolation) ───────────────────
-        # Uses multiprocessing.Process so the gateway can be KILLED if it
-        # hangs. ThreadPoolExecutor.result(timeout) raises TimeoutError but
-        # the thread keeps running — Python can't kill threads.
-        # Process.kill() actually terminates the stuck code.
+        # ── EXTERNAL GATEWAY (Router → Self Context → Núcleo → OpenAI Direct) ──
+        # macOS uses the 'spawn' start method, where multiprocessing (a) can't
+        # pickle a subprocess target and (b) would cold-import the cognitive
+        # stack (torch/embeddings) per message. So on Darwin we run the
+        # PERSISTENT in-process gateway (gw, cached on _process_one above) under
+        # a hard timeout via a worker thread. This restores the original
+        # pre-subprocess behavior, keeps the bus/reactor warm, and is bounded by
+        # GATEWAY_TIMEOUT (core/llm_call has its own timeout + circuit breaker;
+        # the worker main-loop watchdog + supervisor are the ultimate backstops).
+        # On Linux we keep the killable multiprocessing.Process isolation (fork).
         result = None
         with _stage_timer("external_gateway", msg.id):
-            try:
-                import multiprocessing as _mp
-                _result_q = _mp.Queue(maxsize=1)
-
-                def _gw_worker(_q, _uid, _content, _channel):
-                    """Run gateway in isolated process."""
-                    try:
-                        # Re-init gateway in this process (fresh state)
-                        from core.operator.external_gateway import ExternalGateway
-                        _gw = ExternalGateway()
-                        _r = _gw.receive_message(
-                            user_id=_uid,
-                            content=_content,
-                            channel=_channel,
-                        )
-                        _q.put({
-                            "response": _r.response,
-                            "source": _r.source,
-                            "processed": _r.processed,
-                            "event_id": _r.event_id,
-                        })
-                    except Exception as _e:
-                        _q.put({"response": "", "source": "error", "error": str(_e)})
-
-                _proc = _mp.Process(
-                    target=_gw_worker,
-                    args=(_result_q, msg.user_id, msg.content, msg.channel),
-                    daemon=True,
+            if sys.platform == "darwin":
+                from concurrent.futures import (
+                    ThreadPoolExecutor as _TPEg, TimeoutError as _TEg,
                 )
-                _proc.start()
-                _proc.join(timeout=GATEWAY_TIMEOUT)
-
-                if _proc.is_alive():
-                    # Process hung — kill it for real
-                    logger.warning(
-                        "GW_TIMEOUT %s | external_gateway exceeded %.0fs — killing subprocess PID %d",
-                        msg.id, GATEWAY_TIMEOUT, _proc.pid,
-                    )
-                    _proc.kill()
-                    _proc.join(timeout=5)
-                elif not _result_q.empty():
-                    _raw = _result_q.get_nowait()
-                    from core.operator.external_gateway import GatewayResult
-                    result = GatewayResult(
-                        response=_raw.get("response", ""),
-                        source=_raw.get("source", ""),
-                        processed=_raw.get("processed", False),
-                        event_id=_raw.get("event_id", ""),
+                _gw_pool = _TPEg(max_workers=1)
+                try:
+                    _gw_future = _gw_pool.submit(
+                        gw.receive_message,
                         user_id=msg.user_id,
+                        content=msg.content,
                         channel=msg.channel,
                     )
-                # Clean up
+                    result = _gw_future.result(timeout=GATEWAY_TIMEOUT)
+                except _TEg:
+                    logger.warning(
+                        "GW_TIMEOUT %s | external_gateway exceeded %.0fs (in-process)",
+                        msg.id, GATEWAY_TIMEOUT,
+                    )
+                    result = None
+                except Exception as _ge:
+                    logger.warning("external_gateway in-process error: %s", _ge)
+                    result = None
+                finally:
+                    # Never block on a wedged call (llm_call enforces its own timeout).
+                    _gw_pool.shutdown(wait=False)
+            else:
                 try:
-                    _result_q.close()
-                except Exception:
-                    pass
-            except Exception as _ge:
-                logger.warning("external_gateway subprocess error: %s", _ge)
+                    import multiprocessing as _mp
+                    _result_q = _mp.Queue(maxsize=1)
+                    _proc = _mp.Process(
+                        target=_gw_worker,
+                        args=(_result_q, msg.user_id, msg.content, msg.channel),
+                        daemon=True,
+                    )
+                    _proc.start()
+                    _proc.join(timeout=GATEWAY_TIMEOUT)
+
+                    if _proc.is_alive():
+                        # Process hung — kill it for real
+                        logger.warning(
+                            "GW_TIMEOUT %s | external_gateway exceeded %.0fs — killing subprocess PID %d",
+                            msg.id, GATEWAY_TIMEOUT, _proc.pid,
+                        )
+                        _proc.kill()
+                        _proc.join(timeout=5)
+                    elif not _result_q.empty():
+                        _raw = _result_q.get_nowait()
+                        from core.operator.external_gateway import GatewayResult
+                        result = GatewayResult(
+                            response=_raw.get("response", ""),
+                            source=_raw.get("source", ""),
+                            processed=_raw.get("processed", False),
+                            event_id=_raw.get("event_id", ""),
+                            user_id=msg.user_id,
+                            channel=msg.channel,
+                        )
+                    # Clean up
+                    try:
+                        _result_q.close()
+                    except Exception:
+                        pass
+                except Exception as _ge:
+                    logger.warning("external_gateway subprocess error: %s", _ge)
         elapsed = time.time() - t0
 
         response = ""

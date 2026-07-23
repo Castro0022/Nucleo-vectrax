@@ -238,6 +238,11 @@ def _migrate_db() -> None:
         ("queries",       "star_id TEXT DEFAULT NULL"),
         # Cross-reference: resolution_log ↔ queries
         ("resolution_log", "query_id INTEGER DEFAULT NULL"),
+        # patterns: 'status'/'value_score' se añadieron al CREATE TABLE pero
+        # faltaban aquí → las BD creadas antes no tenían la columna y ingest_v2
+        # rompía con "table patterns has no column named status". Aditivo/idempotente.
+        ("patterns",       "status TEXT NOT NULL DEFAULT 'stored'"),
+        ("patterns",       "value_score REAL NOT NULL DEFAULT 0.0"),
     ]
     with _get_conn() as conn:
         for table, col_def in migrations:

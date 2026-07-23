@@ -55,3 +55,6 @@ data/
 
 # local .env backups (contain secrets — never commit)
 .env.bak*
+
+# local DB backups (operational data — never commit)
+*.db.bak*
