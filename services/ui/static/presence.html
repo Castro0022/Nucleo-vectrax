@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Vectrax — Presencia</title>
   <style>
-    /* Fase 1: estático. Sin cifras, etiquetas, tooltips ni leyenda (§2).
-       Solo el campo, sobre negro. */
+    /* Fase 2: presencia viva. Sin cifras, etiquetas, tooltips ni leyenda (§2).
+       Solo el campo, respirando, sobre negro. */
     html, body {
       margin: 0; height: 100%; background: #000; overflow: hidden;
     }
@@ -14,20 +14,50 @@
       position: fixed; inset: 0; display: flex;
       align-items: center; justify-content: center;
     }
-    /* El campo es continuo: lo escalamos suavizado para que no aparezcan
-       celdas (nada discreto que contar). */
+    /* Dos capas superpuestas para doble-buffer (swap sin parpadeo). El campo
+       es continuo: lo escalamos suavizado para que no aparezcan celdas. */
     img.field {
+      position: absolute;
       width: min(90vmin, 90vw); height: min(90vmin, 90vw);
       image-rendering: auto;
       filter: saturate(1.05);
+      transition: opacity 120ms linear;
     }
   </style>
 </head>
 <body>
   <div class="stage">
-    <!-- Campo de densidad renderizado server-side desde el gravity index.
-         Fase 1: una sola proyección estática, sin vida ni animación. -->
-    <img class="field" src="/v1/presence/field.png" alt="" />
+    <!-- Campo vivo renderizado server-side. El ESTADO (t, tensión) lo decide el
+         SERVIDOR por su reloj: todas las pestañas ven el mismo instante. -->
+    <img class="field" id="a" alt="" />
+    <img class="field" id="b" alt="" />
   </div>
+  <script>
+  // La cadencia (refresco) vive en el cliente; el ESTADO (t, tensión) viene del
+  // servidor por su reloj — no pasamos ?t=. Doble buffer: precargamos el
+  // siguiente frame y hacemos swap al cargar (sin parpadeo). Nunca 500.
+  (function () {
+    var FPS = 12;                      // debe seguir la cadencia del servidor
+    var URL = '/v1/presence/field.png';
+    var imgs = [document.getElementById('a'), document.getElementById('b')];
+    var cur = 0;
+    imgs[0].style.opacity = '1';
+    imgs[1].style.opacity = '0';
+    function tick() {
+      var next = imgs[1 - cur];
+      var probe = new Image();
+      probe.onload = function () {
+        next.src = probe.src;
+        next.style.opacity = '1';
+        imgs[cur].style.opacity = '0';
+        cur = 1 - cur;
+      };
+      probe.onerror = function () { /* reintenta en el siguiente tick */ };
+      probe.src = URL + '?_=' + Date.now();  // cache-bust; el server usa su reloj
+    }
+    tick();
+    setInterval(tick, Math.round(1000 / FPS));
+  })();
+  </script>
 </body>
 </html>

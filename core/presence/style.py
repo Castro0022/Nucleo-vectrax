@@ -34,6 +34,17 @@ class PresenceStyle:
     # Umbral de contorno como fracción del máximo del campo (elegido por barrido).
     floor_frac: float = 0.05
 
+    # --- Fase 2 (presencia viva): TEMPO y FORMA del patrón, NO estado. -----
+    # El ESTADO (tensión y sus parámetros derivados: feed/kill/amplitud/deriva)
+    # vive en core/presence/life.py. Aquí solo van tempo/resolución (§8).
+    # Pasos de maduración de la reacción-difusión (forma del patrón). FIJO:
+    # no depende de t, así el coste por frame es plano en el tiempo.
+    rd_steps: int = 120
+    # Frames por ciclo de respiración (tempo de la "respiración").
+    breathing_period: int = 60
+    # Frames/segundo con que el RELOJ DEL SERVIDOR avanza t (cadencia única).
+    fps: int = 12
+
 
 # Estilo por defecto del canal: única fuente de verdad de la FORMA.
 DEFAULT_STYLE = PresenceStyle()
