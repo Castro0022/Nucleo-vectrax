@@ -62,6 +62,9 @@ logger.addHandler(_file_handler)
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}"
 POLL_TIMEOUT = 30
+POLL_UPDATE_LIMIT = 25   # max updates per getUpdates call: bounds the mp.Queue
+                         # payload (backstop vs pipe-buffer backpressure) and
+                         # drains any backlog gradually into the worker pool
 RETRY_DELAY = 15          # espera 15s entre reintentos (antes 5s)
 MAX_CONSECUTIVE_ERRORS = 10
 CONFLICT_RETRY_DELAY = 60  # 409 Conflict: espera 60s antes de reintentar
@@ -127,7 +130,7 @@ def _save_offset(offset: int) -> None:
         pass
 
 
-def _poll_subprocess(_q, _base, _offset, _timeout, _token):
+def _poll_subprocess(_q, _base, _offset, _timeout, _limit, _token):
     """Run getUpdates in an isolated process.
 
     IMPORTANT: this MUST be a MODULE-LEVEL function (not nested inside
@@ -146,6 +149,7 @@ def _poll_subprocess(_q, _base, _offset, _timeout, _token):
         _r = _c.post(
             f"{_base}/getUpdates",
             json={"offset": _offset, "timeout": _timeout,
+                  "limit": _limit,
                   "allowed_updates": ["message"]},
         )
         _r.raise_for_status()
@@ -823,32 +827,56 @@ class TelegramGateway:
                 # file) so it stays picklable under 'spawn' (macOS default).
                 # ══════════════════════════════════════════════════════
                 import multiprocessing as _mp
+                import queue as _queue
 
                 _result_q = _mp.Queue(maxsize=1)
                 _proc = _mp.Process(
                     target=_poll_subprocess,
-                    args=(_result_q, self._base, self._offset, POLL_TIMEOUT, self._token),
+                    args=(_result_q, self._base, self._offset, POLL_TIMEOUT,
+                          POLL_UPDATE_LIMIT, self._token),
                     daemon=True,
                 )
                 t0 = time.time()
                 self._last_poll_ok = t0  # Update BEFORE poll to prevent false stale detection
                 _proc.start()
 
-                # Wait for subprocess WITH heartbeat — never go stale.
-                # _proc.join(38) would block for 38s without heartbeat.
-                # Instead, poll every 5s and write heartbeat each iteration.
+                # ── DRAIN-BEFORE-JOIN — definitive deadlock fix ─────────
+                # multiprocessing.Queue.put() hands the payload to a feeder
+                # thread that writes to an OS pipe. When the payload exceeds
+                # the pipe buffer (~64KB — happens once a backlog of updates
+                # accumulates), that feeder BLOCKS until the pipe is drained.
+                # The old code join()ed the child BEFORE draining, so the
+                # child could never exit (its feeder was stuck) → the poll was
+                # killed at the deadline every cycle, the offset never
+                # advanced, and the backlog grew without bound. We now drain
+                # with get() FIRST (which unblocks the feeder so the child can
+                # exit) and only THEN join. Heartbeat keeps us non-stale; a
+                # genuine network/SSL hang still trips the deadline → killed.
+                _poll_result = None
                 _poll_deadline = t0 + POLL_TIMEOUT + 8
-                while _proc.is_alive() and time.time() < _poll_deadline:
+                while time.time() < _poll_deadline:
                     self._write_heartbeat()
-                    _proc.join(timeout=5)  # check every 5s
+                    try:
+                        _poll_result = _result_q.get(timeout=3)
+                        break  # drained → feeder unblocked, child can exit
+                    except _queue.Empty:
+                        if not _proc.is_alive():
+                            # Child exited; grab a result if one raced in.
+                            try:
+                                _poll_result = _result_q.get_nowait()
+                            except Exception:
+                                _poll_result = None
+                            break
 
-                if _proc.is_alive():
-                    # Subprocess stuck in SSL — kill it instantly
+                if _poll_result is None:
+                    # Genuine hang (network/SSL) or dead child w/o result —
+                    # kill and retry with a fresh subprocess.
                     logger.warning(
-                        "POLL_SUBPROCESS_KILL | hung for %.0fs — killing PID %d",
+                        "POLL_SUBPROCESS_KILL | hung for %.0fs — killing PID %s",
                         time.time() - t0, _proc.pid,
                     )
-                    _proc.kill()
+                    if _proc.is_alive():
+                        _proc.kill()
                     _proc.join(timeout=3)
                     try: _result_q.close()
                     except Exception: pass
@@ -856,11 +884,11 @@ class TelegramGateway:
                     self._write_heartbeat()
                     continue  # retry with fresh subprocess
 
-                # Subprocess completed — get result
-                try:
-                    _poll_result = _result_q.get_nowait()
-                except Exception:
-                    _poll_result = {"ok": False, "error": "no result from subprocess"}
+                # Result drained — reap the (now-exitable) child.
+                _proc.join(timeout=3)
+                if _proc.is_alive():
+                    _proc.kill()
+                    _proc.join(timeout=3)
                 try: _result_q.close()
                 except Exception: pass
 
