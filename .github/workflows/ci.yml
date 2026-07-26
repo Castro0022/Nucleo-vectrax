@@ -1,0 +1,43 @@
+name: CI
+
+# Quality gate: runs the hermetic test suite (live tests excluded) on every
+# push to main and on every pull request. The suite is deterministic — it
+# neutralizes external credentials and isolates all persistent stores via
+# tests/conftest.py, so it needs no secrets and never touches real data.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pytest-asyncio
+
+      # Fast feedback: the engine orchestration layer (registry + bootstrap)
+      # runs first so activation regressions fail early. These are also part
+      # of the full hermetic gate below.
+      - name: Orchestration tests
+        run: PYTHONPATH=. pytest tests/test_orchestration.py -q
+
+      - name: Quality gate (full hermetic suite, excludes live)
+        run: PYTHONPATH=. pytest tests/ -m "not live" --tb=short -q
