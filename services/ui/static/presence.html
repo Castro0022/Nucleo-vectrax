@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vectrax — Presencia</title>
+  <style>
+    /* Fase 1: estático. Sin cifras, etiquetas, tooltips ni leyenda (§2).
+       Solo el campo, sobre negro. */
+    html, body {
+      margin: 0; height: 100%; background: #000; overflow: hidden;
+    }
+    .stage {
+      position: fixed; inset: 0; display: flex;
+      align-items: center; justify-content: center;
+    }
+    /* El campo es continuo: lo escalamos suavizado para que no aparezcan
+       celdas (nada discreto que contar). */
+    img.field {
+      width: min(90vmin, 90vw); height: min(90vmin, 90vw);
+      image-rendering: auto;
+      filter: saturate(1.05);
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <!-- Campo de densidad renderizado server-side desde el gravity index.
+         Fase 1: una sola proyección estática, sin vida ni animación. -->
+    <img class="field" src="/v1/presence/field.png" alt="" />
+  </div>
+</body>
+</html>
