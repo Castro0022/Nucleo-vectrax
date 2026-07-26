@@ -15,6 +15,8 @@ setup(
         "fastapi",
         "uvicorn[standard]",
         "httpx",
+        "python-multipart",
+        "sqlalchemy",
         "python-dotenv",
         "numpy",
         "sentence-transformers",

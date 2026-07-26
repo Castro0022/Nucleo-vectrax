@@ -19,9 +19,14 @@ def client():
 
 
 @pytest.fixture
-def auth_headers():
-    settings = get_settings()
-    return {"Authorization": f"Bearer {settings.api_token}"}
+def auth_headers(monkeypatch):
+    # The insecure default owner token ("vx-dev-token-local") was removed as a
+    # security fix, so the gate now requires an explicitly-configured, strong
+    # VX_API_TOKEN. Set one for the test and authenticate with it (exercises
+    # the real owner path via TokenManager._check_legacy).
+    token = "vx-test-owner-strong-0123456789abcdef"
+    monkeypatch.setenv("VX_API_TOKEN", token)
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_events_require_auth(client):

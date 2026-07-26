@@ -23,9 +23,11 @@ dependencies = [
     "httpx>=0.24",
     "pydantic>=2.0",
     "requests>=2.28",
+    "python-multipart>=0.0.6",  # FastAPI form-data (agent register, propose, health)
     # Config & data
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
+    "sqlalchemy>=2.0",  # opportunities module (ORM over data/opportunities.db)
     # Protobuf pin (chromadb/opentelemetry compatibility)
     "protobuf>=3.20,<4.0",
 ]

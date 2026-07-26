@@ -225,14 +225,21 @@ class TestTokenManager:
         time.sleep(0.1)
         assert tokens.validate_token(plain) is None
 
-    def test_legacy_token_fallback(self, token_mgr):
-        """Legacy VX_API_TOKEN should be accepted as owner."""
-        legacy = os.getenv("VX_API_TOKEN", "vx-dev-token-local")
-        info = token_mgr.validate_token(legacy)
+    def test_legacy_token_fallback(self, token_mgr, monkeypatch):
+        """A STRONG, explicitly-set VX_API_TOKEN is accepted as owner; the old
+        insecure default is ALWAYS rejected (the backdoor stays closed)."""
+        strong = "vx-strong-owner-token-0123456789abcdef"
+        monkeypatch.setenv("VX_API_TOKEN", strong)
+        info = token_mgr.validate_token(strong)
         assert info is not None
         assert info.role == "owner"
         assert info.channel == "creator"
         assert info.username == "mario"
+
+        # Security regression guard: the removed hardcoded default must NEVER be
+        # accepted, even if presented AND set as VX_API_TOKEN.
+        monkeypatch.setenv("VX_API_TOKEN", "vx-dev-token-local")
+        assert token_mgr.validate_token("vx-dev-token-local") is None
 
     def test_cleanup_expired(self, store_and_tokens):
         store, tokens = store_and_tokens
