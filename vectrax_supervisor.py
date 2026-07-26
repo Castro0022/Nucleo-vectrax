@@ -114,11 +114,13 @@ SERVICES: Dict[str, Dict] = {
         "max_restarts": 5,
     },
     "audit_cron": {
-        "cmd": ["cron", "-f"],           # foreground mode
+        # Pure-Python scheduler (NOT system `cron -f`, which gets SIGKILL'd
+        # on macOS -> exit=-9 crash loop). Runs daily/weekly audits in-process.
+        "cmd": [PYTHON, "-m", "observability.audit_cron", "--loop"],
         "cwd": str(VECTRAX_DIR),
         "required": False,               # Audit is not critical path
         "restart_delay": 30,
-        "max_restarts": 3,
+        "max_restarts": 5,
     },
 }
 

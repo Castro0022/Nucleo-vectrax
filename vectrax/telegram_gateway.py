@@ -77,6 +77,11 @@ POLL_CLIENT_REFRESH = 900   # recreate HTTP client every 15 min (defense in dept
 # Must be > POLL_ALARM_TIMEOUT (32s) to give SIGALRM time to fire first,
 # but low enough to catch cases where SIGALRM can't interrupt C-level code.
 POLL_STUCK_THRESHOLD = 50  # Must be > POLL_TIMEOUT(30) + subprocess overhead(~8s) + margin
+# Functional-progress watchdog: _polls only increments on a FULLY successful
+# poll, so it is the true "making progress" signal. POLL_STUCK_THRESHOLD watches
+# _last_poll_ok, which the subprocess-kill path refreshes every ~40s — that is
+# why it NEVER caught the drain-before-join deadlock (bot alive, 0 progress, 20h).
+POLL_PROGRESS_STALL_THRESHOLD = 180  # no successful poll in Ns -> self-restart
 POLL_ALARM_TIMEOUT = POLL_TIMEOUT + 2   # 32s: SIGALRM fires before 35s watchdog
 TCP_PROBE_TIMEOUT = 3                    # pre-poll TCP probe timeout
 TCP_PROBE_HOST = "api.telegram.org"      # resolved once, cached
@@ -177,6 +182,9 @@ class TelegramGateway:
         self._poll_http = self._make_poll_client()
         self._poll_http_created: float = time.time()
         self._last_poll_ok: float = time.time()
+        # Progress-watchdog state: last observed _polls count + when it last rose.
+        self._last_poll_count: int = 0
+        self._last_poll_progress: float = time.time()
         self._send_http = httpx.Client(
             timeout=httpx.Timeout(15, connect=5),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
@@ -719,6 +727,26 @@ class TelegramGateway:
                 self._write_heartbeat()  # one last heartbeat to log the event
                 os._exit(1)
 
+            # === PROGRESS WATCHDOG: detect "alive but not completing polls" ===
+            # _polls increments ONLY after a fully successful poll. The kill
+            # path refreshes _last_poll_ok (so the liveness watchdog above stays
+            # happy), but a poll stuck in spawn->200->hang->kill->continue never
+            # increments _polls. That exact loop kept the bot "alive" with ZERO
+            # progress for ~20h. If _polls hasn't advanced within the stall
+            # window, we are functionally stalled -> force exit for a clean
+            # supervisor restart.
+            if self._polls > self._last_poll_count:
+                self._last_poll_count = self._polls
+                self._last_poll_progress = now
+            elif now - self._last_poll_progress > POLL_PROGRESS_STALL_THRESHOLD:
+                logger.critical(
+                    "PROGRESS_WATCHDOG | no successful poll in %.0fs "
+                    "(polls frozen at %d) — forcing exit for supervisor restart",
+                    now - self._last_poll_progress, self._polls,
+                )
+                self._write_heartbeat()
+                os._exit(1)
+
             # === Signal main thread to refresh poll client ===
             # We CAN'T call _refresh_poll_client() here: abandoning the old
             # client without close() leaks sockets/handles (observed: gateway
@@ -796,6 +824,10 @@ class TelegramGateway:
                         NETWORK_DOWN_SLEEP,
                     )
                     self._last_poll_ok = time.time()  # keep watchdog happy
+                    # Network-down is correct handling, not a stall: mark
+                    # progress so the progress watchdog doesn't restart us in a
+                    # loop during a genuine outage (nothing to fix by restarting).
+                    self._last_poll_progress = time.time()
                     time.sleep(NETWORK_DOWN_SLEEP)
                     continue
 
