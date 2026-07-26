@@ -21,6 +21,20 @@ Garantías estructurales contra el bug "el audio anterior se repite":
   - Cada call a synthesize() es fresh (sin cache; ver synthesizer.py).
   - Si VECTRAX_AUDIO_DISABLED=1, todos los dispatches son no-op (kill switch).
 
+Política de audio — REGLA GLOBAL y su ÚNICA EXCEPCIÓN
+-----------------------------------------------------
+REGLA GLOBAL: Vectrax NO reproduce ni produce audio no solicitado. El audio de
+SERVIDOR (este dispatch — punto único de TODOS los caminos de envío, Telegram
+incluido) está gobernado por `audio_mode()` + el kill switch
+`VECTRAX_AUDIO_DISABLED=1`. Motivo: el audio no solicitado es intrusivo.
+
+ÚNICA EXCEPCIÓN — el Canal del Creador (La Presencia): ahí el creador ABRE
+deliberadamente el canal para hablar, así que SÍ hay voz. Pero esa voz es del
+CLIENTE (Web Speech API del navegador; los eventos `onboundary` dan la sincronía
+por palabra que pide §5) y NO pasa por este dispatch de servidor. Ningún otro
+canal —Telegram incluido— emite audio. `voice_engine.py` y este dispatch quedan
+FUERA del Canal del Creador.
+
 Uso:
     from core.voice.telegram_dispatch import dispatch_audio_async
     dispatch_audio_async(chat_id=cid, text=resp, http_client=client, executor=pool)

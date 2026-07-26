@@ -10,8 +10,12 @@ vuelve VIVO sin dejar de ser honesta ni determinista:
     (Gray-Scott) a partir de la densidad de la Fase 1; el patrón mostrado es un
     blend del propio campo + su reacción-difusión (nunca inventa estructura que
     no venga del universo, §5).
-  - **Respiración, deriva (§9 Fase 2)**: sobre el patrón maduro se aplican una
-    respiración global y una deriva; su intensidad la fija la TENSIÓN.
+  - **Respiración (§9 Fase 2)**: sobre el patrón maduro se aplica una respiración
+    global; su amplitud la fija la TENSIÓN. La presencia vive EN SU SITIO: entre
+    frames cambia el contenido (respiración), nunca la posición.
+  - **Deriva (§4) = fenotipo, NO traslación**: la deriva se expresa en el propio
+    patrón (f, k, σ del RD según lo vivido/tensión), no desplazando la imagen.
+    No hay `np.roll` ni traslación global.
   - **Tensión = ESTADO** (no estilo, §8): escalar en [0,1] derivado de señales
     REALES del universo + la energía del propio campo. Un ÚNICO mapeo
     `_dynamics(tension)`, monótono y con piso creciente, garantiza el invariante
@@ -22,9 +26,8 @@ Determinismo y coste (crítico):
   - `evolve(seed, tension, t)` es una FUNCIÓN PURA: sin reloj, sin azar. Mismo
     `(seed, tension, t)` ⇒ mismo frame, byte a byte.
   - La maduración de reacción-difusión usa un número de pasos FIJO (`rd_steps`),
-    INDEPENDIENTE de `t`. `t` solo controla respiración (un `sin`) y deriva (un
-    `roll`), ambas O(1). Por tanto el coste por frame es PLANO en el tiempo: el
-    frame t=2000 cuesta lo mismo que el t=0 y la respiración no se degrada.
+    INDEPENDIENTE de `t`. `t` solo modula la respiración (un `sin`), O(1). Por
+    tanto el coste por frame es PLANO en el tiempo y la respiración no se degrada.
   - El origen de `t` es el RELOJ DEL SERVIDOR (`server_frame_index`), de modo que
     la presencia tiene un único estado compartido entre todas las pestañas.
 """
@@ -41,16 +44,13 @@ from core.presence.style import DEFAULT_STYLE, PresenceStyle
 
 # --- Tensión → dinámica (ESTADO) -------------------------------------------
 # Un ÚNICO mapeo, monótono no decreciente y con piso creciente. La amplitud de
-# respiración y la deriva CRECEN con la tensión: a tensión alta el piso hace
-# imposible (por construcción) que la presencia se vea en calma (§9). Cambiar
-# estos rangos cambia la relación tensión→agitación; NO hay ruta alternativa.
+# respiración CRECE con la tensión: a tensión alta el piso hace imposible (por
+# construcción) que la presencia se vea en calma (§9). La deriva (§4) NO es
+# traslación: es el fenotipo (feed/kill del RD) cambiando con la tensión — se
+# expresa en el patrón, nunca en la posición.
 _BREATH_MIN, _BREATH_MAX = 0.05, 0.45   # amplitud de respiración
-_DRIFT_MIN, _DRIFT_MAX = 0.0, 2.5       # px/frame de deriva
 _FEED_MIN, _FEED_MAX = 0.034, 0.058     # Gray-Scott feed (calma → turbulento)
 _KILL_MIN, _KILL_MAX = 0.061, 0.063     # Gray-Scott kill
-
-# Dirección fija de la deriva (3-4-5 → determinista, sin azar).
-_DRIFT_COS, _DRIFT_SIN = 0.8, 0.6
 
 # Difusividades de Gray-Scott (estables con Euler explícito: du*4 < 1).
 _DU, _DV = 0.16, 0.08
@@ -61,7 +61,6 @@ def _dynamics(tension: float) -> Dict[str, float]:
     x = min(1.0, max(0.0, float(tension)))
     return {
         "breath_amp": _BREATH_MIN + (_BREATH_MAX - _BREATH_MIN) * x,
-        "drift": _DRIFT_MIN + (_DRIFT_MAX - _DRIFT_MIN) * x,
         "feed": _FEED_MIN + (_FEED_MAX - _FEED_MIN) * x,
         "kill": _KILL_MIN + (_KILL_MAX - _KILL_MIN) * x,
     }
@@ -97,22 +96,6 @@ def _react_diffuse(v0: np.ndarray, feed: float, kill: float, steps: int) -> np.n
     return V
 
 
-def _shift(a: np.ndarray, dx: float, dy: float) -> np.ndarray:
-    """Desplazamiento 2D fraccional, determinista y periódico (bilineal)."""
-    x0 = int(math.floor(dx))
-    y0 = int(math.floor(dy))
-    fx = dx - x0
-    fy = dy - y0
-    a00 = np.roll(np.roll(a, y0, 0), x0, 1)
-    a01 = np.roll(np.roll(a, y0, 0), x0 + 1, 1)
-    a10 = np.roll(np.roll(a, y0 + 1, 0), x0, 1)
-    a11 = np.roll(np.roll(a, y0 + 1, 0), x0 + 1, 1)
-    return (
-        a00 * (1 - fx) * (1 - fy) + a01 * fx * (1 - fy)
-        + a10 * (1 - fx) * fy + a11 * fx * fy
-    )
-
-
 # --- El motor (función PURA) -----------------------------------------------
 
 def evolve(
@@ -124,9 +107,10 @@ def evolve(
     """Frame vivo `t` del campo `seed`, a tensión `tension`. FUNCIÓN PURA.
 
     Determinista: mismo `(seed, tension, t, style)` ⇒ mismo frame. La maduración
-    RD es de pasos FIJOS (no depende de t); `t` solo mueve respiración y deriva
-    ⇒ coste por frame plano en el tiempo. Densidad ABSOLUTA en [0,1] (el render
-    de Fase 2 NO re-normaliza por pico, para que la respiración se vea).
+    RD es de pasos FIJOS (no depende de t); `t` solo modula la respiración ⇒
+    coste por frame plano en el tiempo. El patrón vive EN SU SITIO: sin deriva
+    posicional (no hay traslación ni `np.roll`). Densidad ABSOLUTA en [0,1] (el
+    render de Fase 2 NO re-normaliza por pico, para que la respiración se vea).
     """
     dens = np.asarray(seed.density, dtype=np.float64)
     size = int(seed.size)
@@ -146,20 +130,14 @@ def evolve(
     rd = _norm(_react_diffuse(base, d["feed"], d["kill"], int(style.rd_steps)))
     pattern = _norm(0.5 * base + 0.5 * rd) * 0.72  # margen para la respiración
 
-    # Deriva (t): offset fraccional determinista.
-    off = d["drift"] * float(t)
-    dx = off * _DRIFT_COS
-    dy = off * _DRIFT_SIN
-    pat = _shift(pattern, dx, dy)
-    color_src = np.asarray(seed.color, dtype=np.float64)
-    col = np.stack([_shift(color_src[:, :, i], dx, dy) for i in range(3)], axis=2)
+    # El patrón vive EN SU SITIO — sin deriva posicional (sin traslación/roll).
+    color = np.clip(np.asarray(seed.color, dtype=np.float64), 0.0, 1.0)
 
     # Respiración (t): modulación global; amplitud = tensión.
     period = max(1, int(style.breathing_period))
     breath = 1.0 + d["breath_amp"] * math.sin(2.0 * math.pi * (float(t) / period))
 
-    density = np.clip(pat * breath, 0.0, 1.0)
-    color = np.clip(col, 0.0, 1.0)
+    density = np.clip(pattern * breath, 0.0, 1.0)
     color[density <= 0.0] = 0.0
     return DensityField(size=size, density=density, color=color)
 
@@ -180,11 +158,18 @@ def frame_to_png_bytes(field: DensityField) -> bytes:
 
 
 def server_frame_index(style: PresenceStyle = DEFAULT_STYLE, now: Optional[float] = None) -> int:
-    """`t` derivado del RELOJ DEL SERVIDOR (estado único compartido)."""
+    """`t` derivado del RELOJ DEL SERVIDOR (estado único compartido).
+
+    ACOTADO al ciclo de respiración: `t = int(now*fps) % breathing_period`. Así
+    `t` es pequeño (no `time.time()*fps ≈ 2.1e10`) y la respiración es un bucle
+    sin costuras (`sin` continuo en el wrap). Dos pestañas con el mismo reloj
+    obtienen el mismo `t` ⇒ el mismo frame.
+    """
     if now is None:
         now = time.time()
     fps = max(1, int(style.fps))
-    return int(now * fps)
+    period = max(1, int(style.breathing_period))
+    return int(now * fps) % period
 
 
 def render_current_frame_png(

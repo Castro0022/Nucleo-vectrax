@@ -40,6 +40,18 @@ async def universe():
     return HTMLResponse(content="<h1>Universe not found</h1>", status_code=404)
 
 
+@router.get("/presence", response_class=HTMLResponse, include_in_schema=False)
+async def presence():
+    """Serve the Creator Channel viewer (La Presencia — campo vivo)."""
+    presence_path = Path(__file__).resolve().parent / "static" / "presence.html"
+    if presence_path.exists():
+        return HTMLResponse(
+            content=presence_path.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store"},
+        )
+    return HTMLResponse(content="<h1>Presence not found</h1>", status_code=404)
+
+
 @router.get("/universe/legacy", response_class=HTMLResponse, include_in_schema=False)
 async def universe_legacy():
     """Legacy gravitational universe (knowledge stars, constellations)."""

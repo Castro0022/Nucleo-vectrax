@@ -99,13 +99,14 @@ def _agitation(seed, tension, style, n_frames: int = 6) -> float:
 
 
 def test_dynamics_is_single_monotonic_mapping():
-    # UN solo mapeo tensión→parámetros; amplitud y deriva monótonas no decrecientes.
+    # UN solo mapeo tensión→parámetros. Sin deriva posicional (§4: la deriva es
+    # fenotipo, no traslación): el invariante lo porta la amplitud de respiración,
+    # monótona no decreciente en la tensión.
     xs = [i / 20.0 for i in range(21)]
     amps = [L._dynamics(x)["breath_amp"] for x in xs]
-    drifts = [L._dynamics(x)["drift"] for x in xs]
     assert all(amps[i + 1] >= amps[i] for i in range(len(amps) - 1))
-    assert all(drifts[i + 1] >= drifts[i] for i in range(len(drifts) - 1))
-    assert amps[-1] > amps[0] and drifts[-1] > drifts[0]
+    assert amps[-1] > amps[0]
+    assert "drift" not in L._dynamics(0.5)  # no hay deriva posicional
 
 
 def test_low_tension_may_be_calm():
