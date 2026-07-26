@@ -17,6 +17,7 @@ setup(
         "httpx",
         "python-multipart",
         "sqlalchemy",
+        "aiosqlite",
         "python-dotenv",
         "numpy",
         "sentence-transformers",
