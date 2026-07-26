@@ -157,7 +157,12 @@ def _save_report(report: Dict) -> str:
 # ── Checks ────────────────────────────────────────────────────────
 
 def check_container() -> Dict:
-    """Verify container is running and healthy."""
+    """Verify container/supervisor is running and healthy."""
+    if not os.path.isfile("/proc/1/cmdline"):
+        # No procfs (e.g. macOS): check the supervisor process directly.
+        _o, _ = _shell("pgrep -fl vectrax_supervisor")
+        _ok = "vectrax_supervisor" in _o.lower()
+        return {"name": "container", "ok": _ok, "detail": "supervisor active" if _ok else "supervisor NOT found"}
     out, _ = _shell("cat /proc/1/cmdline 2>/dev/null | tr '\\0' ' '")
     supervisor = "supervisor" in out.lower()
     return {"name": "container", "ok": supervisor, "detail": "supervisor active" if supervisor else "supervisor NOT found"}
@@ -165,9 +170,13 @@ def check_container() -> Dict:
 
 def check_processes() -> Dict:
     """Check for expected processes, detect duplicates."""
-    # Use /proc to find Python processes (works reliably inside docker exec)
+    # Use /proc to find Python processes (works reliably inside docker exec);
+    # fall back to `ps` on hosts without procfs (e.g. macOS).
     lines = []
-    for pid in os.listdir("/proc"):
+    if not os.path.isdir("/proc"):
+        _out, _ = _shell("ps -Ao command=")
+        lines = [l for l in _out.splitlines() if "python" in l.lower()]
+    for pid in (os.listdir("/proc") if os.path.isdir("/proc") else []):
         if not pid.isdigit():
             continue
         try:
