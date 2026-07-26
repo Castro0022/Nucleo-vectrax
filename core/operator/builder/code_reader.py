@@ -27,7 +27,14 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("vectrax.operator.builder.code_reader")
 
-BASE_DIR = os.path.expanduser("~/Vectrax")
+# Repo root derived from THIS file's location
+# (…/core/operator/builder/code_reader.py -> 4x dirname = repo root).
+# The old hardcoded "~/Vectrax" broke whenever the checkout lived elsewhere
+# (CI runners, Docker /app, a different user's home).
+BASE_DIR = os.environ.get(
+    "VECTRAX_DIR",
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+)
 
 
 # ---------------------------------------------------------------------------

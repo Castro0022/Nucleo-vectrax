@@ -10,7 +10,14 @@ import asyncio
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent))
+
+# These tests drive real workflow orchestration against a live LLM backend
+# (Ollama at localhost:11434). They are NOT hermetic — exclude them from the
+# default quality gate, which runs with `-m "not live"`.
+pytestmark = pytest.mark.live
 
 from core.abstraction import load_registry_from_config
 from core.workflows import (

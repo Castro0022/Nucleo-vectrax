@@ -72,15 +72,15 @@ def _collect_module_state() -> str:
         from core.router_learning import RouterDecisionLedger
         from collections import Counter
         records = RouterDecisionLedger().read_last(200)
-        if records:
-            total = len(records)
+        total = len(records)
+        if total:
             methods = Counter(r.get('classification_method','?') for r in records)
             intents = Counter(r.get('intent','?') for r in records)
             fb = methods.get('regex_fallback', 0)
             top_intent = intents.most_common(1)[0][0] if intents else '?'
             lines.append(
                 f"Router:     últimos={total} "
-                f"regex_fallback={fb}({100*fb//total if total else 0}%) "
+                f"regex_fallback={fb}({100*fb//total}%) "
                 f"intent_top={top_intent}"
             )
             # Top conflictos si hay semantic_would_have_been
@@ -93,6 +93,11 @@ def _collect_module_state() -> str:
             if conflicts:
                 top = conflicts.most_common(1)[0]
                 lines.append(f"  conflicto: {top[0]} x{top[1]}")
+        else:
+            # Sin decisiones registradas aún (entorno fresco, p.ej. CI): emitir
+            # el bloque con defaults para que el módulo Router SIEMPRE esté
+            # presente, consistente con Observer/Learner/Governor.
+            lines.append("Router:     últimos=0 regex_fallback=0(0%) intent_top=—")
     except Exception:
         pass
 

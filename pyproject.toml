@@ -28,6 +28,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
     "sqlalchemy>=2.0",  # opportunities module (ORM over data/opportunities.db)
+    "aiosqlite>=0.19",  # async SQLite backend for the opportunities repository
     # Protobuf pin (chromadb/opentelemetry compatibility)
     "protobuf>=3.20,<4.0",
 ]
