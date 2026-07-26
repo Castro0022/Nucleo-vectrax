@@ -37,7 +37,7 @@ from services.core.routes import (
     comm, gateway, billing, universe, webhook, recovery,
     monitor, ideas, dashboard, market_live, ingest_api,
     pattern_performance, census, domain_knowledge_api,
-    engines,
+    engines, presence,
 )
 
 logger = logging.getLogger("vectrax.core.app")
@@ -109,6 +109,7 @@ def create_app() -> FastAPI:
     app.include_router(census.router, prefix="/v1")
     app.include_router(domain_knowledge_api.router, prefix="/v1")
     app.include_router(engines.router, prefix="/v1")
+    app.include_router(presence.router, prefix="/v1")  # Fase 1: campo de densidad
 
     # --- Lifecycle events ---
 
