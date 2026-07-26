@@ -6,22 +6,23 @@
   <title>Vectrax — Presencia</title>
   <style>
     /* Fase 2: presencia viva. Sin cifras, etiquetas, tooltips ni leyenda (§2).
-       Solo el campo, respirando, sobre negro. */
+       UNA sola instancia del campo, centrada, sobre negro. Solo encuadre. */
     html, body {
       margin: 0; height: 100%; background: #000; overflow: hidden;
     }
     .stage {
-      position: fixed; inset: 0; display: flex;
-      align-items: center; justify-content: center;
+      position: fixed; inset: 0; background: #000;
+      display: flex; align-items: center; justify-content: center;
     }
-    /* Dos capas superpuestas para doble-buffer (swap sin parpadeo). El campo
-       es continuo: lo escalamos suavizado para que no aparezcan celdas. */
-    img.field {
-      position: absolute;
-      width: min(90vmin, 90vw); height: min(90vmin, 90vw);
+    /* Una sola imagen: cuadrada al menor lado del viewport (vmin) para que quepa
+       entera, centrada por flex, proporción preservada (object-fit: contain).
+       Sin repeat, sin tile — es un <img> único, no un background. */
+    img#field {
+      width: 96vmin; height: 96vmin;
+      object-fit: contain;
+      display: block;
       image-rendering: auto;
       filter: saturate(1.05);
-      transition: opacity 120ms linear;
     }
   </style>
 </head>
@@ -29,29 +30,20 @@
   <div class="stage">
     <!-- Campo vivo renderizado server-side. El ESTADO (t, tensión) lo decide el
          SERVIDOR por su reloj: todas las pestañas ven el mismo instante. -->
-    <img class="field" id="a" alt="" />
-    <img class="field" id="b" alt="" />
+    <img id="field" alt="" />
   </div>
   <script>
-  // La cadencia (refresco) vive en el cliente; el ESTADO (t, tensión) viene del
-  // servidor por su reloj — no pasamos ?t=. Doble buffer: precargamos el
-  // siguiente frame y hacemos swap al cargar (sin parpadeo). Nunca 500.
+  // Una sola instancia. La cadencia (refresco) vive en el cliente; el ESTADO
+  // (t, tensión) viene del servidor por su reloj — no pasamos ?t=. Precargamos
+  // cada frame en un Image() y solo entonces cambiamos el src visible → sin
+  // parpadeo y sin mostrar imágenes a medio cargar. Nunca 500.
   (function () {
     var FPS = 12;                      // debe seguir la cadencia del servidor
     var URL = '/v1/presence/field.png';
-    var imgs = [document.getElementById('a'), document.getElementById('b')];
-    var cur = 0;
-    imgs[0].style.opacity = '1';
-    imgs[1].style.opacity = '0';
+    var img = document.getElementById('field');
     function tick() {
-      var next = imgs[1 - cur];
       var probe = new Image();
-      probe.onload = function () {
-        next.src = probe.src;
-        next.style.opacity = '1';
-        imgs[cur].style.opacity = '0';
-        cur = 1 - cur;
-      };
+      probe.onload = function () { img.src = probe.src; };
       probe.onerror = function () { /* reintenta en el siguiente tick */ };
       probe.src = URL + '?_=' + Date.now();  // cache-bust; el server usa su reloj
     }
