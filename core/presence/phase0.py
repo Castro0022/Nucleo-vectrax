@@ -206,3 +206,12 @@ def expand(provenance: Tuple[str, ...], db_path: Optional[str] = None) -> List[D
         return []
     finally:
         conn.close()
+
+
+def utterance_payload(limit: int = RECENT_LIMIT, db_path: Optional[str] = None) -> Dict[str, Any]:
+    """Payload para el Canal del Creador (voz+texto): la respuesta DETERMINISTA a
+    decir + su procedencia. Honesto (§5): si no hay datos, el texto lo dice; sin
+    procedencia no se puede expandir (y se ve). Es lo que el cliente hablará
+    (Web Speech) y escribirá sincronizado con la voz.
+    """
+    return answer_now(limit=limit, db_path=db_path).to_dict()

@@ -44,3 +44,19 @@ async def presence_field_png() -> Response:
         media_type="image/png",
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.get("/presence/utterance")
+async def presence_utterance():
+    """Texto (+ procedencia) que la presencia dirá — voz+texto en el CLIENTE (§9).
+
+    Determinista y honesto (§5): sale de datos persistidos (op_cycles), no
+    inventa. El habla y la sincronía por palabra (Web Speech `onboundary`) son
+    del cliente; sin TTS de servidor. Nunca 500: ante error, payload vacío.
+    """
+    try:
+        from core.presence.phase0 import utterance_payload
+
+        return utterance_payload()
+    except Exception:
+        return {"question": "", "text": "", "provenance": [], "provenance_count": 0}
