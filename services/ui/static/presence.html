@@ -24,31 +24,97 @@
       image-rendering: auto;
       filter: saturate(1.05);
     }
+    /* Fase 3 (voz+texto): el texto hablado aparece SINCRONIZADO con la voz. Es
+       la conversación (§9), no una etiqueta de dashboard. */
+    #speech {
+      position: fixed; left: 0; right: 0; bottom: 7vmin;
+      margin: 0 auto; max-width: 80vw; text-align: center;
+      color: rgba(238,240,255,0.92);
+      font: 300 clamp(16px, 3.1vmin, 30px)/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0.01em; text-shadow: 0 1px 24px rgba(0,0,0,0.85);
+      pointer-events: none; white-space: pre-wrap;
+    }
+    /* Señal mínima para ABRIR el canal (§2: sin etiquetas). Se desvanece al hablar. */
+    #cue {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      color: rgba(200,210,235,0.28); font-size: 6vmin; cursor: pointer;
+      transition: opacity 400ms ease; user-select: none;
+    }
   </style>
 </head>
 <body>
   <div class="stage">
-    <!-- Campo vivo renderizado server-side. El ESTADO (t, tensión) lo decide el
-         SERVIDOR por su reloj: todas las pestañas ven el mismo instante. -->
+    <!-- Campo vivo (motor temporal, reloj del servidor). -->
     <img id="field" alt="" />
   </div>
+  <!-- Voz+texto: la conversación (§9 Fase 3). El texto se revela sincronizado
+       con la voz del cliente (Web Speech), nunca más de una palabra por delante. -->
+  <div id="speech"></div>
+  <!-- Señal para ABRIR el canal: el creador habla deliberadamente (y las
+       políticas de autoplay exigen un gesto). -->
+  <div id="cue">◦</div>
   <script>
-  // Una sola instancia. La cadencia (refresco) vive en el cliente; el ESTADO
-  // (t, tensión) viene del servidor por su reloj — no pasamos ?t=. Precargamos
-  // cada frame en un Image() y solo entonces cambiamos el src visible → sin
-  // parpadeo y sin mostrar imágenes a medio cargar. Nunca 500.
+  // --- Campo vivo: refresco a cadencia fija; el estado lo lleva el servidor ---
   (function () {
-    var FPS = 12;                      // debe seguir la cadencia del servidor
+    var FPS = 12;
     var URL = '/v1/presence/field.png';
     var img = document.getElementById('field');
     function tick() {
       var probe = new Image();
       probe.onload = function () { img.src = probe.src; };
-      probe.onerror = function () { /* reintenta en el siguiente tick */ };
-      probe.src = URL + '?_=' + Date.now();  // cache-bust; el server usa su reloj
+      probe.onerror = function () {};
+      probe.src = URL + '?_=' + Date.now();
     }
     tick();
     setInterval(tick, Math.round(1000 / FPS));
+  })();
+
+  // --- Voz + texto sincronizados (Web Speech en el CLIENTE; §5/§9) ------------
+  // El creador abre el canal con un gesto → VECTRAX dice su respuesta
+  // (determinista, de datos persistidos). El texto se revela palabra a palabra
+  // guiado por los eventos `onboundary` del habla: el texto NUNCA va más de una
+  // palabra por delante de la voz. Sin TTS de servidor.
+  (function () {
+    var speechEl = document.getElementById('speech');
+    var cueEl = document.getElementById('cue');
+    var busy = false;
+
+    function revealTo(text, charIndex) {
+      var end = text.indexOf(' ', charIndex);
+      if (end < 0) end = text.length;
+      return text.slice(0, end);
+    }
+
+    function speak() {
+      if (busy || !('speechSynthesis' in window)) return;
+      busy = true;
+      cueEl.style.opacity = '0';
+      speechEl.textContent = '';
+      fetch('/v1/presence/utterance')
+        .then(function (r) { return r.json(); })
+        .then(function (u) {
+          var text = (u && u.text) ? String(u.text) : '';
+          if (!text) { busy = false; return; }
+          try { window.speechSynthesis.cancel(); } catch (e) {}
+          var utt = new SpeechSynthesisUtterance(text);
+          utt.lang = 'es-ES'; utt.rate = 1.0; utt.pitch = 1.0;
+          utt.onboundary = function (ev) {
+            if (ev && ev.charIndex != null) {
+              speechEl.textContent = revealTo(text, ev.charIndex);
+            }
+          };
+          utt.onend = function () { speechEl.textContent = text; busy = false; };
+          utt.onerror = function () { busy = false; };
+          window.speechSynthesis.speak(utt);
+        })
+        .catch(function () { busy = false; });
+    }
+
+    // El creador abre el canal deliberadamente (gesto requerido por autoplay).
+    document.addEventListener('click', speak);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === ' ' || e.key === 'Enter') speak();
+    });
   })();
   </script>
 </body>
