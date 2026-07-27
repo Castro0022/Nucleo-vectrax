@@ -49,7 +49,9 @@ from core.presence.style import DEFAULT_STYLE, PresenceStyle
 # traslación: es el fenotipo (feed/kill del RD) cambiando con la tensión — se
 # expresa en el patrón, nunca en la posición.
 _BREATH_MIN, _BREATH_MAX = 0.05, 0.45   # amplitud de respiración
-_FEED_MIN, _FEED_MAX = 0.034, 0.058     # Gray-Scott feed (calma → turbulento)
+# Gray-Scott feed: MAX = régimen CALMADO, MIN = régimen TURBULENTO. Alta tensión
+# usa MIN (más cambio de contenido). Medido: feed↓ ⇒ agitación↑.
+_FEED_MIN, _FEED_MAX = 0.034, 0.058
 _KILL_MIN, _KILL_MAX = 0.061, 0.063     # Gray-Scott kill
 
 # Difusividades de Gray-Scott (estables con Euler explícito: du*4 < 1).
@@ -61,7 +63,9 @@ def _dynamics(tension: float) -> Dict[str, float]:
     x = min(1.0, max(0.0, float(tension)))
     return {
         "breath_amp": _BREATH_MIN + (_BREATH_MAX - _BREATH_MIN) * x,
-        "feed": _FEED_MIN + (_FEED_MAX - _FEED_MIN) * x,
+        # Alta tensión → feed BAJO → RD más turbulento → más cambio de CONTENIDO
+        # (invariante de tensión sobre contenido, no sobre brillo).
+        "feed": _FEED_MAX - (_FEED_MAX - _FEED_MIN) * x,
         "kill": _KILL_MIN + (_KILL_MAX - _KILL_MIN) * x,
     }
 
@@ -96,7 +100,63 @@ def _react_diffuse(v0: np.ndarray, feed: float, kill: float, steps: int) -> np.n
     return V
 
 
-# --- El motor (función PURA) -----------------------------------------------
+# --- Motor TEMPORAL (Fase 3): el RD EVOLUCIONA en el tiempo -----------------
+# A diferencia de evolve() (Fase 2: madura una vez + respiración de brillo → "una
+# foto"), aquí el estado U/V AVANZA frame a frame. La respiración es CONTENIDO:
+# oscila el FEED del RD (§4), no el brillo. La semilla actúa como ATRACTOR
+# espacial (más feed donde el universo pesa). Funciones PURAS; el estado vive en
+# el servidor (core/presence_runtime.py), no aquí.
+
+# Cuánto sube el feed donde la semilla tiene masa (la semilla como atractor).
+_FEED_SEED_GAIN = 0.020
+# Escala fija V→densidad (no por-frame: no oculta amplitud real de la sustancia).
+_VIS_GAIN = 3.0
+
+
+def rd_step(U, V, feed, kill, steps: int = 1):
+    """Avanza el RD `steps` pasos (Gray-Scott). PURO. `feed` escalar o array."""
+    U = np.array(U, dtype=np.float64, copy=True)
+    V = np.array(V, dtype=np.float64, copy=True)
+    for _ in range(max(0, int(steps))):
+        uvv = U * V * V
+        U += _DU * _laplacian(U) - uvv + feed * (1.0 - U)
+        V += _DV * _laplacian(V) + uvv - (feed + kill) * V
+        np.clip(U, 0.0, 1.0, out=U)
+        np.clip(V, 0.0, 1.0, out=V)
+    return U, V
+
+
+def feed_field(seed_norm, tension: float, frame: int, style: PresenceStyle = DEFAULT_STYLE):
+    """Feed espacial del RD (§4: respiración = feed, NO brillo). PURO.
+
+    - ATRACTOR: el feed sube donde la semilla tiene masa (`seed_norm` en [0,1])
+      → la estructura se forma donde el universo pesa.
+    - RESPIRACIÓN (contenido): un factor global oscila con `frame`; su amplitud
+      la fija la tensión → a más tensión el patrón cambia más (invariante SOBRE
+      CONTENIDO). No se toca el brillo.
+    """
+    d = _dynamics(tension)
+    period = max(1, int(style.breathing_period))
+    breath = 1.0 + d["breath_amp"] * math.sin(2.0 * math.pi * (float(frame) / period))
+    return d["feed"] * breath + _FEED_SEED_GAIN * np.asarray(seed_norm, dtype=np.float64)
+
+
+def seed_to_state(seed_norm):
+    """Estado RD inicial desde la semilla: V = semilla, U = 1 - V. PURO."""
+    V = np.asarray(seed_norm, dtype=np.float64).copy()
+    return 1.0 - V, V
+
+
+def state_to_field(V, color) -> DensityField:
+    """Render del estado vivo: densidad = V·_VIS_GAIN (escala FIJA), color = tinte."""
+    V = np.asarray(V, dtype=np.float64)
+    d = np.clip(V * _VIS_GAIN, 0.0, 1.0)
+    col = np.clip(np.asarray(color, dtype=np.float64), 0.0, 1.0).copy()
+    col[d <= 0.0] = 0.0
+    return DensityField(size=int(V.shape[0]), density=d, color=col)
+
+
+# --- Fase 2: frame ÚNICO (puro; se conserva para tests y como fallback) ------
 
 def evolve(
     seed: DensityField,

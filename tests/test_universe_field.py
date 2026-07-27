@@ -73,37 +73,10 @@ def test_blend_endpoints_are_real_seeds():
     assert np.allclose(a1.density, B.density) and np.allclose(a1.color, B.color)
 
 
-def test_seed_refresh_has_no_abrupt_discontinuity():
-    # MEDIBLE: durante el cruce (t fijo, alpha avanza un frame) el delta máximo
-    # por celda NO debe superar el del movimiento normal (seed fijo, t avanza) a
-    # la MISMA tensión. Si lo supera, el cruce es demasiado corto.
-    st = _style()
-    A, B = _seed_a(), _seed_b()
-    tension = 0.30  # baja-media: caso exigente (poco movimiento que "esconda" el cruce)
-
-    def dmax(f1, f2) -> float:
-        return float(np.abs(f1.density - f2.density).max())
-
-    normal = max(
-        dmax(L.evolve(B, tension, t, st), L.evolve(B, tension, t + 1, st))
-        for t in range(st.breathing_period)
-    )
-
-    frames = max(1, int(UF.TRANSITION_SECONDS * st.fps))
-    d_alpha = 1.0 / frames
-    t_fixed = 3
-    cross = 0.0
-    for i in range(frames):
-        a0 = i * d_alpha
-        a1 = min(1.0, (i + 1) * d_alpha)
-        s0 = UF.blend_seeds(A, B, a0)
-        s1 = UF.blend_seeds(A, B, a1)
-        cross = max(cross, dmax(L.evolve(s0, tension, t_fixed, st), L.evolve(s1, tension, t_fixed, st)))
-
-    assert cross <= normal, (
-        f"cruce demasiado corto: delta_cruce={cross:.6f} > delta_normal={normal:.6f} "
-        f"(sube TRANSITION_SECONDS, ahora {UF.TRANSITION_SECONDS}s)"
-    )
+# El test de "cruce sin discontinuidad" sobre salidas maduras (evolve, Fase 2) se
+# REEMPLAZO por el equivalente sobre la NUEVA entrada del motor temporal (la
+# semilla como atractor del RD): ver
+# tests/test_presence_runtime.py::test_seed_enters_as_smooth_input.
 
 
 def test_tension_in_range_and_safe():
