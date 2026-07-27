@@ -159,9 +159,13 @@ def _save_report(report: Dict) -> str:
 def check_container() -> Dict:
     """Verify container/supervisor is running and healthy."""
     if not os.path.isfile("/proc/1/cmdline"):
-        # No procfs (e.g. macOS): check the supervisor process directly.
-        _o, _ = _shell("pgrep -fl vectrax_supervisor")
-        _ok = "vectrax_supervisor" in _o.lower()
+        # No procfs (e.g. macOS/launchd): scan the full process table for the
+        # supervisor. `pgrep -fl vectrax_supervisor` is unreliable in the
+        # launchd daemon context (reports "NOT found" even while the process is
+        # alive), whereas `ps -Ao command=` is the exact mechanism
+        # check_processes() already uses successfully here — stay consistent.
+        _o, _ = _shell("ps -Ao command=")
+        _ok = any("vectrax_supervisor" in line for line in _o.splitlines())
         return {"name": "container", "ok": _ok, "detail": "supervisor active" if _ok else "supervisor NOT found"}
     out, _ = _shell("cat /proc/1/cmdline 2>/dev/null | tr '\\0' ' '")
     supervisor = "supervisor" in out.lower()
