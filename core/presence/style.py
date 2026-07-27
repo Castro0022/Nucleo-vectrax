@@ -8,9 +8,11 @@ Honestidad (§5, §10): `sigma_cut` y `floor_frac` NO salen de ninguna fórmula.
 Son parámetros de FORMA elegidos por BARRIDO para que el contorno del campo
 quede legible:
 
-  - floor_frac = 0.05 → fraccion_no_vacia ≈ 0.22, dentro del criterio [0.15, 0.60].
-    Barrido observado (kernel a integral unidad): 0.03→0.26, 0.05→0.22, 0.08→0.17.
-    Es el umbral del contorno como fracción del máximo del campo.
+  - floor_frac = 0.05 → fraccion_no_vacia ≈ 0.18, dentro del criterio [0.15, 0.60].
+    Elegido por COMPARACIÓN VISUAL de un abanico de candidatos al mismo instante
+    del campo (0.03→0.25, 0.05→0.18, 0.08→0.07, 0.12→0.05, 0.20→0.04): 0.05 da un
+    anillo lleno y legible sin halo. Es el umbral del contorno: por debajo → negro
+    (fondo/silueta); en [umbral, umbral·(1+knee)] el borde decae (soft-knee), no salta.
   - sigma_cut = 3.0 → el depósito gaussiano se corta a 3σ (≈99.7% de la masa),
     dando un contorno acotado en vez de colas que llenan toda la rejilla.
 
@@ -31,7 +33,8 @@ class PresenceStyle:
     grid: int = 180
     # Corte del depósito gaussiano, en múltiplos de σ (parámetro de forma).
     sigma_cut: float = 3.0
-    # Umbral de contorno como fracción del máximo del campo (elegido por barrido).
+    # Umbral de contorno como fracción del máximo (elegido por comparación visual
+    # → fraccion ≈ 0.18). Por debajo → negro; el borde decae con soft-knee (no salta).
     floor_frac: float = 0.05
 
     # --- Fase 2 (presencia viva): TEMPO y FORMA del patrón, NO estado. -----
