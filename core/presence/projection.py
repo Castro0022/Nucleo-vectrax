@@ -65,6 +65,11 @@ _DEFAULT_RADIUS = 0.55
 # pintada mentía sobre la masa (§2). Ahora todos los nodos tienen la misma huella.
 _SIGMA_FRAC = 0.045
 
+# Ancho de la rampa del borde (soft-knee), como múltiplo del umbral. El knee es
+# ACOTADO: cero por debajo del umbral (fondo negro/silueta) y rampa suave solo en
+# [umbral, umbral·(1+_KNEE_WIDTH)] — NO deja pasar el halo débil sub-umbral.
+_KNEE_WIDTH = 1.0
+
 
 @dataclass(frozen=True)
 class Node:
@@ -210,14 +215,19 @@ def project(
         color_num[:, :, 1] += deposit * gr
         color_num[:, :, 2] += deposit * b
 
-    # Contorno con borde SUAVE (soft-knee): en vez de un corte duro por debajo de
-    # floor_frac·máximo (que dejaba dientes de sierra), se atenúa con smoothstep
-    # → la frontera DECAE, no salta. El soporte lo acota el corte a sigma_cut·σ.
+    # Contorno con borde SUAVE pero ACOTADO (soft-knee):
+    #   - por debajo de `lo` = floor_frac·máximo → CERO (fondo negro, silueta);
+    #   - en [lo, hi] → rampa smoothstep (el borde DECAE, no salta — sin dientes);
+    #   - por encima de `hi` → pleno.
+    # Así NO se pinta el halo débil sub-umbral (que rellenaba el fondo de blanco):
+    # las celdas no nulas siguen siendo ~las mismas que con el corte duro
+    # (density > lo), pero el borde ya no salta.
     if floor_frac > 0.0:
         peak = float(density.max())
         if peak > 0.0:
-            thr = floor_frac * peak
-            x = np.clip(density / thr, 0.0, 1.0)
+            lo = floor_frac * peak
+            hi = lo * (1.0 + _KNEE_WIDTH)
+            x = np.clip((density - lo) / (hi - lo), 0.0, 1.0)
             density = density * (x * x * (3.0 - 2.0 * x))
 
     # Mezcla de color por peso de masa donde queda densidad (evita 0/0).
