@@ -8,7 +8,8 @@ nodos, todavía contable — §2). Es una **reducción real** (§4):
 
   1. Cada nodo DEPOSITA su masa en un campo de densidad continuo 2D
      (acumulación gaussiana en una rejilla ~180×180). Radio según su capa
-     (Core→centro, Outer→periferia); ángulo según su dominio.
+     (Core→centro, Outer→periferia); ángulo dentro de un ARCO por dominio de
+     ancho ∝ nº de nodos (el área que pinta un dominio ~ su nº de nodos/masa).
   2. Cada nodo deposita también color: se mezcla al final por peso de masa
      (si un dominio domina en masa, se nota — no es un tinte global).
   3. Se renderiza el CAMPO, no los nodos. A partir de aquí no queda nada
@@ -59,6 +60,11 @@ _TIER_RADIUS = {
 }
 _DEFAULT_RADIUS = 0.55
 
+# σ CONSTANTE (fracción del lado): la CAPA decide el RADIO, no el tamaño de la
+# huella. Antes σ escalaba con la capa y los nodos OUTER inflaban área → el área
+# pintada mentía sobre la masa (§2). Ahora todos los nodos tienen la misma huella.
+_SIGMA_FRAC = 0.045
+
 
 @dataclass(frozen=True)
 class Node:
@@ -104,6 +110,36 @@ def _tier_radius(tier: str) -> float:
     return _TIER_RADIUS.get((tier or "").upper(), _DEFAULT_RADIUS)
 
 
+def _node_angles(nodes: Sequence[Node]) -> List[float]:
+    """Ángulo de cada nodo repartiendo cada DOMINIO en un ARCO de ancho ∝ su nº
+    de nodos (no un ángulo único). Así el ÁREA que pinta un dominio es ~∝ su nº
+    de nodos —y por tanto a su masa—, no a la geometría (§2: el área no puede
+    mentir sobre el estado). Determinista: arcos ordenados por hash estable y
+    nodos repartidos uniformemente dentro de su arco.
+    """
+    counts: Dict[str, int] = {}
+    for n in nodes:
+        counts[n.domain] = counts.get(n.domain, 0) + 1
+    total = sum(counts.values())
+    if total <= 0:
+        return [0.0 for _ in nodes]
+    order = sorted(counts, key=lambda d: _stable_unit("arc:" + (d or "unknown")))
+    start: Dict[str, float] = {}
+    cursor = 0.0
+    for d in order:
+        start[d] = cursor
+        cursor += 2.0 * math.pi * counts[d] / total
+    seen: Dict[str, int] = {}
+    out: List[float] = []
+    for n in nodes:
+        d = n.domain
+        i = seen.get(d, 0)
+        seen[d] = i + 1
+        width = 2.0 * math.pi * counts[d] / total
+        out.append(start[d] + (i + 0.5) / counts[d] * width)
+    return out
+
+
 # --- La proyección (núcleo) -------------------------------------------------
 
 # §3 (contorno): el depósito gaussiano se corta a `sigma_cut`·σ (fuera → 0) y,
@@ -144,24 +180,25 @@ def project(
     half = size / 2.0
     yy, xx = np.mgrid[0:size, 0:size]
 
-    for n in sorted(nodes, key=lambda z: str(z.id)):
+    nodes_sorted = sorted(nodes, key=lambda z: str(z.id))
+    angles = _node_angles(nodes_sorted)
+    # σ CONSTANTE: la capa decide el RADIO, no el tamaño de la huella (§2).
+    sigma = max(2.0, _SIGMA_FRAC * size)
+    cut2 = (sigma_cut * sigma) ** 2
+
+    for idx, n in enumerate(nodes_sorted):
         mass = max(float(n.mass), 0.0)
         if mass <= 0.0:
             continue
-        r_frac = _tier_radius(n.tier)
-        ang = _domain_angle(n.domain)
+        r_frac = _tier_radius(n.tier)          # capa → RADIO
+        ang = angles[idx]                      # ángulo dentro del arco del dominio
         cx = center + math.cos(ang) * r_frac * half * 0.9
         cy = center + math.sin(ang) * r_frac * half * 0.9
-        # Core más compacto, periferia más difusa → el contorno emerge.
-        sigma = max(2.0, (0.05 + 0.10 * r_frac) * size)
 
         dist2 = ((xx - cx) ** 2) + ((yy - cy) ** 2)
         g = np.exp(-dist2 / (2.0 * sigma * sigma))
-        # Corte a sigma_cut·σ: fuera del disco no hay depósito (contorno, no colas).
-        g[dist2 > (sigma_cut * sigma) ** 2] = 0.0
-        # Kernel a integral unidad: cada nodo deposita `mass` total sin importar
-        # σ (σ controla la EXTENSIÓN, no la cantidad). Evita que los nodos OUTER
-        # (σ mayor) aporten más masa total por pura geometría.
+        g[dist2 > cut2] = 0.0                   # corte a sigma_cut·σ (sin colas)
+        # Kernel a integral unidad: cada nodo deposita `mass` total sin importar σ.
         ksum = float(g.sum())
         if ksum > 0.0:
             g = g / ksum
@@ -173,11 +210,15 @@ def project(
         color_num[:, :, 1] += deposit * gr
         color_num[:, :, 2] += deposit * b
 
-    # Umbral de contorno: cero por debajo de floor_frac·máximo.
+    # Contorno con borde SUAVE (soft-knee): en vez de un corte duro por debajo de
+    # floor_frac·máximo (que dejaba dientes de sierra), se atenúa con smoothstep
+    # → la frontera DECAE, no salta. El soporte lo acota el corte a sigma_cut·σ.
     if floor_frac > 0.0:
         peak = float(density.max())
         if peak > 0.0:
-            density[density < floor_frac * peak] = 0.0
+            thr = floor_frac * peak
+            x = np.clip(density / thr, 0.0, 1.0)
+            density = density * (x * x * (3.0 - 2.0 * x))
 
     # Mezcla de color por peso de masa donde queda densidad (evita 0/0).
     color = np.zeros_like(color_num)
