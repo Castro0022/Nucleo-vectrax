@@ -61,6 +61,24 @@ async function doLogin() {
   }
 }
 
+// Auto-login LOCAL (sin contraseña): en localhost entra como 'owner' (rol owner,
+// canal creador). Evita el muro de login para el creador. En remoto NO aplica:
+// se muestra el login normal. La cuenta owner/(vacía) es de uso local/dev.
+async function autoLoginLocal() {
+  var isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  if (!isLocal) return;
+  try {
+    const d = await api('POST', '/auth/login', { username: 'owner', password: '' });
+    TOKEN = d.token;
+    USER  = { username: d.username, role: d.role, channel: d.channel };
+    localStorage.setItem('vx_token', TOKEN);
+    localStorage.setItem('vx_user', JSON.stringify(USER));
+    enterApp();
+  } catch (e) {
+    /* si falla, se deja visible el login manual */
+  }
+}
+
 function doLogout() {
   api('POST', '/auth/logout').catch(() => {});
   TOKEN = ''; USER = null;
@@ -1083,10 +1101,12 @@ document.addEventListener('DOMContentLoaded', () => {
     b.addEventListener('click', () => showDashSection(b.dataset.section))
   );
 
-  // Session restore
+  // Session restore — o auto-login local (sin contraseña) para el creador.
   if (TOKEN && USER) {
     api('GET', '/auth/me')
       .then(() => enterApp())
-      .catch(() => doLogout());
+      .catch(() => autoLoginLocal());
+  } else {
+    autoLoginLocal();
   }
 });

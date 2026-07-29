@@ -27,6 +27,12 @@ from services.core.middleware.user_context import require_permission
 router = APIRouter(prefix="/gravitational", tags=["gravitational"])
 logger = logging.getLogger("vectrax.core.routes.gravitational")
 
+# El grafo en memoria (aristas = similitud de embeddings) se reconstruye UNA vez
+# por proceso en el primer render del universo. Tras un reinicio queda vacío y en
+# runtime solo se añaden unas pocas aristas, lo que derrotaba el guard `== 0` y
+# dejaba el panel sin conexiones. Ver api_universe.
+_graph_loaded = False
+
 _project_root = str(Path(__file__).resolve().parents[3])
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
@@ -557,12 +563,17 @@ async def api_universe(
             "gravity_score": round(s.gravity_score, 4),
         })
 
-    # Edges from graph (auto-load from DB if empty)
+    # Edges from graph. Reconstruir el grafo completo (aristas desde embeddings)
+    # UNA vez por proceso: tras un reinicio queda vacío y en runtime solo se
+    # añaden unas pocas aristas, lo que antes derrotaba el guard `== 0` y dejaba
+    # el panel sin conexiones. Fallback adicional si quedara en 0.
+    global _graph_loaded
     graph = _g.get_graph()
-    if graph.number_of_edges() == 0 and len(star_ids) > 0:
+    if (not _graph_loaded or graph.number_of_edges() == 0) and len(star_ids) > 0:
         try:
             _g.load_from_db()
             graph = _g.get_graph()
+            _graph_loaded = True
         except Exception:
             pass
     edges = []
