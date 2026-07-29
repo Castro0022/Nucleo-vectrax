@@ -119,6 +119,23 @@ Vectrax is a universal AI infrastructure layer that:
 - **ConvergenceLearner** - Closes the operational awareness cycle: observes PresenciaObserver decisions, detects degradation patterns per motor, and proposes threshold adjustments with evidence — never applies changes without creator authorization
 - **LawSignal** - Connects the 7 Fundamental Laws (Kybalion-inspired) as active score weights: violations reduce sovereignty/convergence or raise noise before PresenciaObserver decides. The principles don't respond. They weigh.
 
+### 🗣️ La Presencia — Canal del Creador (voz)
+Conversación por voz bidireccional sobre el campo vivo del universo, en `/presence`. Le hablas y responde hablando, con memoria e identidad, reusando el MISMO cerebro que los demás canales.
+
+- **Voz de entrada** — Web Speech recognition en el CLIENTE (es-ES, push-to-talk). El reconocimiento vive en el navegador; el servidor no hace STT.
+- **Un solo cerebro (sin routing nuevo)** — la transcripción entra por `ExternalGateway.receive_message` (memoria + identidad). No se añade una capa de routing.
+- **4 registros de fuente** — cada respuesta trae su `source`: `SELF_DETERMINISTIC` (datos propios + procedencia, phase0) | `MEMORY` (lo recordado) | `ONLINE` (búsqueda externa) | `MODEL` (LLM sin respaldo). Default **MODEL**, nunca hacia arriba. Cada registro **tiñe la presencia distinto en la FORMA** (sin texto ni etiqueta): SELF=oro, MEMORY=verde-teal, ONLINE=cian, MODEL=violeta pálido.
+- **Voz de salida (servidor)** — **ElevenLabs streaming with-timestamps**, voz **River** (andrógina, registro medio, tranquila). Devuelve audio + timestamps por PALABRA (de la alineación por carácter).
+- **Texto sincronizado** — se revela palabra a palabra guiado por los timestamps (nunca >1 palabra por delante de la voz). Fallback a la voz del navegador si el servidor no da audio.
+- **Pulsos (§Vibración)** — cada palabra hablada deposita una gaussiana de sustancia en el campo de reacción-difusión; la presencia vibra con su PROPIA voz (no se deforma por amplitud de audio). Invariante: habla real ⇒ pulso visible; sin habla, ningún pulso.
+- **Transición universo↔canal** — <1s e interrumpible (reabrir a mitad no da salto).
+- **Excepción de audio** — la regla global "sin audio" se mantiene; el Canal del Creador es la ÚNICA excepción, y solo el creador lo abre deliberadamente (gesto requerido por autoplay).
+
+Viewer: `/presence`
+API: `POST /v1/presence/ask` (texto→respuesta+source) · `POST /v1/presence/speak` (audio+timestamps, River) · `POST /v1/presence/register` (registro visual) · `POST /v1/presence/pulse` (pulso de palabra) · `GET /v1/presence/utterance` (auto-reporte determinista phase0) · `GET /v1/presence/field.png` (frame vivo del campo)
+Env: `ELEVENLABS_API_KEY` (permiso `text_to_speech` + `voices_read`) · `VX_PRESENCE_VOICE_ID` (default River `SAz9YHcvj6GT2YYXdXww`) · `VX_PRESENCE_TTS_MODEL` (default `eleven_multilingual_v2`)
+Files: `core/presence/voice_eleven.py`, `core/presence_runtime.py`, `core/presence/{projection,life,style,phase0}.py`, `services/core/routes/presence.py`, `services/ui/static/presence.html`
+
 ### 📊 Pattern Performance Dashboard
 Real-time monitoring of trading pattern performance integrated into the Vectrax SPA.
 
