@@ -60,6 +60,11 @@ _file_handler = logging.handlers.RotatingFileHandler(
 _file_handler.setFormatter(logging.Formatter(_LOG_FMT, datefmt=_LOG_DATE))
 logger.addHandler(_file_handler)
 
+# Silenciar el log de peticiones de httpx/httpcore: a nivel INFO registran la URL
+# de getUpdates con el TOKEN del bot en claro (fuga de secreto en los logs).
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 TELEGRAM_API = "https://api.telegram.org/bot{token}"
 POLL_TIMEOUT = 30
 POLL_UPDATE_LIMIT = 25   # max updates per getUpdates call: bounds the mp.Queue
@@ -998,12 +1003,28 @@ class TelegramGateway:
                 err_str = str(e)
                 # 409 Conflict = otra instancia corriendo — esperar más y resetear
                 if "409" in err_str or "Conflict" in err_str:
+                    # 409 = otra instancia/webhook posee el bot (p. ej. un
+                    # deployment remoto con webhook activo). Es MANEJO CORRECTO,
+                    # no un stall. El backoff se hace en INCREMENTOS refrescando
+                    # _last_poll_ok/_last_poll_progress (igual que el path
+                    # NET_DOWN) para que NI el poll-stuck watchdog
+                    # (POLL_STUCK_THRESHOLD=50s) NI el progress watchdog maten el
+                    # proceso. ANTES: sleep(CONFLICT_RETRY_DELAY=60s) sin
+                    # refrescar > 50s → os._exit(1) a mitad del backoff →
+                    # crash-loop perpetuo mientras exista el conflicto.
                     logger.warning(
-                        "409 Conflict detectado — otra instancia activa. "
-                        "Esperando %ds antes de reintentar...", CONFLICT_RETRY_DELAY,
+                        "409 Conflict — otra instancia/webhook posee el bot. "
+                        "Backoff %ds en standby (sin reiniciar)...",
+                        CONFLICT_RETRY_DELAY,
                     )
-                    time.sleep(CONFLICT_RETRY_DELAY)
                     self._errors = 0
+                    _slept = 0.0
+                    while self._running and _slept < CONFLICT_RETRY_DELAY:
+                        self._last_poll_ok = time.time()
+                        self._last_poll_progress = time.time()
+                        self._write_heartbeat()
+                        time.sleep(1.0)
+                        _slept += 1.0
                     continue
                 self._errors += 1
                 logger.error("Poll (%d/%d): %s\n%s", self._errors,
