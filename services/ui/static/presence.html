@@ -13,7 +13,14 @@
     .stage {
       position: fixed; inset: 0; background: #000;
       display: flex; align-items: center; justify-content: center;
+      /* Fase 3: transición universo↔canal (<1s, interrumpible). Al togglear
+         .closed el navegador interpola desde el valor ACTUAL → si se invierte a
+         mitad, no hay salto. */
+      transition: opacity 700ms ease, transform 700ms cubic-bezier(.22,.61,.36,1);
+      will-change: opacity, transform;
     }
+    /* Canal cerrado (visto desde el universo): lejano y tenue. */
+    .stage.closed { opacity: 0; transform: scale(0.82); }
     /* Una sola imagen: cuadrada al menor lado del viewport (vmin) para que quepa
        entera, centrada por flex, proporción preservada (object-fit: contain).
        Sin repeat, sin tile — es un <img> único, no un background. */
@@ -107,6 +114,14 @@
       } catch (e) {}
     }
 
+    // Pulso de voz: cada palabra hablada deposita sustancia en el RD del servidor
+    // (§Vibración = evento REAL; sin habla no hay pulso). Fire-and-forget.
+    function firePulse() {
+      try {
+        fetch('/v1/presence/pulse', { method: 'POST', keepalive: true }).catch(function () {});
+      } catch (e) {}
+    }
+
     // Keepalive: Chrome corta la síntesis tras ~15s si no se le "resucita".
     var _ttsKeep = null;
     function _stopKeepalive() { if (_ttsKeep) { clearInterval(_ttsKeep); _ttsKeep = null; } }
@@ -144,6 +159,7 @@
         u.onboundary = function (ev) {
           if (ev && ev.charIndex != null) {
             speechEl.textContent = revealTo(fullText, offsets[idx] + ev.charIndex);
+            firePulse();  // fallback navegador: pulso por límite de palabra
           }
         };
         if (idx === lastIdx) {
@@ -155,14 +171,15 @@
       _startKeepalive();
     }
 
-    // --- Síntesis de SERVIDOR (ElevenLabs, voz River) + revelado por timestamps ---
+    // --- Síntesis de SERVIDOR (ElevenLabs, voz River) + revelado + pulsos --------
     // Reproduce el audio del servidor y revela el texto palabra a palabra guiado
-    // por los TIMESTAMPS de palabra de ElevenLabs (NO por onboundary). Aquí se
-    // engancharán después los pulsos de la presencia (§Vibración), uno por palabra.
+    // por los TIMESTAMPS de palabra de ElevenLabs (NO por onboundary). Cada palabra
+    // recién iniciada dispara un PULSO en el RD (§Vibración), uno por palabra.
     function playServerAudio(text, b64, words) {
       words = words || [];
       var audio = new Audio('data:audio/mpeg;base64,' + b64);
       var raf = null;
+      var _lastK = 0;
       cueEl.style.opacity = '0';
       function tick() {
         var t = audio.currentTime;
@@ -170,6 +187,9 @@
         while (k < words.length && words[k].start <= t) k++;
         // Revelado: solo palabras ya iniciadas (nunca >1 por delante de la voz).
         speechEl.textContent = words.slice(0, k).map(function (w) { return w.word; }).join(' ');
+        // Pulso por PALABRA: cada palabra recién iniciada deposita un pulso en el
+        // RD (§Vibración = evento real). Uno por palabra nueva.
+        while (_lastK < k) { firePulse(); _lastK++; }
         if (!audio.ended) raf = requestAnimationFrame(tick);
       }
       audio.onplay = function () { if (raf) cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); };
@@ -264,6 +284,41 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); gesture(); }
     });
+  })();
+
+  // --- Transición universo↔canal (<1s, interrumpible) ------------------------
+  // Entrar al canal lo abre desde un estado "lejano" (como visto desde el
+  // universo) en <1s. Salir (Esc) cierra en <1s y vuelve a /universe; si se
+  // reabre a mitad (cualquier interacción), se cancela la salida y reabre desde
+  // el punto actual — sin salto (lo interpola el navegador).
+  (function () {
+    var TRANS_MS = 700;
+    var stage = document.querySelector('.stage');
+    if (!stage) return;
+    var navTimer = null;
+
+    // Entrada: arranca cerrado y abre en el siguiente frame.
+    stage.classList.add('closed');
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { stage.classList.remove('closed'); });
+    });
+
+    function closeToUniverse() {
+      if (navTimer) return;               // ya cerrando
+      stage.classList.add('closed');
+      navTimer = setTimeout(function () { window.location.href = '/universe'; }, TRANS_MS);
+    }
+    function cancelClose() {
+      if (!navTimer) return;
+      clearTimeout(navTimer); navTimer = null;
+      stage.classList.remove('closed');   // reabre desde el punto actual (interrumpible)
+    }
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { closeToUniverse(); return; }
+      cancelClose();
+    }, true);
+    document.addEventListener('click', cancelClose, true);  // clic cancela cierre en curso
   })();
   </script>
 </body>

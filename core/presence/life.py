@@ -174,6 +174,24 @@ def tint_field(field: DensityField, rgb, strength: float) -> DensityField:
     return DensityField(size=int(field.size), density=field.density, color=col)
 
 
+def pulse_kernel(size: int, radius_frac: float) -> np.ndarray:
+    """Gaussiana centrada (pico 1.0) para depositar el PULSO de voz. PURO.
+
+    Cada palabra hablada suma este núcleo a V; el RD reacciona por su física (no
+    se deforma por amplitud de audio). `radius_frac` (σ como fracción de la
+    rejilla) es FORMA (§8).
+    """
+    n = int(size)
+    if n <= 0:
+        return np.zeros((0, 0), dtype=np.float64)
+    idx = np.arange(n, dtype=np.float64)
+    yy, xx = np.meshgrid(idx, idx, indexing="ij")
+    c = (n - 1) / 2.0
+    sigma = max(1.0, float(radius_frac) * n)
+    r2 = (xx - c) ** 2 + (yy - c) ** 2
+    return np.exp(-r2 / (2.0 * sigma * sigma))
+
+
 # --- Fase 2: frame ÚNICO (puro; se conserva para tests y como fallback) ------
 
 def evolve(

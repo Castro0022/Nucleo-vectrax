@@ -27,6 +27,8 @@ from core.presence.projection import DensityField
 from core.presence.style import (
     DEFAULT_STYLE,
     PresenceStyle,
+    PULSE_INTENSITY,
+    PULSE_RADIUS_FRAC,
     REGISTER_TINTS,
     REGISTER_TINT_STRENGTH,
 )
@@ -38,17 +40,25 @@ SPF = 6
 _MAX_CATCHUP = 30
 
 _LOCK = threading.Lock()
-_STATE: Dict[str, Any] = {"U": None, "V": None, "last": None, "frame": 0, "size": None}
+_STATE: Dict[str, Any] = {
+    "U": None, "V": None, "last": None, "frame": 0, "size": None,
+    "pulse_kernel": None,  # núcleo gaussiano del pulso, cacheado por tamaño
+}
 # REGISTRO visual actual (fuente de la última locución): tiñe la presencia en la
 # FORMA (§ registro por source). None = neutro (sin tinte).
 _REGISTER: Dict[str, Any] = {"source": None}
+# PULSOS de voz PENDIENTES (§ Vibración): cada palabra hablada añade sustancia,
+# depositada en V en el próximo avance. Solo existen por eventos de habla REALES
+# (sin habla → sin pulso) → invariante del pulso.
+_PENDING: Dict[str, float] = {"pulse": 0.0}
 
 
 def reset() -> None:
     """Limpia el estado del motor (para tests)."""
     with _LOCK:
-        _STATE.update(U=None, V=None, last=None, frame=0, size=None)
+        _STATE.update(U=None, V=None, last=None, frame=0, size=None, pulse_kernel=None)
         _REGISTER["source"] = None
+        _PENDING["pulse"] = 0.0
 
 
 def set_register(source: Optional[str]) -> Optional[str]:
@@ -65,6 +75,29 @@ def set_register(source: Optional[str]) -> Optional[str]:
 def current_register() -> Optional[str]:
     """Registro visual actual (o None si neutro)."""
     return _REGISTER["source"]
+
+
+def add_pulse(intensity: Optional[float] = None) -> float:
+    """Registra un PULSO de voz (una palabra real hablada). Deposita
+    `PULSE_INTENSITY` de sustancia en V en el próximo avance; el RD reacciona por
+    su física. Devuelve la intensidad, SIEMPRE > 0: un habla real siempre produce
+    un pulso visible (invariante). No se apaga con intensidad 0 — se apaga en el
+    cliente dejando de emitir pulsos.
+    """
+    amt = PULSE_INTENSITY if intensity is None else float(intensity)
+    amt = max(amt, 0.0)
+    with _LOCK:
+        _PENDING["pulse"] += amt
+    return amt
+
+
+def _pulse_kernel(size: int) -> np.ndarray:
+    """Núcleo gaussiano del pulso, cacheado por tamaño en el estado."""
+    k = _STATE.get("pulse_kernel")
+    if k is None or int(k.shape[0]) != int(size):
+        k = L.pulse_kernel(int(size), PULSE_RADIUS_FRAC)
+        _STATE["pulse_kernel"] = k
+    return k
 
 
 def _apply_register(field: DensityField, source: Optional[str]) -> DensityField:
@@ -106,12 +139,24 @@ def _advance(
 
     kill = L._dynamics(tension)["kill"]
     U, V = s["U"], s["V"]
+
+    # Pulsos de voz: depositar sustancia ANTES de avanzar (el RD reacciona por su
+    # física). Se depositan aunque no haya frames que avanzar, para que un habla
+    # real sea visible de inmediato (invariante del pulso).
+    pend = _PENDING["pulse"]
+    if pend > 0.0:
+        V = V + _pulse_kernel(int(seed.size)) * pend
+        np.clip(V, 0.0, 1.0, out=V)
+        _PENDING["pulse"] = 0.0
+
     for _ in range(frames):
         s["frame"] += 1
         feed = L.feed_field(seed_norm, tension, s["frame"], style)
         U, V = L.rd_step(U, V, feed, kill, steps=SPF)
     if frames > 0:
         s.update(U=U, V=V, last=now)
+    elif pend > 0.0:
+        s.update(U=U, V=V)  # persistir el depósito aunque el reloj no avance
 
     return L.state_to_field(s["V"], seed.color)
 

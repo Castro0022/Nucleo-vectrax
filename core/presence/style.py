@@ -66,3 +66,13 @@ REGISTER_TINTS = {
 }
 # Fuerza del tinte (0..1): mezcla registro ↔ color del universo.
 REGISTER_TINT_STRENGTH = 0.45
+
+
+# --- Fase 3: PULSO de voz (§ Vibración = inyección de sustancia). FORMA (§8). --
+# Cada palabra hablada deposita una gaussiana de sustancia en el RD (V); el campo
+# reacciona por su PROPIA física (NO se deforma por amplitud de audio). INVARIANTE:
+# un pulso real (palabra) SIEMPRE es visible; la intensidad no se pone a 0 para
+# simular apagado — se apaga desactivando la vibración en el cliente (deja de
+# emitir pulsos). Sin habla, ningún pulso.
+PULSE_INTENSITY = 0.35        # amplitud del depósito en V (pico de la gaussiana)
+PULSE_RADIUS_FRAC = 0.10      # σ de la gaussiana como fracción de la rejilla

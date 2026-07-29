@@ -175,3 +175,17 @@ async def presence_register(body: PresenceRegisterBody):
         return {"ok": True, "source": set_register(body.source)}
     except Exception:
         return {"ok": False, "source": None}
+
+
+@router.post("/presence/pulse")
+async def presence_pulse():
+    """Un PULSO de voz (una palabra hablada): deposita sustancia en el RD del
+    servidor. La presencia vibra por su PROPIA física (§ Vibración); NO se deforma
+    por amplitud de audio. Solo con habla real existe el pulso. Nunca 500.
+    """
+    try:
+        from core.presence_runtime import add_pulse
+
+        return {"ok": True, "intensity": add_pulse()}
+    except Exception:
+        return {"ok": False, "intensity": 0.0}
