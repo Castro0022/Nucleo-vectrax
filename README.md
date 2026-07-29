@@ -756,6 +756,118 @@ Notes:
 - Manage the service: `launchctl kickstart -k gui/$(id -u)/com.vectrax.supervisor`
   to restart; logs live in `~/.vectrax/*.log`.
 
+## 💾 Backups y Rotación de Logs (Mac)
+
+Como Vectrax ahora corre solo en este Mac (sin volumen de servidor), un año de
+estrellas, convergencias y `op_cycles` vive únicamente en el disco local. Dos
+agentes launchd mantienen copias durables y con timestamp en `~/vectrax_backups/`
+(la de BD, además, espejada a iCloud).
+
+### Backup de la base de datos — `scripts/backup_db.sh`
+
+Snapshot **consistente** de toda la base de datos:
+- **Copia online de cada SQLite** (24 BD entre el repo y `~/.vectrax`) con
+  `sqlite3 .backup` — seguro mientras el sistema escribe (WAL-aware). Un `cp`
+  plano podría capturar un fichero a medias; `.backup` nunca.
+- Snapshot de los ledgers JSONL/JSON de `vault/` y `data/`.
+- Empaqueta `~/vectrax_backups/db/vectrax_db_<STAMP>.tar.gz` (~12 MB desde
+  ~108 MB en crudo), escribe un `.sha256`, **espeja a iCloud** (fuera del disco)
+  y poda a los últimos `VX_DB_RETENTION` archivos.
+- **No destructivo**: jamás modifica las BD originales.
+
+### Rotación de logs — `scripts/rotate_logs.sh`
+
+- Archiva los logs del repo (`logs/`, `*.log` sueltos) + del servicio
+  (`~/.vectrax/*.log`, `*.err`) en `~/vectrax_backups/logs/vectrax_logs_<STAMP>.tar.gz`.
+- Poda a los últimos `VX_LOG_RETENTION` archivos.
+- Tras archivar, trunca **en sitio** de forma segura (`: > fichero`, preserva el
+  inode para que los escritores en append sigan sin romperse) solo los logs
+  **activos** (mtime < 7 días). Pon `VX_LOG_TRUNCATE=0` para archivar sin truncar.
+
+### Programación (agentes launchd)
+
+| Agente | Cuándo | Retención | Salida |
+|---|---|---|---|
+| `com.vectrax.backup-db` | diario 03:30 | 14 (`VX_DB_RETENTION`) | `~/vectrax_backups/db/` + iCloud |
+| `com.vectrax.rotate-logs` | semanal Dom 04:00 | 8 (`VX_LOG_RETENTION`) | `~/vectrax_backups/logs/` |
+
+La BD es la única copia y crece a diario → backup diario (barato, ~12 MB); los
+logs rotan semanalmente. Si el Mac está dormido a esa hora, launchd ejecuta el
+job al despertar.
+
+> **Seguridad fuera del disco:** `~/vectrax_backups/` está en el mismo disco
+> físico, así que por sí solo no protege contra un fallo de disco. Por eso el
+> backup de BD espeja cada archivo a iCloud Drive
+> (`.../CloudDocs/vectrax_backups/db/`).
+
+### Instalar / gestionar
+
+```bash
+# Cargar (o recargar) los agentes
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vectrax.backup-db.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vectrax.rotate-logs.plist
+
+# Verificar que están cargados (PID  status  label)
+launchctl list | grep vectrax
+
+# Ejecutar una vez, a demanda
+bash scripts/backup_db.sh
+bash scripts/rotate_logs.sh
+
+# Detener / descargar
+launchctl bootout gui/$(id -u)/com.vectrax.backup-db
+```
+
+Logs de la rutina: `~/vectrax_backups/{backup_db,rotate_logs}.log`.
+
+### Agentes launchd (plantilla)
+
+Guarda esto en `~/Library/LaunchAgents/com.vectrax.backup-db.plist`. La rotación
+de logs es idéntica pero con label `com.vectrax.rotate-logs`, apuntando a
+`scripts/rotate_logs.sh`, y `StartCalendarInterval` semanal
+(`{ Weekday 0, Hour 4, Minute 0 }`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.vectrax.backup-db</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/mariobravo/Vectrax/scripts/backup_db.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>/Users/mariobravo/vectrax_backups/backup_db.out</string>
+  <key>StandardErrorPath</key><string>/Users/mariobravo/vectrax_backups/backup_db.err</string>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+</dict>
+</plist>
+```
+
+### Restaurar — `scripts/restore_db.sh`
+
+```bash
+# Restaura el último backup (o un STAMP) a un directorio y verifica
+# sha256 + integrity_check de cada .db. NO toca la base viva.
+bash scripts/restore_db.sh latest                      # crea un dir temporal
+bash scripts/restore_db.sh 20260729_132005 /tmp/vx_restore
+
+# Aplicar (CON EL SISTEMA PARADO): copia el .db que necesites, p. ej.
+cp /tmp/vx_restore/repo/vault/operational_cycles.db vault/operational_cycles.db
+# Las estrellas viven en la BD gravitacional (~/.vectrax/vectrax.db):
+cp /tmp/vx_restore/home_vectrax/vectrax.db ~/.vectrax/vectrax.db
+```
+
+> **Probado en vivo (2026-07-29):** restauración del último backup verificada
+> contra la base viva — **28/28 DBs** pasan `integrity_check`; snapshot con
+> estrellas **776**, convergencias **5056**, op_cycles **952** (la base viva iba
+> +1 estrella / +1 op_cycle por seguir operando tras el backup). Un backup no
+> probado no es un backup.
+
 ## 🚀 Deployment (Vultr)
 
 ```bash
@@ -2213,6 +2325,9 @@ Files:
 ---
 
 ## 📋 Changelog
+
+### 2026-07-29
+- **feat(ops): backup automático de la BD + rotación de logs (Mac/launchd)** — Dos agentes launchd mantienen copias durables en `~/vectrax_backups/`. `scripts/backup_db.sh`: copia **online** de las 24 SQLite (repo + `~/.vectrax`) vía `sqlite3 .backup` (consistente con WAL, no un `cp` a medias) + snapshot de los ledgers JSONL/JSON de `vault/`+`data/`; empaqueta `vectrax_db_<STAMP>.tar.gz` (~12 MB desde ~108 MB en crudo), `.sha256`, **espejo a iCloud** (fuera del disco) y retención `VX_DB_RETENTION=14`; no destructivo. `scripts/rotate_logs.sh`: archiva logs del repo + servicio, retención `VX_LOG_RETENTION=8` y truncado seguro en sitio (`: >`, preserva inode) solo de logs activos (mtime<7d; `VX_LOG_TRUNCATE=0` para desactivar). `scripts/restore_db.sh`: restaura a un dir destino y verifica `sha256` + `integrity_check` (no destructivo). Programación: BD diario 03:30, logs semanal Dom 04:00. Nueva sección *Backups y Rotación de Logs (Mac)*. **Restauración PROBADA (2026-07-29)** contra la base viva: 28/28 DBs íntegras; estrellas 776/777, convergencias 5056/5056, op_cycles 952/953 (Δ por operación normal tras el backup). Motivación: tras la mudanza del servidor, un año de estrellas/convergencias/`op_cycles` vive solo en este disco.
 
 ### 2026-07-26
 - **fix(telegram): romper el deadlock del poll — drain-before-join** (PR #56) — El poll corría `getUpdates` en un subproceso y devolvía el resultado por `multiprocessing.Queue`, pero el padre hacía `join` ANTES de drenar; con backlog grande el *feeder* se bloqueaba (payload > buffer del socketpair) → el hijo nunca salía → matado a los ~40s → offset sin avanzar → **deadlock auto-perpetuante** (bot muerto ~20h, 148 updates sin consumir). Fix: `_poll_subprocess` acepta `limit` (`POLL_UPDATE_LIMIT=25`) y el bucle lee `get(timeout)` PRIMERO (desbloquea el feeder) y solo después hace `join`. Repro bajo `spawn`: patrón viejo con 2.4MB → deadlock; nuevo → drena 300 updates en 0.06s. En vivo: `pending_update_count` 148 → 0.
