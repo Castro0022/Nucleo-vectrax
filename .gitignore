@@ -37,6 +37,7 @@ logs/*.log
 # Runtime vault data (operational, not code)
 vault/*.jsonl
 vault/*.json
+vault/audit_reports/
 vault/cognition_signals.jsonl
 vault/candidates.jsonl
 vault/causal_ledger.jsonl
@@ -67,3 +68,6 @@ data/
 *.db.bak*
 
 vault/domain_verification/
+
+# Runtime quality report (regenerado en runtime, no es código)
+ROUTER_ACTIVATION_QUALITY_REPORT.md
