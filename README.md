@@ -848,15 +848,25 @@ de logs es idéntica pero con label `com.vectrax.rotate-logs`, apuntando a
 </plist>
 ```
 
-### Restaurar
+### Restaurar — `scripts/restore_db.sh`
 
 ```bash
-# Extraer un snapshot concreto
-tar -xzf ~/vectrax_backups/db/vectrax_db_<STAMP>.tar.gz -C /tmp/vx_restore
-# Los .db son consistentes y están listos para usar; copia el que necesites,
-# p. ej. la BD de ciclos operativos:
+# Restaura el último backup (o un STAMP) a un directorio y verifica
+# sha256 + integrity_check de cada .db. NO toca la base viva.
+bash scripts/restore_db.sh latest                      # crea un dir temporal
+bash scripts/restore_db.sh 20260729_132005 /tmp/vx_restore
+
+# Aplicar (CON EL SISTEMA PARADO): copia el .db que necesites, p. ej.
 cp /tmp/vx_restore/repo/vault/operational_cycles.db vault/operational_cycles.db
+# Las estrellas viven en la BD gravitacional (~/.vectrax/vectrax.db):
+cp /tmp/vx_restore/home_vectrax/vectrax.db ~/.vectrax/vectrax.db
 ```
+
+> **Probado en vivo (2026-07-29):** restauración del último backup verificada
+> contra la base viva — **28/28 DBs** pasan `integrity_check`; snapshot con
+> estrellas **776**, convergencias **5056**, op_cycles **952** (la base viva iba
+> +1 estrella / +1 op_cycle por seguir operando tras el backup). Un backup no
+> probado no es un backup.
 
 ## 🚀 Deployment (Vultr)
 
@@ -2317,7 +2327,7 @@ Files:
 ## 📋 Changelog
 
 ### 2026-07-29
-- **feat(ops): backup automático de la BD + rotación de logs (Mac/launchd)** — Dos agentes launchd mantienen copias durables en `~/vectrax_backups/`. `scripts/backup_db.sh`: copia **online** de las 24 SQLite (repo + `~/.vectrax`) vía `sqlite3 .backup` (consistente con WAL, no un `cp` a medias) + snapshot de los ledgers JSONL/JSON de `vault/`+`data/`; empaqueta `vectrax_db_<STAMP>.tar.gz` (~12 MB desde ~108 MB en crudo), `.sha256`, **espejo a iCloud** (fuera del disco) y retención `VX_DB_RETENTION=14`; no destructivo. `scripts/rotate_logs.sh`: archiva logs del repo + servicio, retención `VX_LOG_RETENTION=8` y truncado seguro en sitio (`: >`, preserva inode) solo de logs activos (mtime<7d; `VX_LOG_TRUNCATE=0` para desactivar). Programación: BD diario 03:30, logs semanal Dom 04:00. Nueva sección *Backups y Rotación de Logs (Mac)*. Motivación: tras la mudanza del servidor, un año de estrellas/convergencias/`op_cycles` vive solo en este disco.
+- **feat(ops): backup automático de la BD + rotación de logs (Mac/launchd)** — Dos agentes launchd mantienen copias durables en `~/vectrax_backups/`. `scripts/backup_db.sh`: copia **online** de las 24 SQLite (repo + `~/.vectrax`) vía `sqlite3 .backup` (consistente con WAL, no un `cp` a medias) + snapshot de los ledgers JSONL/JSON de `vault/`+`data/`; empaqueta `vectrax_db_<STAMP>.tar.gz` (~12 MB desde ~108 MB en crudo), `.sha256`, **espejo a iCloud** (fuera del disco) y retención `VX_DB_RETENTION=14`; no destructivo. `scripts/rotate_logs.sh`: archiva logs del repo + servicio, retención `VX_LOG_RETENTION=8` y truncado seguro en sitio (`: >`, preserva inode) solo de logs activos (mtime<7d; `VX_LOG_TRUNCATE=0` para desactivar). `scripts/restore_db.sh`: restaura a un dir destino y verifica `sha256` + `integrity_check` (no destructivo). Programación: BD diario 03:30, logs semanal Dom 04:00. Nueva sección *Backups y Rotación de Logs (Mac)*. **Restauración PROBADA (2026-07-29)** contra la base viva: 28/28 DBs íntegras; estrellas 776/777, convergencias 5056/5056, op_cycles 952/953 (Δ por operación normal tras el backup). Motivación: tras la mudanza del servidor, un año de estrellas/convergencias/`op_cycles` vive solo en este disco.
 
 ### 2026-07-26
 - **fix(telegram): romper el deadlock del poll — drain-before-join** (PR #56) — El poll corría `getUpdates` en un subproceso y devolvía el resultado por `multiprocessing.Queue`, pero el padre hacía `join` ANTES de drenar; con backlog grande el *feeder* se bloqueaba (payload > buffer del socketpair) → el hijo nunca salía → matado a los ~40s → offset sin avanzar → **deadlock auto-perpetuante** (bot muerto ~20h, 148 updates sin consumir). Fix: `_poll_subprocess` acepta `limit` (`POLL_UPDATE_LIMIT=25`) y el bucle lee `get(timeout)` PRIMERO (desbloquea el feeder) y solo después hace `join`. Repro bajo `spawn`: patrón viejo con 2.4MB → deadlock; nuevo → drena 300 updates en 0.06s. En vivo: `pending_update_count` 148 → 0.
