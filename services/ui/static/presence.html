@@ -92,10 +92,19 @@
       return text.slice(0, end);
     }
 
-    // Registro visual (forma): lo consumirá el campo. Aquí solo se marca; el
-    // mapeo source → estado del campo (como la tensión) es el paso siguiente.
+    // Registro visual (FORMA): informa al SERVIDOR la fuente de la locución para
+    // que el campo se tiña distinto por registro (SELF_DETERMINISTIC/MEMORY/
+    // ONLINE/MODEL), sin texto ni etiqueta. También lo marca en el cliente.
     function setRegister(source) {
-      document.body.dataset.register = source || 'MODEL';
+      source = source || 'MODEL';
+      document.body.dataset.register = source;
+      try {
+        fetch('/v1/presence/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source: source }),
+        }).catch(function () {});
+      } catch (e) {}
     }
 
     // Keepalive: Chrome corta la síntesis tras ~15s si no se le "resucita".

@@ -156,6 +156,24 @@ def state_to_field(V, color) -> DensityField:
     return DensityField(size=int(V.shape[0]), density=d, color=col)
 
 
+def tint_field(field: DensityField, rgb, strength: float) -> DensityField:
+    """Mezcla un tinte RGB en el color del campo (solo donde hay densidad),
+    preservando estructura y brillo. `strength` en [0,1]; 0 = sin cambio. PURO.
+    Es el mecanismo del REGISTRO visual por fuente (§8): cada `source` tiñe la
+    presencia distinto, en la FORMA, sin texto ni etiqueta.
+    """
+    s = max(0.0, min(1.0, float(strength)))
+    if s <= 0.0:
+        return field
+    d = np.asarray(field.density, dtype=np.float64)
+    col = np.asarray(field.color, dtype=np.float64).copy()
+    tint = np.clip(np.asarray(rgb, dtype=np.float64).reshape(3), 0.0, 1.0)
+    mask = d > 0.0
+    for ch in range(3):
+        col[:, :, ch] = np.where(mask, (1.0 - s) * col[:, :, ch] + s * tint[ch], col[:, :, ch])
+    return DensityField(size=int(field.size), density=field.density, color=col)
+
+
 # --- Fase 2: frame ÚNICO (puro; se conserva para tests y como fallback) ------
 
 def evolve(

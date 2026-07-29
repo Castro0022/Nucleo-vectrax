@@ -24,7 +24,12 @@ import numpy as np
 
 from core.presence import life as L
 from core.presence.projection import DensityField
-from core.presence.style import DEFAULT_STYLE, PresenceStyle
+from core.presence.style import (
+    DEFAULT_STYLE,
+    PresenceStyle,
+    REGISTER_TINTS,
+    REGISTER_TINT_STRENGTH,
+)
 
 # Pasos RD por frame mostrado (~0.24 ms/paso a grid 180 → ~1.5 ms/frame; sostiene
 # 12 fps de sobra). Es TEMPO/forma: cuánto evoluciona el RD por frame.
@@ -34,12 +39,43 @@ _MAX_CATCHUP = 30
 
 _LOCK = threading.Lock()
 _STATE: Dict[str, Any] = {"U": None, "V": None, "last": None, "frame": 0, "size": None}
+# REGISTRO visual actual (fuente de la última locución): tiñe la presencia en la
+# FORMA (§ registro por source). None = neutro (sin tinte).
+_REGISTER: Dict[str, Any] = {"source": None}
 
 
 def reset() -> None:
     """Limpia el estado del motor (para tests)."""
     with _LOCK:
         _STATE.update(U=None, V=None, last=None, frame=0, size=None)
+        _REGISTER["source"] = None
+
+
+def set_register(source: Optional[str]) -> Optional[str]:
+    """Fija el REGISTRO visual actual (fuente de la locución en curso). El campo
+    lo refleja como un tinte en la FORMA, sin texto ni etiqueta. Devuelve el
+    registro normalizado en MAYÚSCULAS, o None.
+    """
+    norm = (source or "").strip().upper() or None
+    with _LOCK:
+        _REGISTER["source"] = norm
+    return norm
+
+
+def current_register() -> Optional[str]:
+    """Registro visual actual (o None si neutro)."""
+    return _REGISTER["source"]
+
+
+def _apply_register(field: DensityField, source: Optional[str]) -> DensityField:
+    """Tiñe el campo según el registro (§8, estado→forma): un tinte suave por
+    fuente. Sin registro o fuente desconocida → sin cambio (neutro)."""
+    if not source:
+        return field
+    rgb = REGISTER_TINTS.get(source)
+    if not rgb:
+        return field
+    return L.tint_field(field, rgb, REGISTER_TINT_STRENGTH)
 
 
 def _advance(
@@ -93,7 +129,10 @@ def current_field(
     if now is None:
         now = time.time()
     with _LOCK:
-        return _advance(now, style, get_seed)
+        field = _advance(now, style, get_seed)
+        source = _REGISTER["source"]
+    # Aplicar el REGISTRO (tinte por fuente) FUERA del lock: op pura sobre el campo.
+    return _apply_register(field, source)
 
 
 def current_frame_png(now: Optional[float] = None, style: PresenceStyle = DEFAULT_STYLE) -> bytes:

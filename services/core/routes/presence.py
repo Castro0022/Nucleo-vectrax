@@ -73,8 +73,15 @@ class PresenceAskBody(BaseModel):
     text: str = ""
 
 
-# Los 4 registros de la presencia. El cliente los usa (por ahora) como marca; el
-# mapeo source → estado del campo (como la tensión) es el paso siguiente.
+class PresenceRegisterBody(BaseModel):
+    """Registro visual (fuente) que el campo debe reflejar en la FORMA."""
+
+    source: str = ""
+
+
+# Los 4 registros de la presencia. El cliente marca el registro y avisa al
+# servidor (POST /presence/register); el campo se tiñe por fuente en la FORMA
+# (core/presence_runtime.set_register + core/presence/style.REGISTER_TINTS).
 _REGISTERS = ("SELF_DETERMINISTIC", "MEMORY", "ONLINE", "MODEL")
 
 
@@ -154,3 +161,17 @@ async def presence_speak(body: PresenceAskBody):
         }
     except Exception:
         return _empty_speak()
+
+
+@router.post("/presence/register")
+async def presence_register(body: PresenceRegisterBody):
+    """Fija el REGISTRO visual actual (SELF_DETERMINISTIC | MEMORY | ONLINE |
+    MODEL) para que la presencia lo distinga en la FORMA (tinte por fuente, §2:
+    sin texto ni etiqueta). Canal local. Nunca 500.
+    """
+    try:
+        from core.presence_runtime import set_register
+
+        return {"ok": True, "source": set_register(body.source)}
+    except Exception:
+        return {"ok": False, "source": None}
