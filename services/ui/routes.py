@@ -21,10 +21,14 @@ _DB_PATH = Path.home() / ".vectrax" / "vectrax.db"
 
 @router.get("/", response_class=HTMLResponse, include_in_schema=False)
 async def index():
-    """Serve the main UI page."""
+    """Serve the main UI page. no-store para que el navegador tome siempre la
+    última versión del SPA (evita servir app.js cacheado tras un cambio)."""
     index_path = _TEMPLATE_DIR / "index.html"
     if index_path.exists():
-        return HTMLResponse(content=index_path.read_text(encoding="utf-8"))
+        return HTMLResponse(
+            content=index_path.read_text(encoding="utf-8"),
+            headers={"Cache-Control": "no-store"},
+        )
     return HTMLResponse(content="<h1>Vectrax UI not found</h1>", status_code=404)
 
 

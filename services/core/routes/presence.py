@@ -14,6 +14,7 @@ La vista no tiene cifras, etiquetas, tooltips ni leyenda (§2): es solo el campo
 from __future__ import annotations
 
 import base64
+from typing import Optional
 
 from fastapi import APIRouter, Response
 from pydantic import BaseModel
@@ -68,9 +69,11 @@ async def presence_utterance():
 
 
 class PresenceAskBody(BaseModel):
-    """Transcripción hablada por el creador en el canal."""
+    """Transcripción hablada por el creador en el canal (+ geoloc opcional)."""
 
     text: str = ""
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
 
 class PresenceRegisterBody(BaseModel):
@@ -120,6 +123,16 @@ async def presence_ask(body: PresenceAskBody):
         from core.operator.external_gateway import get_external_gateway
 
         creator_uid = os.environ.get("VX_CREATOR_ID", "2030762343")
+        # Geoloc del navegador (si llega): la persistimos con la función de
+        # PRODUCCIÓN para que place_search haga búsqueda "cerca" vía
+        # get_user_location. NO se toca el gateway (zona SEMI_SAFE): el camino
+        # _try_place_search ya lee get_user_location(user_id).
+        if body.lat is not None and body.lng is not None:
+            try:
+                from vectrax.user_memory import store_user_location
+                store_user_location(creator_uid, float(body.lat), float(body.lng))
+            except Exception:
+                pass
         result = get_external_gateway().receive_message(
             user_id=creator_uid, content=text, channel="web",
         )

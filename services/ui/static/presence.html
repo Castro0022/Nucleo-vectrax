@@ -47,6 +47,15 @@
       color: rgba(200,210,235,0.28); font-size: 6vmin; cursor: pointer;
       transition: opacity 400ms ease; user-select: none;
     }
+    /* Palabra de activación (§2 sin texto): el estado se ve en la FORMA.
+       "escuchando" = brillo tenue y sostenido; "activado" = destello breve
+       (además del pulso REAL en el RD del servidor). */
+    .stage.listening img#field { filter: saturate(1.08) drop-shadow(0 0 16px rgba(120,150,255,0.10)); }
+    .stage.activated img#field { animation: vx-activated 640ms ease-out; }
+    @keyframes vx-activated {
+      0%   { filter: saturate(1.5) brightness(1.18) drop-shadow(0 0 26px rgba(150,180,255,0.30)); }
+      100% { filter: saturate(1.05); }
+    }
   </style>
 </head>
 <body>
@@ -92,6 +101,7 @@
     var listening = false;  // escuchando
     var opened = false;     // canal ya abierto (primer gesto)
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var _geo = null;        // ubicación del navegador (para place_search "cerca")
 
     function revealTo(text, charIndex) {
       var end = text.indexOf(' ', charIndex);
@@ -241,7 +251,7 @@
       fetch('/v1/presence/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: text }),
+        body: JSON.stringify(_geo ? { text: text, lat: _geo.lat, lng: _geo.lng } : { text: text }),
       })
         .then(function (r) { return r.json(); })
         .then(function (d) {
@@ -251,33 +261,130 @@
         .catch(function () { busy = false; });
     }
 
-    // Escucha UNA frase (push-to-talk). Reconocimiento en el CLIENTE (es-ES).
-    function listen() {
-      if (busy || listening) return;
-      if (!SR) { selfReport(); return; }   // sin reconocimiento: cae a phase0
-      var rec = new SR();
-      rec.lang = 'es-ES';
-      rec.interimResults = false;
-      rec.maxAlternatives = 1;
-      rec.continuous = false;
-      listening = true;
-      cueEl.textContent = '●';             // señal mínima de escucha (§2: sin etiquetas)
-      rec.onresult = function (e) {
-        var t = '';
-        try { t = e.results[0][0].transcript; } catch (err) {}
-        ask(t);
-      };
-      rec.onerror = function () {};
-      rec.onend = function () { listening = false; cueEl.textContent = '◦'; };
-      try { rec.start(); } catch (err) { listening = false; cueEl.textContent = '◦'; }
+    // --- Palabra de activación "VECTRAX": escucha CONTINUA + auto-reinicio -------
+    // Chrome corta el reconocimiento por silencio (~seg) y por tope de sesión
+    // (~60s) AUN con continuous=true. Lo tratamos como EFÍMERO: un bucle que
+    // reinicia en onend/onerror mientras wantListening. Solo se envía al cerebro
+    // lo que va TRAS "VECTRAX"; lo anterior (o sin la palabra) se descarta en el
+    // cliente y no sale a ningún sitio.
+    var stageEl = document.querySelector('.stage');
+    var rec = null;
+    var wantListening = false;   // queremos escuchar en bucle
+    var running = false;         // recognizer activo ahora mismo
+    var armed = false;           // "VECTRAX" oído solo → esperar el comando siguiente
+    var armTimer = null;
+    var flashArmedOnce = false;  // evita repetir el destello dentro de una activación
+    var lastStart = 0;
+    var WAKE = /v[eé]ctra?x/i;    // tolera "vectrax"/"vectra"/"véctrax" (mishears del ASR)
+
+    function setListening(on) { if (stageEl) stageEl.classList.toggle('listening', !!on); }
+
+    // "Activado": destello en la FORMA + pulso REAL en el RD (la palabra ES habla
+    // real → pulso legítimo). Sin texto.
+    function flashActivated() {
+      if (stageEl) {
+        stageEl.classList.remove('activated');
+        void stageEl.offsetWidth;                 // reinicia la animación
+        stageEl.classList.add('activated');
+        setTimeout(function () { if (stageEl) stageEl.classList.remove('activated'); }, 660);
+      }
+      firePulse();
     }
 
-    // Primer gesto: abre el canal con el auto-reporte (SELF_DETERMINISTIC).
-    // Gestos siguientes: escuchar (hablarle).
+    function disarm() { armed = false; if (armTimer) { clearTimeout(armTimer); armTimer = null; } }
+
+    function dispatchCommand(cmd) {
+      cmd = (cmd || '').trim();
+      disarm();
+      if (!cmd) return;
+      cueEl.style.opacity = '0';
+      ask(cmd);                                   // → /v1/presence/ask (con geoloc)
+    }
+
+    // Procesa transcripciones. Solo actúa TRAS "VECTRAX"; lo previo se descarta.
+    function onRecResult(e) {
+      if (busy) return;                           // hablando: ignora (evita eco de su voz)
+      var finalTxt = '', interim = '';
+      for (var i = e.resultIndex; i < e.results.length; i++) {
+        var r = e.results[i];
+        if (r.isFinal) finalTxt += r[0].transcript; else interim += r[0].transcript;
+      }
+      // Destello "activado" en cuanto asoma la palabra (interim = más ágil), 1 vez.
+      if (!armed && !flashArmedOnce && WAKE.test((finalTxt || interim).toLowerCase())) {
+        flashArmedOnce = true; flashActivated();
+      }
+      if (!finalTxt) return;                       // interim: esperar el resultado final
+      var low = finalTxt.toLowerCase();
+      var mm = low.match(WAKE);
+      if (mm) {
+        if (!flashArmedOnce) flashActivated();
+        flashArmedOnce = false;                    // reset para la próxima activación
+        var after = finalTxt.slice(mm.index + mm[0].length).replace(/^[\s,.:;–—-]+/, '').trim();
+        if (after) { dispatchCommand(after); }     // "VECTRAX <comando>" en un turno
+        else { armed = true; if (armTimer) clearTimeout(armTimer); armTimer = setTimeout(disarm, 8000); }
+        return;
+      }
+      flashArmedOnce = false;
+      if (armed) { dispatchCommand(finalTxt); return; }  // "VECTRAX" fue en el turno previo
+      // sin la palabra y sin armar → descartar (NO se envía)
+    }
+
+    function startRec() {
+      if (!SR || running || !wantListening) return;
+      var now = Date.now();
+      if (now - lastStart < 250) { setTimeout(startRec, 300); return; }  // backoff anti crash-loop
+      lastStart = now;
+      try { rec = new SR(); } catch (err) { return; }
+      rec.lang = 'es-ES';
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.maxAlternatives = 1;
+      rec.onstart = function () { running = true; setListening(true); };
+      rec.onresult = onRecResult;
+      rec.onerror = function (ev) {
+        // permiso denegado → parar de verdad (no se recupera sin gesto del usuario).
+        if (ev && (ev.error === 'not-allowed' || ev.error === 'service-not-allowed')) {
+          wantListening = false; setListening(false);
+        }
+        // no-speech / aborted / network → onend reiniciará.
+      };
+      rec.onend = function () {
+        running = false;
+        if (wantListening) startRec();             // Chrome cortó → reiniciar en bucle
+        else setListening(false);
+      };
+      try { rec.start(); }
+      catch (err) { running = false; setTimeout(startRec, 300); }  // InvalidStateError → reintento
+    }
+
+    function startListeningLoop() {
+      if (!SR) { selfReport(); return; }           // sin reconocimiento: al menos auto-reporte
+      wantListening = true;
+      startRec();
+    }
+
+    // Geoloc: se pide tras el gesto (contexto seguro; localhost vale). Se manda en
+    // /v1/presence/ask para que place_search haga la búsqueda "cerca".
+    function captureGeo() {
+      if (!navigator.geolocation) return;
+      try {
+        navigator.geolocation.getCurrentPosition(
+          function (p) { _geo = { lat: p.coords.latitude, lng: p.coords.longitude }; },
+          function () {},
+          { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 }
+        );
+      } catch (e) {}
+    }
+
+    // UN único gesto inicial: los navegadores EXIGEN gesto para micro + audio.
+    // A partir de ahí: escucha continua por palabra de activación, sin más teclas.
     function gesture() {
-      if (busy) return;
-      if (!opened) { opened = true; selfReport(); return; }
-      listen();
+      if (opened) return;
+      opened = true;
+      cueEl.style.opacity = '0';
+      captureGeo();
+      startListeningLoop();
+      selfReport();                                // abre el canal (auto-reporte + audio)
     }
 
     document.addEventListener('click', gesture);
