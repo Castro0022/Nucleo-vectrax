@@ -868,6 +868,8 @@ cp /tmp/vx_restore/home_vectrax/vectrax.db ~/.vectrax/vectrax.db
 > +1 estrella / +1 op_cycle por seguir operando tras el backup). Un backup no
 > probado no es un backup.
 
+Flujo operativo completo (parar el servicio, aplicar sobre la base viva, rollback): ver `docs/OPERATIONS.md` §3.
+
 ## 🚀 Deployment (Vultr)
 
 ```bash
