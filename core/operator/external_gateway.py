@@ -1496,12 +1496,22 @@ class ExternalGateway:
             except Exception:
                 pass
 
+        # Superficie de la FUENTE ya computada por el pipeline (decisión del
+        # creador: EXPONER el source que hasta ahora se descartaba, no re-derivarlo).
+        # Prioridad: memoria → ruta específica (_final_source: self_aware/criterion/…)
+        # → estrategia del SmartRouter (source_path: places/online/market/llm/…).
+        # Vacío si no se pudo determinar — el consumidor decide el registro y NUNCA
+        # adivina hacia arriba. Additivo: solo enriquece la señal, no cambia rutas.
+        _result_source = (
+            "memory" if memory_resolved
+            else (_final_source or locals().get("source_path", "") or "")
+        )
         return GatewayResult(
             event_id=correlation_id,
             user_id=user_id,
             channel=channel,
             response=response_text,
-            source="memory" if memory_resolved else "",
+            source=_result_source,
             timestamp=ts,
             processed=True,
         )

@@ -13,7 +13,14 @@
     .stage {
       position: fixed; inset: 0; background: #000;
       display: flex; align-items: center; justify-content: center;
+      /* Fase 3: transición universo↔canal (<1s, interrumpible). Al togglear
+         .closed el navegador interpola desde el valor ACTUAL → si se invierte a
+         mitad, no hay salto. */
+      transition: opacity 700ms ease, transform 700ms cubic-bezier(.22,.61,.36,1);
+      will-change: opacity, transform;
     }
+    /* Canal cerrado (visto desde el universo): lejano y tenue. */
+    .stage.closed { opacity: 0; transform: scale(0.82); }
     /* Una sola imagen: cuadrada al menor lado del viewport (vmin) para que quepa
        entera, centrada por flex, proporción preservada (object-fit: contain).
        Sin repeat, sin tile — es un <img> único, no un background. */
@@ -69,15 +76,22 @@
     setInterval(tick, Math.round(1000 / FPS));
   })();
 
-  // --- Voz + texto sincronizados (Web Speech en el CLIENTE; §5/§9) ------------
-  // El creador abre el canal con un gesto → VECTRAX dice su respuesta
-  // (determinista, de datos persistidos). El texto se revela palabra a palabra
-  // guiado por los eventos `onboundary` del habla: el texto NUNCA va más de una
-  // palabra por delante de la voz. Sin TTS de servidor.
+  // --- Voz BIDIRECCIONAL: escuchar (Web Speech recognition) + responder -------
+  // El creador ABRE el canal con un gesto (autoplay lo exige). Primer gesto: la
+  // presencia se reporta a sí misma (phase0 → SELF_DETERMINISTIC, con procedencia).
+  // Cada gesto siguiente ESCUCHA (push-to-talk): reconoce es-ES en el CLIENTE y
+  // manda la transcripción al MISMO cerebro (/v1/presence/ask → ExternalGateway).
+  // La presencia HABLA la respuesta (revelada palabra a palabra, nunca >1 por
+  // delante) y marca el REGISTRO (source) del que vino. SÍNTESIS de SERVIDOR
+  // (ElevenLabs, voz River, con timestamps de palabra); reconocimiento en cliente.
+  // Si el servidor no da audio, cae a la voz del navegador (fallback).
   (function () {
     var speechEl = document.getElementById('speech');
     var cueEl = document.getElementById('cue');
-    var busy = false;
+    var busy = false;       // hablando
+    var listening = false;  // escuchando
+    var opened = false;     // canal ya abierto (primer gesto)
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
     function revealTo(text, charIndex) {
       var end = text.indexOf(' ', charIndex);
@@ -85,36 +99,226 @@
       return text.slice(0, end);
     }
 
-    function speak() {
-      if (busy || !('speechSynthesis' in window)) return;
+    // Registro visual (FORMA): informa al SERVIDOR la fuente de la locución para
+    // que el campo se tiña distinto por registro (SELF_DETERMINISTIC/MEMORY/
+    // ONLINE/MODEL), sin texto ni etiqueta. También lo marca en el cliente.
+    function setRegister(source) {
+      source = source || 'MODEL';
+      document.body.dataset.register = source;
+      try {
+        fetch('/v1/presence/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source: source }),
+        }).catch(function () {});
+      } catch (e) {}
+    }
+
+    // Pulso de voz: cada palabra hablada deposita sustancia en el RD del servidor
+    // (§Vibración = evento REAL; sin habla no hay pulso). Fire-and-forget.
+    function firePulse() {
+      try {
+        fetch('/v1/presence/pulse', { method: 'POST', keepalive: true }).catch(function () {});
+      } catch (e) {}
+    }
+
+    // Keepalive: Chrome corta la síntesis tras ~15s si no se le "resucita".
+    var _ttsKeep = null;
+    function _stopKeepalive() { if (_ttsKeep) { clearInterval(_ttsKeep); _ttsKeep = null; } }
+    function _startKeepalive() {
+      _stopKeepalive();
+      _ttsKeep = setInterval(function () {
+        if (!window.speechSynthesis.speaking) { _stopKeepalive(); return; }
+        try { window.speechSynthesis.pause(); window.speechSynthesis.resume(); } catch (e) {}
+      }, 10000);
+    }
+
+    // Habla un texto CONTINUO: parte en frases y las ENCOLA seguidas en el
+    // sintetizador (el motor las reproduce back-to-back, sin esperar a que
+    // termine cada una) → sin cortes entre frases. El revelado sigue palabra a
+    // palabra con offsets ABSOLUTOS, nunca >1 palabra por delante de la voz.
+    function speakText(fullText) {
+      fullText = (fullText || '').trim();
+      if (!fullText || !('speechSynthesis' in window)) { busy = false; return; }
       busy = true;
       cueEl.style.opacity = '0';
       speechEl.textContent = '';
+      try { window.speechSynthesis.cancel(); } catch (e) {}
+      _stopKeepalive();
+
+      // Frases conservando el delimitador; fallback a todo el texto.
+      var chunks = fullText.match(/[^.!?…]+[.!?…]*\s*/g) || [fullText];
+      var offsets = [];
+      var acc = 0;
+      for (var i = 0; i < chunks.length; i++) { offsets.push(acc); acc += chunks[i].length; }
+      var lastIdx = chunks.length - 1;
+
+      chunks.forEach(function (chunk, idx) {
+        var u = new SpeechSynthesisUtterance(chunk);
+        u.lang = 'es-ES'; u.rate = 1.0; u.pitch = 1.0;
+        u.onboundary = function (ev) {
+          if (ev && ev.charIndex != null) {
+            speechEl.textContent = revealTo(fullText, offsets[idx] + ev.charIndex);
+            firePulse();  // fallback navegador: pulso por límite de palabra
+          }
+        };
+        if (idx === lastIdx) {
+          u.onend = function () { speechEl.textContent = fullText; busy = false; _stopKeepalive(); };
+          u.onerror = function () { busy = false; _stopKeepalive(); };
+        }
+        window.speechSynthesis.speak(u);  // encolar sin esperar → continuo
+      });
+      _startKeepalive();
+    }
+
+    // --- Síntesis de SERVIDOR (ElevenLabs, voz River) + revelado + pulsos --------
+    // Reproduce el audio del servidor y revela el texto palabra a palabra guiado
+    // por los TIMESTAMPS de palabra de ElevenLabs (NO por onboundary). Cada palabra
+    // recién iniciada dispara un PULSO en el RD (§Vibración), uno por palabra.
+    function playServerAudio(text, b64, words) {
+      words = words || [];
+      var audio = new Audio('data:audio/mpeg;base64,' + b64);
+      var raf = null;
+      var _lastK = 0;
+      cueEl.style.opacity = '0';
+      function tick() {
+        var t = audio.currentTime;
+        var k = 0;
+        while (k < words.length && words[k].start <= t) k++;
+        // Revelado: solo palabras ya iniciadas (nunca >1 por delante de la voz).
+        speechEl.textContent = words.slice(0, k).map(function (w) { return w.word; }).join(' ');
+        // Pulso por PALABRA: cada palabra recién iniciada deposita un pulso en el
+        // RD (§Vibración = evento real). Uno por palabra nueva.
+        while (_lastK < k) { firePulse(); _lastK++; }
+        if (!audio.ended) raf = requestAnimationFrame(tick);
+      }
+      audio.onplay = function () { if (raf) cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); };
+      audio.onended = function () { if (raf) cancelAnimationFrame(raf); speechEl.textContent = text; busy = false; };
+      audio.onerror = function () { if (raf) cancelAnimationFrame(raf); speakText(text); };  // fallback navegador
+      audio.play().catch(function () { speakText(text); });   // autoplay bloqueado → fallback
+    }
+
+    // Punto ÚNICO de "hablar": intenta la voz del canal en el SERVIDOR (River vía
+    // ElevenLabs, con timestamps). Si no hay audio (fallo/clave/permiso), cae a la
+    // voz del navegador (speakText). El texto se revela sincronizado en ambos casos.
+    function speak(text) {
+      text = (text || '').trim();
+      if (!text) { busy = false; return; }
+      busy = true;
+      cueEl.style.opacity = '0';
+      speechEl.textContent = '…';
+      fetch('/v1/presence/speak', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text }),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d && d.audio_base64) playServerAudio(text, d.audio_base64, d.words || []);
+          else speakText(text);   // servidor sin audio → fallback navegador
+        })
+        .catch(function () { speakText(text); });
+    }
+
+    // phase0: la presencia se reporta a sí misma (SELF_DETERMINISTIC + procedencia).
+    function selfReport() {
+      busy = true;
       fetch('/v1/presence/utterance')
         .then(function (r) { return r.json(); })
         .then(function (u) {
-          var text = (u && u.text) ? String(u.text) : '';
-          if (!text) { busy = false; return; }
-          try { window.speechSynthesis.cancel(); } catch (e) {}
-          var utt = new SpeechSynthesisUtterance(text);
-          utt.lang = 'es-ES'; utt.rate = 1.0; utt.pitch = 1.0;
-          utt.onboundary = function (ev) {
-            if (ev && ev.charIndex != null) {
-              speechEl.textContent = revealTo(text, ev.charIndex);
-            }
-          };
-          utt.onend = function () { speechEl.textContent = text; busy = false; };
-          utt.onerror = function () { busy = false; };
-          window.speechSynthesis.speak(utt);
+          setRegister((u && u.source) || 'SELF_DETERMINISTIC');
+          speak(u && u.text ? String(u.text) : '');
         })
         .catch(function () { busy = false; });
     }
 
-    // El creador abre el canal deliberadamente (gesto requerido por autoplay).
-    document.addEventListener('click', speak);
+    // Manda la transcripción al MISMO cerebro y habla la respuesta + su registro.
+    function ask(text) {
+      text = (text || '').trim();
+      if (!text) { busy = false; return; }
+      busy = true;
+      speechEl.textContent = '…';
+      fetch('/v1/presence/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text }),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          setRegister(d && d.source);
+          speak(d && d.answer ? String(d.answer) : '');
+        })
+        .catch(function () { busy = false; });
+    }
+
+    // Escucha UNA frase (push-to-talk). Reconocimiento en el CLIENTE (es-ES).
+    function listen() {
+      if (busy || listening) return;
+      if (!SR) { selfReport(); return; }   // sin reconocimiento: cae a phase0
+      var rec = new SR();
+      rec.lang = 'es-ES';
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
+      rec.continuous = false;
+      listening = true;
+      cueEl.textContent = '●';             // señal mínima de escucha (§2: sin etiquetas)
+      rec.onresult = function (e) {
+        var t = '';
+        try { t = e.results[0][0].transcript; } catch (err) {}
+        ask(t);
+      };
+      rec.onerror = function () {};
+      rec.onend = function () { listening = false; cueEl.textContent = '◦'; };
+      try { rec.start(); } catch (err) { listening = false; cueEl.textContent = '◦'; }
+    }
+
+    // Primer gesto: abre el canal con el auto-reporte (SELF_DETERMINISTIC).
+    // Gestos siguientes: escuchar (hablarle).
+    function gesture() {
+      if (busy) return;
+      if (!opened) { opened = true; selfReport(); return; }
+      listen();
+    }
+
+    document.addEventListener('click', gesture);
     document.addEventListener('keydown', function (e) {
-      if (e.key === ' ' || e.key === 'Enter') speak();
+      if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); gesture(); }
     });
+  })();
+
+  // --- Transición universo↔canal (<1s, interrumpible) ------------------------
+  // Entrar al canal lo abre desde un estado "lejano" (como visto desde el
+  // universo) en <1s. Salir (Esc) cierra en <1s y vuelve a /universe; si se
+  // reabre a mitad (cualquier interacción), se cancela la salida y reabre desde
+  // el punto actual — sin salto (lo interpola el navegador).
+  (function () {
+    var TRANS_MS = 700;
+    var stage = document.querySelector('.stage');
+    if (!stage) return;
+    var navTimer = null;
+
+    // Entrada: arranca cerrado y abre en el siguiente frame.
+    stage.classList.add('closed');
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { stage.classList.remove('closed'); });
+    });
+
+    function closeToUniverse() {
+      if (navTimer) return;               // ya cerrando
+      stage.classList.add('closed');
+      navTimer = setTimeout(function () { window.location.href = '/universe'; }, TRANS_MS);
+    }
+    function cancelClose() {
+      if (!navTimer) return;
+      clearTimeout(navTimer); navTimer = null;
+      stage.classList.remove('closed');   // reabre desde el punto actual (interrumpible)
+    }
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { closeToUniverse(); return; }
+      cancelClose();
+    }, true);
+    document.addEventListener('click', cancelClose, true);  // clic cancela cierre en curso
   })();
   </script>
 </body>

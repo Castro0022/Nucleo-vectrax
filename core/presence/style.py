@@ -51,3 +51,28 @@ class PresenceStyle:
 
 # Estilo por defecto del canal: única fuente de verdad de la FORMA.
 DEFAULT_STYLE = PresenceStyle()
+
+
+# --- Fase 3: REGISTRO visual por FUENTE (§8, FORMA) -------------------------
+# Cada registro (source) tiñe la presencia distinto — en la FORMA/color, sin
+# texto ni etiqueta (§2). Sesgo suave mezclado con el color del universo
+# (preserva la estructura). Honestidad: los grounded van cálidos/cerca del oro
+# del core; el sin-respaldo (MODEL) va frío/pálido — se nota.
+REGISTER_TINTS = {
+    "SELF_DETERMINISTIC": (1.00, 0.82, 0.35),  # oro — datos propios, no puede mentir
+    "MEMORY":             (0.45, 0.95, 0.70),  # verde-teal — memoria compartida
+    "ONLINE":             (0.40, 0.75, 1.00),  # cian — traído de fuera ("lo busqué")
+    "MODEL":              (0.72, 0.66, 0.88),  # violeta pálido — sin respaldo, se nota
+}
+# Fuerza del tinte (0..1): mezcla registro ↔ color del universo.
+REGISTER_TINT_STRENGTH = 0.45
+
+
+# --- Fase 3: PULSO de voz (§ Vibración = inyección de sustancia). FORMA (§8). --
+# Cada palabra hablada deposita una gaussiana de sustancia en el RD (V); el campo
+# reacciona por su PROPIA física (NO se deforma por amplitud de audio). INVARIANTE:
+# un pulso real (palabra) SIEMPRE es visible; la intensidad no se pone a 0 para
+# simular apagado — se apaga desactivando la vibración en el cliente (deja de
+# emitir pulsos). Sin habla, ningún pulso.
+PULSE_INTENSITY = 0.35        # amplitud del depósito en V (pico de la gaussiana)
+PULSE_RADIUS_FRAC = 0.10      # σ de la gaussiana como fracción de la rejilla
