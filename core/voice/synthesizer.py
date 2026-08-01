@@ -75,12 +75,25 @@ _TTS_COOLDOWN_SECONDS = 300  # 5 minutes after a 429
 
 
 def is_tts_enabled() -> bool:
-    """True si el TTS está habilitado por env y la API key existe."""
+    """True si el TTS está habilitado por env y hay alguna clave (OpenAI o
+    ElevenLabs). El backend concreto lo decide `_tts_backend()`."""
     if os.environ.get("VECTRAX_TTS_DISABLED") == "1":
         return False
-    if not os.environ.get("OPENAI_API_KEY"):
-        return False
-    return True
+    return bool(
+        os.environ.get("OPENAI_API_KEY") or os.environ.get("ELEVENLABS_API_KEY")
+    )
+
+
+def _tts_backend() -> str:
+    """Backend de síntesis: 'elevenlabs' | 'openai'.
+
+    Default: ElevenLabs (voz River) si hay ELEVENLABS_API_KEY; si no, OpenAI.
+    Forzable con VECTRAX_TTS_BACKEND=elevenlabs|openai.
+    """
+    forced = (os.environ.get("VECTRAX_TTS_BACKEND") or "").lower().strip()
+    if forced in ("elevenlabs", "openai"):
+        return forced
+    return "elevenlabs" if os.environ.get("ELEVENLABS_API_KEY") else "openai"
 
 
 def synthesize(
@@ -132,11 +145,23 @@ def synthesize(
         fmt = DEFAULT_FORMAT
 
     # Sin cache: cada synth produce audio nuevo. Ver docstring del modulo.
-    try:
-        audio = _call_openai_tts(raw, voice, DEFAULT_MODEL, fmt)
-    except Exception as exc:
-        logger.warning("TTS synthesis failed: %s", exc)
-        return None
+    # Backend: ElevenLabs (voz River) por defecto si hay clave; OpenAI si no o
+    # como fallback. ElevenLabs REST solo entrega MP3 aquí — para 'opus'
+    # (sendVoice) se usa OpenAI, que sí da OGG/Opus.
+    audio = None
+    if _tts_backend() == "elevenlabs" and fmt == "mp3":
+        try:
+            from core.presence.voice_eleven import synthesize_bytes as _eleven_tts
+            audio = _eleven_tts(raw, fmt="mp3")
+        except Exception as exc:
+            logger.debug("ElevenLabs synth failed, fallback OpenAI: %s", exc)
+            audio = None
+    if audio is None:
+        try:
+            audio = _call_openai_tts(raw, voice, DEFAULT_MODEL, fmt)
+        except Exception as exc:
+            logger.warning("TTS synthesis failed: %s", exc)
+            return None
 
     if audio is None:
         return None

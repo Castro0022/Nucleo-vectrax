@@ -183,6 +183,53 @@ def stream_with_timestamps(
         return
 
 
+def synthesize_bytes(
+    text: str,
+    fmt: str = "mp3",
+    voice_id: str = DEFAULT_VOICE_ID,
+    model_id: Optional[str] = None,
+) -> Optional[bytes]:
+    """Síntesis SIMPLE a bytes (sin timestamps), para Telegram u otros canales.
+
+    Usa el endpoint TTS normal con la voz River. Solo entrega MP3
+    (`mp3_44100_128`); para otros formatos (p. ej. OGG/Opus de sendVoice)
+    devuelve None y el caller decide el fallback. Nunca levanta.
+    """
+    text = (text or "").strip()
+    if not text or fmt != "mp3":
+        return None
+    key = _api_key()
+    if not key:
+        return None
+    import httpx
+    url = f"{_BASE}/v1/text-to-speech/{voice_id}"
+    payload = {
+        "text": text,
+        "model_id": model_id or DEFAULT_MODEL,
+        "voice_settings": _voice_settings(),
+    }
+    params = {"output_format": "mp3_44100_128"}
+    headers = {
+        "xi-api-key": key,
+        "content-type": "application/json",
+        "accept": "audio/mpeg",
+    }
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            r = client.post(url, headers=headers, json=payload, params=params)
+            if r.status_code != 200:
+                try:
+                    _body = r.text[:200]
+                except Exception:
+                    _body = ""
+                logger.warning("ElevenLabs TTS HTTP %d: %s", r.status_code, _body)
+                return None
+            return r.content
+    except Exception as exc:
+        logger.warning("ElevenLabs synthesize_bytes failed: %s", exc)
+        return None
+
+
 def synthesize_with_timestamps(
     text: str,
     voice_id: str = DEFAULT_VOICE_ID,
