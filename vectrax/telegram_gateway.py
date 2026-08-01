@@ -65,6 +65,30 @@ logger.addHandler(_file_handler)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
+# --- Redacción de secretos en logs -----------------------------------------
+# Los errores de poll incluyen la URL de getUpdates con el token del bot en
+# claro (p. ej. "... for url '.../bot<token>/getUpdates'"). Un filtro GLOBAL
+# redacta cualquier bot token en TODOS los registros (gateway.log + stdout) para
+# que el token NUNCA quede en claro, ahora ni en el futuro.
+class _TokenRedactionFilter(logging.Filter):
+    _TOKEN_RE = re.compile(r"bot\d{5,}:[A-Za-z0-9_-]{20,}")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+            if self._TOKEN_RE.search(msg):
+                record.msg = self._TOKEN_RE.sub("bot<REDACTED>", msg)
+                record.args = ()
+        except Exception:
+            pass
+        return True
+
+
+_redactor = _TokenRedactionFilter()
+_file_handler.addFilter(_redactor)
+for _h in logging.getLogger().handlers:
+    _h.addFilter(_redactor)
+
 TELEGRAM_API = "https://api.telegram.org/bot{token}"
 POLL_TIMEOUT = 30
 POLL_UPDATE_LIMIT = 25   # max updates per getUpdates call: bounds the mp.Queue
