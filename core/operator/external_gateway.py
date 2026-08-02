@@ -812,7 +812,7 @@ class ExternalGateway:
             try:
                 from core.learn.criterion import (
                     detect_criterion_request, detect_domain, strongest_domain,
-                    build_criterion_result,
+                    build_criterion_result, extract_topic_tokens,
                 )
                 from intents.freight_intents import (
                     detect_freight_intent, detect_evidence_request,
@@ -844,7 +844,15 @@ class ExternalGateway:
                 # (b) CRITERIO (default, la divisa): pregunta de dominio o pedido
                 #     de opinión → Vectrax opina desde lo aprendido.
                 if not response_text and not _price_only and (_crit_req or _dom):
-                    _target = _dom or strongest_domain()
+                    _target = _dom
+                    # Fallback al dominio más fuerte SOLO cuando el usuario pide
+                    # opinión SIN tema concreto (p.ej. «¿qué opinas?»). Si nombró
+                    # un tema que no mapea a ningún dominio (p.ej. un typo o un
+                    # dominio que Vectrax aún no observa), NO respondemos desde un
+                    # dominio ajeno: dejamos pasar al LLM/auto-contexto. Evita el
+                    # "pregunté real estate y me contestó de BTC".
+                    if _target is None and _crit_req and not extract_topic_tokens(content):
+                        _target = strongest_domain()
                     if _target:
                         _crit = build_criterion_result(_target, content)
                         if _crit and _crit.text:
