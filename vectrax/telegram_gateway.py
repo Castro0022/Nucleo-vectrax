@@ -1735,6 +1735,7 @@ class TelegramGateway:
                     "/vx memory — ver perfil + hechos\n"
                     "/vx stats — estado del sistema\n"
                     "/vx universe — reporte del universo gravitacional\n"
+                    "/vx global — estado global consolidado (estrellas, convergencias, motores, dominios, crecimiento)\n"
                     "/vx alerts [n] — historial de alertas de convergencia\n"
                     "/vx up — uptime + estado rápido\n"
                     "/vx market [execution|budget|halt|approve|positions|auto] — mercado\n"
@@ -1824,6 +1825,15 @@ class TelegramGateway:
             elif cmd == "universe":
                 from core.learn.gravity_engine import universe_report
                 self._send(cid, universe_report(), parse_mode="HTML")
+
+            elif cmd in ("global", "estado"):
+                from core.system_report import build_global_report
+                try:
+                    from core.language_gate import get_user_language
+                    _gl = get_user_language(tg_uid, "")
+                except Exception:
+                    _gl = "es"
+                self._send(cid, build_global_report(lang=_gl, scope="full"), parse_mode="HTML")
 
             elif cmd == "alerts":
                 from core.learn.gravity_engine import format_alert_history

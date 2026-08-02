@@ -864,6 +864,34 @@ class ExternalGateway:
             except Exception as _cg_exc:
                 logger.debug("domain criterion gate failed (passthrough): %s", _cg_exc)
 
+        # ═══════════════════════════════════════════════════════════════
+        # STEP 4.2a4: PUBLIC GLOBAL STATUS gate (opt-in, no-creador)
+        # ═══════════════════════════════════════════════════════════════
+        # Reporte determinista de estado global para NO-creadores, SOLO ante
+        # petición explícita y SOLO si VECTRAX_PUBLIC_UNIVERSE_STATUS está activa
+        # (default OFF → no cambia el comportamiento actual: lo maneja el LLM en
+        # 4.2b). scope="public" omite conteos privados. El creador usa /vx global.
+        if not response_text and not _is_creator_uid(user_id):
+            try:
+                import os as _os
+                _flag = _os.environ.get("VECTRAX_PUBLIC_UNIVERSE_STATUS", "").strip().lower()
+                if _flag not in ("", "0", "false", "off", "no"):
+                    from core.system_report import (
+                        is_global_status_request, build_global_report,
+                    )
+                    if is_global_status_request(content):
+                        from core.language_gate import get_user_language
+                        _gs_lang = get_user_language(user_id, content)
+                        _gs = build_global_report(lang=_gs_lang, scope="public")
+                        if _gs:
+                            response_text = _gs
+                            _domain_source = "global_status_public"
+                            logger.info(
+                                "Pipeline: PUBLIC-STATUS gate | user=%s", user_id[:20],
+                            )
+            except Exception as _gs_exc:
+                logger.debug("public status gate failed (passthrough): %s", _gs_exc)
+
         # 4.2b Auto-contexto — Vectrax se observa a sí mismo
         _self_resolved = False
         if not response_text:
