@@ -49,6 +49,14 @@ _DOMAIN_VOCAB: Dict[str, tuple] = {
         "camion", "camión", "camiones", "carrier", "transportista", "lane",
         "shipment", "envio", "envío",
     ),
+    "florida_real_estate": (
+        "real estate", "realestate", "real state", "real states", "real-estate",
+        "inmobiliario", "inmobiliaria", "inmobiliarios",
+        "bienes raices", "bienes raíces", "propiedad", "propiedades", "vivienda",
+        "viviendas", "condo", "condominio", "apartamento", "listing", "listings",
+        "mls", "hipoteca", "realtor", "florida", "miami", "orlando", "tampa",
+        "jacksonville", "naples",
+    ),
 }
 
 _CRITERION_RE = re.compile(
@@ -84,6 +92,7 @@ _STOPWORDS = set((
 _DOMAIN_INDICATORS = {
     "bolsa", "mercado", "market", "logistica", "logística", "logistics",
     "freight", "dominio", "universo", "acciones", "trading",
+    "inmobiliario", "inmobiliaria", "realestate", "vivienda",
 }
 
 # Sinónimos tópicos ES → tokens del esquema aprendido (relaciona idioma↔entidad).
