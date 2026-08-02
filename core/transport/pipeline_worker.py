@@ -996,6 +996,7 @@ def run_worker() -> None:
     last_market_learn = _startup  # ciclo de aprendizaje de mercado (cada 30 min)
     last_freight_learn = _startup  # freight learning cycle (every 6h)
     last_real_estate_learn = _startup  # real estate learning cycle (every 6h, real provider only)
+    last_cyber_learn = _startup  # cybersecurity learning cycle (every 6h, GATED default OFF)
     last_gravity_sync  = _startup  # gravity index → vectrax.db sync (every 6h)
     last_trading_conv  = _startup  # trading convergence learner (every 24h)
     last_mem_check = _startup  # memory watchdog
@@ -1269,6 +1270,37 @@ def run_worker() -> None:
             except Exception as _re_exc:
                 logger.debug("Real estate learn error (passthrough): %s", _re_exc)
                 last_real_estate_learn = time.time()
+
+            # Cybersecurity learning cycle — incremental NVD+KEV (cada 6h).
+            # GATED, DEFAULT OFF: solo corre con CYBER_LEARN_ENABLED=1 (tras validar
+            # el backfill). Provider por CYBER_FEED_PROVIDER (default simulator; en
+            # prod usar 'nvd'). ThreadPool aislado, timeout 120s, fault-isolated.
+            try:
+                _CYBER_LEARN_INTERVAL = 21600  # 6h
+                _CYBER_LEARN_TIMEOUT  = 120    # max 2min for the whole cycle
+                _cyber_enabled = os.environ.get("CYBER_LEARN_ENABLED", "0") == "1"
+                if _cyber_enabled and time.time() - last_cyber_learn > _CYBER_LEARN_INTERVAL:
+                    from concurrent.futures import ThreadPoolExecutor as _CYP, TimeoutError as _CYT
+                    from connectors.cybersecurity.learning_cycle import run_learning_cycle as _cyber_cycle
+                    with _CYP(max_workers=1) as _cy_pool:
+                        _cy_fut = _cy_pool.submit(_cyber_cycle)
+                        try:
+                            _cy_sum = _cy_fut.result(timeout=_CYBER_LEARN_TIMEOUT)
+                            logger.info(
+                                "Cyber learn: provider=%s events=%d wins=%d losses=%d %.1fs",
+                                _cy_sum.get("provider"), _cy_sum.get("events", 0),
+                                _cy_sum.get("wins", 0), _cy_sum.get("losses", 0),
+                                _cy_sum.get("elapsed_s", 0),
+                            )
+                        except _CYT:
+                            logger.warning(
+                                "CYBER_LEARN_TIMEOUT | cycle exceeded %ds",
+                                _CYBER_LEARN_TIMEOUT,
+                            )
+                    last_cyber_learn = time.time()
+            except Exception as _cy_exc:
+                logger.debug("Cyber learn error (passthrough): %s", _cy_exc)
+                last_cyber_learn = time.time()
 
             # Gravity sync — mature domain patterns → vectrax.db stars + mass recompute (every 6h)
             # Bridges the two star systems: gravity_index.json → visual universe.

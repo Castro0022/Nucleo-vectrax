@@ -1,0 +1,26 @@
+{
+  "domain": "cybersecurity",
+  "description": "Cybersecurity domain — observaciones CVE (NVD) reconciliadas con CISA KEV. Un event_type por nivel de la escalera de subject; signature de UN solo campo mantiene la cardinalidad de estrellas acotada (sin explosion cartesiana).",
+  "event_types": {
+    "cve_family": {
+      "text_template": "cve {cve_id} family={product_family}",
+      "fields": ["cve_id", "product_family"],
+      "signature_fields": ["product_family"]
+    },
+    "cve_class": {
+      "text_template": "cve {cve_id} class={vulnerability_class}",
+      "fields": ["cve_id", "vulnerability_class"],
+      "signature_fields": ["vulnerability_class"]
+    },
+    "cve_vector": {
+      "text_template": "cve {cve_id} vector={attack_vector}",
+      "fields": ["cve_id", "attack_vector"],
+      "signature_fields": ["attack_vector"]
+    },
+    "cve_tier": {
+      "text_template": "cve {cve_id} tier={severity_tier}",
+      "fields": ["cve_id", "severity_tier"],
+      "signature_fields": ["severity_tier"]
+    }
+  }
+}
