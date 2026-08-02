@@ -57,6 +57,14 @@ _DOMAIN_VOCAB: Dict[str, tuple] = {
         "mls", "hipoteca", "realtor", "florida", "miami", "orlando", "tampa",
         "jacksonville", "naples",
     ),
+    "cybersecurity": (
+        "cve", "cves", "vulnerabilidad", "vulnerabilidades", "vulnerability",
+        "vulnerabilities", "exploit", "exploits", "explotada", "explotación",
+        "explotacion", "cvss", "kev", "nvd", "cwe", "ransomware", "parche",
+        "parches", "patch", "zero-day", "zero day", "0day", "rce",
+        "ciberseguridad", "seguridad informática", "seguridad informatica",
+        "vector de ataque", "malware",
+    ),
 }
 
 _CRITERION_RE = re.compile(
@@ -93,6 +101,8 @@ _DOMAIN_INDICATORS = {
     "bolsa", "mercado", "market", "logistica", "logística", "logistics",
     "freight", "dominio", "universo", "acciones", "trading",
     "inmobiliario", "inmobiliaria", "realestate", "vivienda",
+    "ciberseguridad", "vulnerabilidad", "vulnerabilidades", "cve", "cves",
+    "exploit", "cvss", "kev", "ransomware",
 }
 
 # Sinónimos tópicos ES → tokens del esquema aprendido (relaciona idioma↔entidad).
@@ -299,6 +309,33 @@ def rank_domain_evidence(domain: str, limit: int = 8) -> List[Dict[str, Any]]:
                 ent["sources"].append("gravity_index")
     except Exception as exc:
         logger.debug("rank gravity error: %s", exc)
+
+    # 3) verification_ledger (WR/expectancy REALES por subject) — ancla del
+    #    criterio en dominios verificados (freight, real_estate, cybersecurity).
+    try:
+        from core.learn import verification_ledger as _vled
+        for subj, sc in _vled.subject_scores(domain, min_decisive=1).items():
+            key = (subj or "").strip().lower()
+            if not key:
+                continue
+            n = int(sc.n_decisive)
+            ent = entities.get(key)
+            if ent is None:
+                ent = entities.setdefault(key, {
+                    "name": subj, "domain": domain, "sources": [],
+                    "win_rate": round(sc.win_rate, 1), "expectancy": round(sc.expectancy, 3),
+                    "sample_size": n, "confidence": "",
+                    "wilson_lb": _wilson_lb(sc.wins, n), "hits": 0, "tier": "",
+                })
+            else:
+                ent["win_rate"] = round(sc.win_rate, 1)
+                ent["expectancy"] = round(sc.expectancy, 3)
+                ent["sample_size"] = max(int(ent.get("sample_size", 0) or 0), n)
+                ent["wilson_lb"] = _wilson_lb(sc.wins, n)
+            if "verification_ledger" not in ent["sources"]:
+                ent["sources"].append("verification_ledger")
+    except Exception as exc:
+        logger.debug("rank verification error: %s", exc)
 
     ranked = list(entities.values())
     for ent in ranked:
