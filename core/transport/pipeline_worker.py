@@ -1278,8 +1278,14 @@ def run_worker() -> None:
             try:
                 _CYBER_LEARN_INTERVAL = 21600  # 6h
                 _CYBER_LEARN_TIMEOUT  = 120    # max 2min for the whole cycle
+                # SEGURIDAD: solo corre con proveedor REAL (nvd); NO siembra datos
+                # sintéticos del simulator en el universo de producción. Permitir
+                # simulador: CYBER_ALLOW_SIMULATOR=1. (espejo del guard de real_estate)
+                _cyber_provider = os.environ.get("CYBER_FEED_PROVIDER", "simulator").strip().lower()
+                _cyber_allow_sim = os.environ.get("CYBER_ALLOW_SIMULATOR", "0") == "1"
                 _cyber_enabled = os.environ.get("CYBER_LEARN_ENABLED", "0") == "1"
-                if _cyber_enabled and time.time() - last_cyber_learn > _CYBER_LEARN_INTERVAL:
+                _cyber_ok = _cyber_enabled and (_cyber_provider != "simulator" or _cyber_allow_sim)
+                if _cyber_ok and time.time() - last_cyber_learn > _CYBER_LEARN_INTERVAL:
                     from concurrent.futures import ThreadPoolExecutor as _CYP, TimeoutError as _CYT
                     from connectors.cybersecurity.learning_cycle import run_learning_cycle as _cyber_cycle
                     with _CYP(max_workers=1) as _cy_pool:

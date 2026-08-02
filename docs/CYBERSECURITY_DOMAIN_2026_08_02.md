@@ -59,6 +59,7 @@ Fingerprint por nivel: `cybersecurity:cve_<level>:<field>=<valor>` (idéntico en
 - `NVD_API_KEY` — opcional; sube el rate limit (recomendada para el backfill).
 - `CYBER_FEED_PROVIDER` — `nvd` | `simulator` (default: simulator).
 - `CYBER_LEARN_ENABLED` — `1`|`0` (default: **0**, worker apagado).
+- `CYBER_ALLOW_SIMULATOR` — `1`|`0` (default: **0**). Guard de seguridad: el worker solo corre el ciclo si el proveedor es **real** (`CYBER_FEED_PROVIDER=nvd`) o si se permite el simulador explícitamente. Evita sembrar datos sintéticos en el universo de producción.
 - `CYBER_EVENTS_PER_CYCLE`, `CYBER_VERIFY_ENABLED`, `CYBER_INCREMENTAL_DAYS`, `NVD_REQUEST_DELAY`, `CYBER_SEEN_DB`.
 
 ### Comandos
