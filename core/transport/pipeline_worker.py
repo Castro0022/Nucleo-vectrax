@@ -995,6 +995,7 @@ def run_worker() -> None:
     last_digest = _startup     # última ejecución del router digest
     last_market_learn = _startup  # ciclo de aprendizaje de mercado (cada 30 min)
     last_freight_learn = _startup  # freight learning cycle (every 6h)
+    last_real_estate_learn = _startup  # real estate learning cycle (every 6h, real provider only)
     last_gravity_sync  = _startup  # gravity index → vectrax.db sync (every 6h)
     last_trading_conv  = _startup  # trading convergence learner (every 24h)
     last_mem_check = _startup  # memory watchdog
@@ -1228,6 +1229,46 @@ def run_worker() -> None:
             except Exception as _fl:
                 logger.debug("Freight learn error (passthrough): %s", _fl)
                 last_freight_learn = time.time()
+
+            # Real estate learning cycle — acumulación + elevación (cada 6h).
+            # ThreadPool aislado, timeout 120s, fault-isolated. SEGURIDAD: solo corre
+            # con un proveedor REAL (rentcast/attom); NO siembra datos sintéticos del
+            # simulator en el universo de producción. Permitir simulador:
+            # REAL_ESTATE_ALLOW_SIMULATOR=1. Desactivar del todo: REAL_ESTATE_LEARN_ENABLED=0.
+            try:
+                _RE_LEARN_INTERVAL = 21600  # 6h
+                _RE_LEARN_TIMEOUT  = 120    # max 2min for the whole cycle
+                _re_provider = os.environ.get("REAL_ESTATE_FEED_PROVIDER", "simulator").strip().lower()
+                _re_allow_sim = os.environ.get("REAL_ESTATE_ALLOW_SIMULATOR", "0") == "1"
+                _re_enabled = os.environ.get("REAL_ESTATE_LEARN_ENABLED", "1") == "1"
+                _re_ok = _re_enabled and (_re_provider != "simulator" or _re_allow_sim)
+                if _re_ok and time.time() - last_real_estate_learn > _RE_LEARN_INTERVAL:
+                    from concurrent.futures import ThreadPoolExecutor as _REP, TimeoutError as _RET
+                    from connectors.real_estate.learning_cycle import run_learning_cycle as _re_cycle
+                    with _REP(max_workers=1) as _re_pool:
+                        _re_fut = _re_pool.submit(_re_cycle)
+                        try:
+                            _re_sum = _re_fut.result(timeout=_RE_LEARN_TIMEOUT)
+                            logger.info(
+                                "Real estate learn: provider=%s ingested=%d stars=%d→%d "
+                                "mature=%d elevated=%d %.1fs",
+                                _re_sum.get("provider"),
+                                _re_sum.get("events_ingested", 0),
+                                _re_sum.get("stars_before", 0),
+                                _re_sum.get("stars_after", 0),
+                                _re_sum.get("mature_stars", 0),
+                                _re_sum.get("patterns_elevated", 0),
+                                _re_sum.get("elapsed_s", 0),
+                            )
+                        except _RET:
+                            logger.warning(
+                                "REAL_ESTATE_LEARN_TIMEOUT | cycle exceeded %ds",
+                                _RE_LEARN_TIMEOUT,
+                            )
+                    last_real_estate_learn = time.time()
+            except Exception as _re_exc:
+                logger.debug("Real estate learn error (passthrough): %s", _re_exc)
+                last_real_estate_learn = time.time()
 
             # Gravity sync — mature domain patterns → vectrax.db stars + mass recompute (every 6h)
             # Bridges the two star systems: gravity_index.json → visual universe.
