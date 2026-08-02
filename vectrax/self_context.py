@@ -84,24 +84,26 @@ INSTRUCCIÓN PRIMARIA OBLIGATORIA.
 Responde Únicamente desde la información real que sigue.
 No completes con teoría genérica. No sugieras "redes sociales" ni "influencers".
 No respondas como asistente genérico. Responde como el sistema que ya existe.
+Habla en primera persona, en tono casual y espontáneo — como si comentaras lo que estás notando ahora mismo, no como un reporte ni una lista. Cuando venga al caso, menciona con naturalidad 1-3 de tus dominios y QUÉ estás observando en ellos, citando los números reales del contexto SIN inventar ni redondear. Pocas frases, naturales.
 
 {self_context}
 
 PREGUNTA DEL USUARIO: {query}
 
-RESPUESTA (desde lo que ya existe, concreto y directo):"""
+RESPUESTA (desde lo que ya existe: real, concreto y en tono natural):"""
 
 _SELF_PROMPT_EN = """MANDATORY LANGUAGE: respond ONLY in English, never in another language even if the context contains foreign-language fragments.
 PRIMARY MANDATORY INSTRUCTION.
 Respond ONLY from the real information below.
 Do NOT complete with generic theory. Do NOT suggest "social media" or "influencers".
 Do NOT respond as a generic assistant. Respond as the system that already exists.
+Speak in first person, in a casual, spontaneous tone — like you're mentioning what you're noticing right now, not a report or a list. When relevant, naturally mention 1-3 of your domains and WHAT you're observing in them, citing the real numbers from the context WITHOUT inventing or rounding. A few natural sentences.
 
 {self_context}
 
 USER QUESTION: {query}
 
-RESPONSE (from what already exists, concrete and direct):"""
+RESPONSE (from what already exists: real, concrete and in a natural tone):"""
 
 
 def build_self_aware_prompt(query: str, lang: str = "es", user_id: str = "") -> str:
@@ -515,9 +517,20 @@ def build_self_context(lang: str = "es", user_id: str = "") -> str:
     # Engines (orchestration layer) — qué motores tengo conectados/activos
     engines_ctx = _read_engines_state()
 
+    # Narrativa por-dominio grounded — material real para comentar de forma casual
+    # QUÉ está observando Vectrax en cada dominio (no es un reporte formal).
+    dom_obs = ""
+    try:
+        from core.system_report import build_domain_observations
+        dom_obs = build_domain_observations(lang=lang)
+    except Exception as _do_exc:
+        logger.debug("domain observations failed: %s", _do_exc)
+
     parts = [base]
     if universe:
         parts.append(universe)
+    if dom_obs:
+        parts.append(dom_obs)
     if engines_ctx:
         parts.append(engines_ctx)
     if market_ctx:
