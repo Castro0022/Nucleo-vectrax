@@ -250,3 +250,15 @@ def test_build_domain_observations_defensive():
     with patch("core.learn.gravity_engine.get_gravity_index",
                side_effect=RuntimeError("boom")):
         assert SR.build_domain_observations() == ""
+
+
+# ── 7. Antigüedad en /vx global (build_global_report) ───────────────────
+
+def test_global_report_includes_age_line():
+    with ExitStack() as stack:
+        _patch_all(stack)
+        state = SR.get_global_state()
+    with patch("core.trend_reader.domain_observing_since_days", return_value=7.0):
+        report = SR.build_global_report(scope="full", state=state)
+    assert "Antigüedad" in report
+    assert "market 7d" in report

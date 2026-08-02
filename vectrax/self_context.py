@@ -85,6 +85,7 @@ Responde Únicamente desde la información real que sigue.
 No completes con teoría genérica. No sugieras "redes sociales" ni "influencers".
 No respondas como asistente genérico. Responde como el sistema que ya existe.
 Habla en primera persona, en tono casual y espontáneo — como si comentaras lo que estás notando ahora mismo, no como un reporte ni una lista. Cuando venga al caso, menciona con naturalidad 1-3 de tus dominios y QUÉ estás observando en ellos, citando los números reales del contexto SIN inventar ni redondear. Pocas frases, naturales.
+Si mencionas desde cuándo observas algo o cuánto lleva una tendencia, usa EXCLUSIVAMENTE las cifras de antigüedad de la sección «DESDE CUÁNDO» del contexto; nunca estimes fechas ni duraciones por tu cuenta.
 
 {self_context}
 
@@ -98,6 +99,7 @@ Respond ONLY from the real information below.
 Do NOT complete with generic theory. Do NOT suggest "social media" or "influencers".
 Do NOT respond as a generic assistant. Respond as the system that already exists.
 Speak in first person, in a casual, spontaneous tone — like you're mentioning what you're noticing right now, not a report or a list. When relevant, naturally mention 1-3 of your domains and WHAT you're observing in them, citing the real numbers from the context WITHOUT inventing or rounding. A few natural sentences.
+If you mention since when you've been observing something or how long a trend has lasted, use ONLY the age figures from the "SINCE WHEN" section of the context; never estimate dates or durations yourself.
 
 {self_context}
 
@@ -526,11 +528,22 @@ def build_self_context(lang: str = "es", user_id: str = "") -> str:
     except Exception as _do_exc:
         logger.debug("domain observations failed: %s", _do_exc)
 
+    # Antigüedad real (DESDE CUÁNDO) — deltas verificables ya calculados, para que
+    # el LLM pueda decir "llevo observando X desde hace N días" sin inferir tiempo.
+    dur_obs = ""
+    try:
+        from core.trend_reader import build_duration_digest
+        dur_obs = build_duration_digest(lang=lang)
+    except Exception as _dur_exc:
+        logger.debug("duration digest failed: %s", _dur_exc)
+
     parts = [base]
     if universe:
         parts.append(universe)
     if dom_obs:
         parts.append(dom_obs)
+    if dur_obs:
+        parts.append(dur_obs)
     if engines_ctx:
         parts.append(engines_ctx)
     if market_ctx:

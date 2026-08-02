@@ -222,6 +222,24 @@ def build_global_report(
     by_tier = eng.get("by_tier", {}) or {}
     tier_str = ", ".join(f"{k}={v}" for k, v in sorted(by_tier.items())) or "n/d"
 
+    # Antigüedad por dominio (desde cuándo) — reutiliza trend_reader (defensivo,
+    # solo gravity; no toca convergencias ni verification para no encarecer).
+    age_line = ""
+    try:
+        from core.trend_reader import domain_observing_since_days
+        _noise = {"unknown", "tests", "user_interest"}
+        _age = []
+        for _d in [k for k, _v in sorted(grav_dom.items(), key=lambda kv: -(kv[1] or 0))
+                   if k not in _noise][:4]:
+            _s = domain_observing_since_days(_d)
+            if _s is not None:
+                _age.append(f"{_d} {int(round(_s))}d")
+        if _age:
+            _lbl = "🕒 <b>Antigüedad:</b> " if lang == "es" else "🕒 <b>Age:</b> "
+            age_line = _lbl + " · ".join(_age)
+    except Exception as _age_exc:
+        logger.debug("global report age failed: %s", _age_exc)
+
     if lang == "es":
         lines = [
             "🌌 <b>VECTRAX — Estado global</b>",
@@ -259,6 +277,8 @@ def build_global_report(
                 f"palabras {extra.get('word_gravity_count', 0)}"
             ),
         ]
+        if age_line:
+            lines.append(age_line)
         if not public:
             lines += [
                 "",
@@ -308,6 +328,8 @@ def build_global_report(
             f"words {extra.get('word_gravity_count', 0)}"
         ),
     ]
+    if age_line:
+        lines.append(age_line)
     if not public:
         lines += [
             "",

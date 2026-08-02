@@ -40,3 +40,23 @@ Respuesta:
 - Read-only y defensivo: nunca lanza; no crea ni migra datos.
 - Determinismo en `build_global_report` (mismo estado → mismo texto).
 - Reutiliza el SSOT (censo) y los motores existentes; no duplica lógica de conteo.
+## Antigüedad / duración temporal (core/trend_reader.py)
+Añadido 2026-08-02. Permite fundamentar referencias temporales ("llevo observando esto desde hace X días") SOLO en datos verificables; el LLM nunca infiere duraciones.
+### Anclas reutilizadas (read-only, sin nueva persistencia)
+- `GravityRecord.first_seen`/`last_seen` (ISO) — antigüedad por patrón/dominio (`core/learn/schemas.py:50-54`).
+- `convergence_events.timestamp` (event='birth') — edad de cada convergencia activa (`core/learn/convergence_history.py`).
+- `Outcome.resolved_ts` por dominio — span de resultados verificados (`core/learn/verification_ledger.py`).
+### API de `core/trend_reader.py`
+- `days_since(ts)`: acepta epoch (convergencias/verification) e ISO (gravity).
+- `get_pattern_duration(fingerprint)`, `top_pattern_durations(domain, n)`.
+- `active_convergence_ages(domain=None)`, `domain_outcome_span(domain)`.
+- `get_domain_duration(domain)`: compone todas las anclas.
+- `domain_observing_since_days(domain)`: ligero (solo gravity), usado por `/vx global`.
+- `build_duration_digest(domain=None, lang)`: bloque grounded «DESDE CUÁNDO» para inyección.
+### Integración
+- Narrativa casual (lenguaje natural): `build_self_context` inyecta `build_duration_digest()`; `_SELF_PROMPT_ES/EN` exige usar SOLO las cifras de la sección «DESDE CUÁNDO» y nunca estimar fechas/duraciones.
+- `/vx global`: `build_global_report` añade la línea «🕒 Antigüedad: <dominio> Nd · …» (top dominios, salta ruido) vía `domain_observing_since_days`.
+### Limitación conocida
+- La antigüedad refleja el `first_seen` del `gravity_index` actual (~7 días tras la última migración/reset del índice), no la edad del proyecto. Para "desde el origen" habría que derivarla de otra fuente (p. ej. primer snapshot de `evolution_memory`).
+### Tests
+- `tests/test_trend_reader.py` (10) y el caso de antigüedad en `tests/test_system_report.py`.
