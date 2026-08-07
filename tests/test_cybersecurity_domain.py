@@ -446,10 +446,10 @@ def test_backfill_writes_bounded_mass_and_idempotent(tmp_path, temp_vault):
     assert 0 < len(stars) <= 12             # cardinalidad acotada (anti-fragmentación)
     assert s1["seen_ledger"]["total"] == 4
     assert s1["verified"]["wins"] == 4 and s1["verified"]["losses"] == 8
-    # idempotente: reset del checkpoint y re-correr → 0 nuevas y masa intacta
-    seen_ledger.set_checkpoint("backfill_window_idx", "0")
+    # idempotente: re-correr forzando reproceso (resume=False) → 0 nuevas y masa intacta
     bf.run_backfill(since=since, until=until, now=_NOW, client=_FakeClient(items),
-                    kev_map=kev_map, gravity_index=gi, fetch_kev_if_missing=False)
+                    kev_map=kev_map, gravity_index=gi, fetch_kev_if_missing=False,
+                    resume=False)
     assert len(vledger.load_outcomes("cybersecurity")) == lines1
     hits2 = sum(r.hits for r in _cyber_stars(gi).values())
     assert hits2 == hits1
@@ -505,8 +505,11 @@ def test_detect_domain_cyber(tmp_path, temp_vault, monkeypatch):
     assert criterion.detect_domain("opinión sobre exploits y cve") == "cybersecurity"
 
 
-def test_criterion_grounded_cyber(temp_vault):
+def test_criterion_grounded_cyber(tmp_path, temp_vault, monkeypatch):
+    from core.learn import gravity_engine as ge
+    from core.learn.gravity_engine import GravityIndex
     from core.learn import criterion
+    monkeypatch.setattr(ge, "_index", GravityIndex(path=str(tmp_path / "grav.json")))
     vledger.clear_domain("cybersecurity")
     _seed_ledger("tier:CRITICAL", wins=14, losses=26)
     # sin LLM (llm devuelve vacío) → conclusión determinista grounded

@@ -192,6 +192,50 @@ File: `core/domain_knowledge.py`
 API: `GET /v1/domain/list`, `GET /v1/domain/{domain}/knowledge`
 Tests: `tests/test_domain_knowledge.py` (20 tests)
 
+### 🛡️ Cybersecurity Domain (NVD + CISA KEV)
+CVE observation domain, isomorphic to Freight/Real Estate. `entity`=CVE; hierarchical `subject` (`product_family` → `vulnerability_class` → `attack_vector` → `severity_tier`, fallback by mass); `outcome` WIN|LOSS|PENDING|NEUTRAL; `timing` EARLY|LATE|NONE by `days_to_kev`. Decision: **KEV ⇒ WIN always** (never LOSS); scope **2020→today** (<2020 excluded). Full contract: `docs/CYBERSECURITY_DOMAIN_2026_08_02.md`.
+
+The worker cycle is **gated** (`CYBER_LEARN_ENABLED`, default OFF) and only runs with a REAL provider (`CYBER_FEED_PROVIDER=nvd`) or `CYBER_ALLOW_SIMULATOR=1` — it never seeds synthetic CVEs into the production universe.
+
+#### Validation process (multi-layer)
+Validated at three levels; no step depends on production data:
+
+1. **Hermetic test suite** (no network) — dims/ladder, KEV/NVD parsing (mocked HTTP), outcome/timing (KEV-never-LOSS, LOSS>180, PENDING≤180, NEUTRAL), <2020 exclusion, idempotency (re-run = 0 new rows + 0 mass), bounded star cardinality, dry-run, domain detection + grounded criterion, hierarchical fallback, and the worker gate (OFF by default).
+   ```bash
+   PYTHONPATH=. .venv/bin/python -m pytest tests/test_cybersecurity_domain.py -q   # 34 tests
+   ```
+2. **Dry-run against real NVD + KEV** (writes nothing) — reports CVE volume, per-dimension coverage %, outcome distribution and WIN base-rate for a date window.
+   ```bash
+   python -m connectors.cybersecurity.backfill --dry-run --since 2021-01-01 --until 2021-02-01
+   # e.g. 1,951 CVE in 1.14s · family 78% / class 62% / vector 78% / tier 78% · WIN≈0.46%
+   ```
+3. **Isolated live cycle** (real NVD, temp gravity/vault, zero prod impact) — runs the exact `run_learning_cycle` the worker calls, confirming fetch → dims → outcome/timing → stars + ledger end-to-end.
+
+Idempotency + resumability come from the **seen-ledger** (`connectors/cybersecurity/seen_ledger.py`, SQLite by `cve_id` + checkpoints): re-running the backfill adds 0 rows and 0 mass.
+
+#### Worker log monitoring alert
+`scripts/monitor_worker_log.sh` watches `~/.vectrax/worker.log` **incrementally** (byte-offset cursor, rotation-aware) for `[ERROR]` / `[CRITICAL]` / `Traceback` / `TIMEOUT` (incl. `CYBER_LEARN_TIMEOUT`) / `worker_unresponsive` / `heartbeat_stale`, and confirms the cyber cycle ran (`Cyber learn:` → INFO). It appends OK/ALERT lines to `~/.vectrax/worker_alerts.log` and raises a macOS notification on alert (disable with `VX_WORKER_MONITOR_NOTIFY=0`). Read-only — never modifies the system.
+
+Scheduled via a launchd agent (`com.vectrax.worker-monitor`, every 300s, `RunAtLoad`, survives reboots):
+```bash
+# one-off pass · bounded loop · reset cursor to EOF (ignore history)
+bash scripts/monitor_worker_log.sh
+bash scripts/monitor_worker_log.sh --loop 12 300
+bash scripts/monitor_worker_log.sh --reset
+
+# manage the agent
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vectrax.worker-monitor.plist
+launchctl list | grep worker-monitor
+launchctl bootout gui/$(id -u)/com.vectrax.worker-monitor
+```
+When the worker's scheduled cyber cycle fires (first ~6h after start, then every 6h), confirm it in the log:
+```bash
+grep -nE "Cyber learn|CYBER_LEARN" ~/.vectrax/worker.log
+```
+
+Files: `connectors/cybersecurity/*` · `scripts/monitor_worker_log.sh` · `~/Library/LaunchAgents/com.vectrax.worker-monitor.plist` · `docs/CYBERSECURITY_DOMAIN_2026_08_02.md`
+Tests: `tests/test_cybersecurity_domain.py` (34 tests)
+
 ### 📡 Universe Census — Single Source of Truth
 Every endpoint that reports universe totals reads from one shared function: `get_census()`.
 

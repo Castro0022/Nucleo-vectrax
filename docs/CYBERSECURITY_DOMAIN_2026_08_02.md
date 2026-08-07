@@ -44,7 +44,7 @@ Creador: Mario Bravo Castro · Fecha: 2026-08-02
 - `core/transport/pipeline_worker.py` — bloque de ciclo cyber **GATED** (`CYBER_LEARN_ENABLED`, default OFF).
 
 ## Estrellas y cardinalidad
-Fingerprint por nivel: `cybersecurity:cve_<level>:<field>=<valor>` (idéntico en backfill bulk e incremental `ingest_event`). Cota esperada: tiers=4, vectores=4, clases ≲ decenas, familias ≲ cientos–miles; total ≲ ~5.000 estrellas (sin explosión cartesiana).
+Fingerprint por nivel: `cybersecurity:cve_<level>:<field>=<valor>` (idéntico en backfill bulk e incremental `ingest_event`). tiers=4, vectores=4, clases ≲ decenas. **OBSERVADO a escala completa (2020→hoy)**: `product_family` NO quedó acotado — el fallback a `vendor:product` crudo generó decenas de miles de familias distintas → total real **29,899 estrellas** (la cota de diseño de ~5.000 NO se cumplió). Ver §Despliegue → Hallazgos abiertos.
 
 ## Idempotencia (seen-ledger)
 - `upsert(cve) → (is_new, is_changed)` por `content_hash`.
@@ -79,10 +79,30 @@ CYBER_LEARN_ENABLED=1 CYBER_FEED_PROVIDER=nvd python -c "from connectors.cyberse
 ## Validación / criterios de aceptación
 - Suite `tests/test_cybersecurity_domain.py` verde (hermética, sin red). Cubre dims, escalera, KEV/NVD (mock), outcome/timing, KEV-nunca-LOSS, exclusión <2020, idempotencia, masa acotada, dry-run, detección de dominio, criterio grounded, fallback jerárquico y freno del worker.
 - Backfill idempotente (re-run = 0 nuevas) y masa acotada verificados en test.
-- El worker permanece **apagado** (`CYBER_LEARN_ENABLED=0`) hasta validar el backfill real; habilitarlo es un paso manual posterior y aprobado.
+- Worker **habilitado en producción** el 2026-08-03 (`CYBER_LEARN_ENABLED=1`, `CYBER_FEED_PROVIDER=nvd`, guard anti-simulador activo). Backfill 2020→hoy ejecutado y verificado (ver §Despliegue).
 
+## Despliegue (rollout) — registro 2026-08-03
+Rollout incremental y verificable (gate OFF por defecto en cada paso):
+1. **Construcción gated**: `CYBER_LEARN_ENABLED=0`; el worker no corre sin proveedor real (guard anti-simulador).
+2. **Tests herméticos**: `tests/test_cybersecurity_domain.py` (34) verdes; sin regresión en `tests/test_criterion.py` (37).
+3. **Dry-run** contra NVD+KEV real (sin escrituras) para medir cobertura/outcomes.
+4. **Habilitación del worker**: `.env` → `CYBER_FEED_PROVIDER=nvd` + `CYBER_LEARN_ENABLED=1`; supervisor reiniciado; ciclo incremental cada 6h.
+5. **Checkpoint reanudable (live)**: interrupción tras 1 ventana → reanudó desde la ventana 2 (no reinició); reproceso `--no-resume` con **0 duplicados** (seen_total/estrellas/ledger idénticos).
+6. **Backfill completo 2020→hoy**: durable vía launchd one-shot instrumentado (`scripts/cyber_backfill_demo.py`).
+7. **Monitoreo**: agente `com.vectrax.worker-monitor` (cada 300s) vigila el log del worker.
+### Resultado del backfill (2026-08-03)
+- **CVE observadas (2020→hoy): 236,494** (el corpus NVD completo es ~372,505; <2020 excluido por decisión 2).
+- Outcomes: LOSS 182,825 · PENDING 40,756 · NEUTRAL 11,797 · WIN (KEV) 1,116.
+- **Estrellas cognitivas: 29,899** → **ratio ≈ 7.9 CVE/estrella** (1 CVE ≠ 1 estrella: las estrellas son subjects abstractos, no CVEs).
+- Rendimiento: ~37 min (2,244s), ~105 CVE/s, CPU ~47–60%, RSS pico 296 MB.
+- Tamaño BD al cierre: gravity 18.9 MB · seen-ledger 36.8 MB · verification-ledger **162.6 MB**.
+- Log del run: `~/.vectrax/cyber_backfill_demo.log` (`PROGRESS`/`REPORT`).
+### Hallazgos abiertos (resolver antes de uso intensivo del criterio)
+1. **Sobre-fragmentación de `product_family`** (29,899 > cota ~5.000): el fallback a `vendor:product` crudo crea decenas de miles de familias a escala. Mitigación: ampliar el mapa curado vendor→familia y/o agrupar los no mapeados (p. ej. descartar el nivel family cuando el vendor no está mapeado).
+2. **Escala del verification-ledger (162 MB / 693k filas)**: `rank_domain_evidence`→`subject_scores` carga el JSONL completo por consulta → lento en producción. Mitigación: agregados precomputados (SQLite/resumen por subject) en vez del JSONL crudo.
+### Limpieza
+El agente one-shot `com.vectrax.cyber-backfill` se descargó y su plist se eliminó tras completar (no re-ejecuta en reinicios). Persisten los agentes de operación (`supervisor`, `worker-monitor`, `backup-db`, `rotate-logs`).
 ## Fuera de alcance (v1)
 - Convergencia semántica cross-dominio por embeddings a nivel CVE.
 - Rango 2016–2019 (expansión posterior).
 - Fuentes extra (EPSS, ATT&CK, CVE List v5).
-- Activación del worker (queda gated).

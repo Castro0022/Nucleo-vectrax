@@ -68,6 +68,7 @@ data/
 *.db.bak*
 
 vault/domain_verification/
+vault/cyber_kev/
 
 # Runtime quality report (regenerado en runtime, no es código)
 ROUTER_ACTIVATION_QUALITY_REPORT.md

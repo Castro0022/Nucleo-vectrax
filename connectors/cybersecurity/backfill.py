@@ -69,12 +69,16 @@ def run_backfill(
     fetch_kev_if_missing: bool = True,
     max_windows: Optional[int] = None,
     resume: bool = True,
+    progress_cb: Any = None,
 ) -> Dict[str, Any]:
     """Ejecuta el backfill (o el dry-run). Devuelve un summary con cifras."""
     t0 = time.time()
     now_dt = now or datetime.now(timezone.utc)
     since_dt = since or MIN_PUB
     until_dt = until or now_dt
+    # Checkpoint POR RANGO: el índice de ventana solo es válido para el mismo
+    # (since, until). Así un backfill de otro rango no corrompe la reanudación.
+    ckpt_key = f"{_CKPT_WINDOW}:{since_dt.date()}:{until_dt.date()}"
 
     kev_map = _resolve_kev_map(kev_map, fetch_kev_if_missing)
     client = client or NvdClient()
@@ -86,7 +90,7 @@ def run_backfill(
     resume_idx = 0
     if resume and not dry_run:
         try:
-            resume_idx = int(seen_ledger.get_checkpoint(_CKPT_WINDOW, "0") or 0)
+            resume_idx = int(seen_ledger.get_checkpoint(ckpt_key, "0") or 0)
         except ValueError:
             resume_idx = 0
 
@@ -121,7 +125,15 @@ def run_backfill(
         if not dry_run:
             vc.verify_events(batch, record=True, now=now_dt, gravity_records=records)
             gi.update_records(records)
-            seen_ledger.set_checkpoint(_CKPT_WINDOW, str(wi + 1))
+            seen_ledger.set_checkpoint(ckpt_key, str(wi + 1))
+        if progress_cb is not None:
+            progress_cb({
+                "window_index": wi + 1,
+                "windows_total": len(windows),
+                "cve_seen": n_cve,
+                "elapsed_s": round(time.time() - t0, 2),
+                "dry_run": dry_run,
+            })
 
     elapsed = round(time.time() - t0, 2)
     if dry_run:
