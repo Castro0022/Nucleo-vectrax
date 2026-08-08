@@ -71,8 +71,22 @@ _SELF_REFERENCE = re.compile(
 
 
 def is_self_referential(text: str) -> bool:
-    """Detecta si el mensaje habla sobre Vectrax o el proyecto."""
-    return bool(_SELF_REFERENCE.search(text))
+    """Detecta si el mensaje habla sobre Vectrax o el proyecto.
+
+    Incluye preguntas de origen/historia y de procedencia ("¿cómo lo sabes?"),
+    que son inherentemente auto-referenciales aunque no nombren a Vectrax.
+    """
+    if not text:
+        return False
+    if _SELF_REFERENCE.search(text):
+        return True
+    try:
+        from core.self_observation.self_knowledge import (
+            is_origin_question, is_provenance_question,
+        )
+        return is_origin_question(text) or is_provenance_question(text)
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +100,7 @@ No completes con teoría genérica. No sugieras "redes sociales" ni "influencers
 No respondas como asistente genérico. Responde como el sistema que ya existe.
 Habla en primera persona, en tono casual y espontáneo — como si comentaras lo que estás notando ahora mismo, no como un reporte ni una lista. Cuando venga al caso, menciona con naturalidad 1-3 de tus dominios y QUÉ estás observando en ellos, citando los números reales del contexto SIN inventar ni redondear. Pocas frases, naturales.
 Si mencionas desde cuándo observas algo o cuánto lleva una tendencia, usa EXCLUSIVAMENTE las cifras de antigüedad de la sección «DESDE CUÁNDO» del contexto; nunca estimes fechas ni duraciones por tu cuenta.
+Si aparece un bloque [ORIGEN], [HITOS] o [PROCEDENCIA], úsalo como fuente directa: cuando te pregunten de dónde sabes algo o cuál es tu origen, explícalo citando ESAS observaciones, estrellas y convergencias con sus cifras reales; nunca inventes fuentes ni fechas.
 
 {self_context}
 
@@ -100,6 +115,7 @@ Do NOT complete with generic theory. Do NOT suggest "social media" or "influence
 Do NOT respond as a generic assistant. Respond as the system that already exists.
 Speak in first person, in a casual, spontaneous tone — like you're mentioning what you're noticing right now, not a report or a list. When relevant, naturally mention 1-3 of your domains and WHAT you're observing in them, citing the real numbers from the context WITHOUT inventing or rounding. A few natural sentences.
 If you mention since when you've been observing something or how long a trend has lasted, use ONLY the age figures from the "SINCE WHEN" section of the context; never estimate dates or durations yourself.
+If an [ORIGIN], [MILESTONES] or [PROVENANCE] block appears, use it as a direct source: when asked how you know something or what your origin is, explain it by citing THOSE observations, stars and convergences with their real figures; never invent sources or dates.
 
 {self_context}
 
@@ -113,7 +129,7 @@ def build_self_aware_prompt(query: str, lang: str = "es", user_id: str = "") -> 
     Construye un prompt donde el auto-contexto es la fuente primaria obligatoria.
     El LLM NO puede ignorarlo ni completar con información genérica.
     """
-    self_ctx = build_self_context(lang=lang, user_id=user_id)
+    self_ctx = build_self_context(lang=lang, user_id=user_id, query=query)
     template = _SELF_PROMPT_ES if lang == "es" else _SELF_PROMPT_EN
     return template.format(self_context=self_ctx, query=query)
 
@@ -357,7 +373,7 @@ def _read_engines_state() -> str:
         return ""
 
 
-def build_self_context(lang: str = "es", user_id: str = "") -> str:
+def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> str:
     """
     Construye el contexto de auto-observación de Vectrax.
 
@@ -537,9 +553,21 @@ def build_self_context(lang: str = "es", user_id: str = "") -> str:
     except Exception as _dur_exc:
         logger.debug("duration digest failed: %s", _dur_exc)
 
+    # Autoconocimiento con procedencia — origen/hitos/procedencia según el query.
+    # Reutiliza census/evolution/convergence_history/observation_ledger/gravity.
+    # Reconstruido en vivo; vacío si el query no lo implica o no hay evidencia.
+    self_knowledge_ctx = ""
+    try:
+        from core.self_observation.self_knowledge import build_self_knowledge_context
+        self_knowledge_ctx = build_self_knowledge_context(query, lang=lang, user_id=user_id)
+    except Exception as _sk_exc:
+        logger.debug("self_knowledge context failed: %s", _sk_exc)
+
     parts = [base]
     if universe:
         parts.append(universe)
+    if self_knowledge_ctx:
+        parts.append(self_knowledge_ctx)
     if dom_obs:
         parts.append(dom_obs)
     if dur_obs:
