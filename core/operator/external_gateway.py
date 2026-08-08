@@ -92,6 +92,12 @@ class GatewayResult:
     channel: str = ""
     response: str = ""
     source: str = ""  # origen: "memory", "llm", "resolver", ""
+    # Procedencia por-respuesta (Fase 1): adjunta al PRODUCIR la respuesta.
+    # La respuesta NUNCA relee op_cycles para saber cómo se produjo; op_cycles
+    # permanece como ledger de auditoría persistente.
+    resolve_mode: str = ""        # mecanismo: places/online/local/llm/market/...
+    confidence: float = 0.0      # confianza real (SmartRouter) o por-ruta grounded
+    evidence: Optional[Dict[str, Any]] = None  # base usada (route, topic, ...)
     timestamp: float = 0.0
     processed: bool = False
     error: str = ""
@@ -103,6 +109,9 @@ class GatewayResult:
             "channel": self.channel,
             "response": self.response,
             "source": self.source,
+            "resolve_mode": self.resolve_mode,
+            "confidence": self.confidence,
+            "evidence": self.evidence or {},
             "timestamp": self.timestamp,
             "processed": self.processed,
             "error": self.error,
@@ -283,6 +292,11 @@ class ExternalGateway:
             _cycle_obs = CycleObserver(channel=channel, user_tier=_user_tier)
         except Exception:
             pass
+
+        # Holder de procedencia del pipeline (Fase 1): poblado IN-PLACE por
+        # _resolve_via_pipeline con la confianza REAL del router y el tópico.
+        # Es por-llamada (race-safe); NO es estado de instancia.
+        _pipeline_prov: Dict[str, Any] = {}
 
         # ══════════════════════════════════════════════════════════════
         # STEP -1: CONTEXTUAL PRESENCE — record user activity
@@ -1092,6 +1106,7 @@ class ExternalGateway:
                     extra_context=memory_context,
                     act_log=_act_log,
                     gravity_lock=_gravity_lock,
+                    provenance=_pipeline_prov,
                 )
                 try:
                     from core.observability.router_activation import (
@@ -1156,11 +1171,21 @@ class ExternalGateway:
         # ACTUAR — registrar latencia y si la respuesta fue vacía
         _act_latency = (time.time() - _resolve_start) * 1000
         _is_fallback = hasattr(locals(), 'source_path') and 'fallback' in str(locals().get('source_path', ''))
+        # Confianza REAL de la ruta: si el SmartRouter resolvió, usa su confianza
+        # (poblada in-place en _pipeline_prov). Si no, confianza por-ruta grounded.
+        _confidence = _pipeline_prov.get("confidence")
+        if _confidence is None:
+            _confidence = (
+                1.0 if (memory_resolved or _domain_resolved)
+                else 0.9 if _self_resolved
+                else 0.7
+            )
+        _confidence = round(float(_confidence), 4)
         if _cycle_obs:
             _cycle_obs.set_decide(
                 route=_final_source or locals().get('source_path', ''),
                 strategy=locals().get('source_path', ''),
-                confidence=1.0 if memory_resolved or _self_resolved else 0.7,
+                confidence=_confidence,
             )
             _cycle_obs.set_act(
                 latency_ms=_act_latency,
@@ -1428,6 +1453,26 @@ class ExternalGateway:
             except Exception as exc:
                 logger.debug("Final language gate failed (passthrough): %s", exc)
 
+        # ── Fase 2: DECLARACIÓN HONESTA DE CERTEZA ────────────────────────────
+        # Si la confianza de la ruta es baja y la ruta es generativa (no
+        # grounded), la respuesta DECLARA su límite en vez de fingir seguridad.
+        # Nunca bloquea (declarar duda ≠ callar). Usa la confianza ya computada
+        # en la Fase 1; se aplica DESPUÉS del language gate y en el idioma del
+        # usuario para no mezclar idiomas.
+        if response_text:
+            try:
+                from core.operator.certainty import declare_certainty
+                from core.language_gate import get_user_language as _gul_cert
+                _cert_route = _final_source or locals().get("source_path", "") or ""
+                response_text = declare_certainty(
+                    response_text,
+                    confidence=float(locals().get("_confidence", 1.0) or 1.0),
+                    route=_cert_route,
+                    lang=_gul_cert(user_id, content),
+                )
+            except Exception as _cert_exc:
+                logger.debug("certainty layer failed (passthrough): %s", _cert_exc)
+
         # ── POINT D: Actualizar estado conversacional tras el turno ───────────
         if response_text and _conv_state is not None:
             try:
@@ -1542,12 +1587,53 @@ class ExternalGateway:
             "memory" if memory_resolved
             else (_final_source or locals().get("source_path", "") or "")
         )
+        # Procedencia adjunta al objeto de respuesta (Fase 1): mecanismo,
+        # confianza real y evidencia usada — SIN releer op_cycles.
+        _resolve_mode = locals().get("source_path", "") or _result_source
+        _evidence: Dict[str, Any] = {"route": _result_source, "resolve_mode": _resolve_mode}
+        if _pipeline_prov.get("topic"):
+            _evidence["topic"] = _pipeline_prov["topic"]
+        # Fase 5: capa de procedencia — distingue "lo aprendí de vos" (personal)
+        # de "lo sé en general" (shared) y de lo traído de afuera (external).
+        # Aditivo: solo enriquece la evidencia, no cambia rutas.
+        _rm_low = (_resolve_mode or "").lower()
+        if "online" in _rm_low:
+            _evidence["layer"] = "external"
+        elif memory_resolved or _rm_low in ("memory", "identity", "local"):
+            _evidence["layer"] = "personal"
+        else:
+            _evidence["layer"] = "shared"
+
+        # ── Fase 4: LAZO DE APRENDIZAJE EXTERNO ───────────────────────────────
+        # Si la respuesta salió de una búsqueda EXTERNA, entra como observación
+        # con procedencia=external y se alimenta al learning_cycle. La promoción
+        # a convergencia propia la decide el pipeline (CONFIRMED + umbral de
+        # elevación), NUNCA por repetición sola. Defensivo: no altera la respuesta.
+        if response_text:
+            try:
+                from core.operator.external_learning import (
+                    is_external_route, ingest_external_result,
+                )
+                if is_external_route(_resolve_mode):
+                    ingest_external_result(
+                        query=content,
+                        answer=response_text,
+                        route=_resolve_mode,
+                        confidence=float(locals().get("_confidence", 0.0) or 0.0),
+                        engines=_pipeline_prov.get("engines"),
+                    )
+            except Exception as _xl_exc:
+                logger.debug("external learning ingest failed (passthrough): %s", _xl_exc)
+
         return GatewayResult(
             event_id=correlation_id,
             user_id=user_id,
             channel=channel,
             response=response_text,
             source=_result_source,
+            resolve_mode=_resolve_mode,
+            confidence=locals().get("_confidence", 0.0) or 0.0,
+            evidence=_evidence,
             timestamp=ts,
             processed=True,
         )
@@ -1755,6 +1841,7 @@ class ExternalGateway:
         extra_context: str = "",
         act_log=None,
         gravity_lock: bool = False,
+        provenance: Optional[dict] = None,
     ) -> Tuple[str, str]:
         """
         Pipeline cognitivo unificado con clasificación semántica.
@@ -1781,7 +1868,7 @@ class ExternalGateway:
         answer, source_path = self._resolve_via_pipeline(
             user_id, content, channel,
             extra_context=extra_context, act_log=act_log,
-            gravity_lock=gravity_lock,
+            gravity_lock=gravity_lock, provenance=provenance,
         )
         if answer:
             return answer, source_path
@@ -1856,6 +1943,7 @@ class ExternalGateway:
         extra_context: str = "",
         act_log=None,
         gravity_lock: bool = False,
+        provenance: Optional[dict] = None,
     ) -> Tuple[str, str]:
         """
         Pipeline cognitivo completo para mensajes externos.
@@ -2064,6 +2152,14 @@ class ExternalGateway:
                 smart_route.risk_level.value,
                 smart_route.confidence,
             )
+            # Procedencia (Fase 1): exponer la confianza REAL del router y el
+            # tópico hacia el objeto de respuesta, sin releer ledgers.
+            if provenance is not None:
+                try:
+                    provenance["confidence"] = round(float(smart_route.confidence), 4)
+                    provenance["topic"] = smart_route.topic
+                except Exception:
+                    pass
 
             # ── AUTO-EXECUTE según estrategia ──────────────────────
 
@@ -2677,6 +2773,22 @@ class ExternalGateway:
                     return living
             except Exception:
                 pass
+
+        # ── ORIGIN / PROVENANCE: bloque determinista con evidencia real ──
+        # Sin LLM: si preguntan de dónde saben algo o cuál es su origen,
+        # responde con el bloque groundeado de self_knowledge (no el recorte
+        # genérico de 400 chars). Vacío si no hay evidencia (no inventa).
+        try:
+            from core.self_observation.self_knowledge import (
+                is_origin_question, is_provenance_question,
+                build_self_knowledge_context,
+            )
+            if is_origin_question(content) or is_provenance_question(content):
+                sk = build_self_knowledge_context(content, lang=lang, user_id=user_id)
+                if sk and len(sk) > 40:
+                    return sk[:700].strip()
+        except Exception:
+            pass
 
         # ── SYSTEM QUESTIONS (vectrax, nucleo, etc.): self-context ──
         try:

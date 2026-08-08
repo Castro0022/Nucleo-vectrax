@@ -82,6 +82,11 @@ class TestGatewayResult:
         assert d["user_id"] == "user1"
         assert d["response"] == "Hola"
         assert d["processed"] is True
+        # Procedencia por-respuesta (Fase 1)
+        assert "resolve_mode" in d
+        assert "confidence" in d
+        assert "evidence" in d
+        assert d["evidence"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +220,22 @@ class TestGatewayResponse:
         assert result.event_id != ""
         assert result.user_id == "u8"
         assert result.timestamp > 0
+
+    def test_result_carries_provenance(self):
+        """Fase 1: el objeto de respuesta lleva su procedencia adjunta
+        (confianza + evidencia), sin depender de releer op_cycles."""
+        gw = ExternalGateway()
+        result = gw.receive_message(
+            user_id="u_prov", content="¿qué opinas del mercado hoy?", channel="web",
+        )
+        assert isinstance(result, GatewayResult)
+        assert result.processed is True
+        assert 0.0 <= result.confidence <= 1.0
+        assert isinstance(result.evidence, dict)
+        assert "route" in result.evidence
+        assert isinstance(result.resolve_mode, str)
+        # Fase 5: capa de procedencia (personal / compartido / externo)
+        assert result.evidence.get("layer") in {"personal", "shared", "external"}
 
     def test_response_comes_from_core_only(self):
         """La respuesta debe venir del núcleo o estar vacía.
