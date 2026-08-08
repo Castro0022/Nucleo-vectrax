@@ -73,16 +73,28 @@ def _cached(key: str, producer):
 # Detección de intención — ¿origen/historia? ¿procedencia?
 # ---------------------------------------------------------------------------
 
-# Origen/historia. Segunda persona (sobre Vectrax), NO "quién soy" (=usuario).
+# Origen / historia / IDENTIDAD de Vectrax en SEGUNDA persona (sobre Vectrax),
+# NUNCA "quién soy" (= el usuario). Admite tuteo y voseo, y pronombre
+# intermedio ("¿desde cuándo tú/vos existís?").
 _ORIGIN_RE = re.compile(
     r"(?:"
-    r"\btu\s+(?:origen|historia|nacimiento|g[eé]nesis|edad)\b"
+    # Identidad de Vectrax (2ª persona)
+    r"\bqui[eé]n\s+(?:eres|sos)\b"
+    r"|\bqu[eé]\s+(?:eres|sos)\b"
+    r"|\bqui[eé]n\s+es\s+vectrax\b"
+    r"|\bpres[eé]ntate\b"
+    r"|\bwho\s+are\s+you\b"
+    r"|\bwhat\s+are\s+you\b"
+    # Origen / historia / edad (tuteo + voseo; pronombre intermedio opcional)
+    r"|\btu\s+(?:origen|historia|nacimiento|g[eé]nesis|edad)\b"
     r"|\bcu[aá]l\s+es\s+tu\s+origen\b"
-    r"|\bcu[aá]ndo\s+(?:naciste|te\s+crearon|empezaste|surgiste|apareciste|"
-    r"comenzaste|te\s+encendiste)\b"
-    r"|\bdesde\s+cu[aá]ndo\s+(?:existes|est[aá]s|llevas|te\s+)\b"
-    r"|\bcu[aá]nto\s+(?:tiempo\s+)?(?:llevas|tienes)\b"
-    r"|\bqu[eé]\s+edad\s+tienes\b"
+    r"|\bcu[aá]ndo\s+(?:t[uú]\s+|vos\s+|usted\s+)?(?:naciste|nacist[eé]s|te\s+crearon|"
+    r"empezaste|empezast[eé]s|comenzaste|surgiste|apareciste|te\s+encendiste|"
+    r"existes|exist[ií]s)\b"
+    r"|\bdesde\s+cu[aá]ndo\s+(?:t[uú]\s+|vos\s+|usted\s+)?(?:existes|exist[ií]s|"
+    r"est[aá]s|llevas|operas|funcionas)\b"
+    r"|\bcu[aá]nto\s+(?:tiempo\s+)?(?:llevas|tienes|ten[eé]s)\b"
+    r"|\bqu[eé]\s+edad\s+(?:tienes|ten[eé]s)\b"
     r"|\bc[oó]mo\s+(?:naciste|empezaste|surgiste|comenzaste)\b"
     r"|\bwhen\s+were\s+you\s+(?:born|created)\b"
     r"|\bhow\s+old\s+are\s+you\b"

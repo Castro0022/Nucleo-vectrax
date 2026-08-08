@@ -43,6 +43,10 @@ def test_is_origin_question_true():
         "¿cuándo naciste?", "¿cuál es tu origen?", "cuéntame tu historia",
         "¿cuánto tiempo llevas funcionando?", "how old are you?",
         "when were you created?",
+        # Fraseos naturales que antes fallaban (tuteo/voseo/pronombre/identidad)
+        "¿Desde cuándo tú existes?", "desde cuándo vos existís",
+        "¿qué edad tenés?", "¿quién sos?", "¿quién eres?", "¿qué sos?",
+        "preséntate", "¿quién es vectrax?", "who are you?",
     ]:
         assert SK.is_origin_question(q), q
 
@@ -50,6 +54,8 @@ def test_is_origin_question_true():
 def test_is_origin_question_ignores_user_identity():
     # "quién soy" es sobre el USUARIO, no debe activar origen de Vectrax.
     assert not SK.is_origin_question("¿quién soy?")
+    assert not SK.is_origin_question("¿quién soy yo?")
+    assert not SK.is_origin_question("who am i")
     assert not SK.is_origin_question("hola, todo bien")
 
 
