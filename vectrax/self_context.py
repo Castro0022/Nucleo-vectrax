@@ -395,7 +395,7 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
     if lang == "es":
         base = (
             "[VECTRAX SE OBSERVA A SÍ MISMO]\n"
-            "Soy Vectrax. Estoy corriendo en producción.\n"
+            "Soy Vectrax. Estoy corriendo en producción, en infraestructura local.\n"
             f"{stats['users']} usuarios, {stats['interactions']} interacciones, "
             f"{stats['teams']} equipo(s).\n"
             "NO repitas estos números siempre. Si ya los dijiste antes, habla de lo que cambió.\n"
@@ -431,7 +431,7 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
     else:
         base = (
             "[VECTRAX OBSERVES ITSELF]\n"
-            "I am Vectrax. I'm running in production on a Vultr server.\n"
+            "I am Vectrax. I'm running in production, on local infrastructure.\n"
             f"EXACT DATA: I have exactly {stats['users']} real registered users and "
             f"exactly {stats['interactions']} accumulated interactions. "
             f"Do NOT invent or round these numbers.\n"
