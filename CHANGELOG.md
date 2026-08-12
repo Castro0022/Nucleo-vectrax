@@ -2,6 +2,27 @@
 
 All notable changes to Vectrax are documented in this file.
 
+## [2026-08-08] — Autoconocimiento con procedencia + producción local
+### Conciencia operativa con procedencia (PR #87)
+Vectrax puede decir qué sabe, desde cuándo, cómo lo sabe y con cuánta certeza, reconstruido en vivo desde estado real. Reutiliza census, evolution_memory, convergence_history, observation_ledger, learning_cycle y op_cycles; sin sistemas paralelos.
+- **Origen** (`core/self_observation/self_knowledge.py`, nuevo): `get_origin()` distingue el nacimiento institucional canónico (2026-04-07, Vectrax-Core LLC — hecho declarado) de la primera huella verificable / gestación derivada del store durable más antiguo (stars/convergence_events/snapshots). Añade `get_milestones()` e hitos, y `trace_provenance()` que liga tema→evidencia (estrellas + observaciones + convergencias + censo).
+- **Procedencia por-respuesta** (`core/operator/external_gateway.py`): `GatewayResult` expone `resolve_mode`, `confidence` y `evidence`; la confianza REAL del SmartRouter se propaga por un holder por-llamada y alimenta el ciclo `op_cycles` (auditoría; confianza diferenciada por ruta en vez de 0.7 plano) y la respuesta, sin releer el ledger.
+- **Declaración honesta de certeza** (`core/operator/certainty.py`, nuevo): en rutas generativas (llm/online/local) con confianza < `VECTRAX_CERTAINTY_FLOOR` (0.5) antepone una salvedad breve; nunca en rutas grounded, nunca bloquea, sin mezclar idiomas (es/en/fr/it/de/pt).
+- **Aprendizaje externo** (`core/operator/external_learning.py`, nuevo): los resultados de búsqueda online entran como observación `source=external` en el ledger + señal al `learning_cycle`; la promoción a conocimiento propio exige hipótesis CONFIRMED + `MIN_CONFIDENCE_FOR_INTEGRATION=0.60` + Decision Authority — nunca por repetición sola.
+- **Capas personal/compartido**: `evidence['layer']` distingue personal / shared / external. Elevación verificada y regida por umbral (convergencia `CONVERGENCE_MIN_PATHS=3`, colectiva `CROSS_USER_MIN_OWNERS`, `core/domain_knowledge.py` `MIN_SAMPLE=15` + ≥2 tenants), sin almacenar PII.
+### Producción local — fin de referencias a Vultr (PR #88)
+- `vectrax/self_context.py`: elimina el claim falso "running in production on a Vultr server"; ES/EN ahora dicen "infraestructura local" (Vectrax no describe infraestructura inexistente sobre sí mismo).
+- Eliminado `deploy_vultr.sh` (deploy remoto obsoleto; producción corre en la máquina local).
+### Fix: detección de origen/identidad en lenguaje natural (PR #89)
+- `core/self_observation/self_knowledge.py`: `_ORIGIN_RE` ampliado a tuteo+voseo, pronombre intermedio (`¿desde cuándo tú/vos existís?`) e identidad en 2ª persona (`¿quién/qué eres/sos?`, `preséntate`, `who/what are you`), sin capturar `¿quién soy?`/`who am i` (eso es el usuario). Antes estos fraseos caían a respuesta genérica del LLM.
+- Verificado en vivo: `¿desde cuándo tú existes?` → "Nací institucionalmente el 2026-04-07… mi primera huella verificable fue el 2026-03-06…".
+### Tests
+- Nuevas suites: `tests/test_self_knowledge.py`, `tests/test_certainty.py`, `tests/test_external_learning.py` + asserts de procedencia en `tests/test_external_gateway.py`. 53/53 verdes en los módulos tocados.
+### PRs / Deploy
+- PR #87, #88, #89 mergeadas a `main` (`b4a215e`). Desplegado en **producción local** (Mac, launchd `com.vectrax.supervisor`, API `:8900`) reiniciando el supervisor; verificado en vivo (origen real, confianza diferenciada en `op_cycles`, self_context sin Vultr).
+### Pendiente
+- Voz (ElevenLabs TTS): cuota agotada (HTTP 401 `quota_exceeded`). El texto responde correctamente; la voz queda para otro día (recargar créditos o desactivar TTS).
+
 ## [2026-06-28] — Auditoría del dashboard: SSOT del canvas + claridad de métricas de usuario
 ### Canvas alineado al censo (SSOT) — auditoría A–E
 - `core/self_observation/universe_observer.py`: `gravity.convergences_total` usa el valor del censo (1242) en vez de `len(edges del grafo + history)`, que mostraba 2195 en el canvas. La lista de convergencias para dibujar arcos no cambia.
