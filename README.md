@@ -2199,6 +2199,23 @@ File: `core/meta_loop.py` (Layer 7), `core/transport/pipeline_worker.py` (per-me
 
 ---
 
+## 🗺️ Detección de dominio (motor de intención)
+
+El `SemanticClassifier` — el mismo motor que entiende la **intención** de cada mensaje — expone también el **dominio de conocimiento** de la consulta en su salida (`market`, `freight_logistics`, `florida_real_estate`, `cybersecurity`, …), en vez de depender de un extractor de tema posicional aparte y más frágil.
+
+- **Salida del clasificador** — `SemanticResult` incluye `domain` y `domain_confidence` (aditivo y retrocompatible; `to_dict()` los expone). Los puebla `classify()` en una fase 5, sin alterar la intención.
+- **Híbrido keyword + semántico** — resuelve el dominio con el detector léxico determinista (`criterion.detect_domain`) primero (barato y preciso; en aciertos no encodea) y cae a **similitud por embeddings** contra un prototipo por dominio (nombre + vocabulario) solo cuando el léxico falla. Reutiliza el mismo vector de embedding del *boost* de intención (caché de 1 ranura → sin doble encode).
+- **Dominios dinámicos** — provienen de `criterion.known_domains()` (gravity + domain_library), no de un enum fijo → el clasificador se auto-adapta cuando nace un dominio nuevo, sin tocar código.
+- **Consumido por el gateway** — el gate de criterio (`external_gateway.py`, STEP 4.2a3) usa `_resolve_query_domain()`: prioriza el dominio del clasificador cuando su confianza alcanza el umbral y cae a `detect_domain()` (léxico) cuando es baja o no hay dominio semántico. Consultas ambiguas → sin dominio (no secuestran el chit-chat hacia un dominio ajeno).
+- **Detrás de flags** — `VX_SEMANTIC_DOMAIN` (default ON; OFF → solo léxico, comportamiento previo), umbral `VX_SEMANTIC_DOMAIN_FLOOR` (0.45), endurecible en el gateway con `VX_SEMANTIC_DOMAIN_GATE_FLOOR`. Defensivo: nunca lanza; degrada a `("", 0.0)` sin dominios/modelo.
+
+Files:
+- `core/semantic_classifier.py` — `SemanticResult.domain`/`domain_confidence`, `_detect_domain`, `_get_domain_embeddings`, `_embed_query`
+- `core/operator/external_gateway.py` — `_resolve_query_domain` + gate STEP 4.2a3
+Tests: `tests/test_semantic_classifier.py::TestDomainDetection` · `tests/test_external_gateway.py::TestResolveQueryDomain`
+
+---
+
 ## 🧭 Motor de Criterio Aprendido (cross-dominio)
 
 Vectrax forma y **expresa su propio criterio** sobre CUALQUIER dominio de su universo (market, freight_logistics, …) a partir de su aprendizaje persistido — **métricas reales**, no conocimiento general ni respuestas fijas, y **sin fabricar**.
@@ -2210,15 +2227,27 @@ Entiende el **tema concreto** de la pregunta y centra la opinión en la experien
 ```
 Mensaje → detect_criterion_request(content)?
     │ sí
-    ├─ dominio = detect_domain(content)  ó  strongest_domain()   (si no se nombra dominio)
+    ├─ dominio = _resolve_query_domain(content)    ← semántico (SemanticResult.domain) + fallback léxico
+    │                                                 (ó strongest_domain() si se pide opinión sin tema)
+    ├─ polaridad = _detect_query_polarity(content)  ← weakness (pierde) / support (gana) / neutral
     ├─ rank_domain_evidence(dominio)      ← score = E × wilson_lb × confianza × masa   (read-only)
     ├─ extract_topic_tokens(content)      ← tema concreto (acentos, stopwords, indicadores, sinónimos ES→esquema)
     │     ├─ tema CON experiencia → filtra a la evidencia relacionada + centra la opinión
-    │     └─ tema SIN experiencia → "no opino sobre eso; lo más cercano es «…»"   (sin fabricar)
+    │     └─ tema SIN experiencia → "todavía no tengo evidencia directa, pero… te digo lo que pienso"
+    ├─ _order_by_polarity(evidencia, polaridad)     ← ancla en la señal que pide la pregunta
+    ├─ _deterministic_opinion(...)        ← CALIBRA el aplomo por suficiencia (_is_firm): firme vs preliminar
     ├─ _phrase_with_llm(evidencia)        ← LLM restringido EXCLUSIVAMENTE a la evidencia rankeada
     │     └─ _verify_grounded()           ← rechaza entidad/porcentaje fuera de la evidencia (±2)
     └─ fallback determinista si el LLM no está grounded
 ```
+
+### Polaridad + calibración de suficiencia
+
+El criterio **entiende la valencia de la pregunta** y **calibra su aplomo con la evidencia disponible** — nunca presenta ruido (poca muestra / sin ventaja) como una posición firme, pero **tampoco se calla**:
+
+- **Polaridad** (`_detect_query_polarity`): «¿qué **pierde**?» ancla en la señal más floja (`_order_by_polarity` reordena por expectancy ascendente); «¿qué **gana/mejor**?» o neutra, en la dominante.
+- **Suficiencia** (`_is_firm`, N≥15 + ventaja medible — negativa para *weakness*): con evidencia madura mantiene «la posición que me emerge **se apoya en** …»; con evidencia fina la marca como **«señal aún no concluyente»** e indica el motivo (`solo N obs` / `sin ventaja medible`); una consulta de debilidad sin perdedor concluyente lo dice explícitamente.
+- El paso semántico de dominio está detrás de `VX_SEMANTIC_DOMAIN` / `VX_SEMANTIC_DOMAIN_FLOOR` (ver *Detección de dominio*).
 
 ### Fuentes de evidencia (solo lectura)
 
@@ -2232,13 +2261,14 @@ El score se deriva de forma determinista: `expectancy × wilson_lb_frac × peso_
 ### Garantías
 
 - **No fabrica**: toda opinión cita evidencia real; ante entidades ausentes (p. ej. `route_A`) reconoce que no las observó y opina sobre lo que sí aprendió.
+- **Calibrado, no crédulo**: la evidencia por debajo del umbral se presenta como preliminar (nunca como posición firme), sin dejar de responder.
 - **Read-only**: no toca observación / ingesta / aprendizaje / maduración / thresholds ni datos.
 - **Sin parches de prompt ni rutas/frases hardcodeadas** — el criterio emerge de las métricas.
 
 Files:
-- `core/learn/criterion.py` — detección, dominio, ranking, scoping por tema, opinión grounded + verificador
-- `core/operator/external_gateway.py` — compuerta STEP 4.2a3 (precede al narrador self-aware; freight como sub-caso)
-- `tests/test_criterion.py` — 10 tests · `tests/test_external_gateway.py` — precedencia sobre self-aware
+- `core/learn/criterion.py` — detección, dominio, polaridad, ranking, scoping por tema, calibración de suficiencia, opinión grounded + verificador
+- `core/operator/external_gateway.py` — `_resolve_query_domain` + compuerta STEP 4.2a3 (precede al narrador self-aware; freight como sub-caso)
+- `tests/test_criterion.py` · `tests/test_external_gateway.py` — polaridad, calibración, detección de dominio y precedencia sobre self-aware
 
 ---
 
@@ -2327,6 +2357,10 @@ Files:
 ---
 
 ## 📋 Changelog
+
+### 2026-08-13
+- **feat: detección de dominio en el motor de intención + consumo en el gateway** (PRs #93, #94) — `SemanticClassifier` expone el dominio de la consulta en su salida (`SemanticResult.domain`/`domain_confidence`, aditivo/retrocompatible) mediante un híbrido keyword-first (`criterion.detect_domain`) + fallback semántico por embeddings contra prototipos por dominio construidos desde `known_domains()` (dinámico), reutilizando el vector del boost de intención (caché de 1 ranura, sin doble encode). El gate de criterio del gateway (STEP 4.2a3) lo consume vía `_resolve_query_domain()`: dominio semántico si su confianza alcanza el umbral, si no `detect_domain()` léxico; consultas ambiguas → sin dominio. Detrás de `VX_SEMANTIC_DOMAIN` (default ON) / `VX_SEMANTIC_DOMAIN_FLOOR` / `VX_SEMANTIC_DOMAIN_GATE_FLOOR`. Nueva sección *Detección de dominio (motor de intención)*. Tests `TestDomainDetection` + `TestResolveQueryDomain`.
+- **fix(criterion): calibración de suficiencia + conciencia de polaridad** (PR #95) — La FORMACIÓN del criterio ya no presenta evidencia estadísticamente vacía como posición firme. `_detect_query_polarity` (pierde/gana/neutral) + `_order_by_polarity` anclan la señal según la pregunta; `_is_firm` (N≥15 + ventaja medible, negativa para *weakness*) + `_verdict_phrase`/`_insufficiency_note` calibran el aplomo: firme → «se apoya en …»; preliminar → «señal aún no concluyente» con el motivo (poca muestra / sin ventaja). Corrige el caso observado (`new_listing`: +0.00, WR 100%, LB 0%, 3 obs) que se presentaba como posición. Sigue sin bloquear la respuesta y conserva la firma «no es una regla… emerge». +6 tests de polaridad/calibración; 74 verdes (criterion + gateway).
 
 ### 2026-07-29
 - **feat(ops): backup automático de la BD + rotación de logs (Mac/launchd)** — Dos agentes launchd mantienen copias durables en `~/vectrax_backups/`. `scripts/backup_db.sh`: copia **online** de las 24 SQLite (repo + `~/.vectrax`) vía `sqlite3 .backup` (consistente con WAL, no un `cp` a medias) + snapshot de los ledgers JSONL/JSON de `vault/`+`data/`; empaqueta `vectrax_db_<STAMP>.tar.gz` (~12 MB desde ~108 MB en crudo), `.sha256`, **espejo a iCloud** (fuera del disco) y retención `VX_DB_RETENTION=14`; no destructivo. `scripts/rotate_logs.sh`: archiva logs del repo + servicio, retención `VX_LOG_RETENTION=8` y truncado seguro en sitio (`: >`, preserva inode) solo de logs activos (mtime<7d; `VX_LOG_TRUNCATE=0` para desactivar). `scripts/restore_db.sh`: restaura a un dir destino y verifica `sha256` + `integrity_check` (no destructivo). Programación: BD diario 03:30, logs semanal Dom 04:00. Nueva sección *Backups y Rotación de Logs (Mac)*. **Restauración PROBADA (2026-07-29)** contra la base viva: 28/28 DBs íntegras; estrellas 776/777, convergencias 5056/5056, op_cycles 952/953 (Δ por operación normal tras el backup). Motivación: tras la mudanza del servidor, un año de estrellas/convergencias/`op_cycles` vive solo en este disco.
