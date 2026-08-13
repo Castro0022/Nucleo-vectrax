@@ -108,14 +108,24 @@ def check_worker_memory(pid: int) -> Tuple[float, bool]:
 
 
 def _get_process_rss_mb(pid: int) -> float:
-    """Get RSS memory for a process in MB. Cross-platform.
+    """Get *current* RSS memory for a process in MB. Cross-platform.
 
     Strategy:
-      1. /proc/{pid}/status (Linux)
-      2. resource.getrusage (macOS/Unix — only for current process)
-      3. 0.0 if nothing works
+      1. /proc/{pid}/status → VmRSS  (Linux, any pid)
+      2. psutil                     (any platform, any pid — if installed)
+      3. ps -o rss= -p {pid}        (macOS/BSD fallback, any pid)
+      4. 0.0 if nothing works
+
+    Deliberately never uses resource.getrusage().ru_maxrss: that value is
+    the process's *historical peak* RSS, which is monotonic and never
+    decreases. Using it here would mean that once a worker's memory
+    happens to peak above WORKER_RAM_MAX_MB — even from a single
+    transient spike, like loading the embeddings model on the first
+    complex message — should_restart would stay True FOREVER, causing
+    the worker to self-restart in an infinite loop on macOS (see
+    core.transport.pipeline_worker's 30s memory watchdog).
     """
-    # 1. Linux: /proc
+    # 1. Linux: /proc/{pid}/status — works for any pid, always current usage.
     try:
         status_path = Path(f"/proc/{pid}/status")
         if status_path.exists():
@@ -125,18 +135,26 @@ def _get_process_rss_mb(pid: int) -> float:
     except Exception:
         pass
 
-    # 2. macOS/Unix: resource (only works for current process)
-    if pid == os.getpid():
-        try:
-            import resource
-            ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-            import platform
-            if platform.system() == "Darwin":
-                return ru / (1024 * 1024)  # bytes → MB on macOS
-            else:
-                return ru / 1024  # kB → MB on Linux
-        except Exception:
-            pass
+    # 2. psutil — cross-platform, works for any pid the user can see.
+    try:
+        import psutil
+        return psutil.Process(pid).memory_info().rss / (1024 * 1024)
+    except Exception:
+        pass
+
+    # 3. ps -o rss= -p {pid} — macOS/BSD fallback. Unlike resource.getrusage,
+    #    this works for ANY pid (not just self) and always reports current
+    #    RSS, never a historical peak.
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=2,
+        ).stdout.strip()
+        if out:
+            return int(out.split()[0]) / 1024  # kB → MB
+    except Exception:
+        pass
 
     return 0.0
 

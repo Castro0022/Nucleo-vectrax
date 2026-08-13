@@ -55,6 +55,7 @@ async def system_monitor(
             "queue_pending":       m.queue_pending,
             "queue_processing":    m.queue_processing,
             "memory_mb":           m.memory_mb,
+            "memory_peak_mb":      getattr(m, "memory_peak_mb", 0.0),
             "active_users":        getattr(m, "active_users", 0),
         }
     except Exception as exc:

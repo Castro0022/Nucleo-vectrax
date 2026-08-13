@@ -3153,7 +3153,7 @@ class TelegramGateway:
                 f"   ❌ Errores:     {m.queue_error}",
                 "",
                 f"⚡ Latencia: avg {m.avg_latency_s}s | max {m.max_latency_s}s",
-                f"💾 RAM:      {m.memory_mb} MB",
+                f"💾 RAM:      {m.memory_mb} MB (pico {m.memory_peak_mb} MB)",
                 f"👤 Activos:  {m.active_users} (últ. 5min)",
                 f"🔧 Worker:   {worker_status}",
             ]

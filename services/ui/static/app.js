@@ -378,7 +378,7 @@ async function loadOverview() {
       <div class="card-head">${op.status === 'healthy' ? '🟢' : '🟡'} Operador</div>
       <div class="kv"><span class="dim">Worker</span><span>${op.worker_alive ? '✅ Vivo' : '❌ Muerto'}</span></div>
       <div class="kv"><span class="dim">Cola</span><span>${op.queue_pending ?? 0} pend / ${op.queue_processing ?? 0} proc</span></div>
-      <div class="kv"><span class="dim">RAM</span><span>${op.memory_mb ?? '—'} MB</span></div>
+      <div class="kv"><span class="dim">RAM</span><span>${op.memory_mb ?? '—'} MB${op.memory_peak_mb ? ` <span class="dim">(pico ${op.memory_peak_mb})</span>` : ''}</span></div>
       <div class="kv"><span class="dim">Latencia</span><span>${op.avg_latency_s ?? 0}s</span></div>
       <div class="kv"><span class="dim">Audit entries</span><span>${op.audit_entries ?? 0}</span></div>
       <div class="kv"><span class="dim">Ciclos convergencia</span><span>${op.convergence_cycles ?? 0}</span></div>
@@ -857,7 +857,7 @@ async function loadOperator() {
         <div class="kv"><span class="dim">Estado</span><span>${r.status || '—'}</span></div>
         <div class="kv"><span class="dim">Worker</span><span>${wIcon} ${r.worker_alive ? 'vivo' : 'MUERTO'} (${r.worker_heartbeat_age_s ?? '—'}s)</span></div>
         <div class="kv"><span class="dim">Cola</span><span>${r.queue_pending ?? 0} pend / ${r.queue_processing ?? 0} proc / ${r.queue_error ?? 0} err</span></div>
-        <div class="kv"><span class="dim">RAM</span><span>${r.memory_mb ?? '—'} MB</span></div>
+        <div class="kv"><span class="dim">RAM</span><span>${r.memory_mb ?? '—'} MB${r.memory_peak_mb ? ` <span class="dim">(pico ${r.memory_peak_mb})</span>` : ''}</span></div>
         <div class="kv"><span class="dim">Latencia</span><span>avg ${r.avg_latency_s ?? 0}s / max ${r.max_latency_s ?? 0}s</span></div>
         <div class="kv"><span class="dim">Usuarios activos</span><span>${r.active_users ?? 0}</span></div>
       </div>
@@ -974,7 +974,7 @@ async function _renderSistema() {
           <div class="kv"><span class="dim">Estado</span><span>${r.status || '—'}</span></div>
           <div class="kv"><span class="dim">Worker</span><span>${wIcon} ${r.worker_alive ? 'vivo' : 'MUERTO'} (${r.worker_heartbeat_age_s ?? '—'}s)</span></div>
           <div class="kv"><span class="dim">Cola</span><span>${r.queue_pending ?? 0} pend / ${r.queue_processing ?? 0} proc</span></div>
-          <div class="kv"><span class="dim">RAM</span><span>${r.memory_mb ?? '—'} MB</span></div>
+          <div class="kv"><span class="dim">RAM</span><span>${r.memory_mb ?? '—'} MB${r.memory_peak_mb ? ` <span class="dim">(pico ${r.memory_peak_mb})</span>` : ''}</span></div>
           <div class="kv"><span class="dim">Usuarios activos</span><span>${r.active_users ?? 0}</span></div>
         </div>
         <div class="card">
