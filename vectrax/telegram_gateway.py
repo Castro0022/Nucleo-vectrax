@@ -105,7 +105,7 @@ POLL_CLIENT_REFRESH = 900   # recreate HTTP client every 15 min (defense in dept
 # POLL_STUCK_THRESHOLD: watchdog kills process if poll hasn't completed in N seconds.
 # Must be > POLL_ALARM_TIMEOUT (32s) to give SIGALRM time to fire first,
 # but low enough to catch cases where SIGALRM can't interrupt C-level code.
-POLL_STUCK_THRESHOLD = 50  # Must be > POLL_TIMEOUT(30) + subprocess overhead(~8s) + margin
+POLL_STUCK_THRESHOLD = 50  # Must be > POLL_TIMEOUT(30) + subprocess overhead(~12s) + margin
 # Functional-progress watchdog: _polls only increments on a FULLY successful
 # poll, so it is the true "making progress" signal. POLL_STUCK_THRESHOLD watches
 # _last_poll_ok, which the subprocess-kill path refreshes every ~40s — that is
@@ -177,7 +177,12 @@ def _poll_subprocess(_q, _base, _offset, _timeout, _limit, _token):
     try:
         import httpx as _hx
         _c = _hx.Client(
-            timeout=_hx.Timeout(_timeout + 5, connect=5),
+            # Read timeout = long-poll timeout + 9s de holgura (antes +5). Da más
+            # margen para que la respuesta del long-poll llegue bajo latencia y
+            # reduce los "read operation timed out" espurios. Queda por DEBAJO del
+            # _poll_deadline del padre (POLL_TIMEOUT+12) para que el subprocess
+            # devuelva su propio error antes de que el padre lo mate.
+            timeout=_hx.Timeout(_timeout + 9, connect=5),
             limits=_hx.Limits(max_connections=2, max_keepalive_connections=0),
         )
         _r = _c.post(
@@ -914,7 +919,10 @@ class TelegramGateway:
                 # exit) and only THEN join. Heartbeat keeps us non-stale; a
                 # genuine network/SSL hang still trips the deadline → killed.
                 _poll_result = None
-                _poll_deadline = t0 + POLL_TIMEOUT + 8
+                # +12s (antes +8): el padre espera al subprocess algo más que su
+                # read timeout (POLL_TIMEOUT+9) para recoger su resultado/error en
+                # vez de matarlo antes de tiempo. Sigue < POLL_STUCK_THRESHOLD(50).
+                _poll_deadline = t0 + POLL_TIMEOUT + 12
                 while time.time() < _poll_deadline:
                     self._write_heartbeat()
                     try:
@@ -1057,7 +1065,22 @@ class TelegramGateway:
                     logger.critical("MAX POLL ERRORS — shutting down gateway")
                     self._running = False
                     break
-                time.sleep(RETRY_DELAY)
+                # Backoff EXPONENCIAL y watchdog-safe: 2,4,8,... con tope en
+                # RETRY_DELAY. Recupera rápido de un blip transitorio
+                # (reset/502/read-timeout) y escala si el fallo persiste. Durante
+                # la espera refresca heartbeat + _last_poll_ok (esperamos a
+                # propósito, no estamos atascados) para que el POLL_STUCK watchdog
+                # NO fuerce un reinicio a mitad del backoff — origen de force-exits
+                # previos tras un error a ~35s + sleep fijo de 15s. NO refresca
+                # _last_poll_progress: si NADA avanza, MAX_CONSECUTIVE_ERRORS y el
+                # progress watchdog siguen provocando un reinicio limpio.
+                _backoff = min(float(RETRY_DELAY), 2.0 ** self._errors)
+                _slept = 0.0
+                while self._running and _slept < _backoff:
+                    self._last_poll_ok = time.time()
+                    self._write_heartbeat()
+                    time.sleep(1.0)
+                    _slept += 1.0
 
         signal.alarm(0)  # cleanup
         logger.info("Bot stopped | processed=%d | polls=%d | errors=%d",
