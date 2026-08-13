@@ -398,23 +398,17 @@ def _scale_governor_preflight(msg):
 
 
 def _get_rss_mb() -> float:
-    """Get current process RSS in MB. Cross-platform (Linux + macOS)."""
-    # Linux: /proc/self/status
+    """Get *current* process RSS in MB. Cross-platform (Linux + macOS).
+
+    Deliberately delegates to core.scalability_guard's implementation
+    instead of resource.getrusage().ru_maxrss: that value is the process's
+    historical PEAK RSS and never decreases, which broke the RAM
+    before/after delta this function feeds into MEM_LEAK detection (the
+    delta would collapse to ~0 forever after the first heavy message).
+    """
     try:
-        with open("/proc/self/status") as f:
-            for line in f:
-                if line.startswith("VmRSS:"):
-                    return int(line.split()[1]) / 1024
-    except Exception:
-        pass
-    # macOS: resource.getrusage
-    try:
-        import resource
-        import platform
-        ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        if platform.system() == "Darwin":
-            return ru / (1024 * 1024)  # bytes → MB
-        return ru / 1024  # kB → MB
+        from core.scalability_guard import _get_process_rss_mb
+        return _get_process_rss_mb(os.getpid())
     except Exception:
         pass
     return 0.0

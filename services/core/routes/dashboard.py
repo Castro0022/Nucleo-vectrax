@@ -349,6 +349,7 @@ async def dashboard_operator() -> Dict[str, Any]:
             "queue_processing": m.queue_processing,
             "queue_error": m.queue_error,
             "memory_mb": m.memory_mb,
+            "memory_peak_mb": m.memory_peak_mb,
             "active_users": m.active_users,
             "avg_latency_s": m.avg_latency_s,
             "max_latency_s": m.max_latency_s,
@@ -733,6 +734,7 @@ async def dashboard_observatory() -> Dict[str, Any]:
         operator["queue_processing"] = m.queue_processing
         operator["queue_error"] = m.queue_error
         operator["memory_mb"] = m.memory_mb
+        operator["memory_peak_mb"] = m.memory_peak_mb
         operator["active_users"] = m.active_users
         operator["avg_latency_s"] = m.avg_latency_s
     except Exception as exc:

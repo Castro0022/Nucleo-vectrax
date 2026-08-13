@@ -290,6 +290,47 @@ class TestMemoryWatchdog:
         rss = _get_rss_mb()
         assert rss > 0, "Expected non-zero RSS from _get_rss_mb()"
 
+    def test_get_process_rss_mb_never_uses_peak(self, monkeypatch):
+        """_get_process_rss_mb must not fall back to ru_maxrss for any pid."""
+        import resource
+        from core.scalability_guard import _get_process_rss_mb
+
+        # Sabotage getrusage to return an absurd peak; if the implementation
+        # ever falls back to it, the assertion below will fail loudly.
+        monkeypatch.setattr(
+            resource, "getrusage",
+            lambda who: MagicMock(ru_maxrss=999_999_999_999),
+        )
+        ram_mb = _get_process_rss_mb(os.getpid())
+        assert ram_mb < 10_000, (
+            "got an absurd RSS value — _get_process_rss_mb is reading from "
+            "resource.getrusage (peak) instead of /proc or ps (current)"
+        )
+
+    def test_get_process_rss_mb_works_for_other_pid(self):
+        """The supervisor calls check_worker_memory(child_pid), not self.
+
+        On macOS the old resource.getrusage()-based implementation only
+        ever worked for os.getpid() (RUSAGE_SELF), silently returning 0.0 —
+        and therefore should_restart=False — for any other pid. That made
+        the supervisor-side watchdog (vectrax_supervisor.py) a no-op on
+        macOS. ps -o rss= works for any pid the user owns.
+        """
+        import subprocess
+        from core.scalability_guard import _get_process_rss_mb
+
+        proc = subprocess.Popen(["sleep", "5"])
+        try:
+            time.sleep(0.2)  # let it actually start and get a real RSS
+            ram_mb = _get_process_rss_mb(proc.pid)
+            assert ram_mb > 0, (
+                "expected a non-zero RSS reading for a live child pid "
+                "other than self"
+            )
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+
 
 # ===========================================================================
 # Integration: queue_stats with priority

@@ -7,8 +7,15 @@ Métricas:
   - Usuarios activos (mensajes en últimos 5 min)
   - Jobs pendientes / processing / done
   - Latencia promedio de respuesta
-  - CPU / RAM del proceso
+  - CPU / RAM del proceso (RSS *actual*, no el pico histórico)
   - Workers activos + heartbeat age
+
+Medición de memoria:
+  `memory_mb` es el RSS actual del proceso y es el único valor que clasifica
+  el estado. `memory_peak_mb` (ru_maxrss) se expone solo como dato
+  informativo: nunca decrece durante la vida del proceso, así que usarlo
+  para clasificar dejaría el sistema en `degraded` permanente tras cualquier
+  pico transitorio.
 
 Límites duros:
   - MAX_QUEUE_DEPTH: si la cola supera este número, nuevos jobs se rechazan
@@ -70,7 +77,8 @@ class SystemMetrics:
     max_latency_s: float = 0.0
 
     # System
-    memory_mb: float = 0.0
+    memory_mb: float = 0.0        # RSS actual — clasifica el estado
+    memory_peak_mb: float = 0.0   # pico histórico (ru_maxrss) — informativo
     cpu_percent: float = 0.0
 
     # Workers
@@ -99,6 +107,87 @@ _QUEUE_DB = os.path.join(
 )
 
 _HEARTBEAT_PATH = os.path.join(os.path.expanduser("~"), ".vectrax", "worker_heartbeat")
+
+# Cache corto para la lectura de RSS: evita una tormenta de subprocesos `ps`
+# cuando el dashboard y el gateway consultan métricas en paralelo.
+_RSS_CACHE_TTL_S = 2.0
+_rss_cache: tuple = (0.0, 0.0)  # (medido_en, valor_mb)
+
+
+def _read_current_rss_mb() -> float:
+    """
+    RSS *actual* del proceso en MB. Devuelve 0.0 si no se puede medir.
+
+    Orden de preferencia:
+      1. /proc/self/status → VmRSS  (Linux: lectura directa, sin coste)
+      2. psutil                     (multiplataforma, si está instalado)
+      3. ps -o rss=                 (macOS/BSD: fallback vía subproceso)
+
+    Nunca usa ru_maxrss: ese valor es el pico histórico, no el uso actual.
+    """
+    global _rss_cache
+    now = time.time()
+    measured_at, cached = _rss_cache
+    if cached and now - measured_at < _RSS_CACHE_TTL_S:
+        return cached
+
+    value = 0.0
+
+    # 1) Linux — VmRSS en kB
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    value = round(int(line.split()[1]) / 1024, 1)
+                    break
+    except Exception:
+        pass
+
+    # 2) psutil — RSS en bytes
+    if value == 0.0:
+        try:
+            import psutil
+            value = round(
+                psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024), 1
+            )
+        except Exception:
+            pass
+
+    # 3) ps — RSS en kB (macOS/BSD)
+    if value == 0.0:
+        try:
+            import subprocess
+            out = subprocess.run(
+                ["ps", "-o", "rss=", "-p", str(os.getpid())],
+                capture_output=True, text=True, timeout=2,
+            ).stdout.strip()
+            if out:
+                value = round(int(out.split()[0]) / 1024, 1)
+        except Exception:
+            pass
+
+    if value:
+        _rss_cache = (now, value)
+    return value
+
+
+def _read_peak_rss_mb() -> float:
+    """
+    Pico histórico de RSS en MB (ru_maxrss). Solo informativo.
+
+    No decrece nunca durante la vida del proceso, así que no debe usarse
+    para evaluar límites ni clasificar el estado del sistema.
+    """
+    try:
+        import platform
+        import resource
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Darwin/BSD devuelve bytes; Linux devuelve kilobytes.
+        if platform.system() == "Darwin":
+            return round(peak / (1024 * 1024), 1)
+        return round(peak / 1024, 1)
+    except Exception:
+        return 0.0
 
 
 def collect_metrics() -> SystemMetrics:
@@ -144,39 +233,10 @@ def collect_metrics() -> SystemMetrics:
         logger.debug("Queue metrics failed: %s", exc)
 
     # --- System resources ---
-    # Primero intentar /proc/self/status (Linux — más confiable)
-    try:
-        with open("/proc/self/status") as f:
-            for line in f:
-                if line.startswith("VmRSS:"):
-                    m.memory_mb = round(int(line.split()[1]) / 1024, 1)
-                    break
-    except Exception:
-        pass
-
-    # macOS: resource.getrusage retorna bytes
-    if m.memory_mb == 0:
-        try:
-            import resource, platform
-            usage = resource.getrusage(resource.RUSAGE_SELF)
-            if platform.system() == "Darwin":
-                m.memory_mb = round(usage.ru_maxrss / (1024 * 1024), 1)
-            else:
-                m.memory_mb = round(usage.ru_maxrss / 1024, 1)  # Linux: KB → MB
-        except Exception:
-            pass
-
-    # Último fallback: ps
-    if m.memory_mb == 0:
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["ps", "-o", "rss=", "-p", str(os.getpid())],
-                capture_output=True, text=True, timeout=2,
-            )
-            m.memory_mb = round(int(result.stdout.strip()) / 1024, 1)
-        except Exception:
-            pass
+    # Uso actual, no pico: el pico nunca baja y marcaría el sistema como
+    # degradado de forma permanente tras cualquier pico transitorio.
+    m.memory_mb = _read_current_rss_mb()
+    m.memory_peak_mb = _read_peak_rss_mb()
 
     # --- Worker heartbeat ---
     try:
@@ -323,7 +383,7 @@ def format_status(m: Optional[SystemMetrics] = None) -> str:
         f"",
         f"  Users active:  {m.active_users} (last 5min)",
         f"  Latency avg:   {m.avg_latency_s}s (max {m.max_latency_s}s)",
-        f"  Memory:        {m.memory_mb} MB",
+        f"  Memory:        {m.memory_mb} MB (peak {m.memory_peak_mb} MB)",
         f"  Worker:        {'ALIVE' if m.worker_alive else 'DEAD'} (heartbeat {m.worker_heartbeat_age_s}s ago)",
         f"",
         f"  Limits:",
