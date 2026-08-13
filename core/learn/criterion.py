@@ -349,16 +349,133 @@ def rank_domain_evidence(domain: str, limit: int = 8) -> List[Dict[str, Any]]:
 
 # ── Opinión: determinista (grounded) + LLM restringido (verificado) ───
 
+# Suficiencia estadística para sostener una posición FIRME (vs preliminar).
+# Alinea con el umbral de usabilidad del dominio (N>=15) + una ventaja medible.
+_MIN_DECISIVE_FIRM = 15
+_MIN_EDGE_FIRM = 0.005
+
+# Polaridad de la PREGUNTA: ¿pide lo que PIERDE/falla (weakness) o lo que
+# GANA/funciona (support)? Determina qué señal anclar y con qué verbo. Mixta o
+# ausente -> 'neutral' (se ancla en la señal dominante, comportamiento por defecto).
+_QUERY_NEGATIVE_RE = re.compile(
+    r"\b(pierde\w*|perder|p[eé]rdidas?|falla\w*|fall[oó]|peor(?:es)?|malo?s?|mala?s?|"
+    r"d[eé]bil(?:es)?|floj[oa]s?|riesgos[oa]s?|evita\w*|desfavorable\w*|"
+    r"inferior(?:es)?|lose[rs]?|losing|loses|worst|weak(?:est)?|fails?)\b",
+    re.IGNORECASE,
+)
+_QUERY_POSITIVE_RE = re.compile(
+    r"\b(gana\w*|ganar|ganador\w*|funciona\w*|mejor(?:es)?|fuerte\w*|s[oó]lid[oa]s?|"
+    r"rinde\w*|rentable\w*|favorable\w*|superior(?:es)?|wins?|winning|best|"
+    r"strong(?:est)?|works?)\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_query_polarity(query: str) -> str:
+    """('weakness' | 'support' | 'neutral') según la valencia de la pregunta."""
+    if not query:
+        return "neutral"
+    neg = bool(_QUERY_NEGATIVE_RE.search(query))
+    pos = bool(_QUERY_POSITIVE_RE.search(query))
+    if neg and not pos:
+        return "weakness"
+    if pos and not neg:
+        return "support"
+    return "neutral"
+
+
+def _order_by_polarity(
+    evidence: List[Dict[str, Any]], polarity: str,
+) -> List[Dict[str, Any]]:
+    """Reordena para que evidence[0] sea el ANCLA de la polaridad.
+
+    weakness -> la señal más floja primero (menor expectancy, luego menor score).
+    support/neutral -> orden por score (señal dominante primero), sin cambios.
+    Opera sobre la evidencia ya rankeada (top-N por score); para 'weakness' en
+    dominios con >N patrones un perdedor truncado del ranking no reaparece
+    (limitación conocida, aceptable al tamaño de dominio actual).
+    """
+    if not evidence or polarity != "weakness":
+        return evidence
+    return sorted(
+        evidence,
+        key=lambda e: (
+            float(e.get("expectancy", 0.0) or 0.0),
+            float(e.get("score", 0.0) or 0.0),
+        ),
+    )
+
+
+def _is_firm(ent: Dict[str, Any], polarity: str = "neutral") -> bool:
+    """True si la evidencia basta para una posición FIRME (no preliminar).
+
+    Exige muestra decisiva suficiente (N>=15) y una ventaja MEDIBLE en el sentido
+    de la polaridad: negativa para 'weakness' (pierde de verdad), positiva (con
+    piso de confianza) para 'support'/'neutral'.
+    """
+    n = int(ent.get("sample_size", 0) or 0)
+    if n < _MIN_DECISIVE_FIRM:
+        return False
+    e = float(ent.get("expectancy", 0.0) or 0.0)
+    lb = float(ent.get("wilson_lb", 0.0) or 0.0)
+    if polarity == "weakness":
+        return e <= -_MIN_EDGE_FIRM
+    return e >= _MIN_EDGE_FIRM and lb > 0.0
+
+
+def _insufficiency_note(ent: Dict[str, Any], polarity: str = "neutral") -> str:
+    """Motivo concreto por el que la señal aún no es concluyente (muestra/ventaja)."""
+    n = int(ent.get("sample_size", 0) or 0)
+    e = float(ent.get("expectancy", 0.0) or 0.0)
+    parts: List[str] = []
+    if n < _MIN_DECISIVE_FIRM:
+        parts.append(f"solo {n} obs")
+    if polarity == "weakness":
+        if e >= 0:
+            parts.append("no muestra pérdida medible")
+    elif abs(e) < _MIN_EDGE_FIRM:
+        parts.append("sin ventaja medible")
+    return " y ".join(parts) if parts else "señal aún débil"
+
+
+def _verdict_phrase(
+    anchor: str, top: Dict[str, Any], polarity: str, firm: bool,
+) -> str:
+    """Frase-veredicto calibrada por POLARIDAD y SUFICIENCIA. Nunca presenta
+    ruido (poca muestra / sin ventaja) como una posición firme."""
+    if polarity == "weakness":
+        if firm:
+            return f"el patrón más flojo que observo es {anchor}"
+        return (
+            f"todavía no veo un patrón que pierda de forma concluyente; lo más "
+            f"flojo que observo es {anchor}, {_insufficiency_note(top, polarity)}"
+        )
+    # support / neutral: posición de apoyo en la señal dominante.
+    if firm:
+        return f"la posición que me emerge se apoya en {anchor}"
+    return (
+        f"lo más marcado hasta ahora es {anchor}, pero es una señal aún no "
+        f"concluyente: {_insufficiency_note(top, polarity)}"
+    )
+
+
 def _deterministic_opinion(
-    domain: str, ranked: List[Dict[str, Any]], focus: str = "", note: str = "",
+    domain: str,
+    ranked: List[Dict[str, Any]],
+    focus: str = "",
+    note: str = "",
+    polarity: str = "neutral",
 ) -> str:
     # El criterio NO es una regla preprogramada ni una elección entre opciones:
-    # es la POSICIÓN que emerge de todo lo observado hasta ahora. Se lee sobre el
-    # conjunto de la evidencia y se ancla en su señal dominante (grounded).
+    # es la POSICIÓN que emerge de todo lo observado hasta ahora. Se ancla en la
+    # señal que la POLARIDAD de la pregunta pide (apoyo/debilidad) y CALIBRA su
+    # aplomo según la suficiencia de esa señal (firme vs preliminar) — nunca
+    # presenta ruido (poca muestra / sin ventaja medible) como posición firme.
     top = ranked[0]
     rest = ranked[1:3]
     n_pat = len(ranked)
     n_obs = sum(int(e.get("sample_size", 0) or 0) for e in ranked)
+    firm = _is_firm(top, polarity)
     anchor = (
         f"«{top['name']}» (expectancy {top['expectancy']:+.2f}, "
         f"WR {top['win_rate']:.0f}%, LB {top['wilson_lb']:.0f}% sobre "
@@ -367,19 +484,19 @@ def _deterministic_opinion(
     if top.get("hits"):
         anchor += f", masa {top['hits']} activaciones"
     anchor += ")"
+    verdict = _verdict_phrase(anchor, top, polarity, firm)
     if note:
-        head = (
-            f"{note}de lo observado en {domain} la posición que me emerge se "
-            f"apoya en {anchor}."
-        )
+        head = f"{note}de lo observado en {domain} {verdict}."
     else:
         head = (
             f"De todo lo que he observado en {domain} {focus}— {n_pat} patrones "
-            f"sobre {n_obs} observaciones — la posición que me emerge se apoya "
-            f"en {anchor}."
+            f"sobre {n_obs} observaciones — {verdict}."
         )
     out = [head]
-    if rest:
+    # El "resto pesa en esa misma lectura" solo cuando la señal es FIRME y de
+    # apoyo/neutra; con evidencia preliminar o de debilidad no reclamo una
+    # lectura de conjunto sobre señal débil.
+    if rest and firm and polarity in ("support", "neutral"):
         field = "; ".join(
             f"«{o['name']}» (E {o['expectancy']:+.2f}, WR {o['win_rate']:.0f}%)"
             for o in rest
@@ -693,6 +810,7 @@ def build_criterion_result(
 
     # Entender el TEMA concreto y quedarnos con la experiencia RELACIONADA.
     topic = extract_topic_tokens(query)
+    polarity = _detect_query_polarity(query)
     focus = ""
     note = ""
     related = ranked
@@ -715,8 +833,15 @@ def build_criterion_result(
                 f"que he aprendido en {domain} te digo lo que pienso: "
             )
 
+    # Ancla según la POLARIDAD de la pregunta: «¿qué pierde?» ancla en la señal
+    # más floja; «¿qué gana/mejor?» o neutra, en la dominante. related[0] queda
+    # como ancla tanto para la FORMACIÓN como para los verificadores del render.
+    related = _order_by_polarity(related, polarity)
+
     # A) FORMACIÓN — conclusión cerrada, determinista, SIEMPRE y ANTES del LLM.
-    deterministic = _deterministic_opinion(domain, related, focus, note=note)
+    deterministic = _deterministic_opinion(
+        domain, related, focus, note=note, polarity=polarity,
+    )
 
     # B) PRESENTACIÓN — el LLM solo re-redacta la conclusión cerrada.
     attempted, rendered_raw, empty_reason = _call_llm(

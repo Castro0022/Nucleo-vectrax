@@ -663,3 +663,106 @@ def test_bcr_complete_http_error_falls_back(monkeypatch):
     assert res.origin == "deterministic"
     assert res.render_attempt.attempted is True
     assert res.render_attempt.failure_reason == "llm_error"
+
+
+# ── 16. Polaridad de la pregunta + calibración de suficiencia ──────────────
+
+def test_detect_query_polarity():
+    assert C._detect_query_polarity("¿qué patrones de propiedad pierden?") == "weakness"
+    assert C._detect_query_polarity("¿cuál es el mejor patrón?") == "support"
+    assert C._detect_query_polarity("¿qué opinas del mercado?") == "neutral"
+    assert C._detect_query_polarity("what loses and what wins") == "neutral"  # mixta
+    assert C._detect_query_polarity("") == "neutral"
+
+
+def test_weakness_thin_evidence_is_calibrated():
+    # Reproduce el caso new_listing: N bajo, sin ventaja. Ante «¿qué pierde?»
+    # sigue opinando (never-block) pero calibra: NO vende ruido como posición.
+    priors = {"florida_real_estate": [_prior("new_listing", 100.0, 0.0, 3, "")]}
+    gi = _FakeGI(by_domain_map={"florida_real_estate": [_grav("new_listing", 10)]},
+                 domain_stats={"florida_real_estate": {}})
+    ps = _patch_stores(priors, ["florida_real_estate"], gi)
+    for p in ps:
+        p.start()
+    try:
+        resp = C.build_criterion("florida_real_estate", "¿qué patrones de propiedad pierden?")
+    finally:
+        for p in ps:
+            p.stop()
+    low = resp.lower()
+    assert "new_listing" in low                       # opina con lo que hay
+    assert "concluyente" in low                        # marcada como preliminar
+    assert "se apoya en" not in low                    # NO vende ruido como posición firme
+    assert "todavía no tengo datos" not in low         # NO se abstiene (never-block)
+
+
+def test_weakness_picks_losing_pattern():
+    # Con polaridad negativa, ancla en el PERDEDOR real, no en el top ganador.
+    priors = {"market": [
+        _prior("AAPL", 100.0, 16.0, 221, "HIGH"),
+        _prior("BADX", 20.0, -6.0, 40, "HIGH"),
+    ]}
+    gi = _FakeGI(by_domain_map={"market": []}, domain_stats={"market": {}})
+    ps = _patch_stores(priors, ["market"], gi)
+    for p in ps:
+        p.start()
+    try:
+        resp = C.build_criterion("market", "¿qué patrón pierde más?")
+    finally:
+        for p in ps:
+            p.stop()
+    low = resp.lower()
+    assert "más flojo que observo es «badx»" in low     # ancla en el perdedor
+    assert "-6.00" in low                               # cita su expectancy negativa real
+
+
+def test_support_firm_uses_apoyo_phrasing():
+    # Polaridad positiva con evidencia madura → posición de apoyo firme.
+    priors = {"market": [_prior("AAPL", 100.0, 16.0, 221, "HIGH")]}
+    gi = _FakeGI(by_domain_map={"market": []}, domain_stats={"market": {}})
+    ps = _patch_stores(priors, ["market"], gi)
+    for p in ps:
+        p.start()
+    try:
+        resp = C.build_criterion("market", "¿cuál es el mejor patrón?")
+    finally:
+        for p in ps:
+            p.stop()
+    low = resp.lower()
+    assert "se apoya en «aapl»" in low
+
+
+def test_neutral_thin_evidence_is_preliminary():
+    # Neutra con muy poca muestra → calibra como preliminar (no "se apoya en").
+    priors = {"market": [_prior("AAPL", 60.0, 2.0, 3, "LOW")]}
+    gi = _FakeGI(by_domain_map={"market": []}, domain_stats={"market": {}})
+    ps = _patch_stores(priors, ["market"], gi)
+    for p in ps:
+        p.start()
+    try:
+        resp = C.build_criterion("market", "¿qué opinas?")
+    finally:
+        for p in ps:
+            p.stop()
+    low = resp.lower()
+    assert "aapl" in low
+    assert "no concluyente" in low
+    assert "se apoya en" not in low
+
+
+def test_mature_neutral_still_uses_apoyo_phrasing():
+    # Regresión: evidencia madura neutra conserva la frase de apoyo firme.
+    priors = {"market": [_prior("AAPL", 100.0, 16.0, 221, "HIGH")]}
+    gi = _FakeGI(by_domain_map={"market": [_grav("AAPL", 69)]},
+                 domain_stats={"market": {}})
+    ps = _patch_stores(priors, ["market"], gi)
+    for p in ps:
+        p.start()
+    try:
+        resp = C.build_criterion("market", "¿qué opinas de la bolsa?")
+    finally:
+        for p in ps:
+            p.stop()
+    low = resp.lower()
+    assert "se apoya en «aapl»" in low
+    assert "emerge" in low
