@@ -19,6 +19,7 @@ Privacidad:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -66,6 +67,8 @@ class SemanticResult:
     suggested_tools: List[str] = field(default_factory=list)
     frame: str = ""                     # marco comunicativo detectado
     scores: Dict[str, float] = field(default_factory=dict)
+    domain: str = ""                    # dominio de conocimiento (market, freight_logistics, …)
+    domain_confidence: float = 0.0     # confianza de la detección de dominio
     classified_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -79,6 +82,8 @@ class SemanticResult:
             ],
             "suggested_tools": self.suggested_tools,
             "frame": self.frame,
+            "domain": self.domain,
+            "domain_confidence": round(self.domain_confidence, 4),
         }
 
     def get_entities_by_type(self, entity_type: str) -> List[Entity]:
@@ -817,6 +822,29 @@ def _get_intent_embeddings() -> Optional[Dict[str, Any]]:
         return None
 
 
+# 1-slot cache: reutiliza el embedding del último mensaje para que el boost de
+# intención y la detección de dominio no encodeen dos veces el mismo texto.
+_last_embed_text: str = ""
+_last_embed_vec: Any = None
+
+
+def _embed_query(text: str) -> Optional[Any]:
+    """Embed `text` una sola vez (caché de 1 ranura). Devuelve un vector
+    np.float32 o None si el modelo no está disponible. Nunca lanza."""
+    global _last_embed_text, _last_embed_vec
+    if text and text == _last_embed_text and _last_embed_vec is not None:
+        return _last_embed_vec
+    try:
+        from vectrax.embeddings import embed
+        import numpy as np
+        vec = np.asarray(embed(text), dtype=np.float32)
+        _last_embed_text, _last_embed_vec = text, vec
+        return vec
+    except Exception as exc:
+        logger.debug("query embed failed: %s", exc)
+        return None
+
+
 def _embedding_boost(
     text: str,
     scores: Dict[SemanticIntent, float],
@@ -836,9 +864,10 @@ def _embedding_boost(
         return scores
 
     try:
-        from vectrax.embeddings import embed
         import numpy as np
-        query_vec = embed(text)
+        query_vec = _embed_query(text)
+        if query_vec is None:
+            return scores
 
         best_intent = None
         best_sim = 0.0
@@ -871,15 +900,139 @@ def _embedding_boost(
     return scores
 
 
+# ---------------------------------------------------------------------------
+# Domain detection — dominio de conocimiento de la consulta
+# ---------------------------------------------------------------------------
+# El motor de intención ya entiende la oración completa; su salida se extiende
+# para incluir también el DOMINIO de conocimiento de la consulta
+# (market, freight_logistics, florida_real_estate, cybersecurity, …), en vez
+# de depender de un extractor de tema posicional separado y más frágil.
+#
+# Los dominios son DINÁMICOS: provienen de criterion.known_domains()
+# (gravity + domain_library), no de un enum fijo, así el clasificador se
+# auto-adapta cuando nace un dominio nuevo, sin tocar código.
+#
+# Estrategia híbrida (precisión + robustez, coste acotado):
+#   1) Fast-path léxico determinista (criterion.detect_domain): alta precisión
+#      cuando hay clave/vocabulario de dominio en el texto. Muy barato.
+#   2) Fallback semántico por embeddings: compara el embedding de la consulta
+#      contra un prototipo por dominio (nombre + vocabulario), reutilizando el
+#      MISMO vector ya calculado para el boost de intención (sin doble encode).
+# Degrada con gracia: sin dominios o sin modelo → ("", 0.0). Nunca lanza.
+
+_SEMANTIC_DOMAIN_ENABLED = os.getenv("VX_SEMANTIC_DOMAIN", "1") not in ("0", "false", "False", "")
+try:
+    _SEMANTIC_DOMAIN_FLOOR = float(os.getenv("VX_SEMANTIC_DOMAIN_FLOOR", "0.45"))
+except (TypeError, ValueError):
+    _SEMANTIC_DOMAIN_FLOOR = 0.45
+_KEYWORD_DOMAIN_CONFIDENCE = 0.9
+
+_domain_embeddings: Optional[Dict[str, Any]] = None
+_domain_embeddings_key: str = ""
+
+
+def _domain_prototype_text(domain: str, vocab: Tuple[str, ...]) -> str:
+    """Texto prototipo de un dominio: nombre humanizado + su vocabulario."""
+    name = domain.replace("_", " ").strip()
+    terms = " ".join(list(vocab)[:24])
+    return (name + " " + terms).strip()
+
+
+def _get_domain_embeddings() -> Optional[Dict[str, Any]]:
+    """Lazy-load de embeddings prototipo por dominio. Se reconstruye si el
+    conjunto de dominios cambia (cache-key = dominios ordenados). Devuelve None
+    si no hay dominios conocidos o el modelo no está disponible."""
+    global _domain_embeddings, _domain_embeddings_key
+    try:
+        from core.learn.criterion import known_domains, _DOMAIN_VOCAB
+    except Exception as exc:
+        logger.debug("domain vocab unavailable: %s", exc)
+        return None
+    try:
+        domains = known_domains()
+    except Exception as exc:
+        logger.debug("known_domains error: %s", exc)
+        return None
+    if not domains:
+        return None
+    key = "|".join(domains)
+    if _domain_embeddings is not None and _domain_embeddings_key == key:
+        return _domain_embeddings
+    try:
+        from vectrax.embeddings import get_embedder
+        import numpy as np
+        model = get_embedder()
+        keys: List[str] = []
+        texts: List[str] = []
+        for d in domains:
+            keys.append(d)
+            texts.append(_domain_prototype_text(d, _DOMAIN_VOCAB.get(d, ())))
+        vecs = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
+        _domain_embeddings = {
+            k: np.asarray(v, dtype=np.float32) for k, v in zip(keys, vecs)
+        }
+        _domain_embeddings_key = key
+        logger.info("Domain embeddings loaded (%d domains)", len(_domain_embeddings))
+        return _domain_embeddings
+    except Exception as exc:
+        logger.debug("domain embeddings unavailable: %s", exc)
+        return None
+
+
+def _detect_domain(text: str) -> Tuple[str, float]:
+    """Detecta el DOMINIO de conocimiento de `text` → (domain, confidence).
+
+    Híbrido: léxico determinista primero (barato, preciso); si no hay match,
+    fallback semántico por embeddings (reutiliza el vector cacheado del boost).
+    Devuelve ("", 0.0) si no hay dominio claro. Totalmente defensivo.
+    """
+    if not text:
+        return "", 0.0
+
+    # 1) Fast-path léxico determinista (clave/vocabulario de dominio).
+    try:
+        from core.learn.criterion import detect_domain as _kw_detect
+        kw = _kw_detect(text)
+        if kw:
+            return kw, _KEYWORD_DOMAIN_CONFIDENCE
+    except Exception as exc:
+        logger.debug("keyword detect_domain failed: %s", exc)
+
+    # 2) Fallback semántico (opcional, reutiliza el embedding de la consulta).
+    if not _SEMANTIC_DOMAIN_ENABLED:
+        return "", 0.0
+    dom_vecs = _get_domain_embeddings()
+    if not dom_vecs:
+        return "", 0.0
+    query_vec = _embed_query(text)
+    if query_vec is None:
+        return "", 0.0
+    try:
+        import numpy as np
+        best = ""
+        best_sim = 0.0
+        for dom, ref in dom_vecs.items():
+            sim = float(np.dot(query_vec, ref))
+            if sim > best_sim:
+                best_sim = sim
+                best = dom
+        if best and best_sim >= _SEMANTIC_DOMAIN_FLOOR:
+            return best, round(best_sim, 4)
+    except Exception as exc:
+        logger.debug("semantic domain detection failed: %s", exc)
+    return "", 0.0
+
+
 class SemanticClassifier:
     """
     Clasificador semántico central de Vectrax.
 
-    Analiza la intención del usuario en 3+1 fases:
+    Analiza la intención del usuario en 4+1 fases:
       1. Frame detection (estructura sintáctica)
       2. Entity extraction (entidades con contexto)
       3. Intent scoring (puntuación contextual)
       4. Embedding boost (si confianza < 0.5, usa similaridad semántica)
+      5. Domain detection (dominio de conocimiento de la consulta)
 
     Usage::
 
@@ -921,6 +1074,11 @@ class SemanticClassifier:
         # Phase 4: Embedding boost (when regex confidence is low)
         scores = _embedding_boost(stripped, scores)
 
+        # Phase 5: Domain detection. El mismo motor que entiende la intención
+        # expone también el dominio de conocimiento, en vez de depender de un
+        # extractor de tema posicional aparte.
+        domain, domain_conf = _detect_domain(stripped)
+
         # Seleccionar intent principal
         if not scores or all(v == 0.0 for v in scores.values()):
             # Sin señales → general_chat con baja confianza
@@ -931,6 +1089,8 @@ class SemanticClassifier:
                 suggested_tools=_INTENT_TOOLS[SemanticIntent.GENERAL_CHAT],
                 frame="none",
                 scores={k.value: round(v, 4) for k, v in scores.items()},
+                domain=domain,
+                domain_confidence=domain_conf,
             )
 
         ranked = sorted(scores.items(), key=lambda x: -x[1])
@@ -966,6 +1126,8 @@ class SemanticClassifier:
             suggested_tools=tools,
             frame=primary_frame,
             scores={k.value: round(v, 4) for k, v in scores.items()},
+            domain=domain,
+            domain_confidence=domain_conf,
         )
 
         logger.info(

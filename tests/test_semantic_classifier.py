@@ -426,3 +426,92 @@ class TestTrainingExamples:
             f"Got: {r.intent.value} (conf={r.confidence:.2f})\n"
             f"Scores: {r.scores}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. Detección de dominio — el clasificador expone el dominio en su salida
+# ---------------------------------------------------------------------------
+
+class TestDomainDetection:
+    """El SemanticClassifier extiende su salida con el DOMINIO de conocimiento.
+
+    Híbrido: fast-path léxico (criterion.detect_domain) + fallback semántico
+    por embeddings. Los tests son herméticos: no dependen del modelo real ni de
+    los datos de gravity/domain_library (se inyectan vía monkeypatch).
+    """
+
+    def test_result_has_domain_fields(self, sc):
+        r = sc.classify("hola")
+        assert hasattr(r, "domain") and isinstance(r.domain, str)
+        assert hasattr(r, "domain_confidence") and isinstance(r.domain_confidence, float)
+
+    def test_to_dict_includes_domain(self, sc):
+        d = sc.classify("hola").to_dict()
+        assert "domain" in d
+        assert "domain_confidence" in d
+
+    def test_empty_text_has_no_domain(self, sc):
+        r = sc.classify("")
+        assert r.domain == ""
+        assert r.domain_confidence == 0.0
+
+    def test_default_no_domain_is_backward_compatible(self):
+        """SemanticResult construido sin dominio conserva defaults vacíos."""
+        r = SemanticResult(intent=SemanticIntent.GENERAL_CHAT)
+        assert r.domain == ""
+        assert r.domain_confidence == 0.0
+
+    def test_keyword_fast_path_surfaces_domain(self, sc, monkeypatch):
+        """Si el léxico determinista detecta dominio, classify lo expone."""
+        monkeypatch.setattr("core.learn.criterion.detect_domain", lambda text: "market")
+        r = sc.classify("¿qué opinas de esto?")
+        assert r.domain == "market"
+        assert r.domain_confidence >= 0.5
+
+    def test_graceful_when_no_keyword_and_no_embeddings(self, sc, monkeypatch):
+        """Sin match léxico y sin embeddings → dominio vacío, sin crash."""
+        import core.semantic_classifier as scmod
+        monkeypatch.setattr("core.learn.criterion.detect_domain", lambda text: None)
+        monkeypatch.setattr(scmod, "_get_domain_embeddings", lambda: None)
+        r = sc.classify("un texto cualquiera sin dominio claro")
+        assert r.domain == ""
+        assert r.domain_confidence == 0.0
+
+    def test_semantic_fallback_selects_nearest_domain(self, sc, monkeypatch):
+        """Keyword miss + prototipos/embedding simulados → dominio semántico."""
+        import numpy as np
+        import core.semantic_classifier as scmod
+        monkeypatch.setattr(scmod, "_SEMANTIC_DOMAIN_ENABLED", True)
+        monkeypatch.setattr("core.learn.criterion.detect_domain", lambda text: None)
+        protos = {
+            "market": np.array([1.0, 0.0], dtype=np.float32),
+            "freight_logistics": np.array([0.0, 1.0], dtype=np.float32),
+        }
+        monkeypatch.setattr(scmod, "_get_domain_embeddings", lambda: protos)
+        monkeypatch.setattr(
+            scmod, "_embed_query",
+            lambda text: np.array([0.9, 0.1], dtype=np.float32),
+        )
+        r = sc.classify("algo que semánticamente pertenece al mercado")
+        assert r.domain == "market"
+        assert r.domain_confidence >= scmod._SEMANTIC_DOMAIN_FLOOR
+
+    def test_semantic_fallback_below_floor_returns_empty(self, sc, monkeypatch):
+        """Similitud por debajo del umbral → no se asigna dominio."""
+        import numpy as np
+        import core.semantic_classifier as scmod
+        monkeypatch.setattr(scmod, "_SEMANTIC_DOMAIN_ENABLED", True)
+        monkeypatch.setattr(scmod, "_SEMANTIC_DOMAIN_FLOOR", 0.45)
+        monkeypatch.setattr("core.learn.criterion.detect_domain", lambda text: None)
+        protos = {
+            "market": np.array([1.0, 0.0], dtype=np.float32),
+            "freight_logistics": np.array([0.0, 1.0], dtype=np.float32),
+        }
+        monkeypatch.setattr(scmod, "_get_domain_embeddings", lambda: protos)
+        monkeypatch.setattr(
+            scmod, "_embed_query",
+            lambda text: np.array([0.3, 0.3], dtype=np.float32),
+        )
+        r = sc.classify("texto ambiguo sin dominio dominante")
+        assert r.domain == ""
+        assert r.domain_confidence == 0.0
