@@ -38,6 +38,7 @@ from core.operator.external_gateway import (
     GatewayResult,
     get_external_gateway,
     reset_gateway,
+    _resolve_query_domain,
 )
 
 
@@ -454,3 +455,96 @@ class TestFreightDomainGatePrecedence:
             )
         assert CRIT in result.response       # el criterio aprendido ganó
         assert SELFAWARE not in result.response  # el narrador self-aware fue omitido
+
+
+# ---------------------------------------------------------------------------
+# 11. _resolve_query_domain — dominio semántico con fallback léxico
+# ---------------------------------------------------------------------------
+
+class TestResolveQueryDomain:
+    """El gate consume SemanticResult.domain (motor de intención) y cae a
+    detect_domain() cuando la confianza es baja o no hay dominio semántico.
+    Detrás de VX_SEMANTIC_DOMAIN. Tests herméticos: classify() y detect_domain()
+    se inyectan, sin depender del modelo real ni de datos de gravity.
+    """
+
+    def test_semantic_high_confidence_wins_over_keyword(self, monkeypatch):
+        import types
+        monkeypatch.setenv("VX_SEMANTIC_DOMAIN", "1")
+        monkeypatch.setattr(
+            "core.semantic_classifier.classify",
+            lambda t: types.SimpleNamespace(domain="cybersecurity", domain_confidence=0.72),
+        )
+        monkeypatch.setattr("core.learn.criterion.detect_domain", lambda t: "market")
+        dom, conf, src = _resolve_query_domain("¿qué opinas de esto?")
+        assert (dom, src) == ("cybersecurity", "semantic")
+        assert conf == pytest.approx(0.72)
+
+    def test_low_confidence_falls_back_to_keyword(self, monkeypatch):
+        """Confianza semántica por debajo del piso → fallback a detect_domain()."""
+        import types
+        monkeypatch.setenv("VX_SEMANTIC_DOMAIN", "1")
+        monkeypatch.setattr(
+            "core.semantic_classifier.classify",
+            lambda t: types.SimpleNamespace(domain="market", domain_confidence=0.20),
+        )
+        monkeypatch.setattr("core.learn.criterion.detect_domain", lambda t: "freight_logistics")
+        dom, conf, src = _resolve_query_domain("algo ambiguo sin señal fuerte")
+        assert (dom, src) == ("freight_logistics", "keyword")
+
+    def test_no_semantic_domain_uses_keyword(self, monkeypatch):
+        import types
+        monkeypatch.setenv("VX_SEMANTIC_DOMAIN", "1")
+        monkeypatch.setattr(
+            "core.semantic_classifier.classify",
+            lambda t: types.SimpleNamespace(domain="", domain_confidence=0.0),
+        )
+        monkeypatch.setattr("core.learn.criterion.detect_domain", lambda t: "market")
+        dom, conf, src = _resolve_query_domain("precio de btc")
+        assert (dom, src) == ("market", "keyword")
+
+    def test_ambiguous_query_yields_no_domain(self, monkeypatch):
+        """Consulta ambigua: ni semántico ni léxico detectan dominio → None.
+        Evita que el gate secuestre chit-chat hacia un dominio ajeno.
+        """
+        import types
+        monkeypatch.setenv("VX_SEMANTIC_DOMAIN", "1")
+        monkeypatch.setattr(
+            "core.semantic_classifier.classify",
+            lambda t: types.SimpleNamespace(domain="", domain_confidence=0.0),
+        )
+        monkeypatch.setattr("core.learn.criterion.detect_domain", lambda t: None)
+        dom, conf, src = _resolve_query_domain("no sé, tal vez mañana")
+        assert dom is None
+        assert conf == 0.0
+        assert src == "none"
+
+    def test_flag_off_skips_semantic(self, monkeypatch):
+        """VX_SEMANTIC_DOMAIN=0 → no se invoca al clasificador; solo léxico."""
+        import types
+        calls = []
+
+        def _record(t):
+            calls.append(t)
+            return types.SimpleNamespace(domain="market", domain_confidence=0.99)
+
+        monkeypatch.setenv("VX_SEMANTIC_DOMAIN", "0")
+        monkeypatch.setattr("core.semantic_classifier.classify", _record)
+        monkeypatch.setattr("core.learn.criterion.detect_domain", lambda t: "freight_logistics")
+        dom, conf, src = _resolve_query_domain("dame tu opinión")
+        assert (dom, src) == ("freight_logistics", "keyword")
+        assert calls == []  # el clasificador nunca se llamó
+
+    def test_empty_content_yields_none(self):
+        assert _resolve_query_domain("") == (None, 0.0, "none")
+
+    def test_defensive_on_classifier_error(self, monkeypatch):
+        """Si el clasificador lanza, cae a léxico sin propagar la excepción."""
+        def _raise(t):
+            raise RuntimeError("boom")
+
+        monkeypatch.setenv("VX_SEMANTIC_DOMAIN", "1")
+        monkeypatch.setattr("core.semantic_classifier.classify", _raise)
+        monkeypatch.setattr("core.learn.criterion.detect_domain", lambda t: "market")
+        dom, conf, src = _resolve_query_domain("una consulta cualquiera")
+        assert (dom, src) == ("market", "keyword")
