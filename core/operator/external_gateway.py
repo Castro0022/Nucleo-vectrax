@@ -287,7 +287,47 @@ class ExternalGateway:
         result = self._do_receive_message(user_id, content, channel)
         if getattr(result, "processed", False):
             self._total_responded += 1
+
+        # === FILTRO CONSTITUCIONAL (Fase 1 — SHADOW MODE) ===================
+        # Choke point 1: TODAS las rutas de respuesta (greeting, intake,
+        # fast-path, domain criterion, self-aware, nucleus, memory,
+        # SmartRouter/pipeline_v2) convergen aquí, sin importar cuál de los
+        # `return GatewayResult(...)` internos de _do_receive_message produjo
+        # el resultado. Envolver el método PÚBLICO (no _do_receive_message)
+        # garantiza cobertura estructural: cualquier return interno, presente
+        # o futuro, pasa por aquí porque Python ya resolvió la llamada antes
+        # de esta línea. Solo observa y registra en el ledger — en modo
+        # shadow NUNCA altera `result`. Defensivo: nunca debe romper la
+        # respuesta al usuario.
+        try:
+            self._constitutional_shadow_check(user_id, content, result)
+        except Exception as _cf_exc:
+            logger.debug("Constitutional shadow check failed (passthrough): %s", _cf_exc)
+
         return result
+
+    def _constitutional_shadow_check(
+        self, user_id: str, content: str, result: "GatewayResult",
+    ) -> None:
+        """Construye la ActionProposal desde el GatewayResult ya producido y
+        la pasa por el filtro constitucional en modo shadow. Solo observa."""
+        from core.operator.constitutional_guard import shadow_check
+        from core.operator.constitutional_filter import ActionProposal
+
+        if not getattr(result, "processed", False):
+            return  # mensaje vacío u otro caso sin acción real que evaluar
+
+        evidence = result.evidence or {}
+        proposal = ActionProposal(
+            action="respond",
+            correlation_id=result.event_id,
+            classification=result.resolve_mode or result.source or "",
+            interaction_recorded=bool(result.response),
+            domain=str(evidence.get("topic", "")),
+            user_id=user_id,
+            action_logged=True,  # external.message_received/response ya registrados
+        )
+        shadow_check(proposal)
 
     def _do_receive_message(
         self,

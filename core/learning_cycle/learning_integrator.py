@@ -240,6 +240,32 @@ class LearningIntegrator:
             except Exception:
                 pass
 
+            # === FILTRO CONSTITUCIONAL (Fase 1 — SHADOW MODE) ================
+            # Choke point 3: aprendizaje. Integrar una hipótesis como regla
+            # activa es exactamente el caso que la Ley 7 (Generación) protege
+            # ("no convertir hipótesis en conocimiento sin verificación"). Solo
+            # observa y registra — la decisión real la sigue tomando
+            # check_authority() de abajo, sin cambios.
+            try:
+                from core.operator.constitutional_guard import shadow_check
+                from core.operator.constitutional_filter import ActionProposal
+                shadow_check(ActionProposal(
+                    action="activate_learned_rule",
+                    correlation_id=rule_id,
+                    classification=category,
+                    is_irreversible=False,
+                    interaction_recorded=True,
+                    domain=category,
+                    action_logged=True,
+                    # Llegar aquí ya implica hyp.status == CONFIRMED y
+                    # confianza >= MIN_CONFIDENCE_FOR_INTEGRATION (gate previo
+                    # en integrate()), asi que el conocimiento SI fue verificado.
+                    is_learning_context=True,
+                    knowledge_verified=True,
+                ))
+            except Exception as _cf_exc:
+                logger.debug("Constitutional shadow check failed (passthrough): %s", _cf_exc)
+
             decision = check_authority(
                 "activate_learned_rule",
                 governor_mode=gov_mode,

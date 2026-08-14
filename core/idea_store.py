@@ -343,6 +343,33 @@ class IdeaStore:
             "IdeaStore: nueva idea %s [%s] score=%.2f | %s",
             idea.idea_id, idea.priority.value, idea.priority_score, title[:50]
         )
+
+        # === FILTRO CONSTITUCIONAL (Fase 1 — SHADOW MODE) =====================
+        # Choke point 4: generación de ideas. Solo observa y registra — crear
+        # una idea sigue siendo un cambio reversible y de bajo riesgo (queda
+        # PENDING hasta que el creador la apruebe), así que no se modela como
+        # "is_learning_context" (eso aplica recién cuando se APLICA una idea,
+        # Fase 4). `action_logged=False` refleja con honestidad que hoy la
+        # creación de ideas no pasa por el audit ledger, solo por el logger de
+        # Python — hallazgo real que quedará documentado en la matriz de
+        # cobertura de la Fase 1.
+        try:
+            from core.operator.constitutional_guard import shadow_check
+            from core.operator.constitutional_filter import ActionProposal
+            shadow_check(ActionProposal(
+                action="create_idea",
+                correlation_id=idea.idea_id,
+                classification=source.value,
+                is_irreversible=False,
+                interaction_recorded=True,
+                domain=affected_component,
+                action_logged=False,
+                is_hypothesis_context=True,
+                has_counter_evidence=False,
+            ))
+        except Exception as _cf_exc:
+            logger.debug("Constitutional shadow check failed (passthrough): %s", _cf_exc)
+
         return idea
 
     # ── Review ────────────────────────────────────────────────────────────
