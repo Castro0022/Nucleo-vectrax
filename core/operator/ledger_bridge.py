@@ -42,6 +42,7 @@ class EventCategory:
     BUILD = "operator.build"
     MODE_CHANGE = "operator.mode_change"
     PHASE = "operator.phase"
+    CONSTITUTIONAL = "operator.constitutional"
 
 
 # ---------------------------------------------------------------------------
