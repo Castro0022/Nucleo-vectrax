@@ -395,20 +395,15 @@ class SmartRouter:
         signals: Dict[str, Any] = {}
 
         # --- Comandos explícitos (/ai, /multi, /router, etc.) ---
-        cmd_match = _COMMAND_PATTERN.match(stripped)
-        if cmd_match:
-            cmd = cmd_match.group(1).lower()
-            signals["command"] = cmd
-
-            if _AI_SINGLE_PATTERN.match(stripped):
-                signals["prompt"] = stripped[4:].strip()
-                return Intent.AI_SINGLE, signals
-
-            if _AI_MULTI_PATTERN.match(stripped):
-                signals["prompt"] = stripped[7:].strip()
-                return Intent.AI_MULTI, signals
-
-            return Intent.COMMAND, signals
+        # Detección extraída a `_classify_command()` (Fase 2, paso 5) — MISMO
+        # comportamiento exacto, factorizado para que
+        # `core.intent_ssot.resolve_intent()` pueda reutilizarlo tal cual sin
+        # reimplementar los patrones de comando ni el orden de evaluación.
+        cmd_result = self._classify_command(stripped)
+        if cmd_result is not None:
+            cmd_intent, cmd_signals = cmd_result
+            signals.update(cmd_signals)
+            return cmd_intent, signals
 
         # --- Capa 1: Clasificación semántica (siempre se ejecuta) ---
         semantic_result = self._classify_semantic(stripped)
@@ -437,7 +432,40 @@ class SmartRouter:
             signals, stripped,
         )
 
-    # -- 1a. Clasificación regex (fallback seguro) --------------------------
+    # -- 1a. Detección de comandos explícitos (extraída, Fase 2 paso 5) -----
+
+    def _classify_command(self, text: str) -> Optional[Tuple[Intent, Dict[str, Any]]]:
+        """
+        Detecta comandos explícitos (/ai, /multi, /router, /help, ...).
+
+        Extraído del bloque inline que `classify_intent()` ejecutaba antes de
+        tocar clasificación semántica/regex — MISMO comportamiento exacto,
+        solo factorizado a método propio para que
+        `core.intent_ssot._gather_primary_intent_evidence()` (Fase 2, paso 5)
+        pueda reutilizarlo tal cual, sin reimplementar los patrones de
+        comando ni el orden `/ai` → `/multi` → resto.
+
+        Returns:
+            (Intent, signals) si `text` matchea un comando, None si no.
+        """
+        cmd_match = _COMMAND_PATTERN.match(text)
+        if not cmd_match:
+            return None
+
+        cmd = cmd_match.group(1).lower()
+        signals: Dict[str, Any] = {"command": cmd}
+
+        if _AI_SINGLE_PATTERN.match(text):
+            signals["prompt"] = text[4:].strip()
+            return Intent.AI_SINGLE, signals
+
+        if _AI_MULTI_PATTERN.match(text):
+            signals["prompt"] = text[7:].strip()
+            return Intent.AI_MULTI, signals
+
+        return Intent.COMMAND, signals
+
+    # -- 1b. Clasificación regex (fallback seguro) --------------------------
 
     def _classify_regex(self, text: str) -> Tuple[Intent, Dict[str, Any]]:
         """
@@ -479,7 +507,7 @@ class SmartRouter:
             return Intent.ONLINE, regex_signals
         return Intent.MEMORY, regex_signals
 
-    # -- 1b. Resolución unificada de intent ---------------------------------
+    # -- 1c. Resolución unificada de intent ---------------------------------
 
     def _resolve_intent(
         self,
@@ -947,8 +975,21 @@ class SmartRouter:
         t0 = time.time()
         logger.info("route: start (channel=%s, owner=%s, len=%d)", channel, owner, len(text))
 
-        # Paso 1: Clasificar intent
-        intent, intent_signals = self.classify_intent(text)
+        # Paso 1: Clasificar intent — vía el SSOT de intent (Fase 2, paso 5).
+        # route() ya NO clasifica por su cuenta: consume la IntentDecision
+        # ya resuelta por resolve_intent(), que internamente reutiliza los
+        # mismos proveedores de evidencia (_classify_command/_classify_regex/
+        # _resolve_intent) sin volver a invocar self.classify_intent() aquí.
+        # classify_intent() sigue intacto como proveedor de evidencia para
+        # quien lo invoque directamente (tests, otros callers).
+        from core.intent_ssot import resolve_intent
+
+        decision = resolve_intent(text, channel=channel, owner=owner)
+        try:
+            intent = Intent(decision.primary_intent) if decision.primary_intent else Intent.MEMORY
+        except ValueError:
+            intent = Intent.MEMORY
+        intent_signals: Dict[str, Any] = dict(decision.raw_signals or {})
 
         # Paso 2: Detectar contexto
         context = self.detect_context(text, channel, owner)
@@ -983,6 +1024,12 @@ class SmartRouter:
             "sensitive": context["sensitive"],
             "provider_scores": provider_scores,
             "routing_latency_ms": round((time.time() - t0) * 1000, 2),
+            # Fase 2, paso 5 — expone la IntentDecision agregada del SSOT
+            # (dominio/confianza/fuentes de evidencia) para verificación y
+            # telemetría, sin duplicar su cálculo.
+            "domain": decision.domain,
+            "intent_confidence": round(decision.confidence, 4),
+            "intent_evidence_sources": [e.source for e in decision.evidence],
         }
 
         # Extraer comando si aplica

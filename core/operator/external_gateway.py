@@ -164,59 +164,36 @@ def _natural_store_confirmation(content: str, lang: str = "es") -> str:
 # ---------------------------------------------------------------------------
 # Resolución de dominio de la consulta (para el gate de criterio 4.2a3)
 # ---------------------------------------------------------------------------
-# El clasificador semántico ya expone el dominio en su salida
-# (SemanticResult.domain / domain_confidence). El gate lo consume aquí:
-#   1) usa el dominio del clasificador cuando su confianza alcanza el umbral
-#      (el clasificador ya es keyword-first: en aciertos léxicos devuelve el
-#      dominio con conf alta SIN encodear, y solo cae a embeddings en fallos),
-#   2) si la confianza es baja o no hay dominio, cae a detect_domain() léxico.
-# Detrás de VX_SEMANTIC_DOMAIN (misma flag que gobierna el fallback semántico
-# del clasificador): OFF → se omite el paso semántico y solo se usa detect_domain.
-
-def _semantic_domain_enabled() -> bool:
-    """True si el paso semántico de dominio está activo (VX_SEMANTIC_DOMAIN)."""
-    return os.getenv("VX_SEMANTIC_DOMAIN", "1") not in ("0", "false", "False", "")
-
-
-def _domain_gate_floor() -> float:
-    """Umbral de confianza para aceptar el dominio semántico en el gateway.
-    Reutiliza VX_SEMANTIC_DOMAIN_FLOOR (piso del clasificador) por defecto; se
-    puede endurecer aparte con VX_SEMANTIC_DOMAIN_GATE_FLOOR."""
-    raw = os.getenv(
-        "VX_SEMANTIC_DOMAIN_GATE_FLOOR",
-        os.getenv("VX_SEMANTIC_DOMAIN_FLOOR", "0.45"),
-    )
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return 0.45
-
+# Fase 2 (SSOT de intent), paso 2: este gate ya no reimplementa su propia
+# copia de la lógica de prioridad semántico/léxico — delega en
+# `core.intent_ssot.resolve_domain()`, que expone el mismo eje `domain` que
+# `IntentDecision.domain` con idéntica prioridad (semántico si su confianza
+# alcanza el umbral VX_SEMANTIC_DOMAIN_GATE_FLOOR/VX_SEMANTIC_DOMAIN_FLOOR,
+# si no detect_domain() léxico determinista, si no ninguno). El fallback
+# léxico directo de abajo solo se activa si el propio módulo SSOT no está
+# disponible (defensivo, no debería ocurrir en producción).
 
 def _resolve_query_domain(content: str) -> Tuple[Optional[str], float, str]:
     """Resuelve el dominio de conocimiento de `content` para el gate de criterio.
 
-    Prioriza SemanticResult.domain (salida del motor de intención) cuando su
-    domain_confidence alcanza el umbral; si es baja o no hay dominio semántico,
-    cae a detect_domain() (léxico determinista). Devuelve
+    Delega en `core.intent_ssot.resolve_domain()` (misma prioridad que
+    `IntentDecision.domain`). Devuelve
     (domain|None, confidence, source∈{"semantic","keyword","none"}).
     Defensivo: nunca lanza.
     """
     if not content:
         return None, 0.0, "none"
 
-    # 1) Dominio desde el clasificador semántico (detrás de VX_SEMANTIC_DOMAIN).
-    if _semantic_domain_enabled():
-        try:
-            from core.semantic_classifier import classify as _sem_classify
-            _sr = _sem_classify(content)
-            _dom = (getattr(_sr, "domain", "") or "").strip()
-            _conf = float(getattr(_sr, "domain_confidence", 0.0) or 0.0)
-            if _dom and _conf >= _domain_gate_floor():
-                return _dom, _conf, "semantic"
-        except Exception as exc:
-            logger.debug("semantic domain resolve failed (fallback léxico): %s", exc)
+    try:
+        from core.intent_ssot import resolve_domain
+        dom, conf, src = resolve_domain(content)
+        if dom:
+            return dom, conf, src
+        return None, 0.0, "none"
+    except Exception as exc:
+        logger.debug("intent_ssot.resolve_domain no disponible (fallback léxico directo): %s", exc)
 
-    # 2) Fallback léxico determinista (confianza baja o sin dominio semántico).
+    # Fallback defensivo: solo si el módulo SSOT falló al importarse/ejecutar.
     try:
         from core.learn.criterion import detect_domain
         _kw = detect_domain(content)

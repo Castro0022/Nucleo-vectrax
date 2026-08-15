@@ -386,6 +386,98 @@ class TestRoutePipeline:
 
 
 # ===========================================================================
+# 5b. route() consume resolve_intent() — Fase 2, paso 5
+# ===========================================================================
+
+class TestRouteConsumesResolveIntent:
+    """route() debe consumir la IntentDecision ya resuelta por
+    core.intent_ssot.resolve_intent(), sin volver a clasificar la entrada
+    por su cuenta (Fase 2, paso 5)."""
+
+    def test_route_never_calls_classify_intent_directly(self, router, monkeypatch):
+        """Ni route() ni resolve_intent() deben invocar el método agregado
+        classify_intent() — este test falla si route() vuelve a clasificar
+        la entrada llamando a self.classify_intent()."""
+        calls = []
+        original = SmartRouter.classify_intent
+
+        def _tracked(self, text):
+            calls.append(text)
+            return original(self, text)
+
+        monkeypatch.setattr(SmartRouter, "classify_intent", _tracked)
+        router.route("qué dije ayer sobre bitcoin?")
+        assert calls == [], (
+            "route() (o resolve_intent()) invocó classify_intent() "
+            "directamente — route() debe consumir resolve_intent() en su lugar"
+        )
+
+    def test_route_resolves_intent_exactly_once(self, router, monkeypatch):
+        """Ningún proveedor de evidencia interno debe ejecutarse más de una
+        vez por llamada a route() — probaría doble clasificación (una vez
+        dentro de resolve_intent(), otra independiente dentro de route())."""
+        call_counts = {"regex": 0, "resolve": 0}
+        original_regex = SmartRouter._classify_regex
+        original_resolve = SmartRouter._resolve_intent
+
+        def _tracked_regex(self, text):
+            call_counts["regex"] += 1
+            return original_regex(self, text)
+
+        def _tracked_resolve(self, *args, **kwargs):
+            call_counts["resolve"] += 1
+            return original_resolve(self, *args, **kwargs)
+
+        monkeypatch.setattr(SmartRouter, "_classify_regex", _tracked_regex)
+        monkeypatch.setattr(SmartRouter, "_resolve_intent", _tracked_resolve)
+        router.route("qué dije ayer sobre bitcoin?")
+        assert call_counts["regex"] == 1, call_counts
+        assert call_counts["resolve"] == 1, call_counts
+
+    def test_route_uses_resolve_intent_decision_not_a_recalculation(self, router, monkeypatch):
+        """route() debe usar el primary_intent/domain que produce
+        resolve_intent(), no uno recalculado independientemente."""
+        import core.intent_ssot as ssot_mod
+        from core.intent_ssot import IntentDecision
+
+        fake_decision = IntentDecision(
+            primary_intent="market",
+            domain="market",
+            task_type="",
+            voice_intent="",
+            confidence=0.9,
+            evidence=[],
+            conflicts=[],
+            raw_signals={},
+        )
+        monkeypatch.setattr(ssot_mod, "resolve_intent", lambda *a, **k: fake_decision)
+
+        route = router.route("cualquier texto, el contenido no importa aquí")
+        assert route.intent == Intent.MARKET
+        assert route.metadata["domain"] == "market"
+
+    @pytest.mark.parametrize("text", [
+        "hola, cómo estás",
+        "qué dije ayer sobre bitcoin?",
+        "cuánto vale btc",
+        "/ai explica la relatividad",
+        "/multi compara python vs rust",
+        "/router",
+    ])
+    def test_route_and_resolve_intent_share_primary_intent_domain_evidence(self, router, text):
+        """Para el mismo texto, resolve_intent(text) y router.route(text)
+        deben coincidir en primary_intent, dominio y fuentes de evidencia —
+        prueba que route() consume la MISMA resolución, no una paralela."""
+        from core.intent_ssot import resolve_intent
+
+        decision = resolve_intent(text)
+        route = router.route(text)
+        assert route.intent.value == decision.primary_intent
+        assert route.metadata["domain"] == decision.domain
+        assert route.metadata["intent_evidence_sources"] == [e.source for e in decision.evidence]
+
+
+# ===========================================================================
 # 6. record_outcome + stats
 # ===========================================================================
 
