@@ -354,10 +354,13 @@ def _resolve_user_tier(user_id: str):
 
 
 def _quick_intent(content: str) -> str:
-    """Reusa el classifier del VoiceEngine. Defensive."""
+    """Reusa el classifier del VoiceEngine vía el SSOT de intent (Fase 2,
+    paso 3: `core.intent_ssot.resolve_voice_intent()`), en vez de invocar
+    `core.voice.intent.classify_intent()` de forma standalone. Mismo string
+    crudo, mismo fallback "casual". Defensive: nunca lanza."""
     try:
-        from core.voice.intent import classify_intent
-        return classify_intent(content or "")
+        from core.intent_ssot import resolve_voice_intent
+        return resolve_voice_intent(content or "")
     except Exception:
         return "casual"
 

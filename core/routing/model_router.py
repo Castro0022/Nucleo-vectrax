@@ -32,7 +32,6 @@ from .task_classifier import (
     TaskClassification,
     TaskType,
     TASK_CAPABILITY_MAP,
-    classify_task,
 )
 from .circuit_breaker import CircuitBreaker
 
@@ -141,8 +140,13 @@ class ModelRouter:
         # Refresh cloud model availability
         refresh_availability()
 
-        # Step 1: Classify
-        classification = classify_task(prompt, context)
+        # Step 1: Classify — vía el SSOT de intent (Fase 2, paso 4). Ya no se
+        # invoca classify_task() de forma independiente; core.intent_ssot es
+        # el único punto que resuelve la clasificación de tarea, garantizando
+        # que este mismo texto produzca el mismo task_type que
+        # IntentDecision.task_type para cualquier otro consumidor.
+        from core.intent_ssot import resolve_task_classification
+        classification = resolve_task_classification(prompt, context)
         required_cap = TASK_CAPABILITY_MAP.get(
             classification.task_type, Capability.REASONING
         )
