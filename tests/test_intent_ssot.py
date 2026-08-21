@@ -520,3 +520,140 @@ class TestResolveTaskClassification:
         source = inspect.getsource(mr)
         assert "import classify_task" not in source
         assert "resolve_task_classification" in source
+
+
+# ===========================================================================
+# 8. capability_query (Fase 3, paso 4) — evidencia de "pregunta de
+#    capacidad", integrada DENTRO de _gather_primary_intent_evidence().
+#    No es un clasificador nuevo: se deriva de una única entrada de
+#    Evidence(source="self_reference_layer+capability_pattern").
+# ===========================================================================
+
+class TestCapabilityQueryPositive:
+    """Ejemplos positivos exigidos explícitamente: preguntas naturales sobre
+    capacidades, en segunda persona directa, sin necesidad de nombrar
+    «Vectrax» explícitamente."""
+
+    @pytest.mark.parametrize("text", [
+        "¿qué puedes hacer?",
+        "qué puedes hacer",
+        "¿qué tienes disponible?",
+        "¿puedes buscar en internet?",
+        "puedes buscar online?",
+        "¿qué motores tienes?",
+        "¿qué herramientas tienes?",
+        "¿estás conectado a internet?",
+        "¿tienes acceso a mis archivos?",
+        "¿qué te falta para hacer esto?",
+        "¿dónde buscas cuando no sabes algo?",
+        "what can you do?",
+        "what tools do you have?",
+        "can you search online?",
+        "are you connected to the internet?",
+        "what's missing?",
+    ])
+    def test_positive_examples_set_capability_query_true(self, text):
+        decision = resolve_intent(text)
+        assert decision.capability_query is True, f"esperaba True para {text!r}"
+        assert any(
+            e.source == "self_reference_layer+capability_pattern" and e.claim == "capability_query"
+            for e in decision.evidence
+        )
+
+    def test_detect_capability_query_function_directly(self):
+        from core.intent_ssot import _detect_capability_query
+        assert _detect_capability_query("¿qué puedes hacer?") is True
+        assert _detect_capability_query("what can you do?") is True
+
+
+class TestCapabilityQueryNegative:
+    """Menciones casuales de auto-referencia (o mensajes sin relación) NO
+    deben activar capability_query — evita falsos positivos sobre preguntas
+    de identidad/origen/observación que ya cubre otro mecanismo."""
+
+    @pytest.mark.parametrize("text", [
+        "hola, cómo estás",
+        "¿quién te creó?",
+        "qué has observado últimamente",
+        "cuánto vale btc",
+        "cuéntame un chiste",
+        "hoy tuve un buen día",
+        "qué dije ayer sobre bitcoin?",
+        "revisa el estado de vectrax",
+        "who created you?",
+    ])
+    def test_negative_examples_keep_capability_query_false(self, text):
+        decision = resolve_intent(text)
+        assert decision.capability_query is False, f"esperaba False para {text!r}"
+        assert not any(
+            e.source == "self_reference_layer+capability_pattern"
+            for e in decision.evidence
+        )
+
+    def test_detect_capability_query_function_directly_negative(self):
+        from core.intent_ssot import _detect_capability_query
+        assert _detect_capability_query("¿quién te creó?") is False
+        assert _detect_capability_query("") is False
+        assert _detect_capability_query(None) is False
+
+
+class TestCapabilityQueryFieldDefaultsAndContract:
+    def test_field_defaults_to_false(self):
+        assert IntentDecision(primary_intent="memory").capability_query is False
+
+    def test_to_dict_includes_capability_query(self):
+        decision = resolve_intent("¿qué puedes hacer?")
+        d = decision.to_dict()
+        assert d["capability_query"] is True
+
+    def test_empty_text_capability_query_false(self):
+        assert resolve_intent("").capability_query is False
+
+    def test_defensive_on_self_reference_layer_error(self, monkeypatch):
+        """Si self_reference_layer falla, capability_query se degrada a False
+        sin bloquear el resto de la resolución (nunca lanza)."""
+        monkeypatch.setattr(
+            "vectrax.self_reference_layer.evaluate",
+            lambda t: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        decision = resolve_intent("¿qué puedes hacer?")
+        # El regex propio sigue funcionando aunque self_reference_layer falle;
+        # el resto de la decisión (primary_intent) tampoco se ve afectado.
+        assert decision.capability_query is True
+        assert decision.primary_intent
+
+
+class TestCapabilityQueryDoesNotChangeExistingBehavior:
+    """Requisito explícito: cuando capability_query=False, el resto del
+    contrato de IntentDecision debe permanecer idéntico al de antes de este
+    paso (mismo primary_intent/domain/task_type/voice_intent/raw_signals)."""
+
+    _BASELINE_MESSAGES = [
+        "hola, cómo estás",
+        "qué dije ayer sobre bitcoin?",
+        "cuánto vale btc",
+        "busco un lugar cerca de aquí para comer",
+        "/ai qué es bitcoin",
+        "/router",
+    ]
+
+    @pytest.mark.parametrize("text", _BASELINE_MESSAGES)
+    def test_primary_intent_unaffected(self, text):
+        expected_intent, _ = SmartRouter().classify_intent(text)
+        decision = resolve_intent(text)
+        assert decision.capability_query is False
+        assert decision.primary_intent == expected_intent.value
+
+    @pytest.mark.parametrize("text", _BASELINE_MESSAGES)
+    def test_raw_signals_unaffected(self, text):
+        _, expected_signals = SmartRouter().classify_intent(text)
+        decision = resolve_intent(text)
+        assert decision.raw_signals == expected_signals
+
+    def test_command_signals_unaffected_by_capability_gathering(self):
+        """El comando /ai sigue produciendo exactamente el mismo raw_signals
+        (command/prompt) aunque ahora se recolecte evidencia de
+        capability_query antes en la misma función."""
+        decision = resolve_intent("/ai explica la relatividad general")
+        assert decision.raw_signals == {"command": "ai", "prompt": "explica la relatividad general"}
+        assert decision.confidence == 1.0

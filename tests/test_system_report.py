@@ -40,6 +40,11 @@ def _fake_census(**over):
 
 _ENGINES = {
     "total": 3, "available": 2,
+    # Fase 3, paso 1: get_engine_status() real ahora incluye "by_tier"
+    # (calculado una sola vez en bootstrap.py, inventario único canónico).
+    # Este fixture debe reflejarlo para representar fielmente el contrato
+    # actual de la función que mockea.
+    "by_tier": {"core": 1, "observe": 1, "external": 1},
     "engines": [
         {"name": "gravity_engine", "tier": "core"},
         {"name": "criterion", "tier": "observe"},
@@ -262,3 +267,48 @@ def test_global_report_includes_age_line():
         report = SR.build_global_report(scope="full", state=state)
     assert "Antigüedad" in report
     assert "market 7d" in report
+
+
+# ── 8. build_capability_report — integración del narrador (Fase 3, paso 6b) ──
+
+def test_build_capability_report_delegates_to_narrator_exactly():
+    """build_capability_report() no debe reimplementar nada: su salida debe
+    ser idéntica a llamar build_capability_context()+narrate() a mano."""
+    from core.intent_ssot import IntentDecision
+    from core.self_observation.capability_context import build_capability_context
+    from core.self_observation.capability_narrator import narrate
+
+    decision = IntentDecision(primary_intent="", capability_query=True)
+    expected = narrate(build_capability_context(decision), lang="es")
+    assert SR.build_capability_report("es") == expected
+
+
+def test_build_capability_report_es_and_en_differ_and_are_natural():
+    es = SR.build_capability_report("es")
+    en = SR.build_capability_report("en")
+    assert es and en
+    assert es != en
+    assert "{" not in es and "}" not in es
+    assert "{" not in en and "}" not in en
+
+
+def test_build_capability_report_invalid_lang_defaults_to_es():
+    assert SR.build_capability_report("fr") == SR.build_capability_report("es")
+
+
+def test_build_capability_report_defensive_on_failure():
+    with patch(
+        "core.self_observation.capability_context.build_capability_context",
+        side_effect=RuntimeError("boom"),
+    ):
+        assert SR.build_capability_report("es") == ""
+
+
+def test_build_capability_report_does_not_affect_global_report():
+    """El reporte global existente sigue sin volcar nombres de motores —
+    build_capability_report() es aditivo, no modifica build_global_report()."""
+    with ExitStack() as stack:
+        _patch_all(stack)
+        state = SR.get_global_state()
+    report = SR.build_global_report(lang="es", scope="full", state=state)
+    assert "voice_engine" not in report

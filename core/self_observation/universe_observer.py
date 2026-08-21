@@ -129,15 +129,15 @@ class UniverseSnapshot:
         try:
             from core.orchestration import get_engine_status
             _eng = get_engine_status()
+            # Fase 3 — inventario único canónico: by_tier viene de
+            # get_engine_status() (calculado una sola vez en bootstrap.py);
+            # ya no se re-tallea aquí.
             _engines: Dict[str, Any] = {
                 "total": _eng.get("total", 0),
                 "available": _eng.get("available", 0),
-                "by_tier": {},
+                "by_tier": _eng.get("by_tier", {}),
                 "list": _eng.get("engines", []),
             }
-            for _e in _eng.get("engines", []):
-                _t = _e.get("tier", "?")
-                _engines["by_tier"][_t] = _engines["by_tier"].get(_t, 0) + 1
         except Exception:
             _engines = {"total": 0, "available": 0, "by_tier": {}, "list": []}
         return {
