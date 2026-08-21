@@ -63,6 +63,18 @@ _INTERNAL_CHANNEL_MAP = {
 # ID del creador — Mario Bravo Castro. Hardcoded + env override.
 _CREATOR_UID = os.environ.get("VX_CREATOR_ID", "2030762343")
 
+# Mensaje de fallback cuando el filtro constitucional ("Kybalion", 7
+# Principios) bloquea o no autoriza una respuesta en modo 'enforce'. Corto,
+# honesto, sin JSON/números de ley/nombres internos — nunca vacío/silencioso.
+_CONSTITUTIONAL_FALLBACK_ES = (
+    "Prefiero no responder eso todavía — necesito verificarlo mejor. "
+    "Dame un momento e intenta de nuevo."
+)
+_CONSTITUTIONAL_FALLBACK_EN = (
+    "I'd rather not answer that yet — I need to verify it more carefully. "
+    "Give me a moment and try again."
+)
+
 
 def _is_creator_uid(user_id: str) -> bool:
     """True si el user_id corresponde al creador de Vectrax."""
@@ -265,7 +277,7 @@ class ExternalGateway:
         if getattr(result, "processed", False):
             self._total_responded += 1
 
-        # === FILTRO CONSTITUCIONAL (Fase 1 — SHADOW MODE) ===================
+        # === FILTRO CONSTITUCIONAL ("Kybalion", 7 Principios) ===============
         # Choke point 1: TODAS las rutas de respuesta (greeting, intake,
         # fast-path, domain criterion, self-aware, nucleus, memory,
         # SmartRouter/pipeline_v2) convergen aquí, sin importar cuál de los
@@ -273,23 +285,31 @@ class ExternalGateway:
         # el resultado. Envolver el método PÚBLICO (no _do_receive_message)
         # garantiza cobertura estructural: cualquier return interno, presente
         # o futuro, pasa por aquí porque Python ya resolvió la llamada antes
-        # de esta línea. Solo observa y registra en el ledger — en modo
-        # shadow NUNCA altera `result`. Defensivo: nunca debe romper la
-        # respuesta al usuario.
+        # de esta línea.
+        # En modo 'shadow' (default): solo observa y registra en el ledger,
+        # NUNCA altera `result` (comportamiento idéntico a Fase 1).
+        # En modo 'enforce': BLOCK detiene la respuesta real; CAUTION consulta
+        # DecisionAuthority de verdad; PASS continúa sin cambios (ver
+        # `_constitutional_gate()`). Defensivo: nunca debe romper la
+        # respuesta al usuario ante un fallo técnico del gate.
         try:
-            self._constitutional_shadow_check(user_id, content, result)
+            self._constitutional_gate(user_id, content, result)
         except Exception as _cf_exc:
-            logger.debug("Constitutional shadow check failed (passthrough): %s", _cf_exc)
+            logger.debug("Constitutional gate failed (passthrough): %s", _cf_exc)
 
         return result
 
-    def _constitutional_shadow_check(
+    def _constitutional_gate(
         self, user_id: str, content: str, result: "GatewayResult",
     ) -> None:
         """Construye la ActionProposal desde el GatewayResult ya producido y
-        la pasa por el filtro constitucional en modo shadow. Solo observa."""
-        from core.operator.constitutional_guard import shadow_check
-        from core.operator.constitutional_filter import ActionProposal
+        la pasa por el filtro constitucional. En modo 'shadow' (default) solo
+        observa (idéntico a la Fase 1). En modo 'enforce', actúa sobre el
+        veredicto: BLOCK o CAUTION-no-autorizado sustituyen `result.response`
+        por un mensaje honesto y no técnico; PASS o CAUTION-autorizado dejan
+        `result` intacto. Nunca lanza."""
+        from core.operator import constitutional_mode
+        from core.operator.constitutional_filter import ActionProposal, PrincipleVerdict
 
         if not getattr(result, "processed", False):
             return  # mensaje vacío u otro caso sin acción real que evaluar
@@ -304,7 +324,56 @@ class ExternalGateway:
             user_id=user_id,
             action_logged=True,  # external.message_received/response ya registrados
         )
-        shadow_check(proposal)
+
+        if not constitutional_mode.is_enforce():
+            # Shadow (default): comportamiento idéntico a la Fase 1.
+            from core.operator.constitutional_guard import shadow_check
+            shadow_check(proposal)
+            return
+
+        # === ENFORCE: el veredicto puede sustituir la respuesta real ========
+        from core.operator.constitutional_guard import gate_check
+        verdict, decision = gate_check(proposal)
+
+        gate_source = ""
+        if verdict.overall == PrincipleVerdict.BLOCK:
+            gate_source = "constitutional_block"
+        elif (
+            verdict.overall == PrincipleVerdict.CAUTION
+            and decision is not None
+            and not decision.auto_approved
+        ):
+            gate_source = "constitutional_caution_denied"
+
+        if not gate_source:
+            return  # PASS, o CAUTION ya autorizado por DecisionAuthority — sin cambios
+
+        flagged = [
+            f"L{r.number}={r.verdict.value}" for r in verdict.results
+            if r.verdict != PrincipleVerdict.PASS
+        ]
+        try:
+            from core.language_gate import get_user_language
+            lang = get_user_language(user_id, content)
+        except Exception:
+            lang = "es"
+
+        result.response = (
+            _CONSTITUTIONAL_FALLBACK_EN if lang == "en" else _CONSTITUTIONAL_FALLBACK_ES
+        )
+        result.source = gate_source
+        result.resolve_mode = gate_source
+        try:
+            result.evidence = dict(result.evidence or {})
+            result.evidence["constitutional_overall"] = verdict.overall.value
+            result.evidence["constitutional_flagged"] = flagged
+        except Exception:
+            pass
+
+        logger.warning(
+            "Pipeline: CONSTITUTIONAL-GATE %s | overall=%s | flagged=%s | user=%s",
+            gate_source, verdict.overall.value, flagged, user_id[:20],
+        )
 
     def _do_receive_message(
         self,

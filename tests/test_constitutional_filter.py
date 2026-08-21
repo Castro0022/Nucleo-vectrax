@@ -504,7 +504,7 @@ class TestShadowModeNeverAltersBehavior:
         shape = _EARLY_RETURN_SHAPES["greeting_L434"]
         gw = ExternalGateway()
         with patch.object(gw, "_do_receive_message", return_value=shape), \
-             patch.object(gw, "_constitutional_shadow_check", side_effect=RuntimeError("boom")):
+             patch.object(gw, "_constitutional_gate", side_effect=RuntimeError("boom")):
             result = gw.receive_message(user_id="u1", content="hola", channel="web")
         assert result.response == shape.response
 
@@ -531,6 +531,118 @@ class TestShadowModeNeverAltersBehavior:
     def test_set_mode_rejects_invalid_value(self):
         with pytest.raises(ValueError):
             constitutional_mode.set_mode("bogus")
+
+
+# ===========================================================================
+# 7b. Enforce mode — el veredicto SI altera la respuesta (plan "Conectar el
+#     veredicto constitucional (Kybalion) a bloqueo real en
+#     external_gateway.py")
+# ===========================================================================
+
+class TestEnforceModeAltersResponse:
+    """Con constitutional_mode='enforce', el choke point de
+    external_gateway.py ACTÚA sobre el veredicto: BLOCK y
+    CAUTION-no-autorizado sustituyen la respuesta real; PASS y
+    CAUTION-autorizado la dejan intacta. Nunca silencioso (siempre hay
+    respuesta), nunca lanza (fallo técnico -> passthrough)."""
+
+    def test_forced_block_replaces_response_in_enforce_mode(self):
+        import core.operator.constitutional_filter as _cf
+        from core.operator.constitutional_filter import PrincipleResult
+
+        constitutional_mode.set_mode(constitutional_mode.ENFORCE, changed_by="test")
+        shape = _EARLY_RETURN_SHAPES["fallthrough_smartrouter_online_L1700"]
+        gw = ExternalGateway()
+
+        forced_block = MagicMock(return_value=PrincipleResult(
+            number=7, name="Generación", verdict=PrincipleVerdict.BLOCK,
+            reason="forzado por test",
+        ))
+        broken = list(_cf._EVALUATORS)
+        broken[6] = forced_block  # Ley 7 (índice 6)
+
+        with patch.object(gw, "_do_receive_message", return_value=shape), \
+             patch.object(_cf, "_EVALUATORS", tuple(broken)):
+            result = gw.receive_message(user_id="u1", content="x", channel="web")
+
+        assert result is shape  # mismo objeto, mutado in-place por el gate
+        assert result.response != "Según lo que encontré..."
+        assert result.response  # nunca vacío/silencioso
+        assert result.source == "constitutional_block"
+        assert result.processed is True
+        entries = _entries_for(shape.event_id)
+        assert entries[0]["meta"]["details"]["overall"] == "block"
+        assert entries[0]["meta"]["details"]["mode"] == "enforce"
+
+    def test_caution_denied_replaces_response_in_enforce_mode(self):
+        """Sin classification -> Ley 1 CAUTION. Con DecisionAuthority
+        mockeado a no-autorizado, la respuesta se sustituye."""
+        from core.operator.decision_authority import DecisionResult, Authority
+
+        constitutional_mode.set_mode(constitutional_mode.ENFORCE, changed_by="test")
+        shape = GatewayResult(
+            event_id="cid-caution-denied", user_id="u1", channel="web",
+            response="respuesta original", source="", resolve_mode="",
+            timestamp=0.0, processed=True,
+        )
+        gw = ExternalGateway()
+
+        with patch.object(gw, "_do_receive_message", return_value=shape), \
+             patch(
+                 "core.operator.decision_authority.check_authority",
+                 return_value=DecisionResult(
+                     action="respond", authority=Authority.AUTHORIZED,
+                     auto_approved=False, reason="test denial",
+                 ),
+             ):
+            result = gw.receive_message(user_id="u1", content="x", channel="web")
+
+        assert result.response != "respuesta original"
+        assert result.response
+        assert result.source == "constitutional_caution_denied"
+
+    def test_caution_approved_leaves_response_unchanged_in_enforce_mode(self):
+        """Sin classification -> CAUTION, pero 'respond' es AUTO_ACTION real
+        (fix de decision_authority.py) -> DecisionAuthority auto-aprueba,
+        sin mockear nada -> respuesta sin cambios."""
+        constitutional_mode.set_mode(constitutional_mode.ENFORCE, changed_by="test")
+        shape = GatewayResult(
+            event_id="cid-caution-ok", user_id="u1", channel="web",
+            response="respuesta original", source="", resolve_mode="",
+            timestamp=0.0, processed=True,
+        )
+        gw = ExternalGateway()
+        with patch.object(gw, "_do_receive_message", return_value=shape):
+            result = gw.receive_message(user_id="u1", content="x", channel="web")
+
+        assert result.response == "respuesta original"
+
+    def test_pass_verdict_leaves_response_unchanged_in_enforce_mode(self):
+        constitutional_mode.set_mode(constitutional_mode.ENFORCE, changed_by="test")
+        shape = _EARLY_RETURN_SHAPES["fallthrough_memory_L1700"]
+        gw = ExternalGateway()
+        with patch.object(gw, "_do_receive_message", return_value=shape):
+            result = gw.receive_message(user_id="u1", content="x", channel="web")
+        assert result.response == shape.response
+
+    def test_receive_message_never_raises_if_enforce_gate_explodes(self):
+        constitutional_mode.set_mode(constitutional_mode.ENFORCE, changed_by="test")
+        shape = _EARLY_RETURN_SHAPES["greeting_L434"]
+        gw = ExternalGateway()
+        with patch.object(gw, "_do_receive_message", return_value=shape), \
+             patch.object(gw, "_constitutional_gate", side_effect=RuntimeError("boom")):
+            result = gw.receive_message(user_id="u1", content="hola", channel="web")
+        assert result.response == shape.response
+
+    def test_shadow_mode_unaffected_by_new_enforce_code_path(self):
+        """Regresión explícita: con el modo en su default (shadow), el
+        código nuevo de enforce NUNCA se ejecuta — comportamiento idéntico."""
+        assert constitutional_mode.get_mode() == constitutional_mode.SHADOW
+        shape = _EARLY_RETURN_SHAPES["fallthrough_smartrouter_online_L1700"]
+        gw = ExternalGateway()
+        with patch.object(gw, "_do_receive_message", return_value=shape):
+            result = gw.receive_message(user_id="u1", content="x", channel="web")
+        assert result.response == shape.response
 
 
 # ===========================================================================

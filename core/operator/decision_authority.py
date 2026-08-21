@@ -66,6 +66,13 @@ AUTO_ACTIONS = frozenset({
     "classify_message",
     "route_message",
     "generate_response",
+    # "respond" es el nombre REAL usado por
+    # core.operator.external_gateway.py::_constitutional_gate() al construir
+    # el ActionProposal para el choke point constitucional (Fase 1/1.5).
+    # Semánticamente es exactamente "Generar respuestas al usuario" (arriba);
+    # se mantiene "generate_response" también por compatibilidad con otros
+    # posibles callers.
+    "respond",
     "resolve_online",
     "resolve_local",
     "resolve_market",

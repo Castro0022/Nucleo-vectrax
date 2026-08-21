@@ -21,7 +21,7 @@ Creador: Mario Bravo Castro
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 from core.operator import constitutional_mode
 from core.operator.constitutional_filter import (
@@ -119,6 +119,11 @@ def shadow_check(proposal: ActionProposal) -> ConstitutionalVerdict:
     'shadow' — el caller NUNCA debe ramificar su comportamiento sobre el
     valor de retorno en esta fase. Nunca lanza: un fallo de infraestructura
     (p.ej. el ledger no disponible) nunca debe propagarse al pipeline.
+
+    Usado por los choke points que TODAVÍA no actúan sobre el veredicto
+    (`core/idea_store.py`, `core/learning_cycle/learning_integrator.py`).
+    Para el choke point que SÍ actúa (`external_gateway.py`, detrás de
+    `constitutional_mode.enforce`), ver `gate_check()` abajo.
     """
     mode = constitutional_mode.get_mode()
     verdict = evaluate(proposal, mode=mode)
@@ -132,3 +137,71 @@ def shadow_check(proposal: ActionProposal) -> ConstitutionalVerdict:
     except Exception as exc:
         logger.warning("Constitutional ledger recording failed (outer): %s", exc)
     return verdict
+
+
+def _real_decision_authority(verdict: ConstitutionalVerdict, proposal: ActionProposal) -> Any:
+    """Consulta `DecisionAuthority.check_authority()` DE VERDAD (no la
+    simulación de `_simulate_decision_authority`, que es solo informativa
+    para el reporte comparativo de Fase 1). Fail-safe: cualquier fallo se
+    trata como "no auto-aprobado" — nunca autoriza silenciosamente ante un
+    error técnico."""
+    from core.operator.decision_authority import (
+        Authority, DecisionResult, check_authority,
+    )
+    try:
+        gov_mode = "observe"
+        try:
+            from core.governor import get_current_policy
+            gov_mode = get_current_policy().get("mode", "observe")
+        except Exception:
+            pass
+        risk_level = "HIGH" if proposal.is_irreversible else "LOW"
+        return check_authority(proposal.action, governor_mode=gov_mode, risk_level=risk_level)
+    except Exception as exc:
+        logger.warning(
+            "Real DecisionAuthority check failed (fail-safe: no auto-aprobado): %s", exc,
+        )
+        return DecisionResult(
+            action=proposal.action, authority=Authority.AUTHORIZED,
+            auto_approved=False, reason=f"decision_authority_error: {exc}",
+        )
+
+
+def gate_check(proposal: ActionProposal) -> Tuple[ConstitutionalVerdict, Optional[Any]]:
+    """
+    Evalúa + registra, IGUAL que `shadow_check()` — pero además devuelve una
+    decisión REAL de `DecisionAuthority` cuando el veredicto es CAUTION, para
+    que el caller pueda actuar sobre ella.
+
+    Contrato — SOLO debe llamarse cuando `constitutional_mode.get_mode() ==
+    'enforce'`; en 'shadow' los call sites deben seguir usando
+    `shadow_check()` (que nunca debe usarse para decidir nada).
+
+    Retorna `(verdict, decision)`:
+      - `overall == BLOCK`    → `decision` es `None` (BLOCK es terminante por
+        diseño de los 7 principios; no hace falta consultar DecisionAuthority).
+      - `overall == CAUTION`  → `decision` es un `DecisionResult` REAL
+        (`core.operator.decision_authority.check_authority()`).
+      - `overall == PASS`     → `decision` es `None` (no hace falta).
+
+    Nunca lanza: cualquier fallo técnico (evaluación, ledger, o
+    DecisionAuthority) degrada a un estado conservador, nunca a una
+    autorización silenciosa.
+    """
+    mode = constitutional_mode.get_mode()
+    verdict = evaluate(proposal, mode=mode)
+    try:
+        simulated = _simulate_decision_authority(verdict, proposal)
+    except Exception as exc:
+        logger.debug("Decision authority simulation failed (outer): %s", exc)
+        simulated = {"would_execute": False, "authority": "unknown", "reason": f"simulation_error: {exc}"}
+    try:
+        _record_ledger(verdict, proposal, simulated)
+    except Exception as exc:
+        logger.warning("Constitutional ledger recording failed (outer): %s", exc)
+
+    decision: Optional[Any] = None
+    if verdict.overall == PrincipleVerdict.CAUTION:
+        decision = _real_decision_authority(verdict, proposal)
+
+    return verdict, decision
