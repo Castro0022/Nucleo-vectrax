@@ -376,6 +376,30 @@ def _read_engines_state() -> str:
         return ""
 
 
+def _is_capability_query(query: str) -> bool:
+    """True si `query` es una pregunta específica de capacidades de Vectrax.
+
+    Reutiliza EXCLUSIVAMENTE el SSOT de intención (`core.intent_ssot.
+    resolve_intent().capability_query`, Fase 3, paso 4) — no reimplementa
+    ningún patrón/regex propio ni crea un clasificador paralelo. Se usa para
+    evitar que `build_self_context()` duplique (con menos detalle) el mismo
+    dato que el nuevo sistema de autoconocimiento verificable de la Fase 3
+    ya construye por su cuenta cuando la pregunta es de capacidad.
+
+    Defensivo: si el SSOT no está disponible o falla, devuelve False —
+    preserva el comportamiento anterior a la Fase 3 (incluir
+    `_read_engines_state()` siempre).
+    """
+    if not query:
+        return False
+    try:
+        from core.intent_ssot import resolve_intent
+        return bool(resolve_intent(query).capability_query)
+    except Exception as exc:
+        logger.debug("capability_query guard failed: %s", exc)
+        return False
+
+
 def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> str:
     """
     Construye el contexto de auto-observación de Vectrax.
@@ -412,15 +436,10 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
                 "REGLA CRÍTICA: NUNCA uses el nombre del creador en respuestas a este usuario. "
                 "Responde SOLO con el nombre que el usuario te haya dado.\n"
             )
-        base += (
-            "Lo que tengo activo hoy:\n"
-            "• Memoria persistente por usuario\n"
-            "• Búsqueda online en tiempo real\n"
-            "• Sistema de equipos con billing\n"
-            "• Acceso por Telegram, sin fricción\n"
-            "• Universo gravitacional con estrellas, convergencias y constelaciones\n"
-            "• Observación del universo en tiempo real\n"
-        )
+        # Fase 3 — retiradas las viñetas fijas de capacidades no
+        # verificables contra ningún registro (ver guard de
+        # _read_engines_state() más abajo); build_self_context conserva solo
+        # identidad/historia/hechos.
         if is_creator:
             base += (
                 "Cuando el creador me pregunta sobre comercialización, estrategia o próximos pasos,\n"
@@ -444,15 +463,9 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
             base += "My creator is Mario Bravo Castro. We've been building this together for months.\n"
         else:
             base += "CRITICAL RULE: NEVER use the creator's name in responses to this user.\n"
-        base += (
-            "What I have active today:\n"
-            "• Persistent per-user memory\n"
-            "• Real-time online search\n"
-            "• Team system with billing\n"
-            "• Telegram access, zero friction\n"
-            "• Gravitational universe with stars, convergences and constellations\n"
-            "• Real-time universe observation\n"
-        )
+        # Phase 3 — removed the fixed capability bullets (not verifiable
+        # against any registry; see the _read_engines_state() guard below).
+        # build_self_context keeps only identity/history/facts.
         if is_creator:
             base += (
                 "When the creator asks about commercialization, strategy or next steps,\n"
@@ -535,8 +548,12 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
     # Autonomous observations (persistent memory of what Vectrax observed)
     obs_ctx = _read_recent_observations()
 
-    # Engines (orchestration layer) — qué motores tengo conectados/activos
-    engines_ctx = _read_engines_state()
+    # Engines (orchestration layer) — qué motores tengo conectados/activos.
+    # Fase 3, paso 6: si el mensaje es una pregunta específica de capacidades,
+    # el nuevo sistema de autoconocimiento verificable de la Fase 3 ya
+    # construye un resumen con más detalle (exists/connected/authorized/
+    # health por motor); evita duplicar aquí un resumen menos preciso.
+    engines_ctx = "" if _is_capability_query(query) else _read_engines_state()
 
     # Narrativa por-dominio grounded — material real para comentar de forma casual
     # QUÉ está observando Vectrax en cada dominio (no es un reporte formal).
