@@ -41,6 +41,13 @@ UNAVAILABLE = "unavailable"
 FAILED = "failed"
 READY = "ready"          # dry-run: se activaría, pero no se llamó a activate()
 
+# Salud por motor (Fase 3 — autoconocimiento de capacidades). Eje separado de
+# `connected`: un motor puede estar `connected=True` (el módulo importó) pero
+# `health=DEGRADED` (su health-check devolvió False o lanzó).
+HEALTH_AVAILABLE = "AVAILABLE"
+HEALTH_DEGRADED = "DEGRADED"
+HEALTH_UNAVAILABLE = "UNAVAILABLE"
+
 
 @dataclass
 class EngineResult:
@@ -93,34 +100,69 @@ def _ordered(specs: List[EngineSpec]) -> List[EngineSpec]:
 # ---------------------------------------------------------------------------
 
 def _check_health(spec: EngineSpec) -> tuple:
-    """(available: bool, detail: str). Defensivo."""
+    """(connected: bool, health: str, reason: str). Defensivo.
+
+    Separa dos causas que antes se conflacionaban bajo un único
+    `available=False` (Fase 3, autoconocimiento de capacidades):
+      - connected=False (health=UNAVAILABLE) — el módulo asociado ni siquiera
+        importa (p.ej. `ImportError`/`ModuleNotFoundError`, dependencia
+        faltante). No se puede saber nada más del motor.
+      - connected=True, health=DEGRADED — el módulo importó pero su
+        health() devolvió False o lanzó una excepción distinta de import
+        (p.ej. `AttributeError` porque falta un símbolo esperado). El motor
+        EXISTE y está CONECTADO, pero algo en su chequeo de salud falla.
+      - connected=True, health=AVAILABLE — pasa su health-check.
+
+    `reason` es siempre un string determinista y acotado (nunca vuelca
+    valores de variables de entorno ni rutas absolutas fuera del mensaje de
+    excepción truncado).
+    """
     if spec.health is None:
-        return True, "sin health-check (se asume disponible)"
+        return True, HEALTH_AVAILABLE, "sin health-check (se asume disponible)"
     try:
         ok = bool(spec.health())
-        return ok, "" if ok else "health devolvió False"
+        if ok:
+            return True, HEALTH_AVAILABLE, ""
+        return True, HEALTH_DEGRADED, "health devolvió False"
+    except ImportError as exc:  # incluye ModuleNotFoundError
+        return False, HEALTH_UNAVAILABLE, f"{type(exc).__name__}: {str(exc)[:120]}"
     except Exception as exc:  # noqa: BLE001 - defensivo a propósito
-        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+        # El módulo se alcanzó a ejecutar (no fue un fallo de import) pero
+        # algo dentro de health() falló — degradado, no inexistente.
+        return True, HEALTH_DEGRADED, f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
 def get_engine_status() -> Dict[str, Any]:
     """Snapshot read-only del estado de todos los motores (para /v1/engines).
-    No activa nada."""
+    No activa nada.
+
+    `by_tier` se calcula UNA sola vez aquí (inventario único canónico, Fase 3):
+    los consumidores (self_context, system_report, universe_observer,
+    capability_context) deben leer `by_tier` de este dict en vez de
+    re-tallear `tier` cada uno por su cuenta.
+    """
     engines = []
+    by_tier: Dict[str, int] = {}
     for spec in reg.all_specs():
-        available, detail = _check_health(spec)
+        connected, health, reason = _check_health(spec)
+        available = health == HEALTH_AVAILABLE  # compat: mismo booleano que antes
+        tier_val = spec.tier.value
+        by_tier[tier_val] = by_tier.get(tier_val, 0) + 1
         engines.append({
             "name": spec.name,
             "group": spec.group,
-            "tier": spec.tier.value,
+            "tier": tier_val,
             "available": available,
+            "connected": connected,
+            "health": health,
             "gated_by": spec.gated_by,
             "description": spec.description,
-            "detail": detail,
+            "detail": reason,
         })
     return {
         "total": len(engines),
         "available": sum(1 for e in engines if e["available"]),
+        "by_tier": by_tier,
         "engines": engines,
     }
 
@@ -133,10 +175,13 @@ def _decide_and_run(spec: EngineSpec, profile: str, dry_run: bool = False) -> En
     tier = spec.tier
     base = dict(name=spec.name, group=spec.group, tier=tier.value)
 
-    # 1) Health read-only primero.
-    available, hdetail = _check_health(spec)
-    if not available:
-        return EngineResult(status=UNAVAILABLE, detail=hdetail, **base)
+    # 1) Health read-only primero. Conserva el comportamiento exacto previo:
+    # tanto UNAVAILABLE (import fallido) como DEGRADED (health() falló) se
+    # tratan igual aquí (ambos bloquean la activación) — la distinción entre
+    # ambos solo la expone `get_engine_status()` (Fase 3), no `activate_all()`.
+    connected, health, hreason = _check_health(spec)
+    if health != HEALTH_AVAILABLE:
+        return EngineResult(status=UNAVAILABLE, detail=hreason, **base)
 
     # 2) EXTERNAL: jamás se activa desde aquí. Solo conectar+verificar.
     if tier == Tier.EXTERNAL:

@@ -29,6 +29,7 @@ Creador: Mario Bravo Castro
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -89,6 +90,16 @@ class IntentDecision:
                      contrato ligero cross-módulo (usar `evidence` para eso);
                      es detalle de implementación que route() necesita para
                      preservar su contrato exacto.
+    capability_query — True si el mensaje pregunta específicamente por las
+                     capacidades de Vectrax (qué puede hacer / qué tiene
+                     disponible o conectado / puede buscar online / qué le
+                     falta / dónde busca). Fase 3 (autoconocimiento
+                     verificable de capacidades) — campo aditivo, no cambia
+                     el contrato de la Fase 2. Se deriva de la evidencia
+                     `capability_query` añadida dentro de
+                     `_gather_primary_intent_evidence()` (ver
+                     `_detect_capability_query`); NO decide primary_intent
+                     ni crea un clasificador nuevo.
     """
     primary_intent: str
     domain: str = ""
@@ -98,6 +109,7 @@ class IntentDecision:
     evidence: List[Evidence] = field(default_factory=list)
     conflicts: List[str] = field(default_factory=list)
     raw_signals: Dict[str, Any] = field(default_factory=dict)
+    capability_query: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -109,6 +121,7 @@ class IntentDecision:
             "evidence": [e.to_dict() for e in self.evidence],
             "conflicts": self.conflicts,
             "raw_signals": self.raw_signals,
+            "capability_query": self.capability_query,
         }
 
     def summary(self) -> str:
@@ -142,6 +155,69 @@ def _semantic_domain_enabled() -> bool:
     `external_gateway._semantic_domain_enabled()`."""
     import os
     return os.getenv("VX_SEMANTIC_DOMAIN", "1") not in ("0", "false", "False", "")
+
+
+# ---------------------------------------------------------------------------
+# Evidencia "capability_query" (Fase 3, paso 4) — pregunta específica sobre
+# capacidades de Vectrax. NO es un clasificador nuevo ni una fuente paralela
+# de decisión: es evidencia adicional que se añade DENTRO de
+# `_gather_primary_intent_evidence()` (ver abajo) y que `resolve_intent()`
+# usa únicamente para poblar `IntentDecision.capability_query`. Nunca decide
+# `primary_intent`, `domain`, `task_type` ni `voice_intent`.
+# ---------------------------------------------------------------------------
+
+# Regex propio y acotado a este archivo: aisla el sub-caso "pregunta sobre
+# capacidades" (qué puedes hacer / qué tienes disponible-conectado / puedes
+# buscar online / qué te falta / dónde buscas). Deliberadamente ESPECÍFICO
+# para no activarse ante menciones casuales de auto-referencia ("¿quién te
+# creó?", "qué has observado", "cómo estás") que ya cubre
+# `self_reference_layer` con otro propósito (cambiar la voz a primera
+# persona, no afirmar capacidades).
+_CAPABILITY_QUESTION_RE = re.compile(
+    r"(?:"
+    r"qu[eé]\s+(?:puedes|sabes)\s+hacer"
+    r"|qu[eé]\s+tienes\s+(?:disponible|disponibles|conectado|conectados|activo|activos)"
+    r"|qu[eé]\s+(?:motores|herramientas|capacidades|proveedores|servicios|integraciones)\s+tienes"
+    r"|est[aá]s?\s+conectad[oa]\s+a"
+    r"|tienes\s+acceso\s+a"
+    r"|puedes\s+(?:buscar|conectarte|acceder)(?:\s+(?:en\s+)?internet|\s+online)?"
+    r"|qu[eé]\s+(?:te\s+)?falta(?:r[ií]a)?\s+(?:para|hacer)"
+    r"|d[oó]nde\s+buscas"
+    r"|what\s+can\s+you\s+do"
+    r"|what(?:'s|\s+is)\s+available"
+    r"|what\s+(?:tools|engines|capabilities|providers|services|integrations)\s+do\s+you\s+have"
+    r"|are\s+you\s+connected\s+to"
+    r"|can\s+you\s+(?:search|access|connect)(?:\s+(?:the\s+)?internet|\s+online)?"
+    r"|what(?:'s|\s+is)\s+missing"
+    r"|where\s+(?:do\s+you\s+)?search"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _detect_capability_query(text: str, self_ref: Optional[Any] = None) -> bool:
+    """True si `text` pregunta específicamente por capacidades de Vectrax.
+
+    Reutiliza `vectrax.self_reference_layer.evaluate()` (ya existente en el
+    pipeline, invocado por el llamador) como señal de auto-referencia — no
+    reimplementa sus patrones — y aplica el regex propio de arriba para
+    aislar el sub-caso de "pregunta de capacidad". `self_ref` NO es un
+    prerequisito estricto: una pregunta en segunda persona directa ("¿qué
+    puedes hacer?", "can you search online?") es válida aunque el mensaje no
+    nombre explícitamente a Vectrax — exactamente igual que cualquier otro
+    mensaje dirigido al asistente en una conversación. `self_ref` se acepta
+    para paridad de evidencia con el resto de `_gather_primary_intent_evidence`
+    (permite a futuros llamadores reforzar la señal cuando además hay
+    auto-referencia explícita) pero no bloquea la detección. Defensivo:
+    nunca lanza.
+    """
+    if not text:
+        return False
+    try:
+        return bool(_CAPABILITY_QUESTION_RE.search(text))
+    except Exception as exc:
+        logger.debug("capability_query regex failed: %s", exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +262,30 @@ def _gather_primary_intent_evidence(
     conflicts: List[str] = []
     semantic_result = None
     stripped = text.strip()
+
+    # --- Fase 3, paso 4: evidencia "capability_query" ---
+    # Reutiliza self_reference_layer.evaluate() (ya existente) + el regex
+    # propio de este archivo (_detect_capability_query). Se ejecuta ANTES de
+    # cualquier rama/return para que la evidencia quede presente sin importar
+    # qué camino tome la función (comando, fusión normal o fallback) — todas
+    # las ramas devuelven esta MISMA lista `evidence`. No decide
+    # primary_intent ni crea un clasificador nuevo.
+    try:
+        from vectrax.self_reference_layer import evaluate as _sr_evaluate
+        _self_ref = _sr_evaluate(stripped)
+    except Exception as exc:
+        logger.debug("self_reference_layer unavailable: %s", exc)
+        _self_ref = None
+    if _detect_capability_query(stripped, _self_ref):
+        _cap_confidence = (
+            0.9 if (_self_ref is not None and getattr(_self_ref, "self_reference", False))
+            else 0.75
+        )
+        evidence.append(Evidence(
+            source="self_reference_layer+capability_pattern",
+            claim="capability_query",
+            confidence=_cap_confidence,
+        ))
 
     # --- Comandos explícitos: MISMA detección de primera capa que
     # SmartRouter.classify_intent() usa antes de tocar semántico/regex.
@@ -472,6 +572,14 @@ def resolve_intent(text: str, channel: str = "user", owner: str = "") -> IntentD
 
     all_evidence = intent_evidence + domain_evidence + task_evidence + voice_evidence
 
+    # Fase 3, paso 4: capability_query se deriva de la evidencia ya
+    # recolectada dentro de _gather_primary_intent_evidence() — no se
+    # recalcula aquí ni se vuelve a invocar el detector.
+    capability_query = any(
+        e.source == "self_reference_layer+capability_pattern" and e.claim == "capability_query"
+        for e in intent_evidence
+    )
+
     decision = IntentDecision(
         primary_intent=primary_intent or "",
         domain=domain,
@@ -481,6 +589,7 @@ def resolve_intent(text: str, channel: str = "user", owner: str = "") -> IntentD
         evidence=all_evidence,
         conflicts=conflicts,
         raw_signals=raw_signals or {},
+        capability_query=capability_query,
     )
     logger.info("resolve_intent: %s", decision.summary())
     return decision

@@ -135,15 +135,15 @@ def get_global_state() -> Dict[str, Any]:
         st = get_engine_status()
         engines["total"] = st.get("total", 0)
         engines["available"] = st.get("available", 0)
-        by_tier: Dict[str, int] = {}
+        # Fase 3 — inventario único canónico: by_tier viene de
+        # get_engine_status() (calculado una sola vez en bootstrap.py).
+        engines["by_tier"] = st.get("by_tier", {})
         for e in st.get("engines", []):
             t = e.get("tier", "?")
-            by_tier[t] = by_tier.get(t, 0) + 1
             if t == "gated_internal":
                 engines["gated"].append(e.get("name", "?"))
             elif t == "external":
                 engines["external"].append(e.get("name", "?"))
-        engines["by_tier"] = by_tier
     except Exception as exc:
         logger.debug("global_state engines failed: %s", exc)
 
@@ -341,6 +341,48 @@ def build_global_report(
             ),
         ]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Reporte de capacidades (Fase 3, autoconocimiento verificable) — delega
+# EXCLUSIVAMENTE en capability_context/capability_narrator, ya validados.
+# ---------------------------------------------------------------------------
+# A diferencia de build_global_report() (que DELIBERADAMENTE no vuelca
+# nombres de motores individuales — ver
+# test_build_report_full_has_all_sections::"voice_engine" not in report—,
+# este reporte SÍ nombra capacidades específicas cuando corresponde, porque
+# su propósito es justamente responder "qué puedo hacer / qué me falta".
+# Son dos reportes con objetivos distintos dentro del mismo módulo; ninguno
+# reemplaza al otro. Todavía NO está conectado a ningún gate del pipeline
+# de mensajes (eso sigue pendiente, detrás de un flag que aún no existe).
+
+def build_capability_report(lang: str = "es") -> str:
+    """Texto natural y determinista de capacidades, delegando en
+    `core.self_observation.capability_context.build_capability_context()` +
+    `core.self_observation.capability_narrator.narrate()` — no reimplementa
+    nada de su lógica.
+
+    Usa una `IntentDecision` genérica (`capability_query=True`, sin
+    `domain`/`task_type` específico) para obtener el snapshot COMPLETO de
+    capacidades — apropiado para un reporte de sistema, a diferencia de una
+    consulta puntual de usuario que sí filtraría por dominio/task_type.
+
+    100% determinista, sin LLM. Defensivo: nunca lanza; si alguna fuente
+    falla, retorna cadena vacía (igual que el resto de este módulo).
+    """
+    if lang not in ("es", "en"):
+        lang = "es"
+    try:
+        from core.intent_ssot import IntentDecision
+        from core.self_observation.capability_context import build_capability_context
+        from core.self_observation.capability_narrator import narrate
+
+        decision = IntentDecision(primary_intent="", capability_query=True)
+        context = build_capability_context(decision)
+        return narrate(context, lang=lang)
+    except Exception as exc:
+        logger.debug("build_capability_report failed: %s", exc)
+        return ""
 
 
 # ---------------------------------------------------------------------------

@@ -340,12 +340,15 @@ def _read_engines_state() -> str:
             return ""
         available = status.get("available", 0)
 
-        by_tier: dict = {}
+        # Fase 3 — inventario único canónico: by_tier viene de
+        # get_engine_status() (calculado una sola vez en bootstrap.py); ya no
+        # se re-tallea aquí para evitar que este bloque diverja de
+        # system_report.py / universe_observer.py.
+        by_tier: dict = status.get("by_tier", {})
         gated: list = []
         external: list = []
         for e in status.get("engines", []):
             tier = e.get("tier", "?")
-            by_tier[tier] = by_tier.get(tier, 0) + 1
             if tier == "gated_internal":
                 gated.append(e.get("name", "?"))
             elif tier == "external":
