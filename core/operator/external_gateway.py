@@ -1008,7 +1008,64 @@ class ExternalGateway:
         if not response_text:
             try:
                 from vectrax.self_context import is_self_referential, resolve_self_aware
-                if is_self_referential(content):
+                _self_ref_hit = is_self_referential(content)
+
+                # ═══════════════════════════════════════════════════════
+                # Fase 3, paso 8 — CAPABILITY SELF-AWARENESS (modo sombra).
+                # Flag VX_CAPABILITY_SELF_AWARENESS (default OFF): apagado,
+                # este bloque ni siquiera corre — cero cambios de
+                # comportamiento. Encendido: consulta decision.capability_query
+                # (SSOT, core.intent_ssot.resolve_intent()) EN PARALELO al
+                # gate real de arriba (is_self_referential sigue siendo el
+                # único que decide si se llama a resolve_self_aware) —
+                # construye CapabilityContext y registra SOLO los gaps
+                # verificados en observation_ledger (domain=self_knowledge).
+                # Nunca sustituye response_text, nunca activa enforcement,
+                # nunca aprueba ideas (ver plan Fase 3, sección "Rollout en
+                # modo observación").
+                # ═══════════════════════════════════════════════════════
+                try:
+                    import os as _cap_os
+                    _cap_flag = _cap_os.environ.get(
+                        "VX_CAPABILITY_SELF_AWARENESS", "",
+                    ).strip().lower()
+                except Exception:
+                    _cap_flag = ""
+                if _cap_flag not in ("", "0", "false", "off", "no"):
+                    try:
+                        from core.intent_ssot import resolve_intent as _cap_resolve_intent
+                        from core.self_observation.capability_context import (
+                            build_capability_context as _cap_build_ctx,
+                            record_capability_gap as _cap_record_gap,
+                        )
+                        _cap_decision = _cap_resolve_intent(content)
+                        if _cap_decision.capability_query:
+                            _cap_ctx = _cap_build_ctx(_cap_decision)
+                            for _gap in _cap_ctx.gaps:
+                                _cap_record_gap(
+                                    capability_name=_gap.name,
+                                    health=_gap.health,
+                                    authorized=_gap.authorized,
+                                    reason=_gap.reason,
+                                    query_domain=_cap_decision.domain,
+                                    query_task_type=_cap_decision.task_type,
+                                )
+                            logger.info(
+                                "Pipeline: CAPABILITY-SHADOW eval | domain=%s | "
+                                "task=%s | entries=%d | gaps=%d | "
+                                "self_reference_gate=%s | user=%s",
+                                _cap_decision.domain or "-",
+                                _cap_decision.task_type or "-",
+                                len(_cap_ctx.entries), len(_cap_ctx.gaps),
+                                _self_ref_hit, user_id[:20],
+                            )
+                    except Exception as _cap_exc:
+                        logger.debug(
+                            "Capability self-awareness shadow eval failed "
+                            "(passthrough): %s", _cap_exc,
+                        )
+
+                if _self_ref_hit:
                     from core.language_gate import get_user_language
                     _lang = get_user_language(user_id, content)
                     _self_answer = resolve_self_aware(content, lang=_lang, user_id=user_id)

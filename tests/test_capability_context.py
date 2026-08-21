@@ -283,30 +283,31 @@ class TestRecordCapabilityGap:
 
 
 # ===========================================================================
-# 6. Sin flag, sin conexión al pipeline — comportamiento existente intacto
+# 6. Sin flag: comportamiento existente intacto. `capability_context.py`
+#    en sí mismo nunca lee el flag — solo `external_gateway.py` lo hace
+#    (Fase 3, paso 8: shadow gate detrás de VX_CAPABILITY_SELF_AWARENESS,
+#    ver tests/test_external_gateway_capability_shadow.py para el
+#    comportamiento de shadow mode en sí).
 # ===========================================================================
 
 class TestNoWiringYet:
-    def test_flag_not_wired_anywhere_functionally(self):
+    def test_capability_context_module_never_reads_the_flag(self):
         """`capability_context.py` puede MENCIONAR el nombre del flag en su
-        docstring (documentando que el paso 7 lo usará después) pero nunca
-        debe LEERLO como env var todavía (ningún `os.environ`/`getenv`).
-        `external_gateway.py` no debe mencionarlo en absoluto — el paso 7
-        (conectar el gate detrás del flag) sigue pendiente."""
+        docstring (documentando que el paso 7/8 lo usarán en el gateway)
+        pero nunca debe LEERLO como env var por su cuenta (ningún
+        `os.environ`/`getenv`) — el flag es responsabilidad exclusiva del
+        punto de conexión en `external_gateway.py`."""
         import inspect
         import core.self_observation.capability_context as cc
-        import core.operator.external_gateway as gw
         cc_source = inspect.getsource(cc)
         assert 'getenv("VX_CAPABILITY_SELF_AWARENESS"' not in cc_source
         assert 'environ.get("VX_CAPABILITY_SELF_AWARENESS"' not in cc_source
-        assert "VX_CAPABILITY_SELF_AWARENESS" not in inspect.getsource(gw)
-
-    def test_external_gateway_does_not_import_capability_context(self):
-        import inspect
-        import core.operator.external_gateway as gw
-        assert "capability_context" not in inspect.getsource(gw)
 
     def test_self_context_does_not_import_capability_context(self):
+        """self_context.py (paso 7) consulta el SSOT (intent_ssot.
+        resolve_intent().capability_query) directamente — nunca importa ni
+        menciona capability_context.py. Solo external_gateway.py (paso 8)
+        se conecta a capability_context, y solo detrás del flag."""
         import inspect
         import vectrax.self_context as sc
         assert "capability_context" not in inspect.getsource(sc)
