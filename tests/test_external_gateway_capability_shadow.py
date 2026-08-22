@@ -39,6 +39,17 @@ def clean_singletons():
     reset_gateway()
 
 
+@pytest.fixture(autouse=True)
+def no_response_grounding(monkeypatch):
+    """Fase 4: este archivo fija el contrato de la OBSERVACIÓN (Fase 3), que
+    sigue vigente tal cual. La promoción a respuesta visible vive detrás de
+    `VX_CAPABILITY_RESPONSE_GROUNDING` y se cubre en
+    `tests/test_external_gateway_capability_grounding.py`. Se apaga aquí de
+    forma explícita para que estas aserciones sigan siendo herméticas aunque
+    el flag esté encendido en el entorno."""
+    monkeypatch.delenv("VX_CAPABILITY_RESPONSE_GROUNDING", raising=False)
+
+
 # Content que satisface AMBOS detectores con sus patrones reales (sin
 # mockear ninguno de los dos): vectrax/self_context.py::_SELF_REFERENCE
 # ("motor(es)?") y core/intent_ssot.py::_CAPABILITY_QUESTION_RE
