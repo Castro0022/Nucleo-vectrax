@@ -392,123 +392,111 @@ class TestCapabilityResponseGroundingFlagOn:
 
 
 # ===========================================================================
-# Cadena constitucional única (decisiones 4 y 5), en modo enforce.
+# Cadena constitucional única, en modo enforce.
+#
+# Estos tests NO mockean `gate_check` para fabricar veredictos. Sustituyen UN
+# evaluador real dentro de `constitutional_filter._EVALUATORS` (el patrón que
+# ya usa tests/test_constitutional_filter.py) y dejan que `evaluate()` calcule
+# el veredicto agregado de verdad, con `gate_check` y DecisionAuthority reales
+# salvo donde se indique.
+#
+# Este PR NO implementa corrección constitucional: `ActionProposal` no
+# transporta el texto de la respuesta ni `fallback_sources`, y ninguno de los 7
+# evaluadores los inspecciona, así que re-narrar no cambiaría ninguna entrada
+# de `evaluate()` y una segunda evaluación devolvería el mismo veredicto. El
+# gate evalúa UNA vez.
 # ===========================================================================
 
-def _verdict(overall, flagged=()):
-    """ConstitutionalVerdict mínimo para dirigir el gate en los tests."""
-    from core.operator.constitutional_filter import PrincipleVerdict
 
-    class _R:
-        def __init__(self, number, v):
-            self.number, self.verdict, self.name = number, v, f"L{number}"
+def _with_forced_law(law_number, verdict, reason="forzado por test"):
+    """Sustituye el evaluador de UNA ley por uno que devuelve `verdict`. Los
+    otros seis siguen siendo los reales y el agregado lo calcula evaluate()."""
+    import core.operator.constitutional_filter as _cf
+    from core.operator.constitutional_filter import PrincipleResult
 
-    class _V:
-        def __init__(self):
-            self.overall = overall
-            self.results = [_R(n, PrincipleVerdict.CAUTION) for n in flagged]
-
-    return _V()
-
-
-class _Decision:
-    def __init__(self, auto_approved):
-        self.auto_approved = auto_approved
+    forced = lambda proposal: PrincipleResult(  # noqa: E731
+        number=law_number, name=f"L{law_number}", verdict=verdict, reason=reason,
+    )
+    evaluators = list(_cf._EVALUATORS)
+    evaluators[law_number - 1] = forced
+    return patch.object(_cf, "_EVALUATORS", tuple(evaluators))
 
 
 class TestCapabilityConstitutionalChain:
 
-    def _run(self, monkeypatch, gate_side_effect, *, user_id,
+    def _run(self, monkeypatch, *, user_id, extra_patches=(),
              legacy=_LEGACY_PARTIAL, ctx=None):
+        """Corre el camino grounded en enforce con el filtro REAL, espiando
+        `gate_check` sin sustituir su comportamiento."""
+        import core.operator.constitutional_guard as guard
+
         _both_flags_on(monkeypatch)
         gw = ExternalGateway()
-        # `fallback_sources` no vacío para que la corrección determinista
-        # (re-narrar sin ellos) produzca un texto REALMENTE distinto. Con la
-        # lista vacía la corrección sería un no-op y se saltaría por diseño
-        # (ver test_correction_skipped_when_nothing_to_soften).
-        ctx = ctx if ctx is not None else _prod_ctx(fallback_sources=["online_search"])
         stack = _grounding_env(legacy=legacy, ctx=ctx)
-        stack.extend([
-            patch("core.operator.constitutional_mode.is_enforce", return_value=True),
-            patch(
-                "core.operator.constitutional_guard.gate_check",
-                side_effect=gate_side_effect,
-            ),
-        ])
+        stack.append(
+            patch("core.operator.constitutional_mode.is_enforce", return_value=True)
+        )
+        stack.append(
+            patch.object(guard, "gate_check", wraps=guard.gate_check)
+        )
+        stack.extend(extra_patches)
         started = [cm.start() for cm in stack]
-        mock_gate = started[-1]
+        spy_gate = started[len(stack) - len(extra_patches) - 1]
         try:
-            return _send(gw, user_id=user_id), mock_gate
+            return _send(gw, user_id=user_id), spy_gate
         finally:
             for cm in reversed(stack):
                 cm.stop()
 
-    def test_pass_traverses_once_unaltered(self, monkeypatch):
-        from core.operator.constitutional_filter import PrincipleVerdict
-        result, mock_gate = self._run(
-            monkeypatch, lambda p: (_verdict(PrincipleVerdict.PASS), None),
-            user_id="tg:cap_chain_pass",
-        )
-        assert mock_gate.call_count == 1
+    def test_grounded_delivered_under_real_filter(self, monkeypatch):
+        """Camino realista: filtro y DecisionAuthority reales. La respuesta
+        grounded se entrega y el gate evalúa exactamente una vez."""
+        result, spy_gate = self._run(monkeypatch, user_id="tg:cap_chain_real")
+        assert spy_gate.call_count == 1, "el gate evalúa UNA sola vez"
+        assert result.response != eg._CONSTITUTIONAL_FALLBACK_ES
         for name in _PROD_GAPS:
             assert name in result.response
 
-    def test_caution_gets_exactly_one_correction_and_one_reevaluation(self, monkeypatch):
+    def test_forced_block_terminates_with_safe_response_never_legacy(self, monkeypatch):
+        """BLOCK real (Ley 7 forzada, agregado calculado por evaluate()):
+        termina en la respuesta constitucional segura, nunca en la legacy."""
         from core.operator.constitutional_filter import PrincipleVerdict
-        verdicts = [
-            (_verdict(PrincipleVerdict.CAUTION, flagged=[4]), _Decision(False)),
-            (_verdict(PrincipleVerdict.PASS), None),
-        ]
-        result, mock_gate = self._run(
-            monkeypatch, lambda p: verdicts.pop(0), user_id="tg:cap_chain_caution1",
+        result, spy_gate = self._run(
+            monkeypatch, user_id="tg:cap_chain_block",
+            extra_patches=[_with_forced_law(7, PrincipleVerdict.BLOCK)],
         )
-        assert mock_gate.call_count == 2, "exactamente una re-evaluación"
-        assert result.source == "capability_grounded_corrected"
-        assert result.evidence["capability_corrections"] == 1
+        assert spy_gate.call_count == 1, "BLOCK es terminante"
+        assert result.response == eg._CONSTITUTIONAL_FALLBACK_ES
+        assert _LEGACY_PARTIAL not in result.response
+        for name in _PROD_GAPS:
+            assert name not in result.response
+        assert result.source == "constitutional_block"
 
-    def test_persistent_caution_ends_in_safe_response_never_recurses(self, monkeypatch):
+    def test_unauthorized_caution_terminates_with_safe_response(self, monkeypatch):
+        """CAUTION real + DecisionAuthority que NO autoriza: respuesta
+        constitucional segura. Se sustituye solo la autoridad (un componente
+        externo que legítimamente puede denegar), no el veredicto."""
+        import core.operator.constitutional_guard as guard
         from core.operator.constitutional_filter import PrincipleVerdict
-        result, mock_gate = self._run(
-            monkeypatch,
-            lambda p: (_verdict(PrincipleVerdict.CAUTION, flagged=[4]), _Decision(False)),
-            user_id="tg:cap_chain_caution2",
+
+        class _Denied:
+            auto_approved = False
+
+        result, spy_gate = self._run(
+            monkeypatch, user_id="tg:cap_chain_caution_denied",
+            extra_patches=[
+                _with_forced_law(4, PrincipleVerdict.CAUTION),
+                patch.object(
+                    guard, "_real_decision_authority", return_value=_Denied(),
+                ),
+            ],
         )
-        assert mock_gate.call_count == 2, "nunca una tercera evaluación"
+        assert spy_gate.call_count == 1, "sin re-evaluación: no hay corrección"
         assert result.response == eg._CONSTITUTIONAL_FALLBACK_ES
         assert result.source == "constitutional_caution_denied"
 
-    def test_block_never_falls_back_to_legacy(self, monkeypatch):
-        from core.operator.constitutional_filter import PrincipleVerdict
-        result, mock_gate = self._run(
-            monkeypatch, lambda p: (_verdict(PrincipleVerdict.BLOCK, flagged=[1]), None),
-            user_id="tg:cap_chain_block",
-        )
-        assert mock_gate.call_count == 1, "BLOCK es terminante, no se corrige"
-        assert result.response == eg._CONSTITUTIONAL_FALLBACK_ES
-        assert _LEGACY_PARTIAL not in result.response
-        assert result.source == "constitutional_block"
-
-    def test_correction_skipped_when_nothing_to_soften(self, monkeypatch):
-        """Si el contexto no tiene `fallback_sources`, re-narrar produciría el
-        MISMO texto: la corrección se salta por diseño y no se gasta una
-        segunda evaluación en un cambio inexistente."""
-        from core.operator.constitutional_filter import PrincipleVerdict
-        result, mock_gate = self._run(
-            monkeypatch,
-            lambda p: (_verdict(PrincipleVerdict.CAUTION, flagged=[4]), _Decision(False)),
-            user_id="tg:cap_chain_noop",
-            ctx=_prod_ctx(fallback_sources=[]),
-        )
-        assert mock_gate.call_count == 1
-        assert result.response == eg._CONSTITUTIONAL_FALLBACK_ES
-        assert result.evidence["capability_corrections"] == 0
-
-    def test_single_coherent_trace(self, monkeypatch):
-        from core.operator.constitutional_filter import PrincipleVerdict
-        result, _ = self._run(
-            monkeypatch, lambda p: (_verdict(PrincipleVerdict.PASS), None),
-            user_id="tg:cap_chain_trace",
-        )
+    def test_trace_reports_one_verdict_and_zero_corrections(self, monkeypatch):
+        result, _ = self._run(monkeypatch, user_id="tg:cap_chain_trace")
         ev = result.evidence
         for key in (
             "capability_original_len", "capability_grounded_len",
@@ -517,3 +505,5 @@ class TestCapabilityConstitutionalChain:
             "capability_technical_fallback",
         ):
             assert key in ev, f"falta {key} en la traza"
+        assert len(ev["capability_verdicts"]) == 1, "exactamente un veredicto"
+        assert ev["capability_corrections"] == 0, "este PR no corrige"

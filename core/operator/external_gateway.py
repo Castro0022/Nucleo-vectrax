@@ -225,16 +225,6 @@ class GatewayResult:
     timestamp: float = 0.0
     processed: bool = False
     error: str = ""
-    # Fase 4 (grounding de capacidades): contexto verificado que viaja hasta
-    # `_constitutional_gate()` para que la ÚNICA cadena constitucional pueda
-    # aplicar su corrección determinista sin reconstruir nada. Deliberadamente
-    # fuera de `to_dict()`: no forma parte del contrato serializado ni viaja al
-    # canal — es estado interno del pipeline, vivo solo dentro de
-    # `receive_message()`. `None` en toda respuesta que no sea grounded.
-    capability_ctx: Optional[Any] = field(
-        default=None, repr=False, compare=False,
-    )
-    capability_lang: str = field(default="", repr=False, compare=False)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -454,7 +444,7 @@ class ExternalGateway:
             from core.operator.constitutional_guard import shadow_check
             shadow_verdict = shadow_check(proposal)
             self._log_capability_trace(
-                result, verdict_chain=[shadow_verdict], corrections=0,
+                result, verdict_chain=[shadow_verdict],
                 final_source=result.source, user_id=user_id,
             )
             return
@@ -476,46 +466,21 @@ class ExternalGateway:
         if not gate_source:
             # PASS, o CAUTION ya autorizado por DecisionAuthority — sin cambios.
             self._log_capability_trace(
-                result, verdict_chain=[verdict], corrections=0,
+                result, verdict_chain=[verdict],
                 final_source=result.source, user_id=user_id,
             )
             return
 
-        # ── Fase 4: UNA corrección determinista + UNA re-evaluación ─────────
-        # Solo para una respuesta grounded de capacidades (result.capability_ctx
-        # presente) y solo ante CAUTION-no-autorizado. BLOCK es terminante y no
-        # se corrige. La ausencia de recursión es ESTRUCTURAL: dos llamadas
-        # literales en secuencia, sin bucle ni reentrada.
-        corrections = 0
-        if (
-            gate_source == "constitutional_caution_denied"
-            and getattr(result, "capability_ctx", None) is not None
-        ):
-            corrected = self._capability_corrected_narration(result)
-            if corrected and corrected != result.response:
-                result.response = corrected
-                corrections = 1
-                proposal.interaction_recorded = bool(corrected)
-                verdict, decision = gate_check(proposal)  # única re-evaluación
-                gate_source = ""
-                if verdict.overall == PrincipleVerdict.BLOCK:
-                    gate_source = "constitutional_block"
-                elif (
-                    verdict.overall == PrincipleVerdict.CAUTION
-                    and decision is not None
-                    and not decision.auto_approved
-                ):
-                    gate_source = "constitutional_caution_denied"
-                if not gate_source:
-                    # La corrección determinista satisfizo al filtro.
-                    result.source = "capability_grounded_corrected"
-                    result.resolve_mode = "capability_grounded_corrected"
-                    self._log_capability_trace(
-                        result, verdict_chain=[verdict], corrections=corrections,
-                        final_source=result.source, user_id=user_id,
-                    )
-                    return
-
+        # NOTA (Fase 4): aquí NO hay corrección + re-evaluación. Se evaluó y se
+        # descartó: `ActionProposal` no transporta el texto de la respuesta ni
+        # `fallback_sources`, y ninguno de los 7 evaluadores los inspecciona
+        # (ver core/operator/constitutional_filter.py). Re-narrar solo cambia
+        # `result.response`, que no alimenta ninguna entrada de `evaluate()`,
+        # así que una segunda `gate_check()` recibiría una propuesta idéntica y
+        # devolvería el mismo veredicto. Sería una corrección aparente, no real.
+        # Una corrección constitucional legítima exigiría que la propuesta
+        # transportara hechos que el veredicto pueda releer — cambio de contrato
+        # fuera del alcance de este PR.
         flagged = [
             f"L{r.number}={r.verdict.value}" for r in verdict.results
             if r.verdict != PrincipleVerdict.PASS
@@ -539,51 +504,30 @@ class ExternalGateway:
             pass
 
         logger.warning(
-            "Pipeline: CONSTITUTIONAL-GATE %s | overall=%s | flagged=%s | "
-            "corrections=%d | user=%s",
-            gate_source, verdict.overall.value, flagged, corrections,
-            user_id[:20],
+            "Pipeline: CONSTITUTIONAL-GATE %s | overall=%s | flagged=%s | user=%s",
+            gate_source, verdict.overall.value, flagged, user_id[:20],
         )
-        if getattr(result, "capability_ctx", None) is not None:
-            self._log_capability_trace(
-                result, verdict_chain=[verdict], corrections=corrections,
-                final_source=gate_source, user_id=user_id,
-            )
-
-    def _capability_corrected_narration(self, result: "GatewayResult") -> str:
-        """Corrección determinista y ÚNICA de una narración de capacidades que
-        el filtro no autorizó: re-narra sobre una copia del contexto sin
-        `fallback_sources`, que es la única afirmación prospectiva del texto
-        (`capability_narrator._describe_fallback`). Todo lo demás — el estado
-        verificado de cada capacidad — se conserva intacto.
-
-        Sin LLM. Nunca lanza: ante cualquier fallo devuelve "" y el llamador
-        sigue al camino de respuesta constitucional segura."""
-        try:
-            import copy
-            from core.self_observation.capability_narrator import narrate
-            lang = getattr(result, "capability_lang", "") or "es"
-            if lang not in _CAPABILITY_NARRATOR_LANGS:
-                return ""
-            conservative = copy.copy(result.capability_ctx)
-            conservative.fallback_sources = []
-            return narrate(conservative, lang=lang) or ""
-        except Exception as exc:
-            logger.debug("Capability corrective narration failed: %s", exc)
-            return ""
+        self._log_capability_trace(
+            result, verdict_chain=[verdict], final_source=gate_source,
+            user_id=user_id,
+        )
 
     def _log_capability_trace(
         self, result: "GatewayResult", *, verdict_chain: list,
-        corrections: int, final_source: str, user_id: str,
+        final_source: str, user_id: str,
     ) -> None:
-        """Traza única y coherente de la cadena de grounding de capacidades
-        (decisión 7). No hace nada si el mensaje no pasó por ese camino.
-        Nunca lanza."""
+        """Traza única y coherente de la cadena de grounding de capacidades.
+        No hace nada si el mensaje no pasó por ese camino. Nunca lanza.
+
+        `capability_corrections` es siempre 0 y `capability_verdicts` lleva
+        siempre exactamente un veredicto: en este PR el gate evalúa UNA vez y
+        no corrige (ver la nota en `_constitutional_gate`). Los campos se
+        emiten igual, de forma explícita, para que la traza afirme el hecho en
+        vez de dejarlo implícito por ausencia."""
         try:
             evidence = dict(result.evidence or {})
             involved = (
-                getattr(result, "capability_ctx", None) is not None
-                or bool(evidence.get("capability_technical_fallback"))
+                bool(evidence.get("capability_technical_fallback"))
                 or "capability_original_len" in evidence
             )
             if not involved:
@@ -591,18 +535,18 @@ class ExternalGateway:
             evidence["capability_verdicts"] = [
                 v.overall.value for v in verdict_chain if v is not None
             ]
-            evidence["capability_corrections"] = corrections
+            evidence["capability_corrections"] = 0
             evidence["capability_final_source"] = final_source
             result.evidence = evidence
             logger.info(
                 "Pipeline: CAPABILITY-TRACE | original_len=%s | grounded_len=%s | "
-                "discrepancy=%s | verdicts=%s | corrections=%d | final_source=%s | "
+                "discrepancy=%s | verdicts=%s | corrections=0 | final_source=%s | "
                 "technical_fallback=%s | user=%s",
                 evidence.get("capability_original_len", "-"),
                 evidence.get("capability_grounded_len", "-"),
                 evidence.get("capability_discrepancy", "-"),
                 evidence.get("capability_verdicts", "-"),
-                corrections, final_source,
+                final_source,
                 evidence.get("capability_technical_fallback", "") or "-",
                 user_id[:20],
             )
@@ -612,18 +556,18 @@ class ExternalGateway:
     def _maybe_ground_capability_response(
         self, *, original_proposal: str, capability_ctx: Any,
         capability_decision: Any, lang: str, user_id: str,
-    ) -> Tuple[str, bool, str, List[str], str]:
+    ) -> Tuple[str, bool, List[str], str]:
         """Decide si la respuesta visible se sustituye por la narración
         determinista de capacidades.
 
-        Devuelve `(texto, grounded, lang, discrepancia, motivo_fallback)`.
+        Devuelve `(texto, grounded, discrepancia, motivo_fallback)`.
         Nunca lanza: cualquier fallo conserva `original_proposal` (fallback
         técnico), que sigue su curso hacia el ÚNICO gate constitucional final.
         """
         global _GROUNDING_MISCONFIG_WARNED
 
         if not _env_flag_on("VX_CAPABILITY_RESPONSE_GROUNDING"):
-            return original_proposal, False, "", [], "flag_off"
+            return original_proposal, False, [], "flag_off"
 
         # Contrato en capas: la observación (Fase 3) es precondición de la
         # promoción. Sin ella no existe contexto verificado que promover.
@@ -637,20 +581,20 @@ class ExternalGateway:
                     "contexto verificado que promover). Encienda también "
                     "VX_CAPABILITY_SELF_AWARENESS para activarlo.",
                 )
-            return original_proposal, False, "", [], "observation_disabled"
+            return original_proposal, False, [], "observation_disabled"
 
         if capability_decision is None or not getattr(
             capability_decision, "capability_query", False,
         ):
-            return original_proposal, False, "", [], "not_capability_query"
+            return original_proposal, False, [], "not_capability_query"
 
         if capability_ctx is None:
-            return original_proposal, False, "", [], "context_build_failed"
+            return original_proposal, False, [], "context_build_failed"
 
         # `narrate()` solo tiene plantillas es/en; fuera de ahí caería en
         # silencio a español. La respuesta legacy sí cubre los 9 idiomas.
         if lang not in _CAPABILITY_NARRATOR_LANGS:
-            return original_proposal, False, "", [], "lang_unsupported"
+            return original_proposal, False, [], "lang_unsupported"
 
         try:
             discrepancy = _material_discrepancy(original_proposal, capability_ctx)
@@ -661,24 +605,24 @@ class ExternalGateway:
                     "gaps=%d | user=%s",
                     len(getattr(capability_ctx, "gaps", []) or []), user_id[:20],
                 )
-                return original_proposal, False, lang, [], ""
+                return original_proposal, False, [], ""
 
             from core.self_observation.capability_narrator import narrate
             grounded = narrate(capability_ctx, lang=lang) or ""
             if not grounded:
-                return original_proposal, False, lang, discrepancy, "empty_narration"
+                return original_proposal, False, discrepancy, "empty_narration"
 
             logger.info(
                 "Pipeline: CAPABILITY-GROUNDING replace | discrepancy=%s | "
                 "original_len=%d | grounded_len=%d | user=%s",
                 discrepancy, len(original_proposal), len(grounded), user_id[:20],
             )
-            return grounded, True, lang, discrepancy, ""
+            return grounded, True, discrepancy, ""
         except Exception as exc:
             logger.debug(
                 "Capability grounding failed (legacy passthrough): %s", exc,
             )
-            return original_proposal, False, lang, [], "grounding_failed"
+            return original_proposal, False, [], "grounding_failed"
 
     def _do_receive_message(
         self,
@@ -1384,7 +1328,6 @@ class ExternalGateway:
         _capability_grounded = False
         _cap_ctx = None
         _cap_decision = None
-        _cap_lang = ""
         _cap_fallback_reason = ""
         _cap_discrepancy: List[str] = []
         _cap_original_len = 0
@@ -1475,7 +1418,7 @@ class ExternalGateway:
                         # materialmente completa, se conserva la prosa original.
                         # ═══════════════════════════════════════════════════
                         _cap_original_len = len(_self_answer)
-                        (response_text, _capability_grounded, _cap_lang,
+                        (response_text, _capability_grounded,
                          _cap_discrepancy, _cap_fallback_reason) = (
                             self._maybe_ground_capability_response(
                                 original_proposal=_self_answer,
@@ -2221,11 +2164,6 @@ class ExternalGateway:
             evidence=_evidence,
             timestamp=ts,
             processed=True,
-            # Fase 4: solo viaja si la respuesta es grounded — es lo que
-            # habilita la corrección determinista dentro del gate. No se
-            # serializa (fuera de to_dict()).
-            capability_ctx=_cap_ctx if _capability_grounded else None,
-            capability_lang=_cap_lang if _capability_grounded else "",
         )
 
     # -- Fast-path: respuestas instantáneas sin LLM -------------------------
