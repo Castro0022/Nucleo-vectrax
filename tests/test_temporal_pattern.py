@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import numpy as np
 import pytest
 
-from core.learn.temporal_pattern import detect_periodicity, PeriodicityResult
+from core.learn.temporal_pattern import detect_periodicity, PeriodicityResult, _period_grid
 
 
 def _synthetic_periodic(period: float, n_cycles: int, jitter_frac: float,
@@ -120,6 +120,35 @@ class TestNegativeDetection:
             for i in range(5)
         ]
         assert all(o is None for o in outcomes)
+
+
+# ===================================================================
+# Period grid bounds (max_period = span / 2 regression guard)
+# ===================================================================
+
+class TestPeriodGridBounds:
+    """Regression guard: the period grid must require at least two full
+    cycles to fit within the observed span (max_period = span / 2, not
+    span). A period equal to the FULL span would let a single monotonic
+    trend/hump across the only observation window masquerade as
+    periodicity — discovered via the Online Retail II calibration smoke
+    test, see docs/SALES_TRENDS_CALIBRATION_2026_08_25.md."""
+
+    def test_max_period_is_half_the_span(self):
+        t = np.linspace(0.0, 373.0, 200)
+        grid = _period_grid(t, n_periods=500, oversample=3.0)
+        assert grid.max() <= 373.0 / 2.0 + 1e-9
+
+    def test_single_trend_never_reports_full_span_period(self):
+        """A skewed, non-repeating single trend (no real cycle at all)
+        must never be reported with a period near the full span — the
+        exact shape of the artifact found on real Online Retail II data."""
+        rng = np.random.default_rng(5)
+        span = 373.0
+        t = np.sort(span * (rng.random(200) ** 0.3))  # skewed toward the end, no periodicity
+        result = detect_periodicity(t.tolist(), n_permutations=300, random_state=5)
+        if result is not None:
+            assert result.period_days <= span / 2.0 + 1e-6
 
 
 # ===================================================================
