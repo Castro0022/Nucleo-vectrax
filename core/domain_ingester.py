@@ -151,6 +151,7 @@ def ingest_event(
     domain: str,
     event_type: str,
     data: Dict[str, Any],
+    event_timestamp: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Ingest a business event into the gravitational universe.
@@ -160,6 +161,10 @@ def ingest_event(
       2. Feed to gravity engine with domain tag
       3. Pass through Learning Gate
       4. Record in observation ledger
+
+    ``event_timestamp`` (optional ISO-8601 string) lets a caller replay a
+    historical event with its real occurrence time. When omitted, behaviour
+    is identical to before (ingestion time is used).
 
     Returns: {"success": True, "star_id": ..., "learning": "active/passive"}
     """
@@ -192,6 +197,7 @@ def ingest_event(
             intent=event_type,
             outcome=text[:100],
             summary=text[:80],
+            event_timestamp=event_timestamp,
         )
         result["star_id"] = fingerprint
     except Exception as exc:

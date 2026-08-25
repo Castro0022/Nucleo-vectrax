@@ -20,7 +20,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.learn import VAULT_DIR, RUNTIME_DIR
-from core.learn.schemas import GravityRecord, Tier, TIER_ORDER
+from core.learn.schemas import GravityRecord, Tier, TIER_ORDER, decimate_history
 
 # Persistent path: ~/.vectrax/ (Docker volume, survives deploys)
 # Old path: vault/ (bind-mounted code dir, overwritten by rsync)
@@ -37,6 +37,12 @@ DEJAVU_WARM_TO_HOT_MIN_CC = 0.6
 
 MAX_OUTCOME_HISTORY = 20
 
+# Bounded size of GravityRecord.activation_history. Conservative default —
+# NOT yet calibrated against real activation-frequency distributions (e.g.
+# Online Retail II). Must be revisited with real data before any backfill;
+# see docs on the sales_trends temporal pattern extension.
+MAX_ACTIVATION_HISTORY = 256
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -47,6 +53,16 @@ def _parse_iso(s: str) -> datetime:
         return datetime.fromisoformat(s)
     except (ValueError, TypeError):
         return datetime.now(timezone.utc)
+
+
+def _parse_iso_strict(s: str) -> datetime:
+    """Like _parse_iso but raises on invalid input instead of masking it.
+
+    Used to validate caller-supplied ``event_timestamp`` before trusting it
+    as the effective clock for replay — an invalid string must fall back to
+    ``now``, not silently become "now" disguised as a parse success.
+    """
+    return datetime.fromisoformat(s)
 
 
 # ---------------------------------------------------------------------------
@@ -125,11 +141,18 @@ class GravityIndex:
         intent: str = "",
         outcome: str = "observed",
         summary: str = "",
+        event_timestamp: Optional[str] = None,
         **meta: Any,
     ) -> Tuple[GravityRecord, Optional[str]]:
         """
         Register an event.  Returns (record, promotion) where promotion
         is None or the new tier name if Déjà Vu triggered.
+
+        ``event_timestamp`` (optional ISO-8601 string) lets a caller replay
+        a historical event with its real occurrence time instead of the
+        ingestion time. When omitted, behaviour is identical to before —
+        the wall-clock ``now`` is used as the effective clock. When present
+        but unparsable, it is ignored and ``now`` is used (never raises).
 
         Extra metadata kwargs (e.g. ``source="domain_prior"``) are accepted
         and ignored so callers that tag events for provenance — such as
@@ -138,6 +161,7 @@ class GravityIndex:
         """
         records = self._load()
         now = _now_iso()
+        effective = self._resolve_effective_timestamp(event_timestamp, now)
         promotion: Optional[str] = None
 
         rec = records.get(fingerprint)
@@ -146,8 +170,8 @@ class GravityIndex:
                 fingerprint=fingerprint,
                 tier=Tier.HOT.value,
                 hits=1,
-                first_seen=now,
-                last_seen=now,
+                first_seen=effective,
+                last_seen=effective,
                 cc_score=cc_score,
                 impact=impact,
                 domain=domain,
@@ -157,7 +181,14 @@ class GravityIndex:
             )
         else:
             rec.hits += 1
-            rec.last_seen = now
+            # Replay-safe: first_seen/last_seen always bracket every effective
+            # timestamp seen so far, regardless of the order events arrive in
+            # (real time is monotonic, so this is a no-op for the default
+            # "now" path and only matters for historical backfill).
+            if _parse_iso(effective) < _parse_iso(rec.first_seen):
+                rec.first_seen = effective
+            if _parse_iso(effective) > _parse_iso(rec.last_seen):
+                rec.last_seen = effective
             rec.cc_score = cc_score
             rec.impact = impact
             rec.domain = domain
@@ -170,9 +201,11 @@ class GravityIndex:
             # Déjà Vu promotion
             promotion = self._check_promotion(rec)
 
-        # Update frequency
+        # Update frequency (measured against the effective clock so historical
+        # replay does not compute frequency using the real wall-clock "now").
         first = _parse_iso(rec.first_seen)
-        elapsed_days = max((datetime.now(timezone.utc) - first).total_seconds() / 86400, 0.01)
+        reference_now = _parse_iso(effective)
+        elapsed_days = max((reference_now - first).total_seconds() / 86400, 0.01)
         rec.freq = round(rec.hits / elapsed_days, 4)
 
         # Outcome history (keep last N)
@@ -180,9 +213,24 @@ class GravityIndex:
         if len(rec.outcome_history) > MAX_OUTCOME_HISTORY:
             rec.outcome_history = rec.outcome_history[-MAX_OUTCOME_HISTORY:]
 
+        # Activation history: bounded, span-preserving (see decimate_history).
+        rec.activation_history.append(effective)
+        rec.activation_history = decimate_history(rec.activation_history, MAX_ACTIVATION_HISTORY)
+
         records[fingerprint] = rec
         self._save(records)
         return rec, promotion
+
+    @staticmethod
+    def _resolve_effective_timestamp(event_timestamp: Optional[str], now: str) -> str:
+        """Return event_timestamp if it is a valid ISO-8601 string, else now."""
+        if not event_timestamp:
+            return now
+        try:
+            _parse_iso_strict(event_timestamp)
+            return event_timestamp
+        except (ValueError, TypeError):
+            return now
 
     # -- Law 3: Déjà Vu promotion ------------------------------------------
 

@@ -211,6 +211,66 @@ class TestDomainTemplates:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# INGEST_EVENT — event_timestamp replay propagation
+# ═══════════════════════════════════════════════════════════════════
+
+class TestIngestEventTimestamp:
+    """event_timestamp must reach Gravity's activation_history/first_seen
+    without disturbing default (omitted-timestamp) behaviour."""
+
+    def setup_method(self):
+        import tempfile
+        import core.learn.gravity_engine as ge
+        from core.learn.gravity_engine import GravityIndex
+
+        self._tmpdir = tempfile.mkdtemp(prefix="vectrax_test_ingest_ts_")
+        self._ge = ge
+        self._orig_index = ge._index
+        ge._index = GravityIndex(path=os.path.join(self._tmpdir, "gravity_index.json"))
+
+    def teardown_method(self):
+        import shutil
+        self._ge._index = self._orig_index
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_event_timestamp_propagates_to_gravity(self):
+        from core.domain_ingester import ingest_event
+
+        result = ingest_event(
+            tenant_id="t_sales",
+            domain="sales_trends",
+            event_type="sale",
+            data={
+                "product": "Widget", "category": "tools", "region": "EU",
+                "quantity": 3, "amount": 42.0,
+                "invoice_id": "INV-1", "customer_id": "C-1",
+            },
+            event_timestamp="2019-03-15T00:00:00+00:00",
+        )
+        assert result["success"] is True
+        rec = self._ge.get_gravity_index().get(result["star_id"])
+        assert rec is not None
+        assert rec.first_seen == "2019-03-15T00:00:00+00:00"
+        assert "2019-03-15T00:00:00+00:00" in rec.activation_history
+
+    def test_omitted_event_timestamp_uses_ingestion_time(self):
+        from datetime import datetime, timezone
+        from core.domain_ingester import ingest_event
+
+        result = ingest_event(
+            tenant_id="t_sales",
+            domain="sales_trends",
+            event_type="sale",
+            data={"product": "Widget", "category": "tools", "region": "EU",
+                  "quantity": 1, "amount": 10.0},
+        )
+        assert result["success"] is True
+        rec = self._ge.get_gravity_index().get(result["star_id"])
+        ts = datetime.fromisoformat(rec.first_seen)
+        assert (datetime.now(timezone.utc) - ts).total_seconds() < 5
+
+
+# ═══════════════════════════════════════════════════════════════════
 # TEMPLATE FILE VALIDATION
 # ═══════════════════════════════════════════════════════════════════
 

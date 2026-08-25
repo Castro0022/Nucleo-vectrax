@@ -27,8 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.learn.schemas import GravityRecord, ConstellationRecord, Tier, TIER_ORDER
-from core.learn.gravity_engine import GravityIndex
+from core.learn.schemas import GravityRecord, ConstellationRecord, Tier, TIER_ORDER, decimate_history
+from core.learn.gravity_engine import GravityIndex, MAX_ACTIVATION_HISTORY
 from core.learn.gravity_decay import (
     should_demote,
     demote,
@@ -421,6 +421,94 @@ class TestSchemas(unittest.TestCase):
         c2 = ConstellationRecord.from_dict(d)
         self.assertEqual(c.constellation_id, c2.constellation_id)
         self.assertEqual(c.total_events, c2.total_events)
+
+
+# ===================================================================
+# 7. decimate_history — bounded, span-preserving retention
+# ===================================================================
+
+class TestDecimateHistory(unittest.TestCase):
+    """Pure helper used to bound GravityRecord.activation_history."""
+
+    def test_no_op_when_within_bound(self):
+        h = ["a", "b", "c"]
+        self.assertEqual(decimate_history(h, 5), h)
+
+    def test_bounded_after_exceeding(self):
+        h = [str(i) for i in range(100)]
+        result = decimate_history(h, 10)
+        self.assertLessEqual(len(result), 10)
+
+    def test_preserves_first_and_last(self):
+        h = [str(i) for i in range(50)]
+        result = decimate_history(h, 8)
+        self.assertEqual(result[0], h[0])
+        self.assertEqual(result[-1], h[-1])
+
+    def test_max_size_zero_returns_empty(self):
+        self.assertEqual(decimate_history(["a", "b"], 0), [])
+
+    def test_max_size_one_returns_last(self):
+        self.assertEqual(decimate_history(["a", "b", "c"], 1), ["c"])
+
+    def test_max_size_two_returns_first_and_last(self):
+        self.assertEqual(decimate_history(["a", "b", "c", "d"], 2), ["a", "d"])
+
+    def test_incremental_append_stays_bounded_and_preserves_span(self):
+        """Simulates how record_event uses it: append one at a time."""
+        history: list[str] = []
+        max_size = 16
+        for i in range(500):
+            history.append(str(i))
+            history = decimate_history(history, max_size)
+            self.assertLessEqual(len(history), max_size)
+        self.assertEqual(history[0], "0")
+        self.assertEqual(history[-1], "499")
+
+
+# ===================================================================
+# 8. Temporal replay — event_timestamp + activation_history
+# ===================================================================
+
+class TestTemporalReplay(_TempGravityMixin, unittest.TestCase):
+    """Historical replay via event_timestamp must not disturb the default
+    (no-timestamp) behaviour, and must feed activation_history correctly."""
+
+    def test_event_timestamp_sets_first_and_last_seen(self):
+        rec, _ = self.idx.record_event("fp_ts", event_timestamp="2020-01-01T00:00:00+00:00")
+        self.assertEqual(rec.first_seen, "2020-01-01T00:00:00+00:00")
+        self.assertEqual(rec.last_seen, "2020-01-01T00:00:00+00:00")
+        self.assertIn("2020-01-01T00:00:00+00:00", rec.activation_history)
+
+    def test_out_of_order_replay_expands_bracket(self):
+        """A later event recorded first, then an earlier one: first_seen must
+        move backward and last_seen must not move backward."""
+        self.idx.record_event("fp_replay", event_timestamp="2020-06-01T00:00:00+00:00")
+        rec, _ = self.idx.record_event("fp_replay", event_timestamp="2020-01-01T00:00:00+00:00")
+        self.assertEqual(rec.first_seen, "2020-01-01T00:00:00+00:00")
+        self.assertEqual(rec.last_seen, "2020-06-01T00:00:00+00:00")
+        self.assertEqual(len(rec.activation_history), 2)
+
+    def test_omitted_event_timestamp_behaves_like_before(self):
+        rec, _ = self.idx.record_event("fp_now")
+        self.assertEqual(len(rec.activation_history), 1)
+        ts = datetime.fromisoformat(rec.last_seen)
+        self.assertLess((datetime.now(timezone.utc) - ts).total_seconds(), 5)
+
+    def test_invalid_event_timestamp_falls_back_to_now(self):
+        rec, _ = self.idx.record_event("fp_bad_ts", event_timestamp="not-a-date")
+        ts = datetime.fromisoformat(rec.last_seen)
+        self.assertLess((datetime.now(timezone.utc) - ts).total_seconds(), 5)
+
+    def test_activation_history_bounded_by_max_constant(self):
+        for i in range(MAX_ACTIVATION_HISTORY + 50):
+            month = (i % 28) + 1
+            self.idx.record_event(
+                "fp_bound", event_timestamp=f"2020-01-{month:02d}T00:00:00+00:00",
+            )
+        rec = self.idx.get("fp_bound")
+        self.assertLessEqual(len(rec.activation_history), MAX_ACTIVATION_HISTORY)
+        self.assertEqual(rec.hits, MAX_ACTIVATION_HISTORY + 50)
 
 
 if __name__ == "__main__":
