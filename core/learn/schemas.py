@@ -55,6 +55,7 @@ class GravityRecord:
     domain: str = "unknown"
     intent: str = ""
     outcome_history: List[str] = field(default_factory=list)  # last N outcomes
+    activation_history: List[str] = field(default_factory=list)  # ISO timestamps of activation, bounded (see decimate_history)
     decay_factor: float = 1.0  # 1.0 normal, 3.0 for high-impact (anti-amnesia)
     summary: str = ""          # human-readable summary
     constellation_id: Optional[str] = None  # set when compacted
@@ -68,6 +69,44 @@ class GravityRecord:
         valid = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in d.items() if k in valid}
         return cls(**filtered)
+
+
+# ---------------------------------------------------------------------------
+# Bounded, span-preserving history decimation
+# ---------------------------------------------------------------------------
+
+def decimate_history(history: List[str], max_size: int) -> List[str]:
+    """Bound a chronological history list without losing its temporal span.
+
+    Unlike ``outcome_history`` (which simply drops the oldest entries), a
+    temporal activation history must keep observing long-run structure (e.g.
+    an annual cycle) even for a HOT star that accumulates hits daily. A pure
+    count-based cutoff would eventually contain only the last few days/weeks
+    and could never resolve a long period again.
+
+    Strategy: always preserve the first and last entries; when the list
+    exceeds ``max_size``, thin the interior by dropping every second element
+    (halving its resolution) and repeat until the list fits. This keeps
+    O(max_size) storage forever while the represented span keeps growing.
+    """
+    if max_size <= 0:
+        return []
+    if len(history) <= max_size:
+        return list(history)
+    if max_size == 1:
+        return [history[-1]]
+    if max_size == 2:
+        return [history[0], history[-1]]
+
+    result = list(history)
+    while len(result) > max_size:
+        first, last = result[0], result[-1]
+        middle = result[1:-1]
+        if not middle:
+            break
+        middle = middle[::2]
+        result = [first, *middle, last]
+    return result
 
 
 # ---------------------------------------------------------------------------

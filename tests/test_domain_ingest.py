@@ -211,6 +211,137 @@ class TestDomainTemplates:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# INGEST_EVENT — event_timestamp replay propagation
+# ═══════════════════════════════════════════════════════════════════
+
+class TestIngestEventTimestamp:
+    """event_timestamp must reach Gravity's activation_history/first_seen
+    without disturbing default (omitted-timestamp) behaviour."""
+
+    def setup_method(self):
+        import tempfile
+        import core.learn.gravity_engine as ge
+        from core.learn.gravity_engine import GravityIndex
+        from core.self_observation import observation_ledger as ol
+
+        self._tmpdir = tempfile.mkdtemp(prefix="vectrax_test_ingest_ts_")
+        self._ge = ge
+        self._orig_index = ge._index
+        ge._index = GravityIndex(path=os.path.join(self._tmpdir, "gravity_index.json"))
+        ol.init_ledger()
+
+    def teardown_method(self):
+        import shutil
+        self._ge._index = self._orig_index
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_event_timestamp_propagates_to_gravity(self):
+        from core.domain_ingester import ingest_event
+
+        result = ingest_event(
+            tenant_id="t_sales",
+            domain="sales_trends",
+            event_type="sale",
+            data={
+                "product": "Widget", "category": "tools", "region": "EU",
+                "quantity": 3, "amount": 42.0,
+                "invoice_id": "INV-1", "customer_id": "C-1",
+            },
+            event_timestamp="2019-03-15T00:00:00+00:00",
+        )
+        assert result["success"] is True
+        rec = self._ge.get_gravity_index().get(result["star_id"])
+        assert rec is not None
+        assert rec.first_seen == "2019-03-15T00:00:00+00:00"
+        assert "2019-03-15T00:00:00+00:00" in rec.activation_history
+
+    def test_omitted_event_timestamp_uses_ingestion_time(self):
+        from datetime import datetime, timezone
+        from core.domain_ingester import ingest_event
+
+        result = ingest_event(
+            tenant_id="t_sales",
+            domain="sales_trends",
+            event_type="sale",
+            data={"product": "Widget", "category": "tools", "region": "EU",
+                  "quantity": 1, "amount": 10.0},
+        )
+        assert result["success"] is True
+        rec = self._ge.get_gravity_index().get(result["star_id"])
+        ts = datetime.fromisoformat(rec.first_seen)
+        assert (datetime.now(timezone.utc) - ts).total_seconds() < 5
+
+    def test_event_timestamp_propagates_to_observation_ledger(self):
+        """Replayed evidence must be dated consistently in BOTH Gravity and
+        the Observation Ledger — not left stamped with the ingestion time
+        in the ledger while Gravity reflects the historical event time."""
+        from core.domain_ingester import ingest_event
+        from core.self_observation import observation_ledger as ol
+
+        result = ingest_event(
+            tenant_id="t_sales",
+            domain="sales_trends",
+            event_type="sale",
+            data={"product": "Widget", "category": "tools", "region": "EU",
+                  "quantity": 3, "amount": 42.0},
+            event_timestamp="2019-03-15T00:00:00+00:00",
+        )
+        assert result["success"] is True
+        row = ol.get_recent(1)[0]
+        assert row["star_id"] == result["star_id"]
+        assert row["timestamp"] == "2019-03-15T00:00:00+00:00"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SALES_TRENDS SIGNATURE — category-absent regression guard
+# ═══════════════════════════════════════════════════════════════════
+
+class TestSalesTrendsSignature:
+    """Regression guard (review fix #4): sales_trends must not silently
+    collapse distinct products into one star when `category` — a field
+    Online Retail II and similarly bare datasets do not provide — is
+    absent from the event data."""
+
+    def test_signature_does_not_require_category(self):
+        from core.domain_ingester import _conditions_signature, _load_template
+        tpl = _load_template("sales_trends")
+        sig = _conditions_signature(
+            "sale", {"product": "SKU1", "region": "EU", "quantity": 3, "amount": 10.0}, tpl,
+        )
+        assert "product=SKU1" in sig
+        assert "region=EU" in sig
+        assert "category" not in sig
+
+    def test_distinct_products_same_region_do_not_collapse(self):
+        """Without this fix, signature_fields=['category','region'] would
+        silently drop the missing 'category' and leave only 'region',
+        merging every product in a region into one star."""
+        from core.domain_ingester import _conditions_signature, _load_template
+        tpl = _load_template("sales_trends")
+        a = _conditions_signature("sale", {"product": "SKU1", "region": "EU"}, tpl)
+        b = _conditions_signature("sale", {"product": "SKU2", "region": "EU"}, tpl)
+        assert a != b
+
+    def test_same_product_region_recurs_to_same_signature(self):
+        """The recurring *situation* (same product+region) must still
+        collapse despite differing raw invoice/amount — signature_fields
+        exists precisely so a star can mature across many transactions."""
+        from core.domain_ingester import _conditions_signature, _load_template
+        tpl = _load_template("sales_trends")
+        a = _conditions_signature(
+            "sale",
+            {"product": "SKU1", "region": "EU", "quantity": 3, "amount": 10.0, "invoice_id": "INV-1"},
+            tpl,
+        )
+        b = _conditions_signature(
+            "sale",
+            {"product": "SKU1", "region": "EU", "quantity": 7, "amount": 99.5, "invoice_id": "INV-2"},
+            tpl,
+        )
+        assert a == b
+
+
+# ═══════════════════════════════════════════════════════════════════
 # TEMPLATE FILE VALIDATION
 # ═══════════════════════════════════════════════════════════════════
 

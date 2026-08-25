@@ -1,0 +1,26 @@
+{
+  "domain": "sales_trends",
+  "description": "Sales trends domain — transactional sales/returns/restock events. signature_fields key on `product` (a stable SKU/StockCode-like identifier) + `region`, deliberately NOT `category`: real-world datasets commonly lack a maintained category taxonomy — e.g. Online Retail II (UCI) provides InvoiceNo, StockCode, Description, Quantity, InvoiceDate, UnitPrice, CustomerID, Country, but no category column. Keying the signature on `category` when it is absent from the event data would silently collapse every distinct product within a region into a single star and destroy the very per-product periodicity this domain exists to observe (signature_fields silently skips any field missing from the event data — see core/domain_ingester.py _conditions_signature). `category` remains a supported, optional descriptive field for datasets that do have a real taxonomy, but it is intentionally excluded from the default signature. NOTE: the Online Retail II contract for this domain is NOT yet closed — a future loader must still derive a stable `product` value (e.g. from StockCode) before calling ingest_event; no such loader exists yet (see Stage 1 plan: temporal pattern extension).",
+  "event_types": {
+    "sale": {
+      "text_template": "Sale: {product} | region={region} | qty={quantity} | amount=${amount}",
+      "fields": ["product", "category", "region", "quantity", "amount", "invoice_id", "customer_id"],
+      "signature_fields": ["product", "region"]
+    },
+    "return": {
+      "text_template": "Return: {product} | region={region} | reason={reason}",
+      "fields": ["product", "category", "region", "reason", "invoice_id", "customer_id"],
+      "signature_fields": ["product", "region", "reason"]
+    },
+    "restock": {
+      "text_template": "Restock: {product} | region={region} | qty={quantity}",
+      "fields": ["product", "category", "region", "quantity", "supplier"],
+      "signature_fields": ["product", "region"]
+    },
+    "price_change": {
+      "text_template": "Price change: {product} | ${old_price}→${new_price}",
+      "fields": ["product", "category", "region", "old_price", "new_price"],
+      "signature_fields": ["product", "region"]
+    }
+  }
+}
