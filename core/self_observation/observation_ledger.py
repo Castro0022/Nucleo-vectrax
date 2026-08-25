@@ -82,6 +82,27 @@ def init_ledger() -> None:
     logger.debug("observation_ledger initialized at %s", _DB_PATH)
 
 
+def _resolve_ts(timestamp: Optional[str]) -> str:
+    """Return ``timestamp`` normalized to a UTC-aware ISO-8601 string, or
+    the real wall-clock "now" if it is missing/unparsable.
+
+    Mirrors the normalization done at Gravity's replay boundary
+    (core.learn.gravity_engine._parse_iso_strict): naive input is assumed
+    UTC, aware input is converted to UTC, invalid input never raises.
+    """
+    if not timestamp:
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        dt = datetime.fromisoformat(timestamp)
+    except (ValueError, TypeError):
+        return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat(timespec="seconds")
+
+
 def record(
     domain: str,
     obs_type: str,
@@ -90,9 +111,17 @@ def record(
     star_id: Optional[str] = None,
     evidence: Optional[Dict[str, Any]] = None,
     severity: str = "info",
+    timestamp: Optional[str] = None,
 ) -> int:
-    """Record one autonomous observation. Returns the row id."""
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    """Record one autonomous observation. Returns the row id.
+
+    ``timestamp`` (optional ISO-8601 string) lets a caller record an
+    observation under a historical event time — e.g. domain_ingester
+    replaying a past event via ``event_timestamp`` — instead of the real
+    ingestion time. When omitted, behaviour is unchanged: the real
+    wall-clock UTC "now" is used, exactly as before.
+    """
+    ts = _resolve_ts(timestamp)
     ev_json = json.dumps(evidence, ensure_ascii=False) if evidence else None
     try:
         c = _conn()

@@ -49,20 +49,41 @@ def _now_iso() -> str:
 
 
 def _parse_iso(s: str) -> datetime:
+    """Parse an ISO-8601 string, normalizing naive datetimes to UTC-aware.
+
+    Vectrax's own clock (_now_iso) never emits naive timestamps, but
+    externally supplied historical data (e.g. a dataset export without a
+    UTC offset) can. Without this normalization, a naive value stored via
+    replay would later crash any comparison against a real, tz-aware
+    ``datetime.now(timezone.utc)`` ("can't compare offset-naive and
+    offset-aware datetimes").
+    """
     try:
-        return datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(s)
     except (ValueError, TypeError):
         return datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def _parse_iso_strict(s: str) -> datetime:
-    """Like _parse_iso but raises on invalid input instead of masking it.
+    """Like _parse_iso but raises on invalid input instead of masking it,
+    and always returns a UTC-aware datetime (naive input is assumed UTC;
+    aware input is converted to UTC).
 
-    Used to validate caller-supplied ``event_timestamp`` before trusting it
-    as the effective clock for replay — an invalid string must fall back to
-    ``now``, not silently become "now" disguised as a parse success.
+    Used to validate AND normalize caller-supplied ``event_timestamp``
+    before trusting it as the effective clock for replay — an invalid
+    string must fall back to ``now``, not silently become "now" disguised
+    as a parse success. Normalizing here (the input boundary) guarantees
+    every ``effective`` timestamp stored in Gravity (first_seen, last_seen,
+    activation_history) is UTC-aware, so it can never later collide with a
+    naive datetime during comparison.
     """
-    return datetime.fromisoformat(s)
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +183,11 @@ class GravityIndex:
         records = self._load()
         now = _now_iso()
         effective = self._resolve_effective_timestamp(event_timestamp, now)
+        # Parsed once, reused as the single "effective clock" for this call
+        # (frequency AND Déjà Vu promotion) so no part of Gravity reasons
+        # against the real wall-clock while the record itself lives at a
+        # replayed historical instant.
+        effective_dt = _parse_iso(effective)
         promotion: Optional[str] = None
 
         rec = records.get(fingerprint)
@@ -198,14 +224,14 @@ class GravityIndex:
             if summary:
                 rec.summary = summary[:200]
 
-            # Déjà Vu promotion
-            promotion = self._check_promotion(rec)
+            # Déjà Vu promotion — reasoned against the effective clock, not
+            # real wall-clock "now" (see effective_dt comment above).
+            promotion = self._check_promotion(rec, effective_dt)
 
         # Update frequency (measured against the effective clock so historical
         # replay does not compute frequency using the real wall-clock "now").
         first = _parse_iso(rec.first_seen)
-        reference_now = _parse_iso(effective)
-        elapsed_days = max((reference_now - first).total_seconds() / 86400, 0.01)
+        elapsed_days = max((effective_dt - first).total_seconds() / 86400, 0.01)
         rec.freq = round(rec.hits / elapsed_days, 4)
 
         # Outcome history (keep last N)
@@ -223,21 +249,40 @@ class GravityIndex:
 
     @staticmethod
     def _resolve_effective_timestamp(event_timestamp: Optional[str], now: str) -> str:
-        """Return event_timestamp if it is a valid ISO-8601 string, else now."""
+        """Return event_timestamp normalized to a UTC-aware ISO-8601 string,
+        or ``now`` if it is missing/unparsable.
+
+        Normalization (not just validation) happens here, at the input
+        boundary, so every effective timestamp that reaches first_seen,
+        last_seen and activation_history is UTC-aware — regardless of
+        whether the caller supplied a naive datetime (e.g. a historical
+        dataset export with no UTC offset) or one in another timezone.
+        """
         if not event_timestamp:
             return now
         try:
-            _parse_iso_strict(event_timestamp)
-            return event_timestamp
+            normalized = _parse_iso_strict(event_timestamp)
+            return normalized.isoformat()
         except (ValueError, TypeError):
             return now
 
     # -- Law 3: Déjà Vu promotion ------------------------------------------
 
-    def _check_promotion(self, rec: GravityRecord) -> Optional[str]:
-        """Check if a record qualifies for tier promotion."""
+    def _check_promotion(self, rec: GravityRecord, reference_now: datetime) -> Optional[str]:
+        """Check if a record qualifies for tier promotion.
+
+        ``reference_now`` is the effective clock for the event just
+        recorded (real wall-clock "now" for live events, or the replayed
+        historical instant during backfill) — never the real wall-clock
+        directly, so a record living in a replayed past does not get its
+        Déjà Vu windows evaluated against 2026 while the record itself
+        thinks it is 2010. This assumes replay proceeds in non-decreasing
+        chronological order; strictly out-of-order backfill can still skew
+        window timing (first_seen/last_seen bracketing above remains
+        correct regardless).
+        """
         tier = Tier(rec.tier)
-        now = datetime.now(timezone.utc)
+        now = reference_now
         last = _parse_iso(rec.last_seen)
 
         if tier == Tier.DEEP:

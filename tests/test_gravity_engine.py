@@ -510,6 +510,56 @@ class TestTemporalReplay(_TempGravityMixin, unittest.TestCase):
         self.assertLessEqual(len(rec.activation_history), MAX_ACTIVATION_HISTORY)
         self.assertEqual(rec.hits, MAX_ACTIVATION_HISTORY + 50)
 
+    def test_promotion_uses_effective_clock_not_wallclock(self):
+        """Regression guard (review fix #1): Déjà Vu promotion must reason
+        against the replayed historical clock, not real wall-clock 'now'.
+
+        A COLD record from 2010 gets a second hit 4 days later (2010,
+        within the 14-day COLD->WARM window). If promotion incorrectly used
+        real wall-clock 'now' instead of the effective replay clock, the gap
+        against a 2010 last_seen would be ~16 real years, always exceeding
+        the window, and promotion would silently never happen.
+        """
+        records = self.idx.load_raw()
+        records["fp_historical"] = GravityRecord(
+            fingerprint="fp_historical", tier="COLD", hits=1,
+            first_seen="2010-01-01T00:00:00+00:00",
+            last_seen="2010-01-01T00:00:00+00:00",
+        )
+        self.idx.update_records(records)
+
+        rec, promo = self.idx.record_event(
+            "fp_historical", cc_score=0.5,
+            event_timestamp="2010-01-05T00:00:00+00:00",
+        )
+        self.assertEqual(promo, "WARM")
+        self.assertEqual(rec.tier, "WARM")
+
+    def test_naive_event_timestamp_normalized_to_utc_aware(self):
+        """Regression guard (review fix #2): a naive event_timestamp (no UTC
+        offset, e.g. a historical dataset export) must be normalized to
+        UTC-aware at the input boundary."""
+        rec, _ = self.idx.record_event("fp_naive", event_timestamp="2019-03-15T10:00:00")
+        dt = datetime.fromisoformat(rec.first_seen)
+        self.assertIsNotNone(dt.tzinfo)
+        self.assertEqual(dt.utcoffset(), timedelta(0))
+        self.assertEqual(dt.hour, 10)
+
+    def test_aware_non_utc_event_timestamp_converted_to_utc(self):
+        rec, _ = self.idx.record_event(
+            "fp_aware_offset", event_timestamp="2019-03-15T10:00:00+05:00",
+        )
+        dt = datetime.fromisoformat(rec.first_seen)
+        self.assertEqual(dt.utcoffset(), timedelta(0))
+        self.assertEqual(dt.hour, 5)
+
+    def test_mixed_naive_and_aware_timestamps_do_not_crash(self):
+        """A naive historical replay followed by a live (aware) event must
+        not raise 'can't compare offset-naive and offset-aware datetimes'."""
+        self.idx.record_event("fp_mixed", event_timestamp="2019-01-01T00:00:00")
+        rec, _ = self.idx.record_event("fp_mixed")  # live event, no timestamp
+        self.assertEqual(rec.hits, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

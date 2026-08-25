@@ -163,8 +163,13 @@ def ingest_event(
       4. Record in observation ledger
 
     ``event_timestamp`` (optional ISO-8601 string) lets a caller replay a
-    historical event with its real occurrence time. When omitted, behaviour
-    is identical to before (ingestion time is used).
+    historical event with its real occurrence time. It is propagated to
+    BOTH Gravity (first_seen/last_seen/activation_history/frequency/Déjà
+    Vu promotion) and the Observation Ledger, so replayed evidence is
+    dated consistently everywhere instead of leaving the ledger stamped
+    with the ingestion time while Gravity reflects the historical one.
+    When omitted, behaviour is identical to before (ingestion time is
+    used everywhere).
 
     Returns: {"success": True, "star_id": ..., "learning": "active/passive"}
     """
@@ -245,6 +250,7 @@ def ingest_event(
             summary=text[:120],
             star_id=fingerprint,
             evidence={"tenant": tenant_id, "fields": list(data.keys())[:10]},
+            timestamp=event_timestamp,
         )
     except Exception:
         pass
