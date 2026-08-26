@@ -61,6 +61,26 @@ This activates **ingestion only** — real `sales_trends` events now create real
 - No scheduled job or fire-and-forget hook calls either detector automatically on new `sales_trends` activity.
 - Running either detector over real accumulated production data (once enough real tenant traffic exists) remains a distinct, separate, not-yet-approved step.
 
+## Full production backfill (same day, after live-ingestion validation)
+
+After the single-star validation above confirmed the pipeline end-to-end, the full 2-year deduplicated dataset was loaded directly into the real production index via a new script, `scripts/backfill_sales_trends_PRODUCTION.py`.
+
+**Critical difference from the Stage 3 dry-run script**: `scripts/calibrate_sales_trends.py::_BulkGravityIndex` (reused by the Stage 3 dry run) always starts its in-memory cache **empty** — correct only for a throwaway temp path. Pointed at the real production file, flushing an empty-seeded cache would have silently **discarded every pre-existing star in the system** (every domain, every user). `_BulkGravityIndexSeeded` fixes this by loading whatever already exists on disk into the cache once, before any new event is applied, so pre-existing data is preserved and only new/changed fingerprints are added.
+
+**Safety sequence executed:**
+1. Dry-checked the script (no `--confirm`) to confirm it correctly read the real pre-existing state (1,142 fingerprints: 1,141 non-`sales_trends` + the 1 validation star) without writing anything.
+2. Stopped the live supervisor (`launchctl bootout`) to eliminate any risk of a concurrent writer racing with this script's single end-of-run flush.
+3. Ran with `--confirm`: wrote a timestamped backup of the production file first (`gravity_index.json.backup_pre_sales_trends_<UTC timestamp>`, 1,357.4 KB), reused the exact Stage 3 `deduplicate_overlap()` (22,130 exact-duplicate rows removed from the overlap — same figure as the Stage 3 dry run), ingested all 1,022,290 deduplicated rows, flushed once.
+4. The script self-verified: all 1,141 pre-existing non-`sales_trends` fingerprints were still present after the flush — zero data loss.
+5. Restarted the supervisor (`launchctl bootstrap`) and confirmed live via `GET /v1/health` and `GET /v1/universe`.
+
+**Real results:**
+- `~/.vectrax/gravity_index.json`: 1,142 → **29,576** fingerprints (28,434 net new `sales_trends` stars).
+- `sales_trends` stars in production: **28,435** (28,434 from the backfill + the earlier validation star). Top hits match the Stage 3 dry-run findings exactly: `[5367, 3783, 3491, 2824, 2822]`.
+- `GET /v1/universe`: `total_stars` 2,324 → **30,793**, `star_breakdown.gravitational` 1,122 → **29,576**.
+
+`detect_periodicity()` / `detect_periodicity_detrended()` remain unwired from the ingest pipeline — this backfill populates real stars only; running either detector over this real accumulated data is still a separate, not-yet-approved step (same boundary as Stage 3).
+
 ## Related documents
 
 - `docs/SALES_TRENDS_CALIBRATION_2026_08_25.md` — Stage 2, 1-year `MAX_ACTIVATION_HISTORY` calibration.
