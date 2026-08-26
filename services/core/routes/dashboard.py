@@ -367,13 +367,17 @@ async def dashboard_operator() -> Dict[str, Any]:
     # Universe snapshot
     try:
         from core.self_observation.universe_observer import observe_universe
+        from core.universe_census import get_census
         snap = observe_universe()
+        # convergences: canonical total from Census (SSOT), NOT
+        # len(snap.convergences) - that list is a raw sample of graph
+        # edges + legacy ledger rows, never a deduplicated total.
         result["universe"] = {
             "knowledge_stars": snap.knowledge_star_count,
             "user_stars": snap.star_count,
             "total_mass": round(snap.total_mass, 4),
             "pattern_count": snap.pattern_count,
-            "convergences": len(snap.convergences),
+            "convergences": get_census().convergences,
             "core_stars": snap.core_star_count,
             "deep_memory": snap.deep_memory_count,
             "errors_24h": snap.recent_error_count_24h,
@@ -578,7 +582,15 @@ async def dashboard_observatory() -> Dict[str, Any]:
         gi = get_gravity_index()
         gravity["domains"] = gi.domain_stats()
         gravity["tiers"] = gi.tier_counts()
-        all_convergences = gi.cross_domain_convergences()
+        # Reuse the cached global-scan candidate list (3s TTL) instead of
+        # calling cross_domain_convergences() directly here - that scan is
+        # expensive at real scale and this only needs a 20-item sample.
+        # The total below always comes from the canonical registry via
+        # Census, never from len(this sample).
+        from core.self_observation.universe_observer import (
+            get_full_convergence_candidates,
+        )
+        all_convergences = get_full_convergence_candidates()
         gravity["convergences_total"] = census.convergences
         gravity["convergences"] = all_convergences[:20]
         top = gi.top_stars(n=20)

@@ -281,6 +281,123 @@ class TestGlobalCrossDomainScan(unittest.TestCase):
         self.assertEqual(len(targeted), 1)
 
 
+class TestGlobalScanDoesNotExplode(unittest.TestCase):
+    """Regression guard for the 2026-08-26 incident. Measured against real
+    production data, neither a stricter cc floor (121,206 -> 101,709) nor a
+    domain-pair-size product cap (121,206 -> 12,277, but market alone still
+    produced 3,300 spurious matches against a uniformly-high-cc domain)
+    reliably separated signal from noise. temporal_proximity is therefore
+    disabled entirely for the automatic global scan; the explicit
+    two-domain path is unaffected."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix="vectrax_test_gravity_explosion_")
+        self.index_path = os.path.join(self.tmpdir, "gravity_index.json")
+        self.idx = GravityIndex(path=self.index_path)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_global_scan_never_uses_temporal_proximity(self):
+        # No shared intent substrings, all recently active with high
+        # cc_score (mirroring bulk domain_ingester data) - would match via
+        # temporal_proximity if that heuristic applied in global mode.
+        self.idx.record_event("domain_a:x", domain="domain_a", intent="UNIQUE_A", cc_score=0.9)
+        self.idx.record_event("domain_b:y", domain="domain_b", intent="UNIQUE_B", cc_score=0.9)
+        convergences = self.idx.cross_domain_convergences()
+        self.assertEqual(len(convergences), 0)
+
+    def test_global_scan_still_detects_intent_overlap(self):
+        """intent_overlap (actual textual match) remains active in global
+        mode - it is semantically selective and was measured safe (858
+        matches) against the real 30k-record production index."""
+        self.idx.record_event("domain_a:x", domain="domain_a", intent="SHARED", cc_score=0.9)
+        self.idx.record_event("domain_b:y", domain="domain_b", intent="SHARED", cc_score=0.9)
+        convergences = self.idx.cross_domain_convergences()
+        self.assertEqual(len(convergences), 1)
+        self.assertEqual(convergences[0]["type"], "intent_overlap")
+
+    def test_explicit_two_domain_call_still_uses_temporal_proximity(self):
+        """The explicit two-domain path must remain exactly as before -
+        temporal_proximity applies there for a targeted, human-requested
+        query (e.g. market<->freight_logistics), unaffected by the
+        automatic global scan's restriction."""
+        self.idx.record_event("domain_a:x", domain="domain_a", intent="X", cc_score=0.9)
+        self.idx.record_event("domain_b:y", domain="domain_b", intent="Y", cc_score=0.9)
+        targeted = self.idx.cross_domain_convergences(domain_a="domain_a", domain_b="domain_b")
+        self.assertEqual(len(targeted), 1)
+        self.assertEqual(targeted[0]["type"], "temporal_proximity")
+
+
+class TestNoFalseDissolutionOfHistoricalEntities(_TempRegistryMixin, unittest.TestCase):
+    """Regression guard: a canonical convergence involving a historical-only
+    (non-live) participant must never be dissolved just because it cannot
+    appear in a live scan's candidate set."""
+
+    def test_historical_only_convergence_survives_empty_live_scan(self):
+        live = {"market:AAPL": "market"}
+        candidate = {
+            "type": "temporal_proximity", "star_a": "market:AAPL",
+            "star_b": "orphaned_hash_no_longer_live", "combined_cc": 0.5,
+            "combined_hits": 1, "domains": ["market", "unknown_legacy"],
+        }
+        record_convergence_snapshot([candidate], live, self.db_path)
+        self.assertEqual(
+            count_canonical_convergences(status="active", db_path=self.db_path), 1
+        )
+
+        # A live cycle runs and does NOT see this pair again (the historical
+        # participant structurally can never reappear) - it must NOT be
+        # dissolved just because it's absent from an empty candidate list.
+        result = record_convergence_snapshot([], live, self.db_path)
+        self.assertEqual(result["dissolved"], 0)
+        self.assertEqual(
+            count_canonical_convergences(status="active", db_path=self.db_path), 1
+        )
+
+    def test_fully_live_convergence_still_dissolves_normally(self):
+        """Sanity check: the fix must not disable dissolution entirely -
+        a convergence between two currently-live entities still dissolves
+        when it genuinely disappears from the candidate set."""
+        live = {"market:AAPL": "market", "unknown:xyz": "unknown"}
+        candidate = {
+            "type": "intent_overlap", "star_a": "market:AAPL",
+            "star_b": "unknown:xyz", "combined_cc": 0.5, "combined_hits": 1,
+            "domains": ["market", "unknown"],
+        }
+        record_convergence_snapshot([candidate], live, self.db_path)
+        result = record_convergence_snapshot([], live, self.db_path)
+        self.assertEqual(result["dissolved"], 1)
+        self.assertEqual(
+            count_canonical_convergences(status="active", db_path=self.db_path), 0
+        )
+
+    def test_temporal_proximity_convergence_frozen_even_when_both_live(self):
+        """Regression guard for the 2026-08-26 incident: since the automatic
+        global scan no longer evaluates temporal_proximity at all, an
+        existing temporal_proximity convergence must survive indefinitely
+        (never dissolved, never duplicated) even when both of its
+        participants are still live - real market convergences from the
+        backfill must not be silently erased by repeated live cycles."""
+        live = {"market:AAPL": "market", "unknown:xyz": "unknown"}
+        candidate = {
+            "type": "temporal_proximity", "star_a": "market:AAPL",
+            "star_b": "unknown:xyz", "combined_cc": 0.5, "combined_hits": 1,
+            "domains": ["market", "unknown"],
+        }
+        record_convergence_snapshot([candidate], live, self.db_path)
+        # Several subsequent live cycles run with intent_overlap-only
+        # candidates (temporal_proximity is disabled globally) - the
+        # frozen market convergence must survive every one of them.
+        for _ in range(3):
+            result = record_convergence_snapshot([], live, self.db_path)
+            self.assertEqual(result["dissolved"], 0)
+        self.assertEqual(
+            count_canonical_convergences(status="active", db_path=self.db_path), 1
+        )
+        self.assertEqual(count_canonical_convergences(db_path=self.db_path), 1)
+
+
 class TestBackfillLeavesLegacyLedgerIntact(_TempRegistryMixin, unittest.TestCase):
     def test_legacy_table_untouched(self):
         sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))

@@ -306,6 +306,36 @@ def record_convergence_snapshot(
             )
 
         for convergence_id in active_ids - set(current):
+            prior = existing[convergence_id]
+            # A convergence can only be dissolved by a live scan if BOTH
+            # participants are still live-observable (i.e. could plausibly
+            # have been re-detected this cycle). A backfill-origin
+            # participant that no longer exists as a live GravityRecord
+            # (created_from='backfill', domain='unknown_legacy', or any
+            # other historical-only entity) can NEVER appear in a live
+            # scan's candidate set again - its absence is structural, not
+            # evidence the relationship ended. Without this guard, every
+            # historical convergence involving a non-live entity would be
+            # falsely dissolved on the very next live cycle.
+            both_live = (
+                prior["entity_a_id"] in live_fingerprints
+                and prior["entity_b_id"] in live_fingerprints
+            )
+            if not both_live:
+                continue
+            # Incident (2026-08-26): the automatic global scan no longer
+            # evaluates temporal_proximity at all (see
+            # GravityIndex.ENABLE_TEMPORAL_PROXIMITY_IN_GLOBAL_SCAN) - it
+            # produced 121,206 false matches in a single cycle and no
+            # cc/size threshold reliably separated signal from noise. Since
+            # the detector structurally cannot re-detect a
+            # temporal_proximity convergence anymore, its absence from
+            # `current` is not evidence either way. Every real historical
+            # market convergence from the 2026-08-26 backfill is of this
+            # type - they stay frozen at their backfilled state (neither
+            # duplicated nor dissolved) rather than being silently erased.
+            if prior["relationship_type"] == "temporal_proximity":
+                continue
             conn.execute(
                 """UPDATE convergences
                 SET status='dissolved', dissolved_at=?

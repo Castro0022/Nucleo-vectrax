@@ -424,16 +424,57 @@ class GravityIndex:
     # into semantic clusters before pairing) instead of raising the cap.
     MAX_DOMAIN_GROUP_FOR_GLOBAL_SCAN = 300
 
+    # Incident (2026-08-26): the temporal_proximity branch below never
+    # honored the caller's min_cc at all - it used a hardcoded 0.3 floor
+    # unconditionally. That was invisible while cross_domain_convergences()
+    # always anchored to domain_a="market" (only 14 records), but the
+    # first real GLOBAL scan against production data (30k+ records, most
+    # bulk-backfilled within days of each other, so "both active in the
+    # last 7 days" was true for nearly everything) produced 121,206 false
+    # "convergences" in a single cycle before this was caught and reverted.
+    #
+    # Two narrower fixes were tried and measured against the real data
+    # before landing on a full disable, and both failed:
+    #  - Raising the cc floor to 0.75: only a ~16% reduction (121,206 ->
+    #    101,709), because domain_ingester's cc_score formula
+    #    (min(0.3 + field_count*0.1, 1.0)) means bulk-ingested records
+    #    routinely score 0.7-1.0 already (florida_real_estate averages
+    #    exactly 1.0; freight_logistics averages 0.903).
+    #  - Gating by domain-pair size (product cap): cut the total ~90%
+    #    (121,206 -> 12,277) by excluding the largest domain x domain
+    #    pairs, but market (only 14 records) x freight_logistics (300
+    #    capped) alone still produced 3,300 spurious matches - a SMALL
+    #    domain does not help when the domain it's compared against has a
+    #    uniformly high average coherence score; the product cap only
+    #    catches large x large pairs, not small x (uniformly-high-cc) large.
+    #
+    # Given no cc/size-based threshold reliably separates signal from noise
+    # at this data's actual score distribution, temporal_proximity is
+    # disabled entirely for the automatic global scan. It remains exactly
+    # as before for explicit two-domain queries (market<->freight style),
+    # where a human is asking a specific, reviewable question. The 111
+    # real historical market convergences from the 2026-08-26 backfill are
+    # NOT lost - see the automatic-dissolution exemption for existing
+    # temporal_proximity convergences in
+    # core.learn.convergence_registry.record_convergence_snapshot(), which
+    # keeps them frozen at their backfilled state (neither duplicated nor
+    # dissolved) until a more precise re-detection signal is designed.
+    ENABLE_TEMPORAL_PROXIMITY_IN_GLOBAL_SCAN = False
+
     def _weight(self, r: GravityRecord) -> float:
         return r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor
 
     def _match_pair(
         self, a: GravityRecord, b: GravityRecord, domain_a: str, domain_b: str,
-        min_cc: float,
+        min_cc: float, include_temporal_proximity: bool = True,
     ) -> Optional[Dict[str, Any]]:
-        """Shared pairwise matching logic (unchanged heuristic, factored out
-        so both the explicit two-domain path and the global multi-pair path
-        reuse the exact same rules)."""
+        """Shared pairwise matching logic, factored out so both the explicit
+        two-domain path and the global multi-pair path reuse the exact same
+        intent_overlap rules. ``include_temporal_proximity`` gates the
+        second heuristic entirely - see
+        ENABLE_TEMPORAL_PROXIMITY_IN_GLOBAL_SCAN above for why the global
+        scan disables it.
+        """
         if a.intent and b.intent and (
             a.intent.lower() in b.intent.lower()
             or b.intent.lower() in a.intent.lower()
@@ -449,6 +490,9 @@ class GravityIndex:
                     "combined_hits": a.hits + b.hits,
                     "domains": [domain_a, domain_b],
                 }
+            return None
+
+        if not include_temporal_proximity:
             return None
 
         a_last = _parse_iso(a.last_seen)
@@ -534,7 +578,10 @@ class GravityIndex:
             for dom_b in domains[i + 1:]:
                 for a in capped[dom_a]:
                     for b in capped[dom_b]:
-                        match = self._match_pair(a, b, dom_a, dom_b, min_cc)
+                        match = self._match_pair(
+                            a, b, dom_a, dom_b, min_cc,
+                            include_temporal_proximity=self.ENABLE_TEMPORAL_PROXIMITY_IN_GLOBAL_SCAN,
+                        )
                         if match:
                             convergences.append(match)
         return convergences
