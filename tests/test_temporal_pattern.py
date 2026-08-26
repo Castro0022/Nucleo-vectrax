@@ -21,7 +21,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import numpy as np
 import pytest
 
-from core.learn.temporal_pattern import detect_periodicity, PeriodicityResult, _period_grid
+from core.learn.temporal_pattern import (
+    detect_periodicity,
+    detect_periodicity_detrended,
+    PeriodicityResult,
+    _period_grid,
+)
 
 
 def _synthetic_periodic(period: float, n_cycles: int, jitter_frac: float,
@@ -47,6 +52,30 @@ def _synthetic_random(n_points: int, span: float, seed: int) -> list[float]:
     """Purely random arrival times over [0, span) — no structure at all."""
     rng = np.random.default_rng(seed)
     return sorted(rng.uniform(0.0, span, size=n_points).tolist())
+
+
+def _synthetic_trend(n_points: int, span: float, seed: int, skew: float = 0.3) -> list[float]:
+    """A single monotonic trend (density increasing toward the end of the
+    only observation window) with NO repeating cycle — replicates the real
+    artifact found on Online Retail II (see
+    docs/SALES_TRENDS_CALIBRATION_2026_08_25.md)."""
+    rng = np.random.default_rng(seed)
+    t = np.sort(span * (rng.random(n_points) ** skew))
+    return t.tolist()
+
+
+def _synthetic_mixed(period: float, span: float, n_periodic_per_cycle: int,
+                      n_trend: int, seed: int, trend_skew: float = 0.3) -> list[float]:
+    """A monotonic trend (no periodicity) with a genuine periodic component
+    superimposed — the scenario a trend-blind detector cannot handle."""
+    rng = np.random.default_rng(seed)
+    n_cycles = int(span / period)
+    k = np.repeat(np.arange(n_cycles), n_periodic_per_cycle)
+    jitter = rng.normal(0.0, 0.05 * period, size=len(k))
+    periodic = k * period + jitter
+    periodic = periodic[(periodic >= 0) & (periodic < span)]
+    trend = span * (rng.random(n_trend) ** trend_skew)
+    return np.sort(np.concatenate([periodic, trend])).tolist()
 
 
 # ===================================================================
@@ -149,6 +178,107 @@ class TestPeriodGridBounds:
         result = detect_periodicity(t.tolist(), n_permutations=300, random_state=5)
         if result is not None:
             assert result.period_days <= span / 2.0 + 1e-6
+
+
+# ===================================================================
+# Detrended Lomb-Scargle detector (Stage 3): separates trend from period
+# ===================================================================
+
+class TestDetrendedDetector:
+    """Mandatory Stage 3 validation (per the approved plan): the detrended
+    detector must (1) reject a pure trend with no real cycle — replicating
+    the exact artifact found on real Online Retail II data — (2) keep
+    detecting genuine periodicity with no regression vs. the existing
+    Rayleigh detector, (3) detect a real period DESPITE a superimposed
+    trend, and (4) preserve negative validation on pure noise. All periods
+    are artificial (not 7/30/365) to avoid confirmation bias."""
+
+    def test_pure_trend_returns_none(self):
+        """Regression guard replicating the real Stage 2 artifact: a single
+        monotonic trend (no repeating cycle) must not be reported as
+        periodic."""
+        timestamps = _synthetic_trend(n_points=300, span=373.0, seed=1)
+        result = detect_periodicity_detrended(timestamps, n_permutations=300, random_state=1)
+        assert result is None, f"expected no significant periodicity on a pure trend, got {result}"
+
+    @pytest.mark.parametrize("seed", [21, 22, 23])
+    def test_pure_trend_returns_none_multiple_seeds(self, seed):
+        timestamps = _synthetic_trend(n_points=300, span=373.0, seed=seed)
+        result = detect_periodicity_detrended(timestamps, n_permutations=300, random_state=seed)
+        assert result is None
+
+    def test_pure_periodicity_detected_with_sufficient_density(self):
+        """No trend at all: the detrended detector must still find a real
+        period, GIVEN enough points to resolve it after binning.
+
+        Binning inherently trades short-period/sparse-data sensitivity for
+        the ability to separate trend from periodicity: a binned signal
+        cannot resolve a period below ~4 bin widths (see
+        detect_periodicity_detrended's min_period_floor), whereas the
+        point-process Rayleigh detector works fine with ~1 point/cycle.
+        This is why the calibration-derived synthetic here uses several
+        points per cycle instead of detect_periodicity()'s sparser fixture
+        — an honest, documented trade-off, not a bug.
+        """
+        timestamps = _synthetic_mixed(
+            period=47.0, span=1400.0, n_periodic_per_cycle=6, n_trend=0, seed=2,
+        )
+        result = detect_periodicity_detrended(timestamps, n_permutations=300, random_state=2)
+        assert result is not None
+        assert result.method == "lomb_scargle_detrended"
+        relative_error = abs(result.period_days - 47.0) / 47.0
+        assert relative_error < 0.15, f"detected {result.period_days:.2f}d vs true 47d"
+
+    def test_sparse_periodicity_below_bin_resolution_returns_none_not_crash(self):
+        """Documents the trade-off directly: at Rayleigh-sparse density
+        (~1 point/cycle), the period falls below the binned method's own
+        Nyquist-safe floor and it correctly declines to guess, rather than
+        crashing or fabricating a result. detect_periodicity() (Rayleigh)
+        remains the right tool for this density regime."""
+        timestamps = _synthetic_periodic(47.0, n_cycles=30, jitter_frac=0.05, drop_frac=0.1, seed=2)
+        result = detect_periodicity_detrended(timestamps, n_permutations=300, random_state=2)
+        assert result is None
+        assert detect_periodicity(timestamps, n_permutations=300, random_state=2) is not None
+
+    def test_detects_period_despite_superimposed_trend(self):
+        """The central Stage 3 claim: a real periodic signal buried under a
+        monotonic trend must still be detected, unlike a trend-blind
+        detector which either finds nothing or reports the trend's span
+        boundary as a spurious "period" (see docs/SALES_TRENDS_CALIBRATION_2026_08_25.md).
+        """
+        timestamps = _synthetic_mixed(
+            period=47.0, span=1400.0, n_periodic_per_cycle=6,
+            n_trend=150, seed=7,
+        )
+        result = detect_periodicity_detrended(timestamps, n_permutations=300, random_state=3)
+        assert result is not None, "expected to detect the 47d cycle despite the trend"
+        relative_error = abs(result.period_days - 47.0) / 47.0
+        assert relative_error < 0.15, (
+            f"detected {result.period_days:.2f}d vs true 47d (rel err {relative_error:.2%})"
+        )
+        # Must NOT be the trend/span-boundary artifact.
+        assert result.period_days < 1400.0 / 4.0
+
+    @pytest.mark.parametrize("seed", [30, 31, 32])
+    def test_rejects_random_arrivals(self, seed):
+        """Negative validation preserved: pure noise must still return None."""
+        timestamps = _synthetic_random(n_points=300, span=1400.0, seed=seed)
+        result = detect_periodicity_detrended(
+            timestamps, fap_threshold=0.02, n_permutations=300, random_state=seed,
+        )
+        assert result is None, f"expected no significant periodicity on pure noise, got {result}"
+
+    def test_min_period_floor_is_nyquist_safe_not_calendar_based(self):
+        """Regression guard: the detrended grid's lower bound must come from
+        the method's own bin resolution (data-derived), not the fine
+        point-process floor used by detect_periodicity() — using the wrong
+        floor made short candidate periods numerically unresolvable from
+        binned counts (discovered while validating this very detector)."""
+        t = np.linspace(0.0, 1400.0, 320)
+        n_bins = min(max(len(t) // 2, 50), 2000)
+        bin_width = 1400.0 / n_bins
+        grid = _period_grid(t, n_periods=500, oversample=3.0, min_period_floor=4.0 * bin_width)
+        assert grid.min() >= 4.0 * bin_width - 1e-9
 
 
 # ===================================================================
