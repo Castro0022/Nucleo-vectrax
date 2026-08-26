@@ -51,7 +51,14 @@ class UniverseCensus:
     total: int = 0           # gravitational + knowledge + users
 
     # Structural metrics
+    # convergences = canonical convergence entity total (SSOT: see
+    # core.learn.convergence_registry). NOT a raw detector-candidate count
+    # and NOT len(any displayed sample list) — kept as `convergences` for
+    # backward compatibility since to_api_dict()/dashboard.py/self_context.py
+    # already read this field name.
     convergences: int = 0
+    convergences_active: int = 0
+    convergence_confirmations_total: int = 0
     patterns: int = 0
     constellations: int = 0
     mass_total: float = 0.0
@@ -95,6 +102,8 @@ class UniverseCensus:
                 "users": self.users,
             },
             "convergences": self.convergences,
+            "convergences_active": self.convergences_active,
+            "convergence_confirmations_total": self.convergence_confirmations_total,
             "patterns": self.patterns,
             "constellations": self.constellations,
             "mass_total": round(self.mass_total, 4),
@@ -217,9 +226,23 @@ def _build_census() -> UniverseCensus:
         c.gravitational = len(records)
         domain_stats = gi.domain_stats(records=raw)
         c.domains = {d: s.get("count", 0) for d, s in domain_stats.items()}
-        c.convergences = len(gi.cross_domain_convergences(records=raw))
     except Exception as exc:
         logger.debug("census gravity failed: %s", exc)
+
+    # === SOURCE 1b: Canonical convergence registry (SSOT for totals) ===
+    # Previously `c.convergences = len(gi.cross_domain_convergences(...))`
+    # — a raw, market-anchored, non-deduplicated detector-candidate count.
+    # The canonical entity registry (core.learn.convergence_registry) is
+    # now the single source of truth for all three convergence totals.
+    try:
+        from core.learn.convergence_registry import (
+            count_canonical_convergences, get_confirmation_total,
+        )
+        c.convergences = count_canonical_convergences()
+        c.convergences_active = count_canonical_convergences(status="active")
+        c.convergence_confirmations_total = get_confirmation_total()
+    except Exception as exc:
+        logger.debug("census convergence registry failed: %s", exc)
 
     # === SOURCE 2: vectrax.db ===
     try:
