@@ -51,6 +51,12 @@ class UniverseSnapshot:
     stars: List[Dict[str, Any]] = field(default_factory=list)
 
     # ── Convergencias ─────────────────────────────────────────────────────
+    # SAMPLES/DETAIL ONLY. This list mixes in-memory graph edges + up to
+    # 500 raw legacy convergence_events rows (events, not deduplicated
+    # identities). len(snap.convergences) must NEVER be read as a universe
+    # total — the canonical total lives in
+    # core.universe_census.get_census().convergences_total (backed by
+    # core.learn.convergence_registry, not this list).
     convergences: List[Dict[str, Any]] = field(default_factory=list)
 
     # ── Estado operacional ────────────────────────────────────────────────
@@ -85,6 +91,11 @@ class UniverseSnapshot:
     # ── Gravity Engine (estrellas cognitivas + mercado) ───────────────
     gravity_stars: List[Dict[str, Any]] = field(default_factory=list)
     gravity_domains: Dict[str, Any] = field(default_factory=dict)
+    # DISPLAY SAMPLE ONLY (top 20 by discovery order) for the visual panel.
+    # NEVER use len(gravity_convergences) as a total — see
+    # gravity_convergences_total, which itself is a raw detector-candidate
+    # count (pre-canonicalization). The real canonical universe total is
+    # core.universe_census.get_census().convergences_total.
     gravity_convergences: List[Dict[str, Any]] = field(default_factory=list)
     gravity_convergences_total: int = 0
     gravity_total: int = 0
@@ -406,6 +417,13 @@ def _compute_gravity_snapshot() -> Dict[str, Any]:
     gravity_domains = gi.domain_stats(records=raw)
 
     # Cross-domain convergences from gravity index — reuse `raw` too.
+    # No domain_a/domain_b given = the real GLOBAL scan across every domain
+    # pair (see GravityIndex.cross_domain_convergences docstring), not a
+    # market-anchored one. `convs` is the raw, uncanonicalized detector
+    # candidate list (events, not deduplicated identities) — kept in full
+    # as `gravity_convergences_full` so the autonomous observer can feed
+    # the *complete* candidate set into the canonical registry, while the
+    # panel-facing `gravity_convergences` stays a small display sample.
     convs = gi.cross_domain_convergences(records=raw)
 
     return {
@@ -414,6 +432,7 @@ def _compute_gravity_snapshot() -> Dict[str, Any]:
         "gravity_domains": gravity_domains,
         "gravity_convergences_total": len(convs),
         "gravity_convergences": convs[:20],
+        "gravity_convergences_full": convs,
     }
 
 
@@ -426,6 +445,20 @@ def _get_gravity_snapshot_cached() -> Dict[str, Any]:
     _gravity_snapshot_cache["data"] = data
     _gravity_snapshot_cache["ts"] = now
     return data
+
+
+def get_full_convergence_candidates() -> List[Dict[str, Any]]:
+    """Full (uncapped by the UI's top-20) global cross-domain candidate
+    list, for callers that must reason about ALL candidates rather than a
+    display sample — e.g. autonomous_observer feeding the canonical
+    convergence registry. Shares the same 3s TTL cache as the rest of the
+    gravity snapshot (no extra disk reads).
+    """
+    try:
+        return list(_get_gravity_snapshot_cached().get("gravity_convergences_full", []))
+    except Exception as exc:
+        logger.debug("get_full_convergence_candidates failed: %s", exc)
+        return []
 
 
 def _collect_gravity_engine(snap: UniverseSnapshot) -> None:

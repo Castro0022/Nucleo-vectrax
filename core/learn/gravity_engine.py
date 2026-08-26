@@ -411,72 +411,132 @@ class GravityIndex:
             }
         return result
 
+    # Domain groups larger than this are sampled to their top-K members by
+    # gravitational weight (hits × cc × freq × decay) for the *global*
+    # cross-domain scan only. Explicit two-domain calls (domain_a given)
+    # remain exact/uncapped. Without this, a naive all-domain-pairs scan
+    # would be O(N²) across every star in the index (e.g. sales_trends
+    # alone reached 28,435 records after its 2026-08-26 backfill) — this
+    # cap keeps the global scan bounded while a real caller can still ask
+    # for an exact two-domain comparison. This is an explicit, documented
+    # tradeoff, not a silent limitation, and is the seam future work should
+    # replace with real constellation-level comparison (grouping domains
+    # into semantic clusters before pairing) instead of raising the cap.
+    MAX_DOMAIN_GROUP_FOR_GLOBAL_SCAN = 300
+
+    def _weight(self, r: GravityRecord) -> float:
+        return r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor
+
+    def _match_pair(
+        self, a: GravityRecord, b: GravityRecord, domain_a: str, domain_b: str,
+        min_cc: float,
+    ) -> Optional[Dict[str, Any]]:
+        """Shared pairwise matching logic (unchanged heuristic, factored out
+        so both the explicit two-domain path and the global multi-pair path
+        reuse the exact same rules)."""
+        if a.intent and b.intent and (
+            a.intent.lower() in b.intent.lower()
+            or b.intent.lower() in a.intent.lower()
+        ):
+            combined_cc = (a.cc_score + b.cc_score) / 2
+            if combined_cc >= min_cc:
+                return {
+                    "type": "intent_overlap",
+                    "star_a": a.fingerprint,
+                    "star_b": b.fingerprint,
+                    "intent": a.intent,
+                    "combined_cc": round(combined_cc, 4),
+                    "combined_hits": a.hits + b.hits,
+                    "domains": [domain_a, domain_b],
+                }
+            return None
+
+        a_last = _parse_iso(a.last_seen)
+        b_last = _parse_iso(b.last_seen)
+        now = datetime.now(timezone.utc)
+        both_recent = (
+            (now - a_last).total_seconds() < 7 * 86400
+            and (now - b_last).total_seconds() < 7 * 86400
+        )
+        combined_cc_tp = (a.cc_score + b.cc_score) / 2
+        if both_recent and combined_cc_tp >= 0.3:
+            return {
+                "type": "temporal_proximity",
+                "star_a": a.fingerprint,
+                "star_b": b.fingerprint,
+                "a_intent": a.intent,
+                "b_intent": b.intent,
+                "combined_cc": round(combined_cc_tp, 4),
+                "domains": [domain_a, domain_b],
+            }
+        return None
+
     def cross_domain_convergences(
         self,
-        domain_a: str = "market",
-        domain_b: str = "",
+        domain_a: Optional[str] = None,
+        domain_b: Optional[str] = None,
         min_cc: float = 0.0,
         records: Optional[Dict[str, GravityRecord]] = None,
     ) -> List[Dict[str, Any]]:
-        """Find convergences between two domains.
+        """Find convergences between domains.
 
         A convergence is detected when stars from different domains
         share the same intent or have overlapping temporal activity.
-        If domain_b is empty, matches against ALL non-domain_a stars.
+
+        - ``domain_a`` given, ``domain_b`` empty: exact, uncapped match of
+          ``domain_a`` against every other domain (today's original
+          behaviour, preserved for targeted queries like market↔freight).
+        - ``domain_a`` and ``domain_b`` both given: exact, uncapped match
+          between exactly those two domains.
+        - Neither given (the default): a real GLOBAL scan across every
+          domain pair in the index — no domain is hardcoded as the anchor.
+          Domain groups above ``MAX_DOMAIN_GROUP_FOR_GLOBAL_SCAN`` are
+          sampled to their top-K by gravitational weight for this scan only
+          (see the constant's docstring above).
 
         ``records``, if provided, is used instead of re-reading the index
         from disk (see ``domain_stats`` docstring — same rationale: avoid
         redundant full-index reloads when a caller already has one).
         """
         records = records if records is not None else self._load()
-        a_recs = [r for r in records.values() if r.domain == domain_a]
-        b_recs = [
-            r for r in records.values()
-            if (r.domain == domain_b if domain_b else r.domain != domain_a)
-        ]
 
+        if domain_a is not None:
+            a_recs = [r for r in records.values() if r.domain == domain_a]
+            b_recs = [
+                r for r in records.values()
+                if (r.domain == domain_b if domain_b else r.domain != domain_a)
+            ]
+            convergences = []
+            for a in a_recs:
+                for b in b_recs:
+                    match = self._match_pair(a, b, domain_a, domain_b or "*", min_cc)
+                    if match:
+                        convergences.append(match)
+            return convergences
+
+        # Global mode: group by domain once (O(N)), then match every
+        # unordered domain pair — the whole universe, not just market.
+        by_domain: Dict[str, List[GravityRecord]] = {}
+        for r in records.values():
+            by_domain.setdefault(r.domain, []).append(r)
+
+        capped: Dict[str, List[GravityRecord]] = {}
+        for domain, recs in by_domain.items():
+            if len(recs) > self.MAX_DOMAIN_GROUP_FOR_GLOBAL_SCAN:
+                recs = sorted(recs, key=self._weight, reverse=True)[
+                    : self.MAX_DOMAIN_GROUP_FOR_GLOBAL_SCAN
+                ]
+            capped[domain] = recs
+
+        domains = sorted(capped)
         convergences = []
-        for a in a_recs:
-            for b in b_recs:
-                # Intent overlap: same intent keyword
-                if a.intent and b.intent and (
-                    a.intent.lower() in b.intent.lower()
-                    or b.intent.lower() in a.intent.lower()
-                ):
-                    combined_cc = (a.cc_score + b.cc_score) / 2
-                    if combined_cc >= min_cc:
-                        convergences.append({
-                            "type": "intent_overlap",
-                            "star_a": a.fingerprint,
-                            "star_b": b.fingerprint,
-                            "intent": a.intent,
-                            "combined_cc": round(combined_cc, 4),
-                            "combined_hits": a.hits + b.hits,
-                            "domains": [domain_a, domain_b],
-                        })
-                        continue
-
-                # Temporal proximity: both active in last 7 days AND
-                # both have meaningful coherence (avoids noise)
-                a_last = _parse_iso(a.last_seen)
-                b_last = _parse_iso(b.last_seen)
-                now = datetime.now(timezone.utc)
-                both_recent = (
-                    (now - a_last).total_seconds() < 7 * 86400
-                    and (now - b_last).total_seconds() < 7 * 86400
-                )
-                combined_cc_tp = (a.cc_score + b.cc_score) / 2
-                if both_recent and combined_cc_tp >= 0.3:
-                    convergences.append({
-                        "type": "temporal_proximity",
-                        "star_a": a.fingerprint,
-                        "star_b": b.fingerprint,
-                        "a_intent": a.intent,
-                        "b_intent": b.intent,
-                        "combined_cc": round(combined_cc_tp, 4),
-                        "domains": [domain_a, domain_b],
-                    })
-
+        for i, dom_a in enumerate(domains):
+            for dom_b in domains[i + 1:]:
+                for a in capped[dom_a]:
+                    for b in capped[dom_b]:
+                        match = self._match_pair(a, b, dom_a, dom_b, min_cc)
+                        if match:
+                            convergences.append(match)
         return convergences
 
     def universe_summary(self) -> Dict[str, Any]:
@@ -484,13 +544,15 @@ class GravityIndex:
         records = self.all_records()
         domains = self.domain_stats()
         tiers = self.tier_counts()
-        market_cognitive = self.cross_domain_convergences()
+        # No domain arg = global scan across every domain pair (see
+        # cross_domain_convergences docstring), not just market vs rest.
+        convergences = self.cross_domain_convergences()
         return {
             "total_stars": len(records),
             "tiers": tiers,
             "domains": domains,
-            "cross_domain_convergences": len(market_cognitive),
-            "convergence_details": market_cognitive[:10],
+            "cross_domain_convergences": len(convergences),
+            "convergence_details": convergences[:10],
         }
 
 

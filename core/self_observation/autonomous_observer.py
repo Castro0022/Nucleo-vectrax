@@ -344,26 +344,48 @@ def _detect_gravity_changes(
 
 def _detect_convergence_changes(prev: dict, curr: dict, record) -> int:
     n = 0
-    prev_conv = len(prev.get("gravity_convergences", []))
-    curr_conv = len(curr.get("gravity_convergences", []))
+    # gravity_convergences_total is the raw (uncanonicalized) global
+    # detector-candidate count — NOT len(gravity_convergences), which is
+    # only a 20-item display sample and would always compare <=20 vs <=20.
+    prev_conv = prev.get("gravity_convergences_total", 0)
+    curr_conv = curr.get("gravity_convergences_total", 0)
 
-    # Record convergence history (births/dissolutions)
+    # Canonical convergence registry: create/confirm/dissolve/revive.
+    # Fed the FULL global candidate list (every domain pair, not just
+    # market), not the UI's top-20 slice — that slice previously caused
+    # the ledger to only ever see 20 "active" convergences at a time.
     try:
-        from core.learn.convergence_history import record_snapshot
-        curr_convergences = curr.get("gravity_convergences", [])
-        result = record_snapshot(curr_convergences)
-        if result.get("births", 0) > 0:
+        from core.learn.convergence_registry import record_convergence_snapshot
+        from core.self_observation.universe_observer import (
+            get_full_convergence_candidates,
+        )
+        candidates = get_full_convergence_candidates()
+        result = record_convergence_snapshot(candidates)
+        if result.get("created", 0) > 0:
             record("convergence", "convergence_birth",
-                   f"{result['births']} convergencia(s) nacieron",
+                   f"{result['created']} convergencia(s) canónica(s) nueva(s)",
                    evidence=result, severity="info")
             n += 1
-        if result.get("dissolutions", 0) > 0:
+        if result.get("dissolved", 0) > 0:
             record("convergence", "convergence_dissolved",
-                   f"{result['dissolutions']} convergencia(s) se disolvieron",
+                   f"{result['dissolved']} convergencia(s) se disolvieron",
                    evidence=result, severity="info")
+            n += 1
+        if result.get("reappeared", 0) > 0:
+            record("convergence", "convergence_reappeared",
+                   f"{result['reappeared']} convergencia(s) reaparecieron "
+                   f"(mismo convergence_id)",
+                   evidence=result, severity="info")
+            n += 1
+        if result.get("ambiguous"):
+            record("convergence", "convergence_ambiguous",
+                   f"{len(result['ambiguous'])} candidato(s) ambiguo(s) "
+                   f"no fusionado(s) automáticamente",
+                   evidence={"ambiguous": result["ambiguous"][:10]},
+                   severity="info")
             n += 1
     except Exception as _ch:
-        logger.debug("convergence_history failed: %s", _ch)
+        logger.debug("convergence_registry failed: %s", _ch)
 
     if curr_conv > prev_conv:
         delta = curr_conv - prev_conv
