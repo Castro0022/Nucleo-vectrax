@@ -383,10 +383,17 @@ class GravityIndex:
         """Return all records in a given domain."""
         return [r for r in self._load().values() if r.domain == domain]
 
-    def domain_stats(self) -> Dict[str, Dict[str, Any]]:
-        """Aggregate stats per domain (market, cognition, etc.)."""
+    def domain_stats(self, records: Optional[Dict[str, GravityRecord]] = None) -> Dict[str, Dict[str, Any]]:
+        """Aggregate stats per domain (market, cognition, etc.).
+
+        ``records``, if provided, is used instead of re-reading the index
+        from disk — lets a caller that already loaded the full index once
+        (e.g. alongside ``all_records()``) avoid paying the disk read +
+        JSON parse cost again for a large index. Defaults to ``self._load()``
+        for full backward compatibility.
+        """
         domains: Dict[str, list] = {}
-        for rec in self._load().values():
+        for rec in (records if records is not None else self._load()).values():
             domains.setdefault(rec.domain, []).append(rec)
         result = {}
         for d, recs in domains.items():
@@ -409,14 +416,19 @@ class GravityIndex:
         domain_a: str = "market",
         domain_b: str = "",
         min_cc: float = 0.0,
+        records: Optional[Dict[str, GravityRecord]] = None,
     ) -> List[Dict[str, Any]]:
         """Find convergences between two domains.
 
         A convergence is detected when stars from different domains
         share the same intent or have overlapping temporal activity.
         If domain_b is empty, matches against ALL non-domain_a stars.
+
+        ``records``, if provided, is used instead of re-reading the index
+        from disk (see ``domain_stats`` docstring — same rationale: avoid
+        redundant full-index reloads when a caller already has one).
         """
-        records = self._load()
+        records = records if records is not None else self._load()
         a_recs = [r for r in records.values() if r.domain == domain_a]
         b_recs = [
             r for r in records.values()
