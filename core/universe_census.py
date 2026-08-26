@@ -203,14 +203,21 @@ def _build_census() -> UniverseCensus:
     c = UniverseCensus(timestamp=time.time())
 
     # === SOURCE 1: Gravity Engine ===
+    # Perf (2026-08-26): load the index from disk ONCE and reuse it for
+    # domain_stats/cross_domain_convergences, instead of each independently
+    # re-reading/re-parsing the full index (same fix applied in
+    # core/self_observation/universe_observer.py — see
+    # docs/UNIVERSE_PERFORMANCE_2026_08_26.md). No change in what is
+    # counted, only how many times the file is read.
     try:
         from core.learn.gravity_engine import get_gravity_index
         gi = get_gravity_index()
-        records = gi.all_records()
+        raw = gi.load_raw()
+        records = list(raw.values())
         c.gravitational = len(records)
-        domain_stats = gi.domain_stats()
+        domain_stats = gi.domain_stats(records=raw)
         c.domains = {d: s.get("count", 0) for d, s in domain_stats.items()}
-        c.convergences = len(gi.cross_domain_convergences())
+        c.convergences = len(gi.cross_domain_convergences(records=raw))
     except Exception as exc:
         logger.debug("census gravity failed: %s", exc)
 

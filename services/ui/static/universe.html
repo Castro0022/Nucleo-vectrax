@@ -213,6 +213,11 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
   let hovered = null;
   let hoveredQuality = null;
   let animFrame = 0;
+  // Perf caches: recomputed once per data reload (~15s), not per animation
+  // frame. At ~30k stars, re-sorting/re-bucketing at 60fps was the actual
+  // rendering bottleneck (backend delivery is already fast/cached).
+  let sortedStars = [];   // stars, back-to-front by _z
+  let domainGroups = {};  // domain -> visible stars, capped, for convergence arcs
   let filters = {
     'layer-core': true, 'layer-mid': true, 'layer-outer': true,
     'dom-cognitive': true, 'dom-market': true, 'dom-interest': true, 'dom-users': true,
@@ -312,11 +317,15 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       s._twinklePhase = (Math.abs(h) % 314) / 100;
       starMap[s.id] = s;
     }
+    // Back-to-front Z order only changes when the star set changes (data
+    // reload), so sort once here instead of every requestAnimationFrame.
+    sortedStars = stars.slice().sort((a, b) => (b._z || 0.5) - (a._z || 0.5));
   }
 
   // --- Filter visibility ---
   function applyFilters() {
     // Classify each star into a domain category
+    const rawDomainGroups = {};
     for (const s of stars) {
       let vis = true;
       // Layer filter
@@ -335,6 +344,21 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       // User stars (no _domain = legacy gravitational user stars)
       if (!dom && s.star_type !== 'convergence' && !filters['dom-users']) vis = false;
       s._visible = vis;
+      // Track visible gravitational stars per domain for the convergence-arc
+      // layer (candidate endpoints only — does not affect which stars render).
+      if (vis && dom) {
+        (rawDomainGroups[dom] || (rawDomainGroups[dom] = [])).push(s);
+      }
+    }
+    // Cap each domain bucket to the top-N by mass. This bounds the O(n*m)
+    // convergence-arc candidate search (only 6 arcs are ever drawn per pair)
+    // without hiding, removing, or reducing any star in the universe itself —
+    // every star still renders; this only limits convergence-arc endpoints.
+    domainGroups = {};
+    for (const dom in rawDomainGroups) {
+      const arr = rawDomainGroups[dom];
+      arr.sort((a, b) => b.mass - a.mass);
+      domainGroups[dom] = arr.slice(0, 60);
     }
     // Update counters in control panel
     _updateCounts();
@@ -411,6 +435,50 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     const c = LAYER_COLORS[s.layer] || LAYER_COLORS.outer;
     const r = parseInt(c.slice(1,3),16), g = parseInt(c.slice(3,5),16), b = parseInt(c.slice(5,7),16);
     return `rgba(${r},${g},${b},${a})`;
+  }
+
+  // Solid base color (no alpha) for sprite cache keying — mirrors getStarColor.
+  function getStarColorHex(s) {
+    if (s._domain) return DOMAIN_COLORS[s._domain] || DOMAIN_COLORS.unknown;
+    if (s.owner === '__collective__') return '#06d6a0';
+    if (s.star_type === 'convergence') return '#a78bfa';
+    return LAYER_COLORS[s.layer] || LAYER_COLORS.outer;
+  }
+
+  // --- Glow sprite cache ---
+  // createRadialGradient() + 2 fills PER STAR PER FRAME was the dominant cost
+  // at ~30k stars (thousands visible at once). Each distinct color's bloom/
+  // glow gradient shape is baked once into an offscreen canvas texture at
+  // full-alpha; per-frame animation (twinkle/depth/mass) is then applied via
+  // a single ctx.globalAlpha before a cheap drawImage blit — same visual
+  // result (bloom + glow), a fraction of the cost.
+  const _SPRITE_SIZE = 128;
+  const _glowSpriteCache = {};
+  function _buildGlowSprite(hex, stops) {
+    const c = document.createElement('canvas');
+    c.width = c.height = _SPRITE_SIZE;
+    const sctx = c.getContext('2d');
+    const rr = parseInt(hex.slice(1,3),16), gg = parseInt(hex.slice(3,5),16), bb = parseInt(hex.slice(5,7),16);
+    const R = _SPRITE_SIZE / 2;
+    const grad = sctx.createRadialGradient(R, R, 0, R, R, R);
+    for (const [off, a] of stops) grad.addColorStop(off, a <= 0 ? 'transparent' : `rgba(${rr},${gg},${bb},${a})`);
+    sctx.fillStyle = grad;
+    sctx.beginPath();
+    sctx.arc(R, R, R, 0, Math.PI * 2);
+    sctx.fill();
+    return c;
+  }
+  function getGlowSprites(hex) {
+    let entry = _glowSpriteCache[hex];
+    if (!entry) {
+      entry = {
+        // Bloom stops preserve the original 0.08 / 0.03 / 0 ratio (0.03/0.08=0.375)
+        bloom: _buildGlowSprite(hex, [[0, 1], [0.4, 0.375], [1, 0]]),
+        glow: _buildGlowSprite(hex, [[0, 1], [1, 0]]),
+      };
+      _glowSpriteCache[hex] = entry;
+    }
+    return entry;
   }
 
   // --- DRAW ---
@@ -583,8 +651,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
     }
 
     // Stars — cinematic glow + twinkling + 3D depth
-    // Sort by Z (back-to-front) so nearer stars draw on top
-    const sortedStars = stars.slice().sort((a, b) => (b._z || 0.5) - (a._z || 0.5));
+    // Back-to-front Z order is precomputed in layoutStars() (on data reload,
+    // ~every 15s) instead of re-sorted here on every animation frame.
     for (const s of sortedStars) {
       if (!s._visible) continue;
       const [sx, sy] = toScreen(s._x, s._y);
@@ -592,29 +660,29 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
       if (sx < -r*2 || sx > W+r*2 || sy < -r*2 || sy > H+r*2) continue;
 
       const isHovered = hovered && hovered.id === s.id;
-      const color = getStarColor(s);
       const depth = s._depthScale || 1;
       const twinkle = (0.5 + depth * 0.5) * (0.65 + 0.35 * Math.sin(t * (s._twinkleSpeed || 0.02) * 60 + (s._twinklePhase || 0)));
+      const sprites = getGlowSprites(getStarColorHex(s));
 
-      // Outer bloom (wider, brighter — more cinematic)
-      const bloom = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 5);
-      bloom.addColorStop(0, getStarColor(s, 0.08 * twinkle * depth));
-      bloom.addColorStop(0.4, getStarColor(s, 0.03 * twinkle * depth));
-      bloom.addColorStop(1, 'transparent');
-      ctx.fillStyle = bloom;
-      ctx.beginPath();
-      ctx.arc(sx, sy, r * 5, 0, Math.PI * 2);
-      ctx.fill();
+      // Outer bloom (wider, brighter — more cinematic). Prebaked sprite
+      // texture blitted with a single per-frame alpha instead of a fresh
+      // createRadialGradient() per star per frame.
+      const bloomAlpha = 0.08 * twinkle * depth;
+      if (bloomAlpha > 0.004) {
+        const bd = r * 10;
+        ctx.globalAlpha = bloomAlpha;
+        ctx.drawImage(sprites.bloom, sx - bd / 2, sy - bd / 2, bd, bd);
+        ctx.globalAlpha = 1;
+      }
 
       // Inner glow (always visible, not just high-mass)
-      const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, r * 2.5);
-      const glowAlpha = isHovered ? 0.45 : (0.15 + s.mass * 0.2);
-      glow.addColorStop(0, getStarColor(s, glowAlpha * twinkle));
-      glow.addColorStop(1, 'transparent');
-      ctx.fillStyle = glow;
-      ctx.beginPath();
-      ctx.arc(sx, sy, r * 2.5, 0, Math.PI * 2);
-      ctx.fill();
+      const glowAlpha = (isHovered ? 0.45 : (0.15 + s.mass * 0.2)) * twinkle;
+      if (glowAlpha > 0.004) {
+        const gd = r * 5;
+        ctx.globalAlpha = glowAlpha;
+        ctx.drawImage(sprites.glow, sx - gd / 2, sy - gd / 2, gd, gd);
+        ctx.globalAlpha = 1;
+      }
 
       // Star body (brighter, more solid)
       ctx.fillStyle = getStarColor(s, (0.75 + depth * 0.25) * twinkle);
@@ -659,20 +727,15 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
 
     // --- Convergence Phenomena (visible energy zones) ---
     if (filters['show-convergences']) {
-    // Draw glowing arcs connecting converging gravity stars
-    const gravStarsByDomain = {};
-    for (const s of stars) {
-      if (s._domain && s._visible) {
-        if (!gravStarsByDomain[s._domain]) gravStarsByDomain[s._domain] = [];
-        gravStarsByDomain[s._domain].push(s);
-      }
-    }
-    // Cross-domain convergence zones: connect market + user_interest + unknown stars
+    // Draw glowing arcs connecting converging gravity stars.
+    // domainGroups is precomputed in applyFilters() (visible stars only,
+    // capped to top 60 by mass per domain) instead of rescanning all ~30k
+    // stars and building an unbounded cartesian product every frame.
     const convDomains = [['market', 'user_interest'], ['market', 'unknown'], ['user_interest', 'unknown']];
     let totalConvArcs = 0;
     for (const [dA, dB] of convDomains) {
-      const groupA = gravStarsByDomain[dA] || [];
-      const groupB = gravStarsByDomain[dB] || [];
+      const groupA = domainGroups[dA] || [];
+      const groupB = domainGroups[dB] || [];
       if (groupA.length === 0 || groupB.length === 0) continue;
       // Draw energy arcs between closest pairs (max 6 per domain pair)
       let pairs = [];

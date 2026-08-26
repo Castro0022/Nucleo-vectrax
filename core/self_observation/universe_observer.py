@@ -350,44 +350,95 @@ def _collect_operational(snap: UniverseSnapshot) -> None:
         snap.signals.append("operational_state_unavailable")
 
 
+# Perf (2026-08-26, sales_trends backfill regression): the gravity star
+# list + domain stats + cross-domain convergences are the single most
+# expensive part of /v1/universe (measured: ~94.6% of a 6MB response,
+# ~1s of backend compute even after deduplicating the redundant reloads
+# below). The WebSocket stream (services/core/routes/universe.py) rebuilds
+# this every 2s regardless of whether the underlying data changed, so a
+# short TTL cache lets rapid repeated calls (websocket ticks, multiple
+# open tabs, /v1/universe + /v1/census in close succession) share one
+# computation instead of repeating the full sort + O(domain_a x rest)
+# convergence scan every time. This caches the COMPUTED API OUTPUT only
+# (a delivery-layer artifact) — it never touches gravity_index.json, and
+# a cache miss always recomputes from the real, current, on-disk data.
+# See docs/UNIVERSE_PERFORMANCE_2026_08_26.md for the full measurement.
+_GRAVITY_SNAPSHOT_CACHE_TTL = 3.0  # seconds
+_gravity_snapshot_cache: Dict[str, Any] = {"data": None, "ts": 0.0}
+
+
+def _compute_gravity_snapshot() -> Dict[str, Any]:
+    """Pure computation (no caching, no snap mutation) of the expensive
+    gravity-derived fields. Loads the index from disk ONCE and reuses it
+    for domain_stats/cross_domain_convergences (see those methods'
+    docstrings) instead of each independently re-reading the full index.
+    """
+    from core.learn.gravity_engine import get_gravity_index
+    gi = get_gravity_index()
+    raw = gi.load_raw()           # single disk read + JSON parse
+    records = list(raw.values())  # equivalent to all_records(), no extra load
+
+    # Send ALL gravitational stars — the canvas needs every one.
+    # Previously limited to 50, causing 525 missing stars in the panel.
+    combined = sorted(
+        records,
+        key=lambda r: r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor,
+        reverse=True,
+    )
+    gravity_stars = [
+        {
+            "id": r.fingerprint,
+            "domain": r.domain,
+            "intent": r.intent,
+            "tier": r.tier,
+            "hits": r.hits,
+            "cc": round(r.cc_score, 3),
+            "freq": round(r.freq, 3),
+            "weight": round(
+                r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor, 2
+            ),
+            "summary": r.summary[:80] if r.summary else "",
+        }
+        for r in combined
+    ]
+
+    # Domain stats — reuse the already-loaded `raw` dict.
+    gravity_domains = gi.domain_stats(records=raw)
+
+    # Cross-domain convergences from gravity index — reuse `raw` too.
+    convs = gi.cross_domain_convergences(records=raw)
+
+    return {
+        "gravity_total": len(records),
+        "gravity_stars": gravity_stars,
+        "gravity_domains": gravity_domains,
+        "gravity_convergences_total": len(convs),
+        "gravity_convergences": convs[:20],
+    }
+
+
+def _get_gravity_snapshot_cached() -> Dict[str, Any]:
+    now = time.time()
+    cached = _gravity_snapshot_cache["data"]
+    if cached is not None and (now - _gravity_snapshot_cache["ts"]) < _GRAVITY_SNAPSHOT_CACHE_TTL:
+        return cached
+    data = _compute_gravity_snapshot()
+    _gravity_snapshot_cache["data"] = data
+    _gravity_snapshot_cache["ts"] = now
+    return data
+
+
 def _collect_gravity_engine(snap: UniverseSnapshot) -> None:
     """Collect stars from the gravity engine (cognitive + market domains)."""
     try:
-        from core.learn.gravity_engine import get_gravity_index
-        gi = get_gravity_index()
-        records = gi.all_records()
-        snap.gravity_total = len(records)
-
-        # Send ALL gravitational stars — the canvas needs every one.
-        # Previously limited to 50, causing 525 missing stars in the panel.
-        combined = sorted(
-            records,
-            key=lambda r: r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor,
-            reverse=True,
-        )
-        for r in combined:
-            snap.gravity_stars.append({
-                "id": r.fingerprint,
-                "domain": r.domain,
-                "intent": r.intent,
-                "tier": r.tier,
-                "hits": r.hits,
-                "cc": round(r.cc_score, 3),
-                "freq": round(r.freq, 3),
-                "weight": round(
-                    r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor, 2
-                ),
-                "summary": r.summary[:80] if r.summary else "",
-            })
-
-        # Domain stats
-        snap.gravity_domains = gi.domain_stats()
-
-        # Cross-domain convergences from gravity index
-        convs = gi.cross_domain_convergences()
-        snap.gravity_convergences_total = len(convs)
-        for c in convs[:20]:
-            snap.gravity_convergences.append(c)
+        data = _get_gravity_snapshot_cached()
+        snap.gravity_total = data["gravity_total"]
+        # Copy the cached lists before any further (e.g. eToro injection)
+        # mutation below — never mutate the cached objects in place.
+        snap.gravity_stars = list(data["gravity_stars"])
+        snap.gravity_domains = data["gravity_domains"]
+        snap.gravity_convergences_total = data["gravity_convergences_total"]
+        snap.gravity_convergences = list(data["gravity_convergences"])
 
     except Exception as exc:
         logger.debug("gravity engine collection failed: %s", exc)
