@@ -37,11 +37,17 @@ DEJAVU_WARM_TO_HOT_MIN_CC = 0.6
 
 MAX_OUTCOME_HISTORY = 20
 
-# Bounded size of GravityRecord.activation_history. Conservative default —
-# NOT yet calibrated against real activation-frequency distributions (e.g.
-# Online Retail II). Must be revisited with real data before any backfill;
-# see docs on the sales_trends temporal pattern extension.
-MAX_ACTIVATION_HISTORY = 256
+# Bounded size of GravityRecord.activation_history. Calibrated against a
+# real sample (Online Retail II, "Year 2009-2010" sheet, ~513k rows /
+# 18,370 stars): p95 of hits-per-star = 154, chosen over p99 (483) as the
+# more memory-conservative option — 95% of stars in the sample never need
+# decimation at this value; only the top ~5% (mostly genuine bestsellers)
+# trigger decimate_history's span-preserving thinning. Global (applies to
+# every domain, not just sales_trends) — see
+# docs/SALES_TRENDS_CALIBRATION_2026_08_25.md for the full methodology,
+# distribution, and an unrelated periodicity-detector fix found along the
+# way. Revisit if a future domain's real distribution differs materially.
+MAX_ACTIVATION_HISTORY = 154
 
 
 def _now_iso() -> str:

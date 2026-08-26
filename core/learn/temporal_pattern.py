@@ -93,15 +93,24 @@ _GRID_RESOLUTION_CAP = 5000  # numerical resolution budget, not a domain assumpt
 def _period_grid(t_days: np.ndarray, n_periods: int, oversample: float) -> np.ndarray:
     """Build a period grid derived only from the data's own span.
 
-    No candidate period is ever hardcoded. The upper bound is the observed
-    span (a period longer than the span cannot be resolved). The lower
-    bound is deliberately NOT tied to the smallest gap between consecutive
+    No candidate period is ever hardcoded. The lower bound comes purely
+    from the grid density budget (NOT the smallest gap between consecutive
     real events: for a point process, consecutive gaps are themselves
-    already close to the true period (roughly one activation per cycle),
-    so using them as a Nyquist-style floor would exclude the very period
-    being searched for. Instead the lower bound comes purely from the grid
-    density budget, giving a continuous, densely-sampled search space from
-    near-zero up to the full span.
+    already close to the true period, so using them as a Nyquist-style
+    floor would exclude the very period being searched for).
+
+    The upper bound is HALF the observed span, not the full span. A period
+    equal to the full span would let a single monotonic trend/hump across
+    the only observation window masquerade as "periodicity" — with one
+    cycle of data you cannot distinguish a real recurring pattern from a
+    one-off trend (e.g. a growing business's sales rising toward its one
+    and only December in the dataset). Requiring at least two full cycles
+    to fit within the span is the standard guard against this: see
+    docs/SALES_TRENDS_CALIBRATION_2026_08_25.md for the Online Retail II
+    smoke test where several unrelated real product stars all reported a
+    near-identical ~373-day "period" (matching the dataset's ~373-day span
+    almost exactly) at the FAP floor — the signature of this exact
+    artifact, not genuine per-product seasonality.
     """
     span = float(t_days.max() - t_days.min())
     if span <= 0:
@@ -109,7 +118,7 @@ def _period_grid(t_days: np.ndarray, n_periods: int, oversample: float) -> np.nd
 
     n = int(min(max(n_periods * max(oversample, 1.0), 2), _GRID_RESOLUTION_CAP))
     min_period = max(span / _GRID_RESOLUTION_CAP, 1e-6)
-    max_period = span
+    max_period = span / 2.0
 
     if max_period <= min_period:
         return np.array([], dtype=float)
