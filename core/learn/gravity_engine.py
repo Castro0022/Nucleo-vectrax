@@ -436,16 +436,34 @@ class GravityIndex:
     # into semantic clusters before pairing) instead of raising the cap.
     MAX_DOMAIN_GROUP_FOR_GLOBAL_SCAN = 300
 
+    # HOTFIX (2026-08-27, production incident): bulk-ingested domains (e.g.
+    # florida_real_estate, freight_logistics) routinely score cc_score in the
+    # 0.7-1.0 range and have many records with recent last_seen timestamps —
+    # no cc/size threshold reliably separates real temporal_proximity signal
+    # from this noise. Combined with autonomous_observer.py calling the
+    # GLOBAL scan every ~2-3s (via get_full_convergence_candidates()), this
+    # produced tens of thousands of spurious temporal_proximity convergences
+    # per hour in the canonical registry. Disabling temporal_proximity for
+    # the automatic global scan only; explicit two-domain queries (domain_a
+    # given) are exact/targeted and keep it enabled. See convergence_registry
+    # for the canonical registry this feeds.
+    ENABLE_TEMPORAL_PROXIMITY_IN_GLOBAL_SCAN = False
+
     def _weight(self, r: GravityRecord) -> float:
         return r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor
 
     def _match_pair(
         self, a: GravityRecord, b: GravityRecord, domain_a: str, domain_b: str,
-        min_cc: float,
+        min_cc: float, include_temporal_proximity: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """Shared pairwise matching logic (unchanged heuristic, factored out
         so both the explicit two-domain path and the global multi-pair path
-        reuse the exact same rules)."""
+        reuse the exact same rules).
+
+        ``include_temporal_proximity``: see ENABLE_TEMPORAL_PROXIMITY_IN_GLOBAL_SCAN
+        above — the global scan passes this as False; explicit two-domain
+        callers keep the original exact behaviour (True).
+        """
         if a.intent and b.intent and (
             a.intent.lower() in b.intent.lower()
             or b.intent.lower() in a.intent.lower()
@@ -461,6 +479,9 @@ class GravityIndex:
                     "combined_hits": a.hits + b.hits,
                     "domains": [domain_a, domain_b],
                 }
+            return None
+
+        if not include_temporal_proximity:
             return None
 
         a_last = _parse_iso(a.last_seen)
@@ -521,7 +542,10 @@ class GravityIndex:
             convergences = []
             for a in a_recs:
                 for b in b_recs:
-                    match = self._match_pair(a, b, domain_a, domain_b or "*", min_cc)
+                    match = self._match_pair(
+                        a, b, domain_a, domain_b or "*", min_cc,
+                        include_temporal_proximity=True,
+                    )
                     if match:
                         convergences.append(match)
             return convergences
@@ -542,11 +566,15 @@ class GravityIndex:
 
         domains = sorted(capped)
         convergences = []
+        _include_tp = self.ENABLE_TEMPORAL_PROXIMITY_IN_GLOBAL_SCAN
         for i, dom_a in enumerate(domains):
             for dom_b in domains[i + 1:]:
                 for a in capped[dom_a]:
                     for b in capped[dom_b]:
-                        match = self._match_pair(a, b, dom_a, dom_b, min_cc)
+                        match = self._match_pair(
+                            a, b, dom_a, dom_b, min_cc,
+                            include_temporal_proximity=_include_tp,
+                        )
                         if match:
                             convergences.append(match)
         return convergences
