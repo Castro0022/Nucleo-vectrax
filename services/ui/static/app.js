@@ -383,20 +383,56 @@ async function loadOverview() {
       <div class="kv"><span class="dim">Audit entries</span><span>${op.audit_entries ?? 0}</span></div>
       <div class="kv"><span class="dim">Ciclos convergencia</span><span>${op.convergence_cycles ?? 0}</span></div>
     </div>`;
-    // Domains card
+    // Observation Bias card (which domains recent routing has favored)
+    const bias = obs.observation_bias || {};
+    const biasKeys = Object.keys(bias);
+    html += `<div class="card">
+      <div class="card-head">🎯 Observation Bias</div>`;
+    if (biasKeys.length > 0) {
+      biasKeys.sort((a, b) => bias[b] - bias[a]).forEach(d => {
+        const w = bias[d];
+        const barPct = Math.min(w / 3.0 * 100, 100);
+        const cls = w >= 1.5 ? 'ok' : w < 0.8 ? 'err' : 'warn';
+        html += `<div class="kv"><span class="dim">${esc(d)}</span><span class="tag tag-${cls}">${w.toFixed(2)}</span></div>
+          <div class="bias-bar"><div class="bias-bar-fill bias-${cls}" style="width:${barPct}%"></div></div>`;
+      });
+    } else {
+      html += `<p class="dim">Sin datos de bias.</p>`;
+    }
+    const learn = obs.learning || {};
+    if (learn.interactions_until_refine !== undefined) {
+      html += `<div class="kv" style="margin-top:6px"><span class="dim">Refinamiento en</span><span>${learn.interactions_until_refine}/${learn.refine_interval}</span></div>`;
+    }
+    html += `</div>`;
+    html += `</div>`;
+
+    // Domain detail cards (Gravity Engine only — NOT the universe total).
+    // grav.total is the scope these domain counts sum to (798 in the
+    // original audit), not obs.total_stars (2037 = gravitational +
+    // knowledge + users, three separate populations — see the Universo
+    // card above for that breakdown).
     const domains = grav.domains || {};
     const domainKeys = Object.keys(domains);
     if (domainKeys.length > 0) {
-      html += `<div class="card">
-        <div class="card-head">🌐 Dominios</div>`;
+      html += `<div class="sys-grid" style="margin-top:12px">`;
+      html += `<div class="section-title" style="grid-column:1/-1">🌐 Dominios — Gravity Engine (${grav.total ?? 0} stars, subconjunto del universo)</div>`;
       domainKeys.forEach(d => {
-        const v = domains[d];
-        const label = typeof v === 'object' ? `${v.count ?? 0} stars` : v;
-        html += `<div class="kv"><span class="dim">${esc(d)}</span><span>${label}</span></div>`;
+        const stats = domains[d] || {};
+        const n7 = (t7.new_by_domain || {})[d] || 0;
+        const n24 = (t24.new_by_domain || {})[d] || 0;
+        const tiers = Object.entries(stats.tiers || {}).map(([t, c]) => `${t}=${c}`).join(' ') || '—';
+        html += `<div class="card">
+          <div class="card-head">${esc(d)}</div>
+          <div class="kv"><span class="dim">Estrellas</span><span><strong>${stats.count ?? 0}</strong></span></div>
+          <div class="kv"><span class="dim">Hits totales</span><span>${stats.total_hits ?? 0}</span></div>
+          <div class="kv"><span class="dim">CC promedio</span><span>${stats.avg_cc ?? 0}</span></div>
+          <div class="kv"><span class="dim">Frecuencia avg</span><span>${stats.avg_freq ?? 0}</span></div>
+          <div class="kv"><span class="dim">Nuevas 24h / 7d</span><span>${n24 > 0 ? '+' + n24 : 0} / ${n7 > 0 ? '+' + n7 : 0}</span></div>
+          <div class="kv"><span class="dim">Tiers</span><span>${esc(tiers)}</span></div>
+        </div>`;
       });
       html += `</div>`;
     }
-    html += `</div>`;
     el.innerHTML = html;
   } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
 }

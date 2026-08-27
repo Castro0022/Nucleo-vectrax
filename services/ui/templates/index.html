@@ -44,7 +44,14 @@
       <button class="nav-btn active" data-view="chat">Chat</button>
       <button class="nav-btn" data-view="dashboard">Dashboard</button>
       <a href="/universe" class="nav-btn" style="text-decoration:none">Universe</a>
-      <a href="/v1/observatory" class="nav-btn" style="text-decoration:none">Observatory</a>
+      <!-- Observatory's unique data (Observation Bias, per-domain detail) now
+           lives in the Dashboard's Overview tab (2026-08-27 UI audit) — this
+           previously linked to /v1/observatory, a route that does not exist
+           (observatory.html is only reachable directly at /static/observatory.html). -->
+      <button class="nav-btn" data-view="dashboard">Observatory</button>
+      <a href="/v1/market/view" class="nav-btn" style="text-decoration:none">Mercado</a>
+      <a href="/v1/market/patterns/view" class="nav-btn" style="text-decoration:none">Trading</a>
+      <a href="/v1/dashboard/train/view" class="nav-btn" style="text-decoration:none">Pipeline Train</a>
       <a href="/portals" class="nav-btn" style="text-decoration:none">Portals</a>
     </nav>
     <div class="topbar-right">
@@ -88,7 +95,7 @@
       <button class="dash-tab" data-section="stars">Stars</button>
       <button class="dash-tab" data-section="constellations">Constellations</button>
       <button class="dash-tab" data-section="history">History</button>
-      <button class="dash-tab" data-section="sessions">Sessions</button>
+      <button class="dash-tab" data-section="sessions">Usuarios</button>
       <button class="dash-tab" data-section="proposals">Proposals</button>
       <button class="dash-tab" data-section="operator">Operator</button>
       <button class="dash-tab" data-section="audit">Audit</button>

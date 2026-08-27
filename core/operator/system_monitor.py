@@ -268,6 +268,47 @@ def collect_metrics() -> SystemMetrics:
 
 
 # ---------------------------------------------------------------------------
+# Runtime + Governor snapshot (shared by /dashboard/operator and
+# /system/monitor — both previously duplicated the exact same
+# collect_metrics() + get_current_policy() call/dict-building logic).
+# ---------------------------------------------------------------------------
+
+def runtime_and_governor_snapshot() -> Dict[str, Any]:
+    """Runtime metrics (collect_metrics) + governor policy in one dict.
+
+    Single source of truth for the "runtime"/"governor" sections shared by
+    the public dashboard operator view and the authenticated system monitor
+    view, so the two never drift in what fields they expose.
+    """
+    result: Dict[str, Any] = {}
+    try:
+        m = collect_metrics()
+        result["runtime"] = {
+            "status": m.status,
+            "worker_alive": m.worker_alive,
+            "worker_heartbeat_age_s": round(m.worker_heartbeat_age_s, 1),
+            "queue_pending": m.queue_pending,
+            "queue_processing": m.queue_processing,
+            "queue_error": m.queue_error,
+            "memory_mb": m.memory_mb,
+            "memory_peak_mb": m.memory_peak_mb,
+            "active_users": m.active_users,
+            "avg_latency_s": m.avg_latency_s,
+            "max_latency_s": m.max_latency_s,
+        }
+    except Exception as exc:
+        result["runtime"] = {"error": str(exc)}
+
+    try:
+        from core.governor import get_current_policy
+        result["governor"] = get_current_policy()
+    except Exception as exc:
+        result["governor"] = {"error": str(exc)}
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Duplicate detection
 # ---------------------------------------------------------------------------
 

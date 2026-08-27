@@ -96,6 +96,37 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); }
 #empty-state .es-icon { font-size: 64px; margin-bottom: 16px; opacity: 0.3; }
 #empty-state .es-text { font-size: 16px; color: var(--dim); }
 #empty-state .es-sub { font-size: 13px; color: var(--dim); margin-top: 8px; opacity: 0.6; }
+
+/* ----------------------------------------------------------------
+   RESPONSIVE (2026-08-27 UI audit) — HUD panels only. The canvas
+   rendering/physics engine below is untouched; only the absolutely
+   positioned overlay panels are resized/repositioned/collapsed so
+   they no longer overlap each other on narrow viewports (previously
+   #hud-controls at right:16/width:200 and #hud-system at
+   left:16/width:232 combined exceed most phone widths).
+   ---------------------------------------------------------------- */
+@media (max-width: 768px) {
+  #hud-top { padding: 10px 12px; gap: 8px; flex-wrap: wrap; }
+  #hud-top .logo { font-size: 14px; }
+  #hud-top .stats { font-size: 10px; }
+
+  #hud-back { top: 8px; right: 8px; padding: 4px 10px; font-size: 11px; }
+
+  /* Secondary status panel (engines/brokers) — collapsed on narrow
+     screens to avoid overlapping the filters panel; still reachable
+     on desktop/tablet widths. */
+  #hud-system { display: none; }
+
+  #hud-controls {
+    top: 52px; right: 8px; left: 8px; width: auto;
+    max-height: 38vh; overflow-y: auto; font-size: 11px;
+  }
+
+  #hud-legend {
+    left: 8px; right: 8px; bottom: 8px; width: auto;
+    max-height: 28vh; overflow-y: auto; font-size: 10px;
+  }
+}
 </style>
 </head>
 <body>

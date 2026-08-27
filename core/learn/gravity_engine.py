@@ -342,9 +342,12 @@ class GravityIndex:
             if r.fingerprint[:6] == prefix
         ]
 
-    def tier_counts(self) -> Dict[str, int]:
+    def tier_counts(self, records: Optional[Dict[str, GravityRecord]] = None) -> Dict[str, int]:
+        """``records``, if provided, is used instead of re-reading the index
+        from disk (see ``domain_stats`` docstring for the full rationale).
+        """
         counts = {t.value: 0 for t in TIER_ORDER}
-        for rec in self._load().values():
+        for rec in (records if records is not None else self._load()).values():
             counts[rec.tier] = counts.get(rec.tier, 0) + 1
         return counts
 
@@ -379,9 +382,18 @@ class GravityIndex:
 
     # -- cross-domain queries ------------------------------------------------
 
-    def by_domain(self, domain: str) -> List[GravityRecord]:
-        """Return all records in a given domain."""
-        return [r for r in self._load().values() if r.domain == domain]
+    def by_domain(
+        self, domain: str, records: Optional[Dict[str, GravityRecord]] = None,
+    ) -> List[GravityRecord]:
+        """Return all records in a given domain.
+
+        ``records``, if provided, is used instead of re-reading the index
+        from disk (see ``domain_stats`` docstring for the full rationale).
+        """
+        return [
+            r for r in (records if records is not None else self._load()).values()
+            if r.domain == domain
+        ]
 
     def domain_stats(self, records: Optional[Dict[str, GravityRecord]] = None) -> Dict[str, Dict[str, Any]]:
         """Aggregate stats per domain (market, cognition, etc.).
@@ -560,17 +572,30 @@ class GravityIndex:
         self,
         n: int = 10,
         domain: Optional[str] = None,
+        records: Optional[Dict[str, GravityRecord]] = None,
     ) -> List[GravityRecord]:
-        """Return the top N stars by gravitational weight (hits × cc × freq)."""
-        recs = self.by_domain(domain) if domain else self.all_records()
+        """Return the top N stars by gravitational weight (hits × cc × freq).
+
+        ``records``, if provided, is used instead of re-reading the index
+        from disk (see ``domain_stats`` docstring for the full rationale).
+        """
+        source = records if records is not None else self._load()
+        recs = [r for r in source.values() if r.domain == domain] if domain else list(source.values())
         for r in recs:
             r._weight = r.hits * max(r.cc_score, 0.01) * max(r.freq, 0.01) * r.decay_factor
         return sorted(recs, key=lambda r: r._weight, reverse=True)[:n]
 
-    def growth_trends(self, days: int = 7) -> Dict[str, Any]:
-        """Analyze growth trends over a time window."""
+    def growth_trends(
+        self, days: int = 7, records: Optional[Dict[str, GravityRecord]] = None,
+    ) -> Dict[str, Any]:
+        """Analyze growth trends over a time window.
+
+        ``records``, if provided, is used instead of re-reading the index
+        from disk (see ``domain_stats`` docstring for the full rationale) -
+        lets a caller compute multiple windows (e.g. 24h + 7d) from one load.
+        """
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        records = self._load()
+        records = records if records is not None else self._load()
         new_stars = [r for r in records.values()
                      if _parse_iso(r.first_seen) >= cutoff]
         active_stars = [r for r in records.values()
