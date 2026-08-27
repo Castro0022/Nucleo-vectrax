@@ -17,6 +17,30 @@ import tempfile
 import unittest
 from pathlib import Path
 
+
+def _run_async(coro):
+    """Run a coroutine without leaving the process-wide asyncio event loop
+    policy in a state that breaks other tests.
+
+    ``asyncio.run()`` explicitly calls ``asyncio.set_event_loop(None)`` as
+    part of its cleanup. In this test suite that broke an unrelated,
+    pre-existing test (tests/test_providers.py::TestAnthropicProvider::
+    test_list_models_static) that relies on ``asyncio.get_event_loop()``
+    lazily auto-creating a loop - once a prior test has explicitly set the
+    loop to None, Python's auto-create-on-main-thread fallback no longer
+    applies and it raises "There is no current event loop". This helper
+    creates and closes its own loop but always leaves a fresh, open loop
+    set as current afterward, preserving the ambient default-loop
+    behaviour the rest of the suite depends on.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import core.learn.convergence_registry as registry_mod  # noqa: E402
@@ -69,7 +93,7 @@ class TestDashboardOperatorConvergenceCount(_IsolatedCanonicalRegistryMixin, uni
     def test_reports_canonical_census_total(self):
         _seed_canonical_convergences(self.db_path, count=3)
 
-        result = asyncio.run(dashboard_operator())
+        result = _run_async(dashboard_operator())
 
         self.assertIn("universe", result)
         self.assertNotIn("error", result["universe"])
@@ -79,7 +103,7 @@ class TestDashboardOperatorConvergenceCount(_IsolatedCanonicalRegistryMixin, uni
         """The endpoint must track Census's canonical total, not some
         independently-computed or stale number."""
         _seed_canonical_convergences(self.db_path, count=1)
-        first = asyncio.run(dashboard_operator())
+        first = _run_async(dashboard_operator())
         self.assertEqual(first["universe"]["convergences"], 1)
 
         # Force a fresh census read (bypass the 10s TTL cache) after adding
@@ -87,7 +111,7 @@ class TestDashboardOperatorConvergenceCount(_IsolatedCanonicalRegistryMixin, uni
         census_mod._cache["census"] = None
         census_mod._cache["ts"] = 0.0
         _seed_canonical_convergences(self.db_path, count=5)
-        second = asyncio.run(dashboard_operator())
+        second = _run_async(dashboard_operator())
         self.assertEqual(second["universe"]["convergences"], 5)
 
 
@@ -95,7 +119,7 @@ class TestDashboardObservatoryConvergenceCount(_IsolatedCanonicalRegistryMixin, 
     def test_cross_domain_total_matches_canonical_census(self):
         _seed_canonical_convergences(self.db_path, count=4)
 
-        result = asyncio.run(dashboard_observatory())
+        result = _run_async(dashboard_observatory())
 
         self.assertEqual(result["gravity"]["convergences_total"], 4)
         self.assertEqual(result["convergences"]["cross_domain"], 4)
