@@ -354,12 +354,18 @@ def _detect_convergence_changes(prev: dict, curr: dict, record) -> int:
     # Fed the FULL global candidate list (every domain pair, not just
     # market), not the UI's top-20 slice — that slice previously caused
     # the ledger to only ever see 20 "active" convergences at a time.
+    #
+    # IMPORTANT: candidates come from `curr` (the already-collected
+    # snapshot dict), NOT a fresh direct call to the gravity engine. A
+    # prior version called universe_observer.get_full_convergence_candidates()
+    # here directly, which silently bypassed any test that mocks
+    # observe_universe() and hit the REAL gravity index + wrote to the
+    # REAL production convergence registry (the 2026-08-26
+    # tests/test_upl_observer_integration.py incident). Reading from
+    # `curr` respects the same mocking boundary as every other detector.
     try:
         from core.learn.convergence_registry import record_convergence_snapshot
-        from core.self_observation.universe_observer import (
-            get_full_convergence_candidates,
-        )
-        candidates = get_full_convergence_candidates()
+        candidates = curr.get("gravity_convergences_full", [])
         result = record_convergence_snapshot(candidates)
         if result.get("created", 0) > 0:
             record("convergence", "convergence_birth",
