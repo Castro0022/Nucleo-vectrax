@@ -98,6 +98,14 @@ class UniverseSnapshot:
     # core.universe_census.get_census().convergences_total.
     gravity_convergences: List[Dict[str, Any]] = field(default_factory=list)
     gravity_convergences_total: int = 0
+    # FULL (uncapped by the UI's top-20) global cross-domain candidate list.
+    # Internal plumbing for autonomous_observer's canonical-registry feed -
+    # deliberately a real snapshot field (not a side-channel direct call)
+    # so tests that mock observe_universe() correctly control what the
+    # automatic pipeline sees, instead of silently bypassing the mock and
+    # hitting the real gravity index. NOT part of to_api_dict()'s public
+    # response - internal use only.
+    gravity_convergences_full: List[Dict[str, Any]] = field(default_factory=list)
     gravity_total: int = 0
 
     # ── Word Gravity Index (WGI) ─────────────────────────────
@@ -449,10 +457,17 @@ def _get_gravity_snapshot_cached() -> Dict[str, Any]:
 
 def get_full_convergence_candidates() -> List[Dict[str, Any]]:
     """Full (uncapped by the UI's top-20) global cross-domain candidate
-    list, for callers that must reason about ALL candidates rather than a
-    display sample — e.g. autonomous_observer feeding the canonical
-    convergence registry. Shares the same 3s TTL cache as the rest of the
-    gravity snapshot (no extra disk reads).
+    list, straight from the live cached gravity snapshot (no mocking
+    boundary - always real data). For on-demand callers like the
+    dashboard, which intentionally want the live state on every request.
+
+    autonomous_observer does NOT use this function - it reads
+    snap.gravity_convergences_full instead, so that mocking
+    observe_universe() in a test correctly controls what the automatic
+    pipeline sees (see the 2026-08-26 incident: this function bypassed
+    that mock entirely and caused a test to write to the real production
+    database). Shares the same 3s TTL cache as the rest of the gravity
+    snapshot (no extra disk reads).
     """
     try:
         return list(_get_gravity_snapshot_cached().get("gravity_convergences_full", []))
@@ -472,6 +487,7 @@ def _collect_gravity_engine(snap: UniverseSnapshot) -> None:
         snap.gravity_domains = data["gravity_domains"]
         snap.gravity_convergences_total = data["gravity_convergences_total"]
         snap.gravity_convergences = list(data["gravity_convergences"])
+        snap.gravity_convergences_full = list(data["gravity_convergences_full"])
 
     except Exception as exc:
         logger.debug("gravity engine collection failed: %s", exc)

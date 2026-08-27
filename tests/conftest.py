@@ -82,6 +82,43 @@ def _hermetic_base(monkeypatch, tmp_path):
     except Exception:
         pass
 
+    # Redirect the canonical convergence registry (and the legacy
+    # convergence_history ledger it lives alongside) to the temp vault too.
+    # Both compute their DB path directly from __file__, ignoring
+    # VECTRAX_VAULT_DIR, so without this a test that exercises
+    # autonomous_observer.observe_and_record() (e.g. by mocking
+    # observe_universe() but not the registry) can silently read from and
+    # write to the REAL production vault/convergence_history.db - this is
+    # exactly what happened in the 2026-08-26 incident
+    # (tests/test_upl_observer_integration.py). Every test gets its own
+    # empty, isolated registry DB regardless of what it does or doesn't
+    # mock.
+    try:
+        import core.learn.convergence_registry as _cr
+
+        monkeypatch.setattr(
+            _cr, "DB_PATH", str(vault / "convergence_history.db"), raising=False
+        )
+    except Exception:
+        pass
+    try:
+        import core.learn.convergence_history as _ch
+
+        monkeypatch.setattr(
+            _ch, "_DB_PATH", str(vault / "convergence_history.db"), raising=False
+        )
+    except Exception:
+        pass
+    # Reset Census's 10s TTL cache so one test can never observe a value
+    # computed (and cached) by an earlier test.
+    try:
+        import core.universe_census as _uc
+
+        monkeypatch.setitem(_uc._cache, "census", None)
+        monkeypatch.setitem(_uc._cache, "ts", 0.0)
+    except Exception:
+        pass
+
     # 2) Neutralize external credentials/config (deterministic, no real calls).
     for _key in _NEUTRALIZE_ENV:
         monkeypatch.delenv(_key, raising=False)

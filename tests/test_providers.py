@@ -215,7 +215,7 @@ class TestAnthropicProvider:
         """Anthropic list_models returns hardcoded list (no API endpoint)."""
         import asyncio
         provider = AnthropicProvider(api_key="k")
-        models = asyncio.get_event_loop().run_until_complete(provider.list_models())
+        models = asyncio.run(provider.list_models())
         assert len(models) > 0
         assert any("claude" in m for m in models)
 
