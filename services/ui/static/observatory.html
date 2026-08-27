@@ -1,9 +1,26 @@
+<!--
+  DEPRECATED / SUPERSEDED (2026-08-27 UI audit):
+  This page's unique content (Observation Bias card, richer per-domain
+  stats: hits/avg_cc/avg_freq/tiers/new_by_domain) has been ported into
+  the main SPA's Dashboard → Overview tab (services/ui/static/app.js
+  loadOverview()), which already receives the same /v1/dashboard/observatory
+  payload this page consumes (including observation_bias, which was
+  already computed server-side but previously unrendered anywhere).
+  The embedded live Market cycle-flow diagram overlaps with
+  market_live.html, now a first-class SPA nav item.
+
+  Preserved (not deleted) per the audit's "no data/route deletion
+  without explicit approval" policy. Still reachable directly at
+  /static/observatory.html (note: NOT mounted at /v1/observatory or
+  /observatory — no such route exists). The SPA topbar's "Observatory"
+  link now opens the Dashboard instead.
+-->
 <!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Vectrax — Observatory</title>
+<title>Vectrax — Observatory (legacy)</title>
 <style>
 :root {
   --bg: #060a10; --surface: #0e1420; --border: #1a2235;

@@ -84,6 +84,68 @@ class TestCrossDomainConvergencesRecordsParam(unittest.TestCase):
         self.assertGreaterEqual(len(via_records), 1)
 
 
+class TestTierCountsTopStarsGrowthTrendsRecordsParam(unittest.TestCase):
+    """2026-08-27 dashboard/observatory audit: tier_counts(), top_stars(), and
+    growth_trends() gained the same optional ``records`` param as
+    domain_stats()/cross_domain_convergences() above, so dashboard_observatory()
+    can load the index from disk ONCE and reuse it for all five calls instead
+    of five independent reloads. Must produce IDENTICAL results whether
+    records is passed or not.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix="vectrax_test_universe_perf_")
+        self.idx = GravityIndex(path=os.path.join(self.tmpdir, "gravity_index.json"))
+        for i in range(5):
+            self.idx.record_event(f"market:fp_{i}", domain="market", intent="AAPL", cc_score=0.5)
+        for i in range(3):
+            self.idx.record_event(f"other:fp_{i}", domain="other_domain", intent="x", cc_score=0.3)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def test_tier_counts_with_and_without_records_match(self):
+        via_disk = self.idx.tier_counts()
+        raw = self.idx.load_raw()
+        via_records = self.idx.tier_counts(records=raw)
+        self.assertEqual(via_disk, via_records)
+
+    def test_tier_counts_records_param_does_not_hit_disk(self):
+        raw = self.idx.load_raw()
+        os.remove(self.idx.path)
+        via_records = self.idx.tier_counts(records=raw)
+        self.assertEqual(sum(via_records.values()), 8)
+
+    def test_top_stars_with_and_without_records_match(self):
+        via_disk = self.idx.top_stars(n=20)
+        raw = self.idx.load_raw()
+        via_records = self.idx.top_stars(n=20, records=raw)
+        self.assertEqual(
+            [r.fingerprint for r in via_disk],
+            [r.fingerprint for r in via_records],
+        )
+
+    def test_top_stars_records_param_does_not_hit_disk(self):
+        raw = self.idx.load_raw()
+        os.remove(self.idx.path)
+        via_records = self.idx.top_stars(n=20, records=raw)
+        self.assertEqual(len(via_records), 8)
+
+    def test_growth_trends_with_and_without_records_match(self):
+        via_disk = self.idx.growth_trends(days=7)
+        raw = self.idx.load_raw()
+        via_records = self.idx.growth_trends(days=7, records=raw)
+        self.assertEqual(via_disk["new_stars"], via_records["new_stars"])
+        self.assertEqual(via_disk["active_stars"], via_records["active_stars"])
+        self.assertEqual(via_disk["new_by_domain"], via_records["new_by_domain"])
+
+    def test_growth_trends_records_param_does_not_hit_disk(self):
+        raw = self.idx.load_raw()
+        os.remove(self.idx.path)
+        via_records = self.idx.growth_trends(days=7, records=raw)
+        self.assertEqual(via_records["total_stars"], 8)
+
+
 class TestGravitySnapshotCache(unittest.TestCase):
     """core.self_observation.universe_observer's short-TTL gravity cache."""
 

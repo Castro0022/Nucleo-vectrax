@@ -83,7 +83,7 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); font
   min-height: 100vh; background: var(--bg);
 }
 .login-card {
-  width: 380px; padding: 40px 36px;
+  width: 100%; max-width: 380px; padding: 40px 36px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
   text-align: center;
 }
@@ -117,7 +117,8 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); font
   display: flex; align-items: center; justify-content: center;
 }
 .topbar-name  { font-size: 15px; font-weight: 600; color: var(--text); }
-.topbar-nav   { display: flex; gap: 0; margin-left: 32px; }
+.topbar-nav   { display: flex; gap: 0; margin-left: 32px; overflow-x: auto; white-space: nowrap; scrollbar-width: thin; }
+.topbar-nav .nav-btn { flex-shrink: 0; }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 .topbar-identity { font-size: 13px; color: var(--dim); }
 .topbar-identity strong { color: var(--text); }
@@ -321,6 +322,22 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); font
   gap: 12px;
 }
 .sys-header { font-size: 12px; margin-bottom: 10px; }
+
+/* Section title (full-width heading inside a .sys-grid, e.g. domain detail cards) */
+.section-title {
+  font-size: 13px; font-weight: 700; color: var(--text);
+  padding: 10px 0 2px; text-transform: uppercase; letter-spacing: 0.03em;
+}
+
+/* Observation Bias bar */
+.bias-bar {
+  height: 3px; background: var(--surface2); border-radius: 2px;
+  margin: 2px 0 8px; overflow: hidden;
+}
+.bias-bar-fill { height: 100%; border-radius: 2px; }
+.bias-bar-fill.bias-ok   { background: var(--ok); }
+.bias-bar-fill.bias-warn { background: var(--warn); }
+.bias-bar-fill.bias-err  { background: var(--err); }
 
 /* Star rows (gravity engine) */
 .star-row {

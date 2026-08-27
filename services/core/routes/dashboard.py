@@ -5,7 +5,7 @@ Endpoints públicos que agregan datos de ambas bases de datos
 (vectrax.db gravitacional + user_memory.db Telegram) para el
 panel web. Sin auth — el dashboard es read-only.
 
-  GET /v1/dashboard/summary      — stats agregados
+  GET /v1/dashboard/summary      — stats agregados (DEPRECATED, sin consumidores; ver docstring)
   GET /v1/dashboard/stars        — knowledge stars (top por masa)
   GET /v1/dashboard/constellations — constellations
   GET /v1/dashboard/interactions  — historial de Telegram
@@ -54,7 +54,16 @@ def _user_conn() -> sqlite3.Connection:
 
 @router.get("/summary")
 async def dashboard_summary() -> Dict[str, Any]:
-    """Aggregated stats from gravitational + Telegram databases."""
+    """Aggregated stats from gravitational + Telegram databases.
+
+    DEPRECATED (2026-08-27 UI audit): no frontend page consumes this
+    endpoint anymore — the SPA's Overview tab reads `/dashboard/observatory`
+    (backed by `core.universe_census.get_census()`, the single source of
+    truth for totals). Kept for backward compatibility with any external
+    caller; not removed per the "no data/endpoint deletion without proof
+    of zero external use" policy for this audit. Prefer `get_census()` or
+    `/dashboard/observatory` for any new integration.
+    """
     result: Dict[str, Any] = {"ts": time.time()}
 
     # Gravitational DB
@@ -337,49 +346,43 @@ async def dashboard_operator() -> Dict[str, Any]:
     """Full operator status: runtime + governor + universe."""
     result: Dict[str, Any] = {}
 
-    # Runtime metrics
+    # Runtime + Governor (shared helper — identical to /system/monitor's
+    # section, see core.operator.system_monitor.runtime_and_governor_snapshot).
     try:
-        from core.operator.system_monitor import collect_metrics
-        m = collect_metrics()
-        result["runtime"] = {
-            "status": m.status,
-            "worker_alive": m.worker_alive,
-            "worker_heartbeat_age_s": round(m.worker_heartbeat_age_s, 1),
-            "queue_pending": m.queue_pending,
-            "queue_processing": m.queue_processing,
-            "queue_error": m.queue_error,
-            "memory_mb": m.memory_mb,
-            "memory_peak_mb": m.memory_peak_mb,
-            "active_users": m.active_users,
-            "avg_latency_s": m.avg_latency_s,
-            "max_latency_s": m.max_latency_s,
-        }
+        from core.operator.system_monitor import runtime_and_governor_snapshot
+        result.update(runtime_and_governor_snapshot())
     except Exception as exc:
         result["runtime"] = {"error": str(exc)}
-
-    # Governor
-    try:
-        from core.governor import get_current_policy
-        result["governor"] = get_current_policy()
-    except Exception as exc:
         result["governor"] = {"error": str(exc)}
 
-    # Universe snapshot
+    # Universe mini-card — lightweight, targeted reads instead of the full
+    # observe_universe() (which also collects ALL user stars, up to 500
+    # convergence_history rows, gravity engine + eToro injection, word
+    # gravity, and quality entities — far more than these 8 numbers need).
+    universe: Dict[str, Any] = {}
     try:
-        from core.self_observation.universe_observer import observe_universe
-        snap = observe_universe()
-        result["universe"] = {
-            "knowledge_stars": snap.knowledge_star_count,
-            "user_stars": snap.star_count,
-            "total_mass": round(snap.total_mass, 4),
-            "pattern_count": snap.pattern_count,
-            "convergences": len(snap.convergences),
-            "core_stars": snap.core_star_count,
-            "deep_memory": snap.deep_memory_count,
-            "errors_24h": snap.recent_error_count_24h,
-        }
+        from core.universe_census import get_census
+        census = get_census()
+        universe["knowledge_stars"] = census.knowledge
+        universe["user_stars"] = census.users
+        universe["total_mass"] = round(census.mass_total, 4)
+        universe["pattern_count"] = census.patterns
+        universe["convergences"] = census.convergences
     except Exception as exc:
-        result["universe"] = {"error": str(exc)}
+        universe["census_error"] = str(exc)
+    try:
+        from vectrax.core_nucleus import get_core_info
+        universe["core_stars"] = get_core_info().get("core_star_count", 0)
+    except Exception:
+        universe["core_stars"] = 0
+    try:
+        from core.self_observation.state_collector import collect_state
+        state = collect_state()
+        universe["deep_memory"] = state.deep_memory_count
+        universe["errors_24h"] = state.recent_error_count_24h
+    except Exception as exc:
+        universe["state_error"] = str(exc)
+    result["universe"] = universe
 
     # Operator layers
     try:
@@ -576,12 +579,17 @@ async def dashboard_observatory() -> Dict[str, Any]:
     try:
         from core.learn.gravity_engine import get_gravity_index
         gi = get_gravity_index()
-        gravity["domains"] = gi.domain_stats()
-        gravity["tiers"] = gi.tier_counts()
-        all_convergences = gi.cross_domain_convergences()
+        # Load the full index ONCE and reuse it across every call below —
+        # previously each of these 5 calls independently re-read + re-parsed
+        # the entire gravity_index.json from disk (see domain_stats/etc.
+        # docstrings for the records= rationale).
+        raw = gi.load_raw()
+        gravity["domains"] = gi.domain_stats(records=raw)
+        gravity["tiers"] = gi.tier_counts(records=raw)
+        all_convergences = gi.cross_domain_convergences(records=raw)
         gravity["convergences_total"] = census.convergences
         gravity["convergences"] = all_convergences[:20]
-        top = gi.top_stars(n=20)
+        top = gi.top_stars(n=20, records=raw)
         gravity["top_stars"] = [
             {
                 "id": r.fingerprint[:30], "domain": r.domain, "intent": r.intent,
@@ -592,14 +600,14 @@ async def dashboard_observatory() -> Dict[str, Any]:
             }
             for r in top
         ]
-        trends = gi.growth_trends(days=7)
+        trends = gi.growth_trends(days=7, records=raw)
         gravity["trends_7d"] = {
             "new": trends["new_stars"],
             "active": trends["active_stars"],
             "growing": trends["growing_stars"],
             "new_by_domain": trends["new_by_domain"],
         }
-        trends_1d = gi.growth_trends(days=1)
+        trends_1d = gi.growth_trends(days=1, records=raw)
         gravity["trends_24h"] = {
             "new": trends_1d["new_stars"],
             "active": trends_1d["active_stars"],

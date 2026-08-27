@@ -58,7 +58,13 @@ async def presence():
 
 @router.get("/universe/legacy", response_class=HTMLResponse, include_in_schema=False)
 async def universe_legacy():
-    """Legacy gravitational universe (knowledge stars, constellations)."""
+    """Legacy gravitational universe (knowledge stars, constellations).
+
+    DEPRECATED (2026-08-27 UI audit): a confirmed strict subset of /universe
+    (universe.html) — see the deprecation comment at the top of
+    templates/universe_legacy.html for the full comparison. Preserved, not
+    removed, pending confirmation of zero external bookmarks/links.
+    """
     legacy_path = _TEMPLATE_DIR / "universe_legacy.html"
     if legacy_path.exists():
         return HTMLResponse(content=legacy_path.read_text(encoding="utf-8"))

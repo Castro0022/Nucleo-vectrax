@@ -44,22 +44,15 @@ async def system_monitor(
     """
     result: dict = {}
 
-    # ── 1. Métricas operacionales (gateway, worker, queue, RAM) ───────────
+    # ── 1. Runtime + Governor (shared helper — identical to
+    #      /dashboard/operator's section, see
+    #      core.operator.system_monitor.runtime_and_governor_snapshot) ─────
     try:
-        from core.operator.system_monitor import collect_metrics
-        m = collect_metrics()
-        result["runtime"] = {
-            "status":              m.status,
-            "worker_alive":        m.worker_alive,
-            "worker_heartbeat_age_s": round(m.worker_heartbeat_age_s, 1),
-            "queue_pending":       m.queue_pending,
-            "queue_processing":    m.queue_processing,
-            "memory_mb":           m.memory_mb,
-            "memory_peak_mb":      getattr(m, "memory_peak_mb", 0.0),
-            "active_users":        getattr(m, "active_users", 0),
-        }
+        from core.operator.system_monitor import runtime_and_governor_snapshot
+        result.update(runtime_and_governor_snapshot())
     except Exception as exc:
         result["runtime"] = {"error": str(exc)}
+        result["governor"] = {"error": str(exc)}
 
     # ── 2. IdeaStore ─────────────────────────────────────────────────────
     try:
@@ -95,14 +88,7 @@ async def system_monitor(
     except Exception as exc:
         result["meta_loop"] = {"error": str(exc)}
 
-    # ── 4. Governor ──────────────────────────────────────────────────────
-    try:
-        from core.governor import get_current_policy
-        result["governor"] = get_current_policy()
-    except Exception as exc:
-        result["governor"] = {"error": str(exc)}
-
-    # ── 5. Procesos del supervisor ────────────────────────────────────────
+    # ── 4. Procesos del supervisor ────────────────────────────────────────
     try:
         import os
         pid_dir = os.path.expanduser("~/.vectrax")
