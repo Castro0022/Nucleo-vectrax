@@ -38,6 +38,7 @@ logs/*.log
 vault/*.jsonl
 vault/*.json
 vault/audit_reports/
+vault/cyber_kev/
 vault/cognition_signals.jsonl
 vault/candidates.jsonl
 vault/causal_ledger.jsonl

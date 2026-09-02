@@ -553,3 +553,73 @@ def test_learning_cycle_enabled_with_simulator(tmp_path, temp_vault, monkeypatch
     assert r["events"] == 60
     assert len([fp for fp in gi.load_raw() if fp.startswith("cybersecurity:")]) > 0
     assert len(vledger.load_outcomes("cybersecurity")) > 0
+
+
+# ── Etapa 7: cardinalidad acotada (familia) + cache del ledger ──────────────
+
+def test_family_star_cap_bounds_new_families_but_not_other_levels(monkeypatch):
+    """Con CYBER_MAX_FAMILY_STARS bajo, nuevas familias distintas dejan de
+    materializarse tras el tope, pero class/vector/tier (enumeraciones
+    curadas, sin fallback crudo) siguen acumulando masa normalmente para
+    CADA evento, tope incluido."""
+    monkeypatch.setenv("CYBER_MAX_FAMILY_STARS", "2")
+    records: dict = {}
+    for i in range(5):
+        dims = {
+            "product_family": f"vendor{i}:product{i}",  # 5 familias distintas
+            "vulnerability_class": "xss",
+            "attack_vector": "NETWORK",
+            "severity_tier": "HIGH",
+        }
+        vc._accumulate_mass(records, dims)
+    family_stars = [fp for fp in records if fp.startswith("cybersecurity:cve_family:")]
+    assert len(family_stars) == 2  # tope respetado, no 5
+    # los otros niveles son compartidos por los 5 eventos → 1 estrella cada uno,
+    # con hits acumulados por evento (el tope de familia no los afecta).
+    assert records["cybersecurity:cve_class:vulnerability_class=xss"].hits == 5
+    assert records["cybersecurity:cve_vector:attack_vector=NETWORK"].hits == 5
+    assert records["cybersecurity:cve_tier:severity_tier=HIGH"].hits == 5
+
+
+def test_family_star_cap_default_is_generous(monkeypatch):
+    """Sin override, el tope por defecto (3000) no interfiere con volúmenes
+    de prueba normales."""
+    monkeypatch.delenv("CYBER_MAX_FAMILY_STARS", raising=False)
+    records: dict = {}
+    for i in range(10):
+        vc._accumulate_mass(records, {"product_family": f"v{i}:p{i}"})
+    assert len([fp for fp in records if fp.startswith("cybersecurity:cve_family:")]) == 10
+
+
+def test_load_outcomes_cache_hits_avoid_reparse(temp_vault, monkeypatch):
+    """Lecturas repetidas sin escrituras intermedias no vuelven a parsear el
+    archivo — clave para dominios con ledgers grandes (p. ej. cybersecurity)."""
+    from core.learn.outcome_adapter import Outcome, OutcomeStatus
+    vledger.clear_domain("cybersecurity")
+    vledger.record_outcome(Outcome(prediction_id="CVE-Z|tier", domain="cybersecurity",
+                                   subject="tier:HIGH", status=OutcomeStatus.WIN, score=1.0))
+    calls = {"n": 0}
+    _orig = vledger._parse_outcomes_file
+
+    def _counting(path, domain):
+        calls["n"] += 1
+        return _orig(path, domain)
+
+    monkeypatch.setattr(vledger, "_parse_outcomes_file", _counting)
+    for _ in range(3):
+        outs = vledger.load_outcomes("cybersecurity")
+        assert len(outs) == 1
+    assert calls["n"] == 1  # solo la primera lectura parseó; el resto vino del cache
+
+
+def test_load_outcomes_cache_invalidated_by_write(temp_vault):
+    """Una escritura nueva cambia el mtime → la siguiente lectura NO debe
+    servir datos obsoletos desde el cache."""
+    from core.learn.outcome_adapter import Outcome, OutcomeStatus
+    vledger.clear_domain("cybersecurity")
+    vledger.record_outcome(Outcome(prediction_id="CVE-A|tier", domain="cybersecurity",
+                                   subject="tier:HIGH", status=OutcomeStatus.WIN, score=1.0))
+    assert len(vledger.load_outcomes("cybersecurity")) == 1
+    vledger.record_outcome(Outcome(prediction_id="CVE-B|tier", domain="cybersecurity",
+                                   subject="tier:HIGH", status=OutcomeStatus.LOSS, score=-1.0))
+    assert len(vledger.load_outcomes("cybersecurity")) == 2

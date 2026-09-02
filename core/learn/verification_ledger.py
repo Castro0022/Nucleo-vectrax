@@ -34,6 +34,18 @@ logger = logging.getLogger("vectrax.verification_ledger")
 
 _lock = threading.Lock()
 
+# Read-side cache: the full parsed outcome list per domain, invalidated by the
+# file's mtime. Domains like cybersecurity can accumulate hundreds of thousands
+# of append-only lines (one per (cve, subject-level) decisive outcome); without
+# this, every call from the criterion/opinion engine (subject_scores /
+# rank_domain_evidence) re-reads and re-parses the entire file from disk, even
+# though writes only happen in bursts (learning cycle every ~6h, or a one-off
+# backfill). Keyed by domain; a cheap os.stat() decides whether to reuse the
+# cached list or re-parse. Never serves stale data: any write changes the
+# file's mtime, which the next read detects.
+_load_cache_lock = threading.Lock()
+_load_cache: Dict[str, tuple] = {}  # domain -> (mtime, List[Outcome])
+
 
 def _vault_dir() -> str:
     return os.environ.get(
@@ -74,13 +86,9 @@ def record_many(outcomes) -> int:
 
 # ── Lectura ────────────────────────────────────────────────────────────
 
-def load_outcomes(domain: str, subject: Optional[str] = None,
-                  limit: Optional[int] = None) -> List[Outcome]:
-    """Carga Outcomes verificados de un dominio (opcionalmente filtrados por
-    subject, y limitados a los ``limit`` más recientes)."""
-    path = _path(domain)
-    if not os.path.exists(path):
-        return []
+def _parse_outcomes_file(path: str, domain: str) -> List[Outcome]:
+    """Parse the full JSONL file (no filtering). Pure I/O + parse; caching and
+    filtering live in ``load_outcomes``/``_load_all_outcomes_cached``."""
     out: List[Outcome] = []
     try:
         with open(path, encoding="utf-8") as f:
@@ -91,8 +99,6 @@ def load_outcomes(domain: str, subject: Optional[str] = None,
                 try:
                     d = json.loads(line)
                 except Exception:
-                    continue
-                if subject is not None and d.get("subject") != subject:
                     continue
                 try:
                     status = OutcomeStatus(d.get("status", "neutral"))
@@ -109,10 +115,44 @@ def load_outcomes(domain: str, subject: Optional[str] = None,
                 ))
     except Exception as exc:
         logger.debug("verification_ledger load failed: %s", exc)
-        return out
+    return out
+
+
+def _load_all_outcomes_cached(domain: str) -> List[Outcome]:
+    """Full, unfiltered outcome list for ``domain``, served from the in-memory
+    cache when the file's mtime hasn't changed since it was last parsed.
+
+    Keyed by the resolved file path (not just ``domain``) so tests/tools that
+    point ``VECTRAX_VAULT_DIR`` at different directories within the same
+    process never share a cache entry across different underlying files.
+    """
+    path = _path(domain)
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        with _load_cache_lock:
+            _load_cache.pop(path, None)
+        return []
+    with _load_cache_lock:
+        cached = _load_cache.get(path)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+    outcomes = _parse_outcomes_file(path, domain)
+    with _load_cache_lock:
+        _load_cache[path] = (mtime, outcomes)
+    return outcomes
+
+
+def load_outcomes(domain: str, subject: Optional[str] = None,
+                  limit: Optional[int] = None) -> List[Outcome]:
+    """Carga Outcomes verificados de un dominio (opcionalmente filtrados por
+    subject, y limitados a los ``limit`` más recientes)."""
+    out = _load_all_outcomes_cached(domain)
+    if subject is not None:
+        out = [o for o in out if o.subject == subject]
     if limit and limit > 0:
         return out[-limit:]
-    return out
+    return list(out)
 
 
 # ── Agregación (núcleo invariante) ─────────────────────────────────────

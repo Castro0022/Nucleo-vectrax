@@ -19,6 +19,7 @@ Creador: Mario Bravo Castro
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
@@ -149,14 +150,39 @@ def verify_events(events: Iterable[Any], record: bool = True,
 
 _CC_BY_LEVEL = {"family": 0.6, "class": 0.5, "vector": 0.4, "tier": 0.4}
 
+# Hard cap on NEW distinct `family`-level stars (see docs/CYBERSECURITY_DOMAIN_2026_08_02.md
+# "Estrellas y cardinalidad"). `product_family()` intentionally falls back to a raw
+# vendor:product string when a CPE pair isn't in the curated map (audited/tested
+# contract — see test_product_family_map_override_and_fallback) — that long tail of
+# mostly one-off products is what produced a ~29.8k-star explosion in the 2026-08-02
+# backfill, versus the domain's documented budget of "≲~5,000 estrellas". This caps
+# NEW family stars only; existing ones keep accumulating mass normally, and
+# class/vector/tier (bounded by curated enums, never raw fallback) are unaffected.
+# Mirrors the same defensive-cap pattern already used for other bulk domains (see
+# gravity_engine.py MAX_DOMAIN_GROUP_FOR_GLOBAL_SCAN).
+_DEFAULT_MAX_FAMILY_STARS = 3000
+
+
+def _max_family_stars() -> int:
+    try:
+        return int(os.environ.get("CYBER_MAX_FAMILY_STARS", _DEFAULT_MAX_FAMILY_STARS))
+    except ValueError:
+        return _DEFAULT_MAX_FAMILY_STARS
+
 
 def _accumulate_mass(records: Dict[str, Any], dims: Mapping[str, Optional[str]]) -> None:
     """Incrementa (o crea) la estrella gravitacional de cada nivel presente, en
     memoria. Fingerprint idéntico al que produciría `ingest_event` con el template
-    (`cybersecurity:cve_<level>:<field>=<valor>`) → paridad de identidad."""
+    (`cybersecurity:cve_<level>:<field>=<valor>`) → paridad de identidad.
+
+    NEW `family`-level stars are subject to `_max_family_stars()` (see comment
+    above `_DEFAULT_MAX_FAMILY_STARS`); all other levels are uncapped."""
     from core.learn.schemas import GravityRecord, Tier  # lazy
     from connectors.cybersecurity.dimensions import LADDER, LEVEL_EVENT
     now_iso = datetime.now(timezone.utc).isoformat()
+    family_prefix = f"{DOMAIN}:{LEVEL_EVENT['family'][0]}:"
+    family_cap = _max_family_stars()
+    family_count: Optional[int] = None  # computed lazily, only if needed
     for level in LADDER:
         event_type, field_name = LEVEL_EVENT[level]
         val = dims.get(field_name)
@@ -165,6 +191,16 @@ def _accumulate_mass(records: Dict[str, Any], dims: Mapping[str, Optional[str]])
         fp = f"{DOMAIN}:{event_type}:{field_name}={val}"
         rec = records.get(fp)
         if rec is None:
+            if level == "family":
+                if family_count is None:
+                    family_count = sum(1 for k in records if k.startswith(family_prefix))
+                if family_count >= family_cap:
+                    logger.debug(
+                        "cyber.family_star_cap | cap=%d reached; skipping new family star %r",
+                        family_cap, val,
+                    )
+                    continue
+                family_count += 1
             rec = GravityRecord(
                 fingerprint=fp, tier=Tier.HOT.value, hits=1,
                 first_seen=now_iso, last_seen=now_iso,
