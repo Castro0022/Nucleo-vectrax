@@ -505,10 +505,8 @@ def _deterministic_opinion(
             f"El resto de lo observado ({field}) pesa en esa misma lectura; "
             f"no son opciones que elija por separado."
         )
-    out.append(
-        "No es una regla que me programaron ni una elección de menú: es lo que "
-        "emerge de la evidencia acumulada, y se reconfigura conforme sigo observando."
-    )
+    # Sin coletilla fija: la conclusión termina en la evidencia. Cualquier texto
+    # agregado incondicionalmente es ruido repetido en toda respuesta determinista.
     return " ".join(out)
 
 

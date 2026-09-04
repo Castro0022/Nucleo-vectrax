@@ -141,7 +141,9 @@ def test_build_criterion_expresses_preference():
     assert "aapl" in low                        # ancla la posición en el patrón real
     assert "emerge" in low                       # posición emergente (no "me inclino"/"elijo")
     assert ("expectancy" in low or "wr" in low)          # cita métrica real
-    assert "no es una regla" in low              # ni regla preprogramada ni elección de menú
+    # sin coletilla fija: la conclusión termina en la evidencia
+    assert "no es una regla" not in low
+    assert "elección de menú" not in low
 
 
 # ── 5. Abstención constructiva ante entidades ausentes (caso route_A) ─────
@@ -286,8 +288,10 @@ def test_build_criterion_always_opines_low_data():
             p.stop()
     low = resp.lower()
     assert "aapl" in low                         # opina con lo que tiene
-    assert "emerge" in low                        # como posición emergente
+    # posición calibrada como preliminar (evidencia insuficiente para ser firme)
+    assert "señal aún no concluyente" in low
     assert "todavía no tengo datos" not in low    # NO se abstiene
+    assert "no es una regla" not in low           # sin coletilla fija
 
 
 # ── 10. RenderAttempt.__post_init__ — una rama por cada estado de la tabla ──
