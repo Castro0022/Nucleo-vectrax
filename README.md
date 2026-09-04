@@ -192,6 +192,19 @@ File: `core/domain_knowledge.py`
 API: `GET /v1/domain/list`, `GET /v1/domain/{domain}/knowledge`
 Tests: `tests/test_domain_knowledge.py` (20 tests)
 
+### 🏪 Multi-Domain Ingest API
+Generic, domain-agnostic event ingestion for any business vertical. A domain becomes usable purely by adding a `config/domain_templates/{domain}.json` file — no per-domain code, no allowlist. Currently active: `retail`, `restaurant`, `finance`, `logistics`, `healthcare`, `freight_logistics`, `cybersecurity`, `sales_trends`.
+
+**Flow:** `POST /v1/ingest/{domain}` (tenant API key) → `core.domain_ingester.ingest_event()` → fingerprint via `signature_fields` (keeps star cardinality bounded) → Gravity Engine → Learning Gate → Observation Ledger → Domain Knowledge Elevation (fire-and-forget).
+
+**Historical/precise timestamps:** the request body accepts an optional `timestamp` (ISO-8601). When supplied, it becomes the star's effective clock (`first_seen`/`last_seen`/`activation_history`/Déjà Vu promotion) instead of the ingestion time — lets a tenant backfill or report events with their real occurrence time. *(Fixed 2026-08-26: this field was defined on the request model but silently dropped before reaching the engine — see `docs/SALES_TRENDS_LIVE_INGEST_2026_08_26.md`.)*
+
+**sales_trends** is the newest active domain (temporal pattern / periodicity extension, see `core/learn/temporal_pattern.py`): `signature_fields = [product, region]` — deliberately not `category`, since real-world datasets (e.g. Online Retail II) often lack a maintained taxonomy; keying on an absent field would silently collapse every product in a region into one star.
+
+Files: `services/core/routes/ingest_api.py`, `core/domain_ingester.py`, `core/tenant.py`, `config/domain_templates/*.json`
+API: `POST /v1/ingest/{domain}`, `POST /v1/ingest/tenant/create` (creator only), `GET /v1/ingest/tenant/list` (creator only)
+Tests: `tests/test_ingest_api.py` (7 tests: domain-agnostic behavior, auth/domain-lock, timestamp propagation regression guard)
+
 ### 📡 Universe Census — Single Source of Truth
 Every endpoint that reports universe totals reads from one shared function: `get_census()`.
 
