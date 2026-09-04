@@ -1,16 +1,8 @@
 # Vectrax — Arquitectura del Sistema
 
-**Versión:** Septiembre 2026 (actualizado tras auditoría E2E)  
+**Versión:** Junio 2026  
 **Creador:** Mario Bravo Castro  
-**Entorno de producción:** Mac local · launchd (`com.vectrax.supervisor`) · sin Docker ni Vultr
-
-> **Nota de procedencia:** desde el 2026-08-08 (PR #88, ver `CHANGELOG.md`) la
-> producción corre **localmente** en esta Mac, supervisada por `launchd`. El
-> despliegue anterior en Vultr (`140.82.28.181`, Docker + Caddy) fue retirado;
-> `deploy_vultr.sh` ya no existe en el repo. Esta sección y las secciones 7–9
-> y 12 reflejan el despliegue REAL verificado por auditoría E2E de solo
-> lectura el 2026-09-02 (procesos vivos, `/health`, logs de producción) — no
-> solo lo que el código del repo permite hacer.
+**Entorno de producción:** Vultr VPS · 140.82.28.181 · Docker
 
 ---
 
@@ -21,24 +13,21 @@ continuo y capacidad de acción gobernada. No es un chatbot ni un wrapper de LLM
 es un sistema que percibe, aprende, propone y —con autorización explícita— actúa.
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│              VECTRAX CORE (Mac local · launchd, sin Docker)         │
+┌─────────────────────────────────────────────────────────────────────┐
+│                         VECTRAX CORE                                │
 │                                                                     │
 │  Telegram ──► Gateway ──► Queue ──► Worker Pool ──► LLM / Memory   │
-│  (long-poll,                            │                          │
-│   USE_WEBHOOK=0)             ┌───────────┴───────────┐             │
+│                                          │                          │
+│                              ┌───────────┴───────────┐             │
 │                              │    Background Cycles  │             │
 │                              │  Market Learn (30min) │             │
-│                              │  Domain Learn Thread  │             │
-│                              │   freight/real_estate/│             │
-│                              │   cyber (6h, aislado  │             │
-│                              │   del main loop)      │             │
+│                              │  Freight Learn (6h)   │             │
 │                              │  Conv. Learner (24h)  │             │
 │                              │  Proactive Nudges(10m)│             │
-│                              └────────────────────────┘             │
+│                              └───────────────────────┘             │
 │                                                                     │
-│  REST API (:8900) — bind local, sin proxy TLS público en este host │
-└──────────────────────────────────────────────────────────────────────┘
+│  REST API (:8900) ──► Caddy TLS ──► api.vectrax.app                │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -286,148 +275,131 @@ Contexto del prompt (por nivel):
 ### Infraestructura
 
 ```
-Host: Mac local (macOS) · supervisado por launchd · sin Docker, sin Vultr, sin Caddy
+VPS: Vultr  │  140.82.28.181  │  OS: Ubuntu  │  RAM: 8GB limit  │  CPU: 4 cores
 
-Servicios (gestionados por com.vectrax.supervisor vía vectrax_supervisor.py):
-  telegram_gateway  python -m vectrax.telegram_gateway   (long-poll, USE_WEBHOOK=0)
-  pipeline_worker   python -m core.transport.pipeline_worker
-  core_api          python -m uvicorn services.core.app:app --host 0.0.0.0 --port 8900
-  meta_loop         python vectrax_unified.py
-  audit_cron        python -m observability.audit_cron --loop
-
-launchd agents adicionales (independientes del supervisor):
-  com.vectrax.backup-db     diario 03:30 → scripts/backup_db.sh
-  com.vectrax.rotate-logs   semanal dom 04:00 → scripts/rotate_logs.sh
+Servicios activos:
+  vectrax-core  (python:3.11-slim, restart: unless-stopped, healthy)
+  caddy         (caddy:2-alpine, perfil TLS, api.vectrax.app → vectrax:8900)
 
 Red:
-  Puerto 8900: bind 0.0.0.0, alcance de facto local (sin proxy TLS público en
-  este host; a diferencia del Caddy/api.vectrax.app del despliegue Vultr retirado)
-  Sin puertos 80/443 gestionados por Vectrax en este host
+  vectrax-net (bridge) — comunicación interna Caddy↔Vectrax
+  Puerto 8900: bind 0.0.0.0 (host) — solo accesible desde localhost (UFW)
+  Puerto 443:  público — HTTPS con TLS automático (Let's Encrypt)
+  Puerto 80:   público — redirect permanente a 443
 
-Persistencia:
-  ~/.vectrax/       runtime (DBs, logs, gravity_index.json, domain_library/)
-  <repo>/vault/     DBs de dominio (convergence_history.db, operational_cycles.db)
-  Backups: ~/vectrax_backups/ + iCloud (ver docs/OPERATIONS.md)
+Volumen persistente:
+  vectrax-runtime → /root/.vectrax/ (sobrevive docker compose down/up)
+  CRÍTICO: down -v destruye el volumen. Backup: scripts/backup_runner.sh
 
-Arranque / reinicio (runbook completo en docs/OPERATIONS.md):
-  launchctl kickstart -k gui/$(id -u)/com.vectrax.supervisor   # reinicio
-  launchctl bootout   gui/$(id -u)/com.vectrax.supervisor      # parar
-  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.vectrax.supervisor.plist  # arrancar
+Deploy:
+  bash deploy_vultr.sh
+  (rsync código → docker compose build → docker compose up -d)
+  .env y vault/ nunca sobrescritos por rsync
 ```
 
 ### Variables de entorno clave
 
 ```
 # Obligatorias
-TELEGRAM_BOT_TOKEN            Bot de Telegram
-OPENAI_API_KEY                LLM principal
-ETORO_API_KEY                 eToro REST API
-ETORO_USER_KEY                 eToro JWT de usuario
-ETORO_ENVIRONMENT              "real" | "demo"
+TELEGRAM_BOT_TOKEN          Bot de Telegram
+OPENAI_API_KEY              LLM principal
+ETORO_API_KEY               eToro REST API
+ETORO_USER_KEY              eToro JWT de usuario
+ETORO_ENVIRONMENT           "real" | "demo"
 
 # Opcionales / Feature flags
-USE_WEBHOOK                    0 (default local, long-poll) | 1 (requiere WEBHOOK_BASE_URL)
-BROKER_PROVIDER                etoro (default) | alpaca
-FREIGHT_FEED_PROVIDER          simulator (default) | real — sin flag enable/disable, siempre corre
-REAL_ESTATE_FEED_PROVIDER      simulator (default) | rentcast | attom
-REAL_ESTATE_LEARN_ENABLED      1 (default) — exige proveedor real salvo REAL_ESTATE_ALLOW_SIMULATOR=1
-CYBER_FEED_PROVIDER            simulator (default) | nvd
-CYBER_LEARN_ENABLED            0 (default) — exige proveedor real salvo CYBER_ALLOW_SIMULATOR=1
-PROACTIVE_ENGINE_ENABLED       0 (default — activar con "1")
-CONTINUITY_REENTRY_ENABLED     1 (default)
-ALPACA_API_KEY                 Requiere alpaca-py instalado
-ALPACA_SECRET_KEY              —
-ALPACA_PAPER                   true (default)
+BROKER_PROVIDER             etoro (default) | alpaca
+FREIGHT_FEED_PROVIDER       simulator (default) | real
+FREIGHT_EVENTS_PER_CYCLE    200 (default)
+FREIGHT_LEARN_ENABLED       1 (default)
+PROACTIVE_ENGINE_ENABLED    0 (default — activar con "1")
+CONTINUITY_REENTRY_ENABLED  1 (default)
+ALPACA_API_KEY              Requiere alpaca-py instalado
+ALPACA_SECRET_KEY           —
+ALPACA_PAPER                true (default)
 ```
 
 ### Proceso de ciclos en pipeline_worker
 
-| Ciclo | Intervalo | Timeout | Dónde corre | Propósito |
-|---|---|---|---|---|
-| Market learning (eToro) | 30 min | 60s | main loop (ThreadPool) | Señales → patrones |
-| Freight / Real estate / Cyber learning | 6h c/u | 120s c/u | **hilo daemon dedicado** `_domain_learning_thread` | Eventos → stars → elevación |
-| Gravity sync | 6h | — | main loop | gravity_index.json → vectrax.db |
-| Trading convergence learner | 24h | — | main loop (inline) | Detección de deriva de umbrales |
-| Presence nudges | 10 min | — | main loop | Mensajes proactivos 3-nudge |
-| Proactive engine | 10 min | — | main loop | Recordatorios (OFF por defecto) |
-| Scheduler | 60s | — | main loop | Tareas programadas |
-| Router digest | configurable | — | main loop | Telemetría de routing |
-
-> **Fix 2026-09-02:** freight/real_estate/cyber corrían antes síncronos en el
-> main loop y superaban `MAIN_LOOP_WATCHDOG_TIMEOUT` (60s), forzando
-> `os._exit(1)` cada ~6h sin completar un solo ciclo (14 reinicios en 72h, 0
-> ciclos completados — ver auditoría E2E). Ahora corren en
-> `_domain_learning_thread`, un hilo daemon separado: su duración ya no
-> afecta al watchdog del main loop, que sigue protegiendo contra cuelgues
-> reales del pipeline de mensajes.
+| Ciclo | Intervalo | Timeout | Propósito |
+|---|---|---|---|
+| Market learning (eToro) | 30 min | 60s | Señales → patrones |
+| Freight learning | 6h | 120s | Eventos → stars → elevación |
+| Trading convergence learner | 24h | — | Detección de deriva de umbrales |
+| Presence nudges | 10 min | — | Mensajes proactivos 3-nudge |
+| Proactive engine | 10 min | — | Recordatorios (OFF por defecto) |
+| Scheduler | 60s | — | Tareas programadas |
+| Router digest | configurable | — | Telemetría de routing |
 
 ---
 
 ## 8. Seguridad
 
-> Esta sección documentaba la superficie de ataque del despliegue Vultr/Docker
-> retirado el 2026-08-08. Se actualiza aquí para reflejar el despliegue local
-> real, verificado por auditoría E2E el 2026-09-02 — sin inventar controles no
-> verificables desde este documento (p. ej. FileVault, firewall del SO).
+### Superficie de ataque y controles
 
-### Superficie de ataque y controles (despliegue local actual)
-
-| Superficie | Control | Estado verificado |
+| Superficie | Control | Estado |
 |---|---|---|
-| API REST (:8900) | HTTPBearer + RBAC multiusuario (`services/core/auth.py`, `TokenManager`) | ✓ Activo (no depende del host) |
-| `/health` (público en el host) | Sin auth — solo lectura de estado | ✓ Intencional |
-| Puerto 8900 | bind `0.0.0.0`; alcance real = red local (sin proxy público/TLS en este host) | Ver nota abajo |
-| Ingreso Telegram | Long-poll (`USE_WEBHOOK=0`) — sin endpoint de webhook expuesto hoy | ✓ Verificado (gateway.log) |
-| Webhook (código presente, inactivo) | `TELEGRAM_WEBHOOK_SECRET` solo se valida si `USE_WEBHOOK=1` | ⚠ No aplica hoy (long-poll) |
-| `.env` en disco | `chmod 600`, propietario del usuario local (no root) | ✓ Verificado |
-| Vault DBs (`vault/*.db`) | `mode 0644`, propietario del usuario local | ⚠ Ver riesgos |
+| API REST (:8900) | HTTPBearer + RBAC (require_token, require_role) | ✓ Activo |
+| `/health` (público) | Sin auth — solo lectura de estado | ✓ Intencional |
+| Puerto 8900 externo | UFW: allow only from 127.0.0.1 | ✓ Aplicado Jun-23 |
+| Puerto 443 (HTTPS) | Caddy TLS + security headers | ✓ Activo |
+| Telegram webhook | TELEGRAM_WEBHOOK_SECRET validado | ✓ Activo |
+| .env en disco | chmod 600, propietario root | ✓ Aplicado Jun-23 |
+| Vault DBs | mode 0644 dentro del container | ⚠ Ver riesgos |
+| Container como root | Sin directiva USER en Dockerfile | ⚠ Ver riesgos |
 | eToro ejecución | Requiere creator auth explícita | ✓ Activo |
 | Sovereignty engine | Inhibe emisiones sin consent | ✓ Activo |
 | Circuit breakers | ExternalCallGuard por servicio | ✓ Activo |
-| Audit log | `sovereignty.jsonl` (toda acción) | ✓ Activo |
+| Audit log | sovereignty.jsonl (207KB, toda acción) | ✓ Activo |
+| SSH | Key-based auth únicamente (vectrax_server) | ✓ Activo |
 
-**Nota — puerto 8900 sin TLS público:** a diferencia del despliegue Vultr
-retirado (Caddy + Let's Encrypt + UFW), este host no tiene un proxy público
-delante de la API. Si se necesita acceso remoto, debe añadirse un control
-equivalente (proxy autenticado o túnel) antes de exponer el puerto fuera de
-la red local.
+### Riesgos residuales y mitigaciones recomendadas
 
-### Riesgos residuales
+**ALTO — Container corre como root**
+- Evidencia: Dockerfile sin directiva `USER`; todos los procesos PID como root
+- Riesgo: si hay RCE en el LLM o la API, el attacker tiene root en el container
+- Mitigación recomendada:
+  ```dockerfile
+  RUN groupadd -r vectrax && useradd -r -g vectrax -d /home/vectrax vectrax
+  RUN chown -R vectrax:vectrax /root/.vectrax /app/vault
+  USER vectrax
+  ```
+  Requiere migrar el volumen de `/root/.vectrax` a `/home/vectrax/.vectrax`
 
-**BAJO-MEDIO — Vault DBs en `0644`**
-- Evidencia verificada: `ls -la vault/*.db` → `-rw-r--r--`, propietario del
-  usuario local (no root, no multi-tenant — a diferencia del riesgo Vultr
-  original, donde cualquier proceso del container podía leerlas).
-- Mitigación recomendada: `chmod 600 vault/*.db ~/.vectrax/*.db` si esta Mac
-  tiene más de una cuenta de usuario local.
+**MEDIO — Vault files mode 0644**
+- Evidencia: ls -la /root/.vectrax/*.db → -rw-r--r--
+- Riesgo: cualquier proceso en el container (o futuro usuario no-root) puede leer DBs
+- Mitigación: `chmod 600 /root/.vectrax/*.db /root/.vectrax/*.jsonl` en startup
 
-**INFORMATIVO — `.env` en el filesystem**
-- Las credenciales están en disco (`chmod 600`) y en `os.environ` del
-  proceso. Mitigación futura: gestor de secretos si el despliegue vuelve a
-  ser remoto.
+**BAJO — SSH root login habilitado**
+- Evidencia: sshd en puerto 22, usuario root, key-based auth
+- Riesgo: si la clave privada se expone, acceso root directo al servidor
+- Mitigación: crear usuario sin privilegios para deploy, deshabilitar root SSH
+
+**INFORMATIVO — .env montado en /app**
+- Evidencia: `./:/app` bind mount + `env_file: .env`
+- Las credenciales están en el filesystem del container y en `os.environ`
+- Mitigación futura: usar Docker secrets o Vault para inyección en runtime
 
 ---
 
 ## 9. Backup y Recuperación
 
-Backup y restauración corren vía `launchd` (no hay Docker ni volúmenes
-remotos). Runbook completo, con flujo de restauración paso a paso y
-verificación de integridad: **`docs/OPERATIONS.md`**.
-
 ```bash
-# Estado de los agentes de backup
-launchctl list | grep -E "vectrax.backup-db|vectrax.rotate-logs"
+# Backup manual (local + iCloud)
+bash scripts/backup_runner.sh
 
-# Backup manual de BD (además del cron diario 03:30)
-bash scripts/backup_db.sh
+# Proteger volumen antes de operaciones destructivas
+bash scripts/protect_volume.sh
 
-# Restaurar un backup a un directorio de trabajo (no destructivo: verifica
-# sha256 + integrity_check antes de tocar cualquier dato vivo)
-bash scripts/restore_db.sh latest /tmp/vx_restore
+# NUNCA ejecutar sin backup previo:
+docker compose down -v   # DESTRUYE vectrax-runtime
+
+# Restaurar desde backup
+docker run --rm -v vectrax-runtime:/root/.vectrax \
+  -v /ruta/backup:/backup alpine \
+  tar xzf /backup/vectrax_runtime_YYYYMMDD.tar.gz -C /
 ```
-
-Destinos: `~/vectrax_backups/` (local) + iCloud, por decisión explícita — sin
-disco externo ni Backblaze B2.
 
 ---
 
@@ -542,15 +514,12 @@ e aúsla todos los stores persistentes. No toca datos reales ni requiere secrets
 
 ### Deploy a producción
 
-`deploy_vultr.sh` fue eliminado (PR #88, 2026-08-08) — no hay deploy remoto.
-El código en `main` local ES la producción:
-
 ```bash
-git pull origin main                     # main local YA es producción
-launchctl kickstart -k gui/$(id -u)/com.vectrax.supervisor
-# Verificación:
-launchctl list | grep vectrax
-curl -s http://127.0.0.1:8900/health
+bash deploy_vultr.sh
+# rsync código (excluye .env, vault/, data/, logs/)
+# docker compose build  (usa cache — solo reconstruye capas modificadas)
+# docker compose up -d  (restart unless-stopped)
+# Verificación: docker compose ps + docker compose logs --tail=15
 ```
 
 ---
@@ -571,14 +540,10 @@ python -m pytest tests/test_gravity_engine.py           # gravity engine
 
 ---
 
-## 14. Evidencia de Producción — Jun 23, 2026 (HISTÓRICO — despliegue Vultr retirado)
-
-> ⚠️ Esta sección corresponde al despliegue en Vultr/Docker, retirado el
-> 2026-08-08 (PR #88). Se conserva como registro histórico. Para evidencia del
-> despliegue local actual, ver la Sección 15.
+## 14. Evidencia de Producción — Jun 23, 2026
 
 Primer ciclo completo de todos los motores tras el deploy de la arquitectura avanzada.
-Registrado en `/root/.vectrax/worker.log` (ruta dentro del container Vultr, ya no aplica).
+Registrado en `/root/.vectrax/worker.log`.
 
 ### Freight Learning Cycle — Primer ciclo (23:36 server time)
 
@@ -662,48 +627,3 @@ Estados al cierre del día:
 
 *Documentado: Junio 23, 2026 — Post auditoría E2E de dominios Trading y Freight*  
 *Revisión de seguridad: Junio 23, 2026 — Puerto 8900 restringido + .env 0600*
-
----
-
-## 15. Evidencia de Producción — Sep 2, 2026 (post auditoría E2E, despliegue local)
-
-Verificación tras la auditoría E2E de solo lectura y la corrección de sus 3
-hallazgos (pipeline_worker watchdog, job worker-monitor huérfano, esta
-documentación).
-
-### Identidad de despliegue
-```
-HEAD local = origin/main = 360c372 (working tree clean)
-Host: Mac local, launchd com.vectrax.supervisor (KeepAlive, RunAtLoad)
-GET /health → 200 {"status":"ok","env":"dev","components":{"api":"ok","database":"ok","governor":"act"}}
-```
-Nota: `env` reporta `"dev"` (default de `VX_ENV`, no seteada en `.env`)
-aunque este proceso ES la producción real — cosmético, `is_production` solo
-afecta el `reload` de uvicorn, no la autenticación ni el comportamiento.
-
-### Pipeline conversacional (verificado con tráfico real, 1-2 sep)
-```
-CONVERGENCE_CYCLE | phase[3]_memory=✓ phase[6]_gravitation=✓ action=proceed
-PROC_OUT source=criterion:llm_rendered  ← Motor de Criterio respondiendo con
-  evidencia real (expectancy/WR de freight_logistics y market)
-```
-
-### Ciclos de dominio freight/real_estate/cyber — antes vs. después del fix
-```
-Antes:   MAIN_LOOP_WATCHDOG | main loop stuck for 60-90s > 60s — force exit
-         14 reinicios del worker en 72h, 0 líneas "Freight/Real estate/
-         Cyber learn:" en los logs — los tres ciclos nunca completaban.
-Después: los tres ciclos corren en _domain_learning_thread (hilo daemon
-         dedicado, core/transport/pipeline_worker.py), totalmente
-         desacoplado del main loop — su duración ya no dispara
-         MAIN_LOOP_WATCHDOG.
-```
-
-### Jobs launchd
-```
-com.vectrax.supervisor      PID activo, KeepAlive              ✓
-com.vectrax.backup-db       agente activo                      ✓
-com.vectrax.rotate-logs     agente activo                      ✓
-com.vectrax.worker-monitor  ELIMINADO (script inexistente,
-                            status 127 en cada corrida) — cerrado ✓
-```

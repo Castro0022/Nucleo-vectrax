@@ -21,7 +21,7 @@ import os
 import signal
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -918,198 +918,6 @@ def _heartbeat_thread(interval: float, stop_event=None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Domain learning cycles (freight / real_estate / cybersecurity) — background
-# ---------------------------------------------------------------------------
-#
-# ROOT CAUSE FIX (auditoría E2E 2026-09-02): estos tres ciclos corrían
-# SÍNCRONOS dentro del main loop de run_worker() vía
-# `with ThreadPoolExecutor(...) as pool: pool.submit(fn).result(timeout=120)`.
-# Dos problemas combinados los rompían en producción:
-#   1. MAIN_LOOP_WATCHDOG_TIMEOUT es 60s. Cualquier ciclo real (con llamadas
-#      HTTP a Rentcast/NVD) que tardara >60s hacía que el watchdog considerara
-#      el main loop "colgado" y forzara os._exit(1) — matando el worker ANTES
-#      de que el ciclo pudiera completar o siquiera loggear su resultado.
-#   2. `with ThreadPoolExecutor() as pool:` bloquea en `__exit__`
-#      (`shutdown(wait=True)`) hasta que la tarea interna termine de verdad,
-#      sin importar que `future.result(timeout=120)` ya haya lanzado
-#      TimeoutError — así que el timeout de 120s era ilusorio si la tarea
-#      seguía colgada.
-# Evidencia: reinicios del worker cada ~6h01m (14 veces en 72h) sin una sola
-# línea "Freight/Real estate/Cyber learn:" en los logs.
-#
-# Fix: estos ciclos ahora corren en un hilo daemon dedicado
-# (_domain_learning_thread), totalmente desacoplado del main loop — su
-# duración ya NO afecta a _watchdog_tick(), así que MAIN_LOOP_WATCHDOG sigue
-# protegiendo contra cuelgues REALES del pipeline de mensajes. Además usan
-# _run_bounded(), que hace shutdown(wait=False) para que un timeout sea un
-# timeout real, no una espera indefinida disfrazada.
-
-_FREIGHT_LEARN_INTERVAL = 21600       # 6h
-_FREIGHT_LEARN_TIMEOUT = 120          # max 2min for the whole cycle
-_RE_LEARN_INTERVAL = 21600            # 6h
-_RE_LEARN_TIMEOUT = 120               # max 2min for the whole cycle
-_CYBER_LEARN_INTERVAL = 21600         # 6h
-_CYBER_LEARN_TIMEOUT = 120            # max 2min for the whole cycle
-_DOMAIN_LEARNING_CHECK_INTERVAL = 30  # background thread poll interval
-
-
-def _run_bounded(fn, timeout: float, *, pool_name: str):
-    """Run `fn()` in a throwaway single-worker pool with a REAL timeout.
-
-    Unlike `with ThreadPoolExecutor() as pool: ... future.result(timeout=T)`,
-    this never blocks past `timeout`: `pool.shutdown(wait=False)` lets a truly
-    hung task keep running orphaned (it finishes or dies on its own) instead
-    of blocking the caller — which is what silently defeated the 120s
-    timeout before this fix.
-
-    Returns (result, timed_out).
-    """
-    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix=pool_name)
-    future = pool.submit(fn)
-    try:
-        return future.result(timeout=timeout), False
-    except _FuturesTimeoutError:
-        return None, True
-    finally:
-        pool.shutdown(wait=False)
-
-
-def _run_freight_learn() -> None:
-    """Freight learning cycle — pattern accumulation + elevation.
-
-    Provider selected by FREIGHT_FEED_PROVIDER (default: simulator).
-    """
-    from connectors.freight.learning_cycle import run_learning_cycle as _freight_cycle
-
-    summary, timed_out = _run_bounded(
-        _freight_cycle, _FREIGHT_LEARN_TIMEOUT, pool_name="freight_learn",
-    )
-    if timed_out:
-        logger.warning("FREIGHT_LEARN_TIMEOUT | cycle exceeded %ds", _FREIGHT_LEARN_TIMEOUT)
-        return
-    logger.info(
-        "Freight learn: provider=%s ingested=%d stars=%d→%d "
-        "mature=%d elevated=%d %.1fs",
-        summary.get("provider"),
-        summary.get("events_ingested", 0),
-        summary.get("stars_before", 0),
-        summary.get("stars_after", 0),
-        summary.get("mature_stars", 0),
-        summary.get("patterns_elevated", 0),
-        summary.get("elapsed_s", 0),
-    )
-
-
-def _run_real_estate_learn() -> None:
-    """Real estate learning cycle. SEGURIDAD: solo corre con un proveedor REAL
-    (rentcast/attom); NO siembra datos sintéticos del simulator en producción.
-    Permitir simulador: REAL_ESTATE_ALLOW_SIMULATOR=1. Desactivar del todo:
-    REAL_ESTATE_LEARN_ENABLED=0.
-    """
-    provider = os.environ.get("REAL_ESTATE_FEED_PROVIDER", "simulator").strip().lower()
-    allow_sim = os.environ.get("REAL_ESTATE_ALLOW_SIMULATOR", "0") == "1"
-    enabled = os.environ.get("REAL_ESTATE_LEARN_ENABLED", "1") == "1"
-    if not (enabled and (provider != "simulator" or allow_sim)):
-        return
-
-    from connectors.real_estate.learning_cycle import run_learning_cycle as _re_cycle
-
-    summary, timed_out = _run_bounded(
-        _re_cycle, _RE_LEARN_TIMEOUT, pool_name="real_estate_learn",
-    )
-    if timed_out:
-        logger.warning("REAL_ESTATE_LEARN_TIMEOUT | cycle exceeded %ds", _RE_LEARN_TIMEOUT)
-        return
-    logger.info(
-        "Real estate learn: provider=%s ingested=%d stars=%d→%d "
-        "mature=%d elevated=%d %.1fs",
-        summary.get("provider"),
-        summary.get("events_ingested", 0),
-        summary.get("stars_before", 0),
-        summary.get("stars_after", 0),
-        summary.get("mature_stars", 0),
-        summary.get("patterns_elevated", 0),
-        summary.get("elapsed_s", 0),
-    )
-
-
-def _run_cyber_learn() -> None:
-    """Cybersecurity learning cycle — incremental NVD+KEV. GATED, DEFAULT OFF:
-    solo corre con CYBER_LEARN_ENABLED=1. Provider por CYBER_FEED_PROVIDER
-    (default simulator; en prod usar 'nvd'). SEGURIDAD: solo corre con
-    proveedor REAL (nvd); NO siembra datos sintéticos en producción. Permitir
-    simulador: CYBER_ALLOW_SIMULATOR=1.
-    """
-    provider = os.environ.get("CYBER_FEED_PROVIDER", "simulator").strip().lower()
-    allow_sim = os.environ.get("CYBER_ALLOW_SIMULATOR", "0") == "1"
-    enabled = os.environ.get("CYBER_LEARN_ENABLED", "0") == "1"
-    if not (enabled and (provider != "simulator" or allow_sim)):
-        return
-
-    from connectors.cybersecurity.learning_cycle import run_learning_cycle as _cyber_cycle
-
-    summary, timed_out = _run_bounded(
-        _cyber_cycle, _CYBER_LEARN_TIMEOUT, pool_name="cyber_learn",
-    )
-    if timed_out:
-        logger.warning("CYBER_LEARN_TIMEOUT | cycle exceeded %ds", _CYBER_LEARN_TIMEOUT)
-        return
-    logger.info(
-        "Cyber learn: provider=%s events=%d wins=%d losses=%d %.1fs",
-        summary.get("provider"), summary.get("events", 0),
-        summary.get("wins", 0), summary.get("losses", 0),
-        summary.get("elapsed_s", 0),
-    )
-
-
-def _domain_learning_thread(startup: float, stop_event=None) -> None:
-    """Background daemon: runs freight/real_estate/cyber learning cycles.
-
-    Corre TOTALMENTE fuera del main loop de run_worker() — su duración nunca
-    llama ni depende de _watchdog_tick(), así que MAIN_LOOP_WATCHDOG sigue
-    protegiendo contra cuelgues reales del pipeline de mensajes mientras estos
-    ciclos (que legítimamente pueden tardar hasta ~120s por llamadas HTTP a
-    proveedores reales) tienen espacio para completar.
-
-    `stop_event` (opcional) permite terminar el hilo en tests; en producción
-    se omite y el hilo corre indefinidamente.
-    """
-    last_freight = startup
-    last_real_estate = startup
-    last_cyber = startup
-
-    while True:
-        now = time.time()
-
-        if now - last_freight > _FREIGHT_LEARN_INTERVAL:
-            try:
-                _run_freight_learn()
-            except Exception as exc:
-                logger.warning("Freight learn error (passthrough): %s", exc)
-            last_freight = time.time()
-
-        if now - last_real_estate > _RE_LEARN_INTERVAL:
-            try:
-                _run_real_estate_learn()
-            except Exception as exc:
-                logger.warning("Real estate learn error (passthrough): %s", exc)
-            last_real_estate = time.time()
-
-        if now - last_cyber > _CYBER_LEARN_INTERVAL:
-            try:
-                _run_cyber_learn()
-            except Exception as exc:
-                logger.warning("Cyber learn error (passthrough): %s", exc)
-            last_cyber = time.time()
-
-        if stop_event is not None:
-            if stop_event.wait(_DOMAIN_LEARNING_CHECK_INTERVAL):
-                return
-        else:
-            time.sleep(_DOMAIN_LEARNING_CHECK_INTERVAL)
-
-
-# ---------------------------------------------------------------------------
 # Stuck processing recovery
 # ---------------------------------------------------------------------------
 
@@ -1183,9 +991,9 @@ def run_worker() -> None:
     last_reentry = _startup    # última ejecución del reentry check
     last_digest = _startup     # última ejecución del router digest
     last_market_learn = _startup  # ciclo de aprendizaje de mercado (cada 30 min)
-    # freight_learn / real_estate_learn / cyber_learn ya NO corren en el main
-    # loop: ver _domain_learning_thread() (hilo daemon dedicado, iniciado más
-    # abajo) — evita que estos ciclos disparen MAIN_LOOP_WATCHDOG.
+    last_freight_learn = _startup  # freight learning cycle (every 6h)
+    last_real_estate_learn = _startup  # real estate learning cycle (every 6h, real provider only)
+    last_cyber_learn = _startup  # cybersecurity learning cycle (every 6h, GATED default OFF)
     last_gravity_sync  = _startup  # gravity index → vectrax.db sync (every 6h)
     last_trading_conv  = _startup  # trading convergence learner (every 24h)
     last_mem_check = _startup  # memory watchdog
@@ -1212,17 +1020,6 @@ def run_worker() -> None:
     )
     _hb.start()
     logger.info("Async heartbeat thread started (interval=%ds)", HEARTBEAT_INTERVAL)
-
-    # Domain learning cycles (freight/real_estate/cybersecurity) — dedicated
-    # background thread, decoupled from the main loop / MAIN_LOOP_WATCHDOG.
-    _dl = _wd_threading.Thread(
-        target=_domain_learning_thread,
-        args=(_startup,),
-        daemon=True,
-        name="domain_learning",
-    )
-    _dl.start()
-    logger.info("Domain learning thread started (freight/real_estate/cyber)")
 
     # Discard stale messages from previous sessions (>90s old)
     _STALE_AGE = 90  # was 300s — lowered to catch crash-orphaned messages faster
@@ -1396,12 +1193,117 @@ def run_worker() -> None:
                 logger.debug("Market learn error (passthrough): %s", _ml)
                 last_market_learn = time.time()
 
-            # Freight / Real estate / Cyber learning cycles: movidos a
-            # _domain_learning_thread (hilo daemon dedicado, ver más arriba) —
-            # ya NO corren aquí. Motivo: bloqueaban el main loop hasta 120s,
-            # por encima de MAIN_LOOP_WATCHDOG_TIMEOUT (60s), causando
-            # os._exit(1) cada ~6h sin completar un solo ciclo. Ver auditoría
-            # E2E 2026-09-02.
+            # Freight learning cycle — pattern accumulation + elevation (every 6h)
+            # Runs in an isolated ThreadPool with 120s timeout.
+            # Provider selected by FREIGHT_FEED_PROVIDER (default: simulator).
+            # Fault-isolated: never crashes the main loop.
+            try:
+                _FREIGHT_LEARN_INTERVAL = 21600  # 6h
+                _FREIGHT_LEARN_TIMEOUT  = 120    # max 2min for the whole cycle
+                if time.time() - last_freight_learn > _FREIGHT_LEARN_INTERVAL:
+                    from concurrent.futures import ThreadPoolExecutor as _FLP, TimeoutError as _FLT
+                    from connectors.freight.learning_cycle import run_learning_cycle as _freight_cycle
+                    with _FLP(max_workers=1) as _fl_pool:
+                        _fl_fut = _fl_pool.submit(_freight_cycle)
+                        try:
+                            _fl_sum = _fl_fut.result(timeout=_FREIGHT_LEARN_TIMEOUT)
+                            logger.info(
+                                "Freight learn: provider=%s ingested=%d stars=%d→%d "
+                                "mature=%d elevated=%d %.1fs",
+                                _fl_sum.get("provider"),
+                                _fl_sum.get("events_ingested", 0),
+                                _fl_sum.get("stars_before", 0),
+                                _fl_sum.get("stars_after", 0),
+                                _fl_sum.get("mature_stars", 0),
+                                _fl_sum.get("patterns_elevated", 0),
+                                _fl_sum.get("elapsed_s", 0),
+                            )
+                        except _FLT:
+                            logger.warning(
+                                "FREIGHT_LEARN_TIMEOUT | cycle exceeded %ds",
+                                _FREIGHT_LEARN_TIMEOUT,
+                            )
+                    last_freight_learn = time.time()
+            except Exception as _fl:
+                logger.debug("Freight learn error (passthrough): %s", _fl)
+                last_freight_learn = time.time()
+
+            # Real estate learning cycle — acumulación + elevación (cada 6h).
+            # ThreadPool aislado, timeout 120s, fault-isolated. SEGURIDAD: solo corre
+            # con un proveedor REAL (rentcast/attom); NO siembra datos sintéticos del
+            # simulator en el universo de producción. Permitir simulador:
+            # REAL_ESTATE_ALLOW_SIMULATOR=1. Desactivar del todo: REAL_ESTATE_LEARN_ENABLED=0.
+            try:
+                _RE_LEARN_INTERVAL = 21600  # 6h
+                _RE_LEARN_TIMEOUT  = 120    # max 2min for the whole cycle
+                _re_provider = os.environ.get("REAL_ESTATE_FEED_PROVIDER", "simulator").strip().lower()
+                _re_allow_sim = os.environ.get("REAL_ESTATE_ALLOW_SIMULATOR", "0") == "1"
+                _re_enabled = os.environ.get("REAL_ESTATE_LEARN_ENABLED", "1") == "1"
+                _re_ok = _re_enabled and (_re_provider != "simulator" or _re_allow_sim)
+                if _re_ok and time.time() - last_real_estate_learn > _RE_LEARN_INTERVAL:
+                    from concurrent.futures import ThreadPoolExecutor as _REP, TimeoutError as _RET
+                    from connectors.real_estate.learning_cycle import run_learning_cycle as _re_cycle
+                    with _REP(max_workers=1) as _re_pool:
+                        _re_fut = _re_pool.submit(_re_cycle)
+                        try:
+                            _re_sum = _re_fut.result(timeout=_RE_LEARN_TIMEOUT)
+                            logger.info(
+                                "Real estate learn: provider=%s ingested=%d stars=%d→%d "
+                                "mature=%d elevated=%d %.1fs",
+                                _re_sum.get("provider"),
+                                _re_sum.get("events_ingested", 0),
+                                _re_sum.get("stars_before", 0),
+                                _re_sum.get("stars_after", 0),
+                                _re_sum.get("mature_stars", 0),
+                                _re_sum.get("patterns_elevated", 0),
+                                _re_sum.get("elapsed_s", 0),
+                            )
+                        except _RET:
+                            logger.warning(
+                                "REAL_ESTATE_LEARN_TIMEOUT | cycle exceeded %ds",
+                                _RE_LEARN_TIMEOUT,
+                            )
+                    last_real_estate_learn = time.time()
+            except Exception as _re_exc:
+                logger.debug("Real estate learn error (passthrough): %s", _re_exc)
+                last_real_estate_learn = time.time()
+
+            # Cybersecurity learning cycle — incremental NVD+KEV (cada 6h).
+            # GATED, DEFAULT OFF: solo corre con CYBER_LEARN_ENABLED=1 (tras validar
+            # el backfill). Provider por CYBER_FEED_PROVIDER (default simulator; en
+            # prod usar 'nvd'). ThreadPool aislado, timeout 120s, fault-isolated.
+            try:
+                _CYBER_LEARN_INTERVAL = 21600  # 6h
+                _CYBER_LEARN_TIMEOUT  = 120    # max 2min for the whole cycle
+                # SEGURIDAD: solo corre con proveedor REAL (nvd); NO siembra datos
+                # sintéticos del simulator en el universo de producción. Permitir
+                # simulador: CYBER_ALLOW_SIMULATOR=1. (espejo del guard de real_estate)
+                _cyber_provider = os.environ.get("CYBER_FEED_PROVIDER", "simulator").strip().lower()
+                _cyber_allow_sim = os.environ.get("CYBER_ALLOW_SIMULATOR", "0") == "1"
+                _cyber_enabled = os.environ.get("CYBER_LEARN_ENABLED", "0") == "1"
+                _cyber_ok = _cyber_enabled and (_cyber_provider != "simulator" or _cyber_allow_sim)
+                if _cyber_ok and time.time() - last_cyber_learn > _CYBER_LEARN_INTERVAL:
+                    from concurrent.futures import ThreadPoolExecutor as _CYP, TimeoutError as _CYT
+                    from connectors.cybersecurity.learning_cycle import run_learning_cycle as _cyber_cycle
+                    with _CYP(max_workers=1) as _cy_pool:
+                        _cy_fut = _cy_pool.submit(_cyber_cycle)
+                        try:
+                            _cy_sum = _cy_fut.result(timeout=_CYBER_LEARN_TIMEOUT)
+                            logger.info(
+                                "Cyber learn: provider=%s events=%d wins=%d losses=%d %.1fs",
+                                _cy_sum.get("provider"), _cy_sum.get("events", 0),
+                                _cy_sum.get("wins", 0), _cy_sum.get("losses", 0),
+                                _cy_sum.get("elapsed_s", 0),
+                            )
+                        except _CYT:
+                            logger.warning(
+                                "CYBER_LEARN_TIMEOUT | cycle exceeded %ds",
+                                _CYBER_LEARN_TIMEOUT,
+                            )
+                    last_cyber_learn = time.time()
+            except Exception as _cy_exc:
+                logger.debug("Cyber learn error (passthrough): %s", _cy_exc)
+                last_cyber_learn = time.time()
 
             # Gravity sync — mature domain patterns → vectrax.db stars + mass recompute (every 6h)
             # Bridges the two star systems: gravity_index.json → visual universe.
