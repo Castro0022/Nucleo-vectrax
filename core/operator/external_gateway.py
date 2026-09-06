@@ -1228,6 +1228,7 @@ class ExternalGateway:
                 from core.learn.criterion import (
                     detect_criterion_request, strongest_domain,
                     build_criterion_result, extract_topic_tokens,
+                    is_learning_inquiry,
                 )
                 from intents.freight_intents import (
                     detect_freight_intent, detect_evidence_request,
@@ -1269,11 +1270,43 @@ class ExternalGateway:
                     # dominio que Vectrax aún no observa), NO respondemos desde un
                     # dominio ajeno: dejamos pasar al LLM/auto-contexto. Evita el
                     # "pregunté real estate y me contestó de BTC".
-                    if _target is None and _crit_req and not extract_topic_tokens(content):
+                    if (
+                        _target is None
+                        and _crit_req
+                        and not extract_topic_tokens(content)
+                        and is_learning_inquiry(content)
+                    ):
+                        # "¿Qué has aprendido?" SIN tema/dominio: pedir el
+                        # tema en vez de escoger un dominio por su cuenta
+                        # (strongest_domain()) o enumerar dominios. Distinto
+                        # de "¿qué opinas?" genérico, que sí conserva el
+                        # fallback a strongest_domain() más abajo.
+                        from core.language_gate import get_user_language
+                        _lrn_lang = get_user_language(user_id, content)
+                        response_text = (
+                            "¿Sobre qué tema quieres que te cuente lo que he "
+                            "aprendido?"
+                            if _lrn_lang != "en"
+                            else "What topic would you like me to share what "
+                            "I've learned about?"
+                        )
+                        _domain_resolved = True
+                        _domain_source = "criterion:ask_topic"
+                        logger.info(
+                            "Pipeline: DOMAIN-CRITERION gate | ask_topic "
+                            "(learning inquiry without domain) | user=%s",
+                            user_id[:20],
+                        )
+                    if (
+                        _target is None
+                        and _crit_req
+                        and not extract_topic_tokens(content)
+                        and not response_text
+                    ):
                         _target = strongest_domain()
                         if _target:
                             _dom_src, _dom_conf = "strongest", 0.0
-                    if _target:
+                    if _target and not response_text:
                         _crit = build_criterion_result(_target, content)
                         if _crit and _crit.text:
                             response_text = _crit.text
@@ -1334,9 +1367,55 @@ class ExternalGateway:
         if not response_text:
             try:
                 from vectrax.self_context import is_self_referential, resolve_self_aware
-                _self_ref_hit = is_self_referential(content)
+                _brand_self_ref = is_self_referential(content)
 
-                # ═══════════════════════════════════════════════════════
+                # ══════════════════════════════════════════════════════════════════
+                # Diseño A/B/C, Frente A/B — speech_act amplía el gate de
+                # SELF_KNOWLEDGE SIN tocar is_self_referential() (`_brand_self_ref`
+                # arriba queda intacto, y sigue disparando por su cuenta — p.ej.
+                # "cómo va tu universo"). Flag VX_SPEECH_ACT_ROUTING (default
+                # OFF, modo sombra): apagado, `_self_ref_hit` es idéntico al
+                # comportamiento anterior (`_brand_self_ref`), cero cambios de
+                # comportamiento. Encendido: si el SSOT clasifica el mensaje
+                # como `speech_act=="query"` (¿puedes hacer X? / en qué me
+                # ayudas / qué capacidades tienes—generaliza por similitud de
+                # embeddings, no por regex), también entra a este bloque, pero
+                # se responde desde `capability_status` verificado (ver abajo),
+                # nunca con el LLM libre — cierra el hueco diagnosticado donde
+                # preguntas genéricas de capacidad caían en `_resolve_via_pipeline`
+                # sin ningún grounding.
+                # ══════════════════════════════════════════════════════════════════
+                _speech_act_routing_on = _env_flag_on("VX_SPEECH_ACT_ROUTING")
+                _speech_act = ""
+                if _speech_act_routing_on:
+                    try:
+                        from core.intent_ssot import resolve_intent as _sa_resolve_intent
+                        _speech_act = _sa_resolve_intent(content).speech_act
+                    except Exception as _sa_exc:
+                        logger.debug(
+                            "speech_act resolution failed (passthrough): %s", _sa_exc,
+                        )
+                # NOTA (defecto "¿Qué has aprendido?" diagnosticado tras A/B/C):
+                # NO se exige aquí `capability_query` además de
+                # `speech_act=="query"` porque rompe casos reales que este
+                # gate SÍ debe cubrir (p.ej. "¿En qué me puedes ayudar?" tiene
+                # `capability_query=False` pese a ser una pregunta de
+                # capacidad legítima — exactamente el hueco que `speech_act`
+                # existe para cerrar sin enumerar regex). El defecto de
+                # "¿qué has aprendido?" se corrige aguas arriba, en el DOMAIN
+                # CRITERION GATE (STEP 4.2a3, más arriba en este método):
+                # `is_learning_inquiry()` fija `response_text` ANTES de
+                # llegar aquí, y el `if not response_text:` que envuelve todo
+                # este bloque hace que `_query_gate_only` ni se evalúe para
+                # ese caso.
+                _query_gate_only = (
+                    _speech_act_routing_on
+                    and _speech_act == "query"
+                    and not _brand_self_ref
+                )
+                _self_ref_hit = _brand_self_ref or _query_gate_only
+
+                # ════════════════════════════════════════════════
                 # Fase 3, paso 8 — CAPABILITY SELF-AWARENESS (modo sombra).
                 # Flag VX_CAPABILITY_SELF_AWARENESS (default OFF): apagado,
                 # este bloque ni siquiera corre — cero cambios de
@@ -1391,7 +1470,37 @@ class ExternalGateway:
                             "(passthrough): %s", _cap_exc,
                         )
 
-                if _self_ref_hit:
+                if _self_ref_hit and _query_gate_only:
+                    # Disparado ÚNICAMENTE por speech_act (ninguna coincidencia
+                    # de vocabulario de marca) — responder desde el estado REAL
+                    # de `capability_status`, nunca desde `resolve_self_aware()`
+                    # (LLM libre). `_capability_grounded=True` reutiliza el
+                    # mismo bypass ya existente de auditor/presence/idioma-final
+                    # que protege a la narración de capacidades de Fase 4 — esta
+                    # narración ya es verificada, no debe reescribirse.
+                    from core.language_gate import get_user_language
+                    _lang = get_user_language(user_id, content)
+                    _status_lang = _lang if _lang in ("es", "en") else "es"
+                    try:
+                        from core.self_observation.capability_status import (
+                            build_capability_status_context as _cap_status_ctx,
+                        )
+                        _self_answer = _cap_status_ctx(content, lang=_status_lang)
+                    except Exception as _cs_exc:
+                        logger.debug(
+                            "capability_status responder failed (passthrough): %s", _cs_exc,
+                        )
+                        _self_answer = ""
+                    if _self_answer:
+                        response_text = _self_answer
+                        _self_resolved = True
+                        _capability_grounded = True
+                        logger.info(
+                            "Pipeline: SPEECH-ACT-QUERY resolved via capability_status "
+                            "| user=%s | len=%d",
+                            user_id[:20], len(_self_answer),
+                        )
+                elif _self_ref_hit:
                     from core.language_gate import get_user_language
                     _lang = get_user_language(user_id, content)
                     _self_answer = resolve_self_aware(content, lang=_lang, user_id=user_id)
@@ -1403,7 +1512,7 @@ class ExternalGateway:
                             user_id[:20], len(_self_answer),
                         )
 
-                        # ═══════════════════════════════════════════════════
+                        # ════════════════════════════════════════════════
                         # Fase 4 — PROMOCIÓN A RESPUESTA VISIBLE.
                         # Flag VX_CAPABILITY_RESPONSE_GROUNDING (default OFF),
                         # SEPARADO de VX_CAPABILITY_SELF_AWARENESS: ese sigue
@@ -2359,6 +2468,134 @@ class ExternalGateway:
             logger.debug("Place search failed: %s", exc)
             return ""
 
+    # -- Ejecución condicionada de ACTION_REQUEST (Diseño A/B/C, Frente B/C) --
+    # Punto Único de despacho narrar-vs-ejecutar: combina `speech_act`
+    # (core.intent_ssot, Frente A) con el estado REAL de
+    # `capability_status` (ya construido) para decidir si una solicitud de
+    # acción se ejecuta o se responde con la narración de su estado. Solo se
+    # invoca cuando `VX_SPEECH_ACT_ROUTING` está encendido (ver llamador en
+    # `_resolve_via_pipeline`) — apagado (default), este método ni se llama:
+    # cero cambios de comportamiento.
+
+    @staticmethod
+    def _narrate_capability(name: str, lang: str) -> str:
+        from core.self_observation.capability_status import (
+            query_capability_status, render_status_block,
+        )
+        report = query_capability_status(names=[name])
+        return render_status_block(report, lang=lang if lang in ("es", "en") else "es")
+
+    @staticmethod
+    def _execute_place_search_structured(params: Any, user_id: str) -> Optional[Tuple[str, str]]:
+        try:
+            from vectrax.integrations.place_search import search_places_structured
+            user_location = None
+            if user_id:
+                try:
+                    from vectrax.user_memory import get_user_location
+                    user_location = get_user_location(user_id)
+                except Exception:
+                    pass
+            result = search_places_structured(params, user_location=user_location)
+        except Exception as exc:
+            logger.debug("search_places_structured failed: %s", exc)
+            return None
+        message = result.get("message", "") if isinstance(result, dict) else ""
+        return (message, "action_place_search") if message else None
+
+    @staticmethod
+    def _execute_reminder_structured(params: Any, user_id: str, lang: str) -> Optional[Tuple[str, str]]:
+        try:
+            from core.scheduler import add_task_structured
+            chat_id = 0
+            if user_id.startswith("tg:"):
+                try:
+                    chat_id = int(user_id[3:])
+                except ValueError:
+                    chat_id = 0
+            task = add_task_structured(user_id, chat_id, params.content, params.when_text)
+        except Exception as exc:
+            logger.debug("add_task_structured failed: %s", exc)
+            task = None
+        if not task:
+            return None
+        confirmation = (
+            f"Noted: {params.content} — {params.when_text}." if lang == "en"
+            else f"Anotado: {params.content} — {params.when_text}."
+        )
+        return confirmation, "action_reminder"
+
+    def _maybe_execute_action_request(
+        self, *, content: str, user_id: str, lang: str, smart_route: Any,
+    ) -> Optional[Tuple[str, str]]:
+        """Devuelve (answer, resolve_mode) si intercepta el ACTION_REQUEST, o
+        None si no aplica — en cuyo caso el llamador sigue el pipeline normal
+        sin ningún cambio. Nunca lanza.
+
+        Autoridad: `core.intent_ssot` ya decidió QUÉ/CÓMO (speech_act);
+        `core.self_observation.capability_status` decide si ESTA confirmada;
+        `core.action_extraction` traduce texto a parámetros SOLO cuando ambas
+        ya autorizaron. Este método combina las tres, no redecide ninguna.
+        """
+        if smart_route is None:
+            return None
+        try:
+            from core.intent_ssot import resolve_intent as _ar_resolve_intent
+            speech_act = _ar_resolve_intent(content).speech_act
+        except Exception as exc:
+            logger.debug("action-request speech_act resolution failed: %s", exc)
+            return None
+        if speech_act != "action":
+            return None
+
+        try:
+            from core.smart_router import Strategy as _Strategy
+            from core.self_observation.capability_status import get_capability_status
+            from core.action_extraction import (
+                extract_action_params, PlaceSearchParams, ReminderParams,
+            )
+
+            if smart_route.strategy == _Strategy.RESOLVE_PLACES:
+                entry = get_capability_status("place_search")
+                if entry is None or entry.status != "confirmed":
+                    narration = self._narrate_capability("place_search", lang)
+                    return (narration, "capability_blocked") if narration else None
+                params = extract_action_params(content, lang=lang, hint_intent="place_search")
+                if isinstance(params, PlaceSearchParams):
+                    return self._execute_place_search_structured(params, user_id)
+                return None
+
+            # Estrategias ya específicas (market/identity/comando/cognitivo
+            # de alto riesgo/etc.) no se interceptan — solo las genéricas,
+            # donde el router no encontró una ruta de ejecución concreta.
+            _generic = {
+                _Strategy.RESOLVE_ONLINE, _Strategy.RESOLVE_LOCAL,
+                _Strategy.RESOLVE_MEMORY,
+            }
+            if smart_route.strategy not in _generic:
+                return None
+
+            # Dominio no determinado por el router (p.ej. "reminder"): se
+            # infiere DENTRO de la misma llamada de extracción (Frente C),
+            # nunca por keywords propios de este archivo.
+            params = extract_action_params(content, lang=lang)
+            if isinstance(params, ReminderParams):
+                entry = get_capability_status("reminder")
+                if entry is None or entry.status != "confirmed":
+                    narration = self._narrate_capability("reminder", lang)
+                    return (narration, "capability_blocked") if narration else None
+                return self._execute_reminder_structured(params, user_id, lang)
+            if isinstance(params, PlaceSearchParams):
+                entry = get_capability_status("place_search")
+                if entry is None or entry.status != "confirmed":
+                    narration = self._narrate_capability("place_search", lang)
+                    return (narration, "capability_blocked") if narration else None
+                return self._execute_place_search_structured(params, user_id)
+            return None
+        except Exception as exc:
+            logger.debug("Action-request dispatch failed (passthrough): %s", exc)
+            return None
+
     # -- Pipeline de resolución cognitiva (v2 semántico) ---------------------
 
     def _resolve_via_pipeline_v2(
@@ -2689,7 +2926,34 @@ class ExternalGateway:
                 except Exception:
                     pass
 
-            # ── AUTO-EXECUTE según estrategia ──────────────────────
+            # ══════════════════════════════════════════════════════════════════
+            # Diseño A/B/C, Frente B — ejecución condicionada por
+            # capability_status para ACTION_REQUEST. Flag
+            # VX_SPEECH_ACT_ROUTING (default OFF, mismo flag que amplía el
+            # gate de SELF_KNOWLEDGE): apagado, este bloque no corre —
+            # comportamiento idéntico al actual, cae directo al AUTO-EXECUTE
+            # de siempre.
+            # ══════════════════════════════════════════════════════════════════
+            if _env_flag_on("VX_SPEECH_ACT_ROUTING"):
+                try:
+                    _action_result = self._maybe_execute_action_request(
+                        content=content, user_id=user_id,
+                        lang=self._detect_user_lang(user_id, content),
+                        smart_route=smart_route,
+                    )
+                except Exception as _ar_exc:
+                    logger.debug("Action-request dispatch failed (passthrough): %s", _ar_exc)
+                    _action_result = None
+                if _action_result:
+                    _ar_answer, _ar_mode = _action_result
+                    sr.record_feedback(smart_route, success=True, word_count=word_count)
+                    logger.info(
+                        "Pipeline: ACTION-REQUEST dispatch | mode=%s | len=%d",
+                        _ar_mode, len(_ar_answer),
+                    )
+                    return _ar_answer, _ar_mode
+
+            # ── AUTO-EXECUTE según estrategia ────────────────────
 
             # Búsqueda de lugar físico (semántico → Google Places)
             if smart_route.strategy == Strategy.RESOLVE_PLACES:

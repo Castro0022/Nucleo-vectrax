@@ -83,8 +83,49 @@ def test_detect_criterion_request():
     assert C.detect_criterion_request("según lo que aprendiste, ¿qué es mejor?")
     assert C.detect_criterion_request("compara los patrones de logística")
     assert C.detect_criterion_request("¿cuál preferirías?")
+    assert C.detect_criterion_request("¿qué has aprendido?")
+    assert C.detect_criterion_request("What have you learned?")
     assert not C.detect_criterion_request("hola, ¿cómo estás?")
     assert not C.detect_criterion_request("guarda esta nota")
+
+
+# ── 1b. is_learning_inquiry() — sub-caso "¿qué has aprendido?" ────────────────
+
+def test_is_learning_inquiry_positive():
+    assert C.is_learning_inquiry("¿Qué has aprendido?")
+    assert C.is_learning_inquiry("¿Qué aprendiste?")
+    assert C.is_learning_inquiry("What have you learned?")
+    assert C.is_learning_inquiry("¿Qué has aprendido del mercado?")
+    assert C.is_learning_inquiry("qué has aprendido de ciberseguridad")
+
+
+def test_is_learning_inquiry_negative():
+    # Pedidos de opinión genéricos NO son "is_learning_inquiry" (son un eje
+    # distinto: ése conserva el fallback a strongest_domain()).
+    assert not C.is_learning_inquiry("¿Qué opinas?")
+    assert not C.is_learning_inquiry("¿cuál preferirías?")
+    assert not C.is_learning_inquiry("")
+    assert not C.is_learning_inquiry("hola, ¿cómo estás?")
+
+
+def test_learning_inquiry_without_topic_has_no_topic_tokens():
+    # Regresión del defecto: las formas verbales de "aprendiste/has aprendido/
+    # have/learned" NO deben filtrarse como si fueran el TEMA concreto de la
+    # pregunta (antes "has"/"aprendiste" colaban como topic_tokens espurios,
+    # impidiendo detectar la ausencia real de tema).
+    assert C.extract_topic_tokens("¿Qué has aprendido?") == []
+    assert C.extract_topic_tokens("¿Qué aprendiste?") == []
+    assert C.extract_topic_tokens("What have you learned?") == []
+
+
+def test_learning_inquiry_with_domain_keeps_topic_tokens_empty_but_domain_detected():
+    # El dominio nombrado (mercado/ciberseguridad/freight) se resuelve por
+    # `_resolve_query_domain`/`detect_domain`, no por `extract_topic_tokens`
+    # (los indicadores de dominio se descartan a propósito ahí). Aquí solo
+    # confirmamos que la ausencia de VERBOS de aprendizaje como topic_tokens
+    # espurios se mantiene con dominio presente en la frase.
+    assert C.extract_topic_tokens("¿Qué has aprendido del mercado?") == []
+    assert C.extract_topic_tokens("qué has aprendido de freight") == []
 
 
 # ── 2. Detección de dominio ───────────────────────────────────────────────
