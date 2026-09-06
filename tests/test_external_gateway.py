@@ -458,6 +458,87 @@ class TestFreightDomainGatePrecedence:
 
 
 # ---------------------------------------------------------------------------
+# 10b. Defecto post-A/B/C #3 — "¿Qué has aprendido?" sin tema/dominio pide
+# el tema en vez de enumerar dominios o escoger uno con strongest_domain().
+# ---------------------------------------------------------------------------
+
+class TestLearningInquiryAsksForTopic:
+    """"¿Qué has aprendido?" SIN tema/dominio debe pedir el tema, NUNCA
+    escoger un dominio por su cuenta ni enumerar dominios. Si el usuario SÍ
+    nombra un dominio (mercado/ciberseguridad/freight/...), responde con la
+    evidencia de ESE dominio, sin cambios.
+    """
+
+    def test_learning_inquiry_without_domain_asks_for_topic(self):
+        from unittest.mock import patch
+
+        gw = ExternalGateway()
+        with patch("core.learn.criterion.detect_domain", return_value=None), \
+             patch("core.learn.criterion.strongest_domain") as mock_strongest, \
+             patch("core.learn.criterion.build_criterion_result") as mock_bcr, \
+             patch("vectrax.response_auditor.run_audit", side_effect=lambda **kw: kw.get("response", "")), \
+             patch("core.language_gate.enforce_language", side_effect=lambda text, *a, **k: text), \
+             patch("core.conversation.presence_policy.apply_presence_policy", side_effect=lambda text, *a, **k: (text, False)):
+            result = gw.receive_message(
+                user_id="tg:test_learning_no_topic",
+                content="\u00bfQu\u00e9 has aprendido?",
+                channel="telegram",
+            )
+        mock_strongest.assert_not_called()   # NO escoge un dominio por su cuenta
+        mock_bcr.assert_not_called()         # NO fabrica una respuesta de criterio
+        low = result.response.lower()
+        assert "tema" in low or "topic" in low   # pide el tema
+        # No enumera dominios conocidos en la respuesta
+        for dom in ("market", "freight_logistics", "cybersecurity", "florida_real_estate"):
+            assert dom not in low
+
+    def test_learning_inquiry_with_domain_answers_from_that_domain(self):
+        from unittest.mock import patch
+        from core.learn.criterion import CriterionResult, RenderAttempt
+
+        gw = ExternalGateway()
+        CRIT = "MARKET_LEARNING_EVIDENCE_SENTINEL"
+        _cr = CriterionResult("deterministic", CRIT, None, RenderAttempt(attempted=False))
+        with patch("core.learn.criterion.detect_domain", return_value="market"), \
+             patch("core.learn.criterion.strongest_domain") as mock_strongest, \
+             patch("core.learn.criterion.build_criterion_result", return_value=_cr), \
+             patch("vectrax.response_auditor.run_audit", side_effect=lambda **kw: kw.get("response", "")), \
+             patch("core.language_gate.enforce_language", side_effect=lambda text, *a, **k: text), \
+             patch("core.conversation.presence_policy.apply_presence_policy", side_effect=lambda text, *a, **k: (text, False)):
+            result = gw.receive_message(
+                user_id="tg:test_learning_with_domain",
+                content="\u00bfQu\u00e9 has aprendido del mercado?",
+                channel="telegram",
+            )
+        assert CRIT in result.response
+        mock_strongest.assert_not_called()   # dominio ya resuelto, sin fallback
+
+    def test_generic_opinion_without_topic_still_uses_strongest_domain(self):
+        """Regresión: "¿qué opinas?" (NO es is_learning_inquiry) conserva el
+        fallback existente a strongest_domain() cuando no hay tema/dominio.
+        """
+        from unittest.mock import patch
+        from core.learn.criterion import CriterionResult, RenderAttempt
+
+        gw = ExternalGateway()
+        CRIT = "STRONGEST_DOMAIN_SENTINEL"
+        _cr = CriterionResult("deterministic", CRIT, None, RenderAttempt(attempted=False))
+        with patch("core.learn.criterion.detect_domain", return_value=None), \
+             patch("core.learn.criterion.strongest_domain", return_value="market") as mock_strongest, \
+             patch("core.learn.criterion.build_criterion_result", return_value=_cr), \
+             patch("vectrax.response_auditor.run_audit", side_effect=lambda **kw: kw.get("response", "")), \
+             patch("core.language_gate.enforce_language", side_effect=lambda text, *a, **k: text), \
+             patch("core.conversation.presence_policy.apply_presence_policy", side_effect=lambda text, *a, **k: (text, False)):
+            result = gw.receive_message(
+                user_id="tg:test_generic_opinion",
+                content="\u00bfQu\u00e9 opinas?",
+                channel="telegram",
+            )
+        mock_strongest.assert_called_once()
+        assert CRIT in result.response
+
+
+# ---------------------------------------------------------------------------
 # 11. _resolve_query_domain — dominio semántico con fallback léxico
 # ---------------------------------------------------------------------------
 

@@ -675,6 +675,88 @@ def search_places(
 
 
 # ---------------------------------------------------------------------------
+# Entry point tipado (Diseño A/B/C, Frente C) — recibe parámetros YA
+# estructurados (core.action_extraction.PlaceSearchParams), nunca el mensaje
+# conversacional completo. No reinterpreta texto: no hay prefijos que
+# eliminar porque no hay texto libre que limpiar.
+# ---------------------------------------------------------------------------
+
+def search_places_structured(
+    params: Any,
+    user_location: Optional[Dict[str, float]] = None,
+    max_results: int = DEFAULT_MAX_RESULTS,
+    language: str = DEFAULT_LANGUAGE,
+) -> Dict[str, Any]:
+    """Busca lugares reales a partir de parámetros ya extraídos (Frente C).
+
+    `params` es un `core.action_extraction.PlaceSearchParams` (o cualquier
+    objeto con atributos `category`/`cuisine`/`location`) — se construye la
+    consulta de la API directamente desde esos campos tipados, sin volver a
+    tocar `_extract_search_query()` ni ningún otro paso de limpieza de texto
+    conversacional. Mismo contrato de salida que `search_places()`.
+    """
+    category = (getattr(params, "category", "") or "").strip()
+    cuisine = (getattr(params, "cuisine", "") or "").strip()
+    if not category:
+        return {
+            "found": False, "results": [], "query_used": "",
+            "search_type": "", "message": "No se proporcionó una categoría de búsqueda.",
+        }
+
+    query = f"{cuisine} {category}".strip() if cuisine else category
+
+    api_key = _get_api_key()
+    if not api_key:
+        return {
+            "found": False, "results": [], "query_used": query,
+            "search_type": "", "message": "Búsqueda de lugares no disponible en este momento.",
+        }
+
+    detected_type = _detect_place_type(query) or category
+    raw_places: List[Dict[str, Any]] = []
+    search_type = "text"
+
+    if user_location:
+        search_type = "nearby"
+        raw_places = _nearby_search(
+            location=user_location,
+            included_types=[detected_type] if detected_type else None,
+            max_results=max_results,
+            language=language,
+        )
+        if not raw_places:
+            search_type = "text"
+            raw_places = _text_search(
+                query=query, max_results=max_results, language=language,
+                location_bias=user_location, included_type=detected_type,
+            )
+    else:
+        raw_places = _text_search(
+            query=query, max_results=max_results, language=language,
+            included_type=detected_type,
+        )
+
+    results = [_normalize_place(p, user_location) for p in raw_places]
+    if user_location:
+        results.sort(
+            key=lambda r: r["distancia_km"] if r["distancia_km"] is not None else 9999,
+        )
+
+    found = len(results) > 0
+    message = format_results(results, query) if found else _no_results_message(query)
+
+    logger.info(
+        "Place search (structured): category=%r cuisine=%r type=%s found=%d location=%s",
+        category, cuisine, search_type, len(results), "yes" if user_location else "no",
+    )
+
+    return {
+        "found": found, "results": results, "query_used": query,
+        "search_type": search_type, "message": message,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Formateo de resultados
 # ---------------------------------------------------------------------------
 

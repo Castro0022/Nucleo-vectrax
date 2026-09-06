@@ -40,7 +40,8 @@ _SELF_REFERENCE = re.compile(
     r"|\b(?:venderlo|comercializarlo|monetizarlo|lanzarlo)\b"
     r"|\b(?:nuestro|tu|mi)\s+(?:sistema|proyecto|producto|app|bot)\b"
     r"|\b(?:qu[eé]\s+(?:hemos|has|he)\s+(?:construido|hecho|logrado))\b"
-    r"|\b(?:c[oó]mo\s+(?:va|est[aá]|funciona|crece))\b"
+    r"|\bc[oó]mo\s+(?:va|est[aá]|funciona|crece)\s+(?:el\s+|tu\s+|mi\s+)?"
+    r"(?:sistema|proyecto|vectrax|universo)\b"
     r"|\b(?:siguiente\s+paso|pr[oó]ximo\s+paso)\b"
     r"|\b(?:modelo\s+de\s+negocio|plan\s+comercial|estrategia)\b"
     # Universo gravitacional y estado operacional
@@ -70,15 +71,38 @@ _SELF_REFERENCE = re.compile(
 )
 
 
+# Vocativo de saludo/agradecimiento dirigido a Vectrax por su nombre
+# ("Hola Vectrax", "Gracias, Vectrax") — el nombre se usa para DIRIGIRSE a
+# Vectrax, no para preguntar/afirmar algo SOBRE él. Deliberadamente acotado a
+# saludo/agradecimiento + "vectrax" como prefijo del mensaje; no toca ninguna
+# otra forma de mencionar "vectrax" ("revisa el estado de vectrax", "¿qué es
+# vectrax?", "cómo funciona vectrax" siguen intactos más abajo).
+_VOCATIVE_GREETING_RE = re.compile(
+    r"^\s*(?:hola|hey|hi|hello|buenas|buenos\s+d[ií]as|buenas\s+(?:tardes|noches)"
+    r"|gracias|thanks?|thank\s+you)\b\s*[,]?\s*vectrax\b",
+    re.IGNORECASE,
+)
+
+
 def is_self_referential(text: str) -> bool:
     """Detecta si el mensaje habla sobre Vectrax o el proyecto.
 
     Incluye preguntas de origen/historia y de procedencia ("¿cómo lo sabes?"),
     que son inherentemente auto-referenciales aunque no nombren a Vectrax.
+
+    Excepción: un vocativo de saludo/agradecimiento ("Hola Vectrax",
+    "Gracias, Vectrax") NO cuenta por sí solo — se evalúa el resto del
+    mensaje (sin el saludo+vocativo) contra el resto de términos de
+    auto-referencia; si el resto no dispara nada, es conversación normal.
     """
     if not text:
         return False
-    if _SELF_REFERENCE.search(text):
+    stripped = text.strip()
+    vocative_match = _VOCATIVE_GREETING_RE.match(stripped)
+    if vocative_match:
+        if _SELF_REFERENCE.search(stripped[vocative_match.end():]):
+            return True
+    elif _SELF_REFERENCE.search(stripped):
         return True
     try:
         from core.self_observation.self_knowledge import (
@@ -400,6 +424,63 @@ def _is_capability_query(query: str) -> bool:
         return False
 
 
+def _has_market_intent(query: str) -> bool:
+    """True si `query` tiene intención EXPLÍCITA de mercado.
+
+    Reutiliza el mismo eje `domain` que ya resuelve `core.intent_ssot`
+    (idéntica prioridad semántico/léxico que el resto del pipeline) — no crea
+    un detector de mercado paralelo. Defensivo: si el SSOT falla, NO se
+    asume mercado (False), para no contaminar por un fallo silencioso.
+    """
+    if not query:
+        return False
+    try:
+        from core.intent_ssot import resolve_domain
+        dom, _conf, _src = resolve_domain(query)
+        return dom == "market"
+    except Exception as exc:
+        logger.debug("market intent guard failed: %s", exc)
+        return False
+
+
+def _capability_status_enabled() -> bool:
+    """Kill-switch del bloque de estado de capacidades (`VX_CAPABILITY_STATUS_CONTEXT`).
+
+    Encendido por defecto: el bloque NO añade afirmaciones nuevas — sustituye
+    el hueco que dejaba el guard de `_is_capability_query()` por el estado
+    verificado en vivo. Se apaga poniendo la variable en 0/false/off/no.
+    """
+    try:
+        import os as _os
+        return _os.environ.get(
+            "VX_CAPABILITY_STATUS_CONTEXT", "1",
+        ).strip().lower() not in ("", "0", "false", "off", "no")
+    except Exception:
+        return True
+
+
+def _read_capability_status(query: str, lang: str) -> str:
+    """Estado de capacidades DERIVADO del estado real del sistema, en las tres
+    categorías (confirmada / existe-sin-confirmar / condicional).
+
+    Nunca es una descripción fija: `capability_status` recalcula la pertenencia
+    a cada categoría en cada consulta desde motores, módulos, flags y
+    credenciales reales. Si mañana se conecta una integración nueva, cambia de
+    categoría sola — sin editar este archivo. Defensivo: cadena vacía si no hay
+    evidencia o si algo falla.
+    """
+    if not _capability_status_enabled():
+        return ""
+    try:
+        from core.self_observation.capability_status import (
+            build_capability_status_context,
+        )
+        return build_capability_status_context(query, lang=lang)
+    except Exception as exc:
+        logger.debug("capability status context failed: %s", exc)
+        return ""
+
+
 def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> str:
     """
     Construye el contexto de auto-observación de Vectrax.
@@ -537,23 +618,38 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
     except Exception as _ch_exc:
         logger.debug("Convergence history context failed: %s", _ch_exc)
 
-    # Market observation awareness
+    # Market observation awareness — SOLO si la consulta tiene intención
+    # EXPLÍCITA de mercado (corrección de contaminación): antes se anexaba a
+    # TODA respuesta self-aware sin relación con el query (p.ej. "¿cómo va el
+    # sistema?" arrastraba señales de mercado). Reutiliza el mismo eje
+    # `domain` del SSOT que ya usa el resto del pipeline (core.intent_ssot),
+    # sin crear un detector nuevo.
     market_ctx = ""
-    try:
-        from connectors.etoro.market_context import get_watchlist_summary
-        market_ctx = get_watchlist_summary()
-    except Exception:
-        pass
+    if _has_market_intent(query):
+        try:
+            from connectors.etoro.market_context import get_watchlist_summary
+            market_ctx = get_watchlist_summary()
+        except Exception:
+            pass
 
     # Autonomous observations (persistent memory of what Vectrax observed)
     obs_ctx = _read_recent_observations()
 
     # Engines (orchestration layer) — qué motores tengo conectados/activos.
     # Fase 3, paso 6: si el mensaje es una pregunta específica de capacidades,
-    # el nuevo sistema de autoconocimiento verificable de la Fase 3 ya
-    # construye un resumen con más detalle (exists/connected/authorized/
-    # health por motor); evita duplicar aquí un resumen menos preciso.
-    engines_ctx = "" if _is_capability_query(query) else _read_engines_state()
+    # el sistema de autoconocimiento verificable construye un estado con más
+    # detalle (exists/connected/authorized/health por motor); evita duplicar
+    # aquí un resumen menos preciso.
+    _capability_q = _is_capability_query(query)
+    engines_ctx = "" if _capability_q else _read_engines_state()
+
+    # Estado de capacidades en tres categorías, DERIVADO del estado real en
+    # este instante (no una lista escrita a mano). Ocupa exactamente el hueco
+    # que deja el guard de arriba cuando la pregunta SÍ es de capacidad:
+    # ESTADO REAL DEL SISTEMA -> SELF_KNOWLEDGE -> RESPUESTA NATURAL.
+    capability_status_ctx = (
+        _read_capability_status(query, lang) if _capability_q else ""
+    )
 
     # Narrativa por-dominio grounded — material real para comentar de forma casual
     # QUÉ está observando Vectrax en cada dominio (no es un reporte formal).
@@ -586,6 +682,8 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
     parts = [base]
     if universe:
         parts.append(universe)
+    if capability_status_ctx:
+        parts.append(capability_status_ctx)
     if self_knowledge_ctx:
         parts.append(self_knowledge_ctx)
     if dom_obs:

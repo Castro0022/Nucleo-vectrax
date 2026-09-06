@@ -148,3 +148,62 @@ def test_build_self_context_includes_engines_state_when_not_capability_query():
         out = SC.build_self_context(lang="es", user_id="test:x", query="hola")
     mock_engines.assert_called_once()
     assert "[MIS MOTORES]" in out
+
+
+# ---------------------------------------------------------------------------
+# Defecto post-A/B/C #2 — contaminación de mercado: market_ctx NO debe
+# añadirse a TODA respuesta self_aware, solo cuando la consulta tiene
+# intención EXPLÍCITA de mercado (vectrax.self_context._has_market_intent).
+# ---------------------------------------------------------------------------
+
+def test_has_market_intent_delegates_to_ssot_domain():
+    """_has_market_intent() no reimplementa detección propia: delega
+    exclusivamente en core.intent_ssot.resolve_domain()."""
+    with patch("core.intent_ssot.resolve_domain", return_value=("market", 0.9, "semantic")):
+        assert SC._has_market_intent("qué ves en el mercado") is True
+    with patch("core.intent_ssot.resolve_domain", return_value=("freight_logistics", 0.9, "semantic")):
+        assert SC._has_market_intent("qué ves en freight") is False
+    with patch("core.intent_ssot.resolve_domain", return_value=("", 0.0, "none")):
+        assert SC._has_market_intent("¿cómo va el sistema?") is False
+
+
+def test_has_market_intent_defensive_on_empty_and_error():
+    assert SC._has_market_intent("") is False
+    with patch("core.intent_ssot.resolve_domain", side_effect=RuntimeError("boom")):
+        assert SC._has_market_intent("qué ves en el mercado") is False
+
+
+def test_build_self_context_skips_market_ctx_without_market_intent():
+    """¿Cómo va el sistema? NO debe arrastrar señales de mercado: sin
+    intención explícita de mercado, get_watchlist_summary() ni se invoca."""
+    with patch("vectrax.self_context._read_live_stats",
+               return_value={"users": 1, "interactions": 1, "facts": 0, "teams": 0}), \
+         patch("vectrax.self_context._read_universe_state", return_value=""), \
+         patch("vectrax.self_context._read_recent_observations", return_value=""), \
+         patch("vectrax.self_context._is_capability_query", return_value=False), \
+         patch("vectrax.self_context._read_engines_state", return_value=""), \
+         patch("vectrax.self_context._has_market_intent", return_value=False), \
+         patch("connectors.etoro.market_context.get_watchlist_summary",
+               return_value="BTC +5%") as mock_watchlist:
+        out = SC.build_self_context(lang="es", user_id="test:x", query="¿Cómo va el sistema?")
+    mock_watchlist.assert_not_called()
+    assert "OBSERVACIÓN DE MERCADO" not in out
+    assert "BTC" not in out
+
+
+def test_build_self_context_includes_market_ctx_with_explicit_market_intent():
+    """Con intención explícita de mercado (¿qué ves en el mercado?), el
+    bloque de mercado sí se incluye — comportamiento preservado."""
+    with patch("vectrax.self_context._read_live_stats",
+               return_value={"users": 1, "interactions": 1, "facts": 0, "teams": 0}), \
+         patch("vectrax.self_context._read_universe_state", return_value=""), \
+         patch("vectrax.self_context._read_recent_observations", return_value=""), \
+         patch("vectrax.self_context._is_capability_query", return_value=False), \
+         patch("vectrax.self_context._read_engines_state", return_value=""), \
+         patch("vectrax.self_context._has_market_intent", return_value=True), \
+         patch("connectors.etoro.market_context.get_watchlist_summary",
+               return_value="BTC +5%") as mock_watchlist:
+        out = SC.build_self_context(lang="es", user_id="test:x", query="qué ves en el mercado")
+    mock_watchlist.assert_called_once()
+    assert "OBSERVACIÓN DE MERCADO" in out
+    assert "BTC +5%" in out

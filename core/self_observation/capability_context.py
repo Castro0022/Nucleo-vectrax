@@ -82,6 +82,11 @@ class CapabilityEntry:
     reason: str            # detalle determinista, saneado (nunca secretos/rutas/env)
     evidence_source: str   # qué función produjo el dato (trazabilidad)
     observed_at: float     # timestamp de la observación real (no cacheado)
+    # NOMBRE de la condición que hoy NO se cumple (flag o credencial), nunca su
+    # valor. Vacío cuando no hay condición pendiente. Es el dato que permite
+    # que una capacidad pase de "condicionada" a "confirmada" SOLA en cuanto el
+    # entorno real cambia: la condición se re-evalúa en cada consulta.
+    condition: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -95,6 +100,7 @@ class CapabilityEntry:
             "reason": self.reason,
             "evidence_source": self.evidence_source,
             "observed_at": self.observed_at,
+            "condition": self.condition,
         }
 
 
@@ -129,14 +135,33 @@ class CapabilityContext:
 # construir esta lista.
 # ---------------------------------------------------------------------------
 
+# Claves admitidas por entrada:
+#   kind/group/module/attr — igual que antes.
+#   probe: True            — además de importar, LLAMA a `attr()` (predicado
+#                            sin argumentos) y trata el falsy como DEGRADED:
+#                            "existe y conecta, pero no está confirmado".
+#   gated_by: "FLAG"       — misma regla que `EngineSpec.gated_by`.
+#   requires_env: (...)    — TODAS esas variables deben estar pobladas.
+#   requires_env_any: (...)— al menos UNA debe estarlo.
+# `requires_env*` y `gated_by` NO se "declaran por si acaso": solo se anotan
+# cuando el propio código exige esa credencial (p.ej. TelegramGateway lanza
+# ValueError con el token vacío). Se re-evalúan en CADA consulta, así que una
+# credencial que aparezca mañana mueve la capacidad de "condicionada" a
+# "confirmada" sin tocar una sola línea de texto.
 _CAPABILITY_CATALOG: Dict[str, Dict[str, Any]] = {
     "online_search": {
         "kind": "capability", "group": "proveedores",
         "module": "vectrax.resolver", "attr": "resolve_online",
+        # Sin credencial obligatoria: DuckDuckGo funciona sin clave y las
+        # claves (Tavily/Brave/CSE) solo añaden motores. Declarar una
+        # condición aquí sería afirmar un requisito que el código no tiene.
     },
     "llm_providers": {
         "kind": "integration", "group": "proveedores",
         "module": "vectrax.intelligence_bridge", "attr": "is_ready",
+        # El puente expone su propio predicado de disponibilidad real: se
+        # llama en vez de suponer que "importa" == "listo".
+        "probe": True,
     },
     "domain_knowledge": {
         "kind": "service", "group": "aprendizaje",
@@ -149,6 +174,9 @@ _CAPABILITY_CATALOG: Dict[str, Dict[str, Any]] = {
     "telegram_gateway": {
         "kind": "gateway", "group": "otros",
         "module": "vectrax.telegram_gateway", "attr": None,
+        # Verificado en código: `TelegramGateway.__init__` lanza ValueError
+        # con el token vacío y `_load_token()` aborta el proceso.
+        "requires_env": ("TELEGRAM_BOT_TOKEN",),
     },
     # Fuente real ya usada por external_gateway.py (PRE-ROUTER FREIGHT
     # INTERCEPT) — se cataloga aquí solo para poder ofrecerla como
@@ -156,6 +184,23 @@ _CAPABILITY_CATALOG: Dict[str, Dict[str, Any]] = {
     "freight_query": {
         "kind": "service", "group": "otros",
         "module": "intents.freight_intents", "attr": "resolve_freight_query",
+    },
+    # Diseño A/B/C (Frente B, 5.4) — búsqueda de lugar REAL vía Google
+    # Places, distinta de "online_search" (que es búsqueda web genérica).
+    # Verificado en código: `place_search._get_api_key()` exige
+    # GOOGLE_PLACES_API_KEY; sin ella `search_places()` devuelve
+    # "no disponible", nunca inventa resultados.
+    "place_search": {
+        "kind": "capability", "group": "proveedores",
+        "module": "vectrax.integrations.place_search", "attr": "search_places",
+        "requires_env": ("GOOGLE_PLACES_API_KEY",),
+    },
+    # Diseño A/B/C (Frente B, 5.4) — recordatorios reales (antes invisibles
+    # para capability_status aunque funcionaban: core.scheduler nunca
+    # figuraba ni en engine_registry.py ni en este catálogo).
+    "reminder": {
+        "kind": "service", "group": "otros",
+        "module": "core.scheduler", "attr": "add_task",
     },
 }
 
@@ -166,22 +211,43 @@ _FALLBACK_CANDIDATES: Tuple[str, ...] = (
 )
 
 
-def _check_module_health(module: str, attr: Optional[str] = None) -> Tuple[bool, str, str]:
+def _check_module_health(
+    module: str, attr: Optional[str] = None, probe: bool = False,
+) -> Tuple[bool, str, str]:
     """(connected, health, reason) para un módulo/atributo suelto que NO es
     un `EngineSpec` registrado. Misma semántica exacta que
     `bootstrap._check_health()` — reutilizada como PATRÓN (no se importa
     directamente porque esa función espera un `EngineSpec`) para no
     reimplementar un registro completo por 6 elementos. Defensivo: nunca
-    lanza."""
+    lanza.
+
+    Con `probe=True` no basta con que el atributo exista: se LLAMA (predicado
+    sin argumentos) y un resultado falsy produce DEGRADED — "existe y conecta,
+    pero su operatividad no está confirmada". Es la diferencia entre declarar
+    una capacidad y verificarla."""
     try:
         m = importlib.import_module(module)
         if attr is not None:
-            getattr(m, attr)
+            target = getattr(m, attr)
+            if probe:
+                if bool(target()):
+                    return True, HEALTH_AVAILABLE, ""
+                return True, HEALTH_DEGRADED, f"{attr}() devolvió False"
         return True, HEALTH_AVAILABLE, ""
     except ImportError as exc:  # incluye ModuleNotFoundError
         return False, HEALTH_UNAVAILABLE, f"{type(exc).__name__}: {str(exc)[:120]}"
     except Exception as exc:  # noqa: BLE001 - defensivo a propósito
         return True, HEALTH_DEGRADED, f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
+def _env_populated(var: str) -> bool:
+    """True si la credencial existe y no está vacía. Lee el NOMBRE, nunca
+    expone el valor. Defensivo: nunca lanza."""
+    try:
+        import os as _os
+        return bool((_os.environ.get(var, "") or "").strip())
+    except Exception:
+        return False
 
 
 def _derive_authorized_from_gated_by(gated_by: Optional[str]) -> Tuple[bool, str]:
@@ -204,6 +270,31 @@ def _derive_authorized_from_gated_by(gated_by: Optional[str]) -> Tuple[bool, str
         logger.debug("_env_truthy unavailable: %s", exc)
         active = False
     return active, f"gated_by={gated_by}"
+
+
+def _derive_catalog_authorization(spec: Dict[str, Any]) -> Tuple[bool, str]:
+    """(authorized, condition) para una entrada del catálogo local.
+
+    `condition` es el NOMBRE de la condición que hoy no se cumple (flag o
+    credencial) — nunca su valor. Se re-evalúa en cada llamada contra el
+    entorno real: en cuanto la credencial aparece, `authorized` pasa a True
+    solo, sin editar ningún texto."""
+    gated_by = spec.get("gated_by")
+    if gated_by and not _derive_authorized_from_gated_by(gated_by)[0]:
+        return False, gated_by
+
+    missing = [
+        var for var in tuple(spec.get("requires_env") or ())
+        if not _env_populated(var)
+    ]
+    if missing:
+        return False, ",".join(missing)
+
+    any_of = tuple(spec.get("requires_env_any") or ())
+    if any_of and not any(_env_populated(var) for var in any_of):
+        return False, "|".join(any_of)
+
+    return True, ""
 
 
 _SECRET_LIKE_RE = None  # compilado lazy para no pagar el costo si no se usa
@@ -281,7 +372,8 @@ def build_capability_context(decision: Any) -> CapabilityContext:
         logger.debug("get_engine_status unavailable: %s", exc)
         status = {"engines": []}
     for e in status.get("engines", []):
-        authorized, auth_reason = _derive_authorized_from_gated_by(e.get("gated_by"))
+        gated_by = e.get("gated_by")
+        authorized, auth_reason = _derive_authorized_from_gated_by(gated_by)
         health = e.get("health") or (HEALTH_AVAILABLE if e.get("available") else HEALTH_UNAVAILABLE)
         reason = e.get("detail") or auth_reason
         entries.append(CapabilityEntry(
@@ -295,24 +387,29 @@ def build_capability_context(decision: Any) -> CapabilityContext:
             reason=_sanitize_reason(reason),
             evidence_source="engine_registry+bootstrap.get_engine_status",
             observed_at=now,
+            condition="" if authorized else (gated_by or ""),
         ))
 
     # 2) Capacidades/integraciones/servicios/gateways NO registrados como
     # motores (requisito 2) — catálogo local de este archivo, nunca escrito
     # de vuelta a engine_registry.py.
     for name, spec in _CAPABILITY_CATALOG.items():
-        connected, health, reason = _check_module_health(spec["module"], spec.get("attr"))
+        connected, health, reason = _check_module_health(
+            spec["module"], spec.get("attr"), probe=bool(spec.get("probe")),
+        )
+        authorized, condition = _derive_catalog_authorization(spec)
         entries.append(CapabilityEntry(
             name=name,
             kind=spec["kind"],
             group=spec["group"],
             exists=True,
             connected=connected,
-            authorized=True,  # sin gated_by declarado en el catálogo local
+            authorized=authorized,
             health=health,
-            reason=_sanitize_reason(reason),
+            reason=_sanitize_reason(reason or (f"requiere {condition}" if condition else "")),
             evidence_source="capability_context._CAPABILITY_CATALOG",
             observed_at=now,
+            condition=condition,
         ))
 
     by_name = {entry.name: entry for entry in entries}
