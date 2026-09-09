@@ -81,8 +81,8 @@ def test_get_origin_picks_oldest_durable_store():
     def _fake_scalar(path, sql, params=()):
         if "FROM stars" in sql:
             return 2000000000.0        # 2033 — el más nuevo
-        if "convergence_events" in sql:
-            return 1600000000.0        # 2020-09 — el MÁS ANTIGUO
+        if "FROM convergences" in sql:
+            return 1600000000.0        # 2020-09 — el MÁS ANTIGUO (registro canónico)
         if "snapshots" in sql:
             return 1700000000.0        # 2023
         return None
@@ -138,9 +138,9 @@ def test_get_milestones_orders_and_includes_first_convergence():
         constellations=3, convergences=2, total=149,
     )
     conv_row = {
-        "intent": "cve_family", "combined_cc": 0.55,
-        "timestamp": 1749465600.0,  # 2025-06-09
-        "star_a": "a", "star_b": "b",
+        "relationship_type": "cve_family", "combined_cc": 0.55,
+        "first_seen": 1749465600.0,  # 2025-06-09
+        "entity_a_id": "a", "entity_b_id": "b",
     }
 
     origin = {
@@ -190,7 +190,7 @@ def test_trace_provenance_links_topic_to_evidence():
     with patch("core.learn.gravity_engine.get_gravity_index", return_value=fake_index), \
          patch("core.self_observation.observation_ledger.get_by_domain",
                return_value=[{"summary": "nvidia subió con fuerza"}]), \
-         patch("core.learn.convergence_history.get_active", return_value=[]), \
+         patch("core.learn.convergence_registry.get_canonical_convergences", return_value=[]), \
          patch("core.universe_census.get_census", return_value=census), \
          patch.object(SK, "_sqlite_scalar", side_effect=_fake_scalar):
         prov = SK.trace_provenance(
@@ -221,7 +221,7 @@ def test_trace_provenance_empty_when_no_evidence():
     with patch("core.learn.gravity_engine.get_gravity_index", return_value=empty_index), \
          patch("core.self_observation.observation_ledger.get_by_domain", return_value=[]), \
          patch("core.self_observation.observation_ledger.count", return_value=0), \
-         patch("core.learn.convergence_history.get_active", return_value=[]), \
+         patch("core.learn.convergence_registry.get_canonical_convergences", return_value=[]), \
          patch("core.universe_census.get_census", return_value=census), \
          patch.object(SK, "_sqlite_scalar", return_value=None):
         prov = SK.trace_provenance(topic="algo raro", domain="market")

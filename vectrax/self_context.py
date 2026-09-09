@@ -528,14 +528,16 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
         except Exception as _cs_exc:
             logger.debug("Codebase structure failed: %s", _cs_exc)
 
-    # Convergence history — births, deaths, active details
+    # Convergence registry (canonical, #107) — births, deaths, active details.
+    # The legacy convergence_history ledger is left out of the operational
+    # circuit; this reads exclusively from convergence_registry.
     try:
-        from core.learn.convergence_history import build_context as _conv_ctx
+        from core.learn.convergence_registry import build_context as _conv_ctx
         conv_history = _conv_ctx(limit=5)
         if conv_history:
             base += "\n\n" + conv_history
     except Exception as _ch_exc:
-        logger.debug("Convergence history context failed: %s", _ch_exc)
+        logger.debug("Convergence registry context failed: %s", _ch_exc)
 
     # Market observation awareness
     market_ctx = ""

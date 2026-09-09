@@ -23,10 +23,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.learn.convergence_registry import (  # noqa: E402
+    build_context,
     compute_convergence_id,
     connect,
     count_canonical_convergences,
+    count_lifecycle_events,
     get_confirmation_total,
+    get_recent_lifecycle_events,
     normalize_candidate,
     normalize_entity_id,
     record_convergence_snapshot,
@@ -327,6 +330,56 @@ class TestBackfillLeavesLegacyLedgerIntact(_TempRegistryMixin, unittest.TestCase
         self.assertEqual(before, after)
         self.assertEqual(len(groups), 1)
         self.assertEqual(list(groups.values())[0].status, "dissolved")
+
+
+class TestLifecycleEvents(_TempRegistryMixin, unittest.TestCase):
+    """convergence_lifecycle_events is the canonical temporal/historical
+    authority (#107) — count_lifecycle_events()/get_recent_lifecycle_events()
+    are the read API that replaces convergence_history.count_events()/
+    get_recent() for every migrated consumer."""
+
+    def _candidate(self, star_a="market:AAPL", star_b="unknown:xyz",
+                    domains=("market", "unknown"), cc=0.5, hits=3):
+        return {
+            "type": "intent_overlap", "star_a": star_a, "star_b": star_b,
+            "combined_cc": cc, "combined_hits": hits, "domains": list(domains),
+        }
+
+    def test_count_lifecycle_events_tracks_created_and_dissolved(self):
+        live = {"market:AAPL": "market", "unknown:xyz": "unknown"}
+        candidate = self._candidate()
+        record_convergence_snapshot([candidate], live, self.db_path)
+        record_convergence_snapshot([candidate], live, self.db_path)  # confirmed
+        record_convergence_snapshot([], live, self.db_path)           # dissolved
+
+        counts = count_lifecycle_events(db_path=self.db_path)
+        self.assertEqual(counts.get("created", 0), 1)
+        self.assertEqual(counts.get("confirmed", 0), 1)
+        self.assertEqual(counts.get("dissolved", 0), 1)
+
+    def test_get_recent_lifecycle_events_newest_first(self):
+        live = {"market:AAPL": "market", "unknown:xyz": "unknown"}
+        candidate = self._candidate()
+        record_convergence_snapshot([candidate], live, self.db_path, observed_at=100.0)
+        record_convergence_snapshot([], live, self.db_path, observed_at=200.0)  # dissolved
+
+        events = get_recent_lifecycle_events(limit=10, db_path=self.db_path)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["event"], "dissolved")  # newest first
+        self.assertEqual(events[1]["event"], "created")
+
+    def test_build_context_empty_when_no_events(self):
+        self.assertEqual(build_context(db_path=self.db_path), "")
+
+    def test_build_context_reports_active_and_counts(self):
+        live = {"market:AAPL": "market", "unknown:xyz": "unknown"}
+        record_convergence_snapshot([self._candidate()], live, self.db_path)
+
+        text = build_context(limit=5, db_path=self.db_path)
+        self.assertIn("HISTORIAL DE CONVERGENCIAS", text)
+        self.assertIn("1 nacimientos", text)
+        self.assertIn("Activas ahora: 1", text)
+        self.assertIn("market:AAPL", text)
 
 
 if __name__ == "__main__":

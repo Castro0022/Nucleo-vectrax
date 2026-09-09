@@ -106,12 +106,14 @@ def test_top_pattern_durations():
 
 def test_active_convergence_ages_and_filter():
     rows = [
-        {"key": "a:b", "intent": "x", "domains": '["market"]',
-         "timestamp": _epoch_ago(5), "combined_cc": 0.5, "combined_hits": 10},
-        {"key": "c:d", "intent": "y", "domains": '["freight_logistics","market"]',
-         "timestamp": _epoch_ago(2), "combined_cc": 0.4, "combined_hits": 8},
+        {"convergence_id": "a:b", "relationship_type": "x",
+         "domain_a": "market", "domain_b": "market",
+         "first_seen": _epoch_ago(5), "combined_cc": 0.5, "combined_hits": 10},
+        {"convergence_id": "c:d", "relationship_type": "y",
+         "domain_a": "freight_logistics", "domain_b": "market",
+         "first_seen": _epoch_ago(2), "combined_cc": 0.4, "combined_hits": 8},
     ]
-    with patch("core.learn.convergence_history.get_active", return_value=rows):
+    with patch("core.learn.convergence_registry.get_canonical_convergences", return_value=rows):
         allc = TR.active_convergence_ages()
         assert len(allc) == 2
         assert allc[0]["key"] == "a:b"                 # más antigua primero
@@ -147,14 +149,15 @@ def test_get_domain_duration_composes():
         _rec(first_seen=_iso_ago(3), last_seen=_iso_ago(0.5)),
     ]
     outs = [types.SimpleNamespace(resolved_ts=_epoch_ago(6))]
-    rows = [{"key": "a:b", "intent": "x", "domains": '["market"]',
-             "timestamp": _epoch_ago(4)}]
+    rows = [{"convergence_id": "a:b", "relationship_type": "x",
+             "domain_a": "market", "domain_b": "market",
+             "first_seen": _epoch_ago(4)}]
     with ExitStack() as st:
         st.enter_context(patch("core.learn.gravity_engine.get_gravity_index",
                                return_value=_GI(by_dom={"market": recs})))
         st.enter_context(patch("core.learn.verification_ledger.load_outcomes",
                                return_value=outs))
-        st.enter_context(patch("core.learn.convergence_history.get_active",
+        st.enter_context(patch("core.learn.convergence_registry.get_canonical_convergences",
                                return_value=rows))
         d = TR.get_domain_duration("market")
 
@@ -173,15 +176,16 @@ def test_build_duration_digest_grounded():
     top = [_rec(fingerprint="fp", domain="market", intent="BTC",
                 first_seen=_iso_ago(9), last_seen=_iso_ago(0.5))]
     outs = [types.SimpleNamespace(resolved_ts=_epoch_ago(6))]
-    rows = [{"key": "a:b", "intent": "x", "domains": '["market"]',
-             "timestamp": _epoch_ago(4)}]
+    rows = [{"convergence_id": "a:b", "relationship_type": "x",
+             "domain_a": "market", "domain_b": "market",
+             "first_seen": _epoch_ago(4)}]
     with ExitStack() as st:
         st.enter_context(patch("core.learn.gravity_engine.get_gravity_index",
                                return_value=_GI(by_dom={"market": recs},
                                                 top={"market": top})))
         st.enter_context(patch("core.learn.verification_ledger.load_outcomes",
                                return_value=outs))
-        st.enter_context(patch("core.learn.convergence_history.get_active",
+        st.enter_context(patch("core.learn.convergence_registry.get_canonical_convergences",
                                return_value=rows))
         txt = TR.build_duration_digest(domain="market", lang="es")
 
@@ -199,7 +203,7 @@ def test_build_duration_digest_empty_when_no_data():
                                return_value=_GI()))
         st.enter_context(patch("core.learn.verification_ledger.load_outcomes",
                                return_value=[]))
-        st.enter_context(patch("core.learn.convergence_history.get_active",
+        st.enter_context(patch("core.learn.convergence_registry.get_canonical_convergences",
                                return_value=[]))
         assert TR.build_duration_digest(domain="market") == ""
 
@@ -211,7 +215,7 @@ def test_defensive_on_source_failure():
                side_effect=RuntimeError("boom")):
         assert TR.get_pattern_duration("x") is None
         assert TR.top_pattern_durations("market") == []
-    with patch("core.learn.convergence_history.get_active",
+    with patch("core.learn.convergence_registry.get_canonical_convergences",
                side_effect=RuntimeError("boom")):
         assert TR.active_convergence_ages() == []
     with patch("core.learn.verification_ledger.load_outcomes",
@@ -220,7 +224,7 @@ def test_defensive_on_source_failure():
     with ExitStack() as st:
         for t in ("core.learn.gravity_engine.get_gravity_index",
                   "core.learn.verification_ledger.load_outcomes",
-                  "core.learn.convergence_history.get_active"):
+                  "core.learn.convergence_registry.get_canonical_convergences"):
             st.enter_context(patch(t, side_effect=RuntimeError("boom")))
         d = TR.get_domain_duration("market")     # no debe lanzar
         assert d["n_patterns"] == 0 and d["active_convergences"] == 0

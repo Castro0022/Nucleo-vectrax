@@ -586,9 +586,16 @@ async def dashboard_observatory() -> Dict[str, Any]:
         raw = gi.load_raw()
         gravity["domains"] = gi.domain_stats(records=raw)
         gravity["tiers"] = gi.tier_counts(records=raw)
-        all_convergences = gi.cross_domain_convergences(records=raw)
+        # #107 unification: gravity_engine.cross_domain_convergences() is a
+        # candidate detector, not a source of truth for consumers. The
+        # dashboard's convergence sample (and total) both read the canonical
+        # registry now — never the raw, uncanonicalized candidate list.
         gravity["convergences_total"] = census.convergences
-        gravity["convergences"] = all_convergences[:20]
+        try:
+            from core.learn.convergence_registry import get_canonical_convergences
+            gravity["convergences"] = get_canonical_convergences(limit=20)
+        except Exception:
+            gravity["convergences"] = []
         top = gi.top_stars(n=20, records=raw)
         gravity["top_stars"] = [
             {

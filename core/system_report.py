@@ -12,7 +12,8 @@ demás siguen; NUNCA lanza):
                                                     cross-domain, dominios, masa
   • core.orchestration.get_engine_status()       → motores (total/disponibles/tier)
   • core.learn.gravity_engine.growth_trends()    → crecimiento (7d)
-  • core.learn.convergence_history               → convergencias persistidas
+  • core.learn.convergence_registry              → historial de convergencias
+                                                    (autoridad canónica, #107)
   • core.domain_knowledge.list_domains()         → dominios de la librería de criterio
 
 NO calcula nada nuevo ni persiste: reutiliza el SSOT (censo) y los motores ya
@@ -107,17 +108,23 @@ def get_global_state() -> Dict[str, Any]:
     except Exception as exc:
         logger.debug("global_state census failed: %s", exc)
 
-    # 2) Convergencias persistidas (historial de nacimientos/disoluciones)
+    # 2) Convergencias persistidas (historial de nacimientos/disoluciones).
+    # Autoridad canónica (#107): convergence_lifecycle_events es la única
+    # fuente temporal. Se conserva convergences["history"] por compatibilidad
+    # de forma/nombres de campo; la ruta legacy (convergence_history) queda
+    # fuera del circuito operativo.
     try:
-        from core.learn.convergence_history import count_events, get_active
-        ev = count_events() or {}
+        from core.learn.convergence_registry import (
+            count_canonical_convergences, count_lifecycle_events,
+        )
+        ev = count_lifecycle_events() or {}
         convergences["history"] = {
-            "births": int(ev.get("birth", 0)),
-            "dissolutions": int(ev.get("dissolution", 0)),
-            "active": len(get_active()),
+            "births": int(ev.get("created", 0)),
+            "dissolutions": int(ev.get("dissolved", 0)),
+            "active": count_canonical_convergences(status="active"),
         }
     except Exception as exc:
-        logger.debug("global_state convergence_history failed: %s", exc)
+        logger.debug("global_state convergence_registry failed: %s", exc)
 
     # 3) Motores (capa de orquestación)
     engines: Dict[str, Any] = {

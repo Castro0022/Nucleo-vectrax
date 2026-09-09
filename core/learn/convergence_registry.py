@@ -11,6 +11,7 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger("vectrax.convergence_registry")
@@ -370,3 +371,98 @@ def get_canonical_convergences(
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle events — canonical equivalent of the legacy ledger's read API
+# (core.learn.convergence_history). Unification #107→now: this table is the
+# single source of temporal/historical truth for convergences; the legacy
+# ``convergence_events`` ledger is left out of the operational circuit.
+# ---------------------------------------------------------------------------
+
+def count_lifecycle_events(db_path: Optional[str] = None) -> Dict[str, int]:
+    """Count lifecycle events by type (created/confirmed/reappeared/dissolved).
+
+    Canonical equivalent of the legacy ledger's ``count_events()``, but reads
+    ``convergence_lifecycle_events`` instead of ``convergence_events``.
+    """
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT event, COUNT(*) as c FROM convergence_lifecycle_events "
+            "GROUP BY event"
+        ).fetchall()
+        return {r["event"]: r["c"] for r in rows}
+    finally:
+        conn.close()
+
+
+def get_recent_lifecycle_events(
+    limit: int = 10, db_path: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Most recent lifecycle events (any type), newest first.
+
+    Canonical equivalent of the legacy ledger's ``get_recent()``.
+    """
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM convergence_lifecycle_events "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def build_context(limit: int = 5, db_path: Optional[str] = None) -> str:
+    """Build injectable LLM context from the canonical registry.
+
+    Canonical equivalent of the legacy ledger's ``build_context()``: reads
+    current state from ``convergences`` and recent transitions from
+    ``convergence_lifecycle_events`` — never from ``convergence_history``.
+    """
+    events = get_recent_lifecycle_events(limit=limit, db_path=db_path)
+    if not events:
+        return ""
+
+    active = get_canonical_convergences(status="active", db_path=db_path)
+    counts = count_lifecycle_events(db_path=db_path)
+
+    lines = [
+        f"[HISTORIAL DE CONVERGENCIAS — {counts.get('created', 0)} nacimientos, "
+        f"{counts.get('dissolved', 0)} disoluciones]",
+    ]
+
+    if active:
+        lines.append(f"Activas ahora: {len(active)}")
+        for a in active[:3]:
+            ts = datetime.fromtimestamp(a["last_seen"]).strftime("%m/%d %H:%M")
+            lines.append(
+                f"  {a.get('relationship_type') or '?'} | "
+                f"{str(a.get('entity_a_id', ''))[:15]}↔"
+                f"{str(a.get('entity_b_id', ''))[:15]} | "
+                f"cc={a.get('combined_cc', 0.0):.2f} "
+                f"hits={a.get('combined_hits', 0)} | desde {ts}"
+            )
+
+    recent_created = [e for e in events if e["event"] == "created"]
+    recent_dissolved = [e for e in events if e["event"] == "dissolved"]
+
+    if recent_created:
+        lines.append("Últimos nacimientos:")
+        for b in recent_created[:3]:
+            ts = datetime.fromtimestamp(b["timestamp"]).strftime("%m/%d %H:%M")
+            lines.append(
+                f"  {ts} | convergence_id={b['convergence_id'][:12]} | "
+                f"cc={(b.get('combined_cc') or 0):.2f}"
+            )
+
+    if recent_dissolved:
+        lines.append("Últimas disoluciones:")
+        for d in recent_dissolved[:2]:
+            ts = datetime.fromtimestamp(d["timestamp"]).strftime("%m/%d %H:%M")
+            lines.append(f"  {ts} | convergence_id={d['convergence_id'][:12]}")
+
+    return "\n".join(lines)
