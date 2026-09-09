@@ -129,18 +129,24 @@ def validate_entry(
 # ---------------------------------------------------------------------------
 
 def _check_convergence(symbol: str) -> bool:
-    """Check if the symbol has a convergence in the gravity engine."""
+    """Check if the symbol has an active canonical convergence (#107).
+
+    gravity_engine.cross_domain_convergences() is a candidate detector, not
+    a source of truth for consumers — this reads the canonical registry
+    (core.learn.convergence_registry) instead of the raw candidate list.
+    """
     try:
-        from core.learn.gravity_engine import get_gravity_index
-        gi = get_gravity_index()
-        convergences = gi.cross_domain_convergences()
-        for c in convergences:
-            domains = c.get("domains", [])
-            intent = c.get("intent", "")
-            if symbol in intent.upper() or "market" in domains:
+        from core.learn.convergence_registry import get_canonical_convergences
+        active = get_canonical_convergences(status="active")
+        sym_upper = symbol.upper()
+        for c in active:
+            domains = (c.get("domain_a", ""), c.get("domain_b", ""))
+            entities = (c.get("entity_a_id", ""), c.get("entity_b_id", ""))
+            if "market" in domains and any(sym_upper in e.upper() for e in entities):
                 return True
         # Also check if the market star itself has significant mass
-        rec = gi.get(f"market:{symbol}")
+        from core.learn.gravity_engine import get_gravity_index
+        rec = get_gravity_index().get(f"market:{symbol}")
         if rec and rec.hits >= 5 and rec.cc_score >= 0.3:
             return True
     except Exception as exc:

@@ -9,8 +9,8 @@ reales — el LLM nunca infiere el tiempo, recibe el número ya calculado.
 Anclas reutilizadas (todas read-only, ninguna nueva persistencia):
   • GravityRecord.first_seen / last_seen / freq   (core/learn/schemas.py:50-54)
         → antigüedad por patrón y por dominio, ritmo (hits/día).
-  • convergence_events.timestamp (event='birth')  (core/learn/convergence_history.py)
-        → edad de cada convergencia activa.
+  • convergences.first_seen (status='active')     (core/learn/convergence_registry.py)
+        → edad de cada convergencia activa (autoridad canónica, #107).
   • Outcome.resolved_ts por dominio               (core/learn/verification_ledger.py)
         → span (primer/último) de resultados verificados por dominio.
 
@@ -141,10 +141,16 @@ def active_convergence_ages(
 ) -> List[Dict[str, Any]]:
     """Convergencias actualmente activas con su antigüedad (días desde el
     nacimiento). Si `domain` se indica, filtra las que lo incluyen. Orden:
-    más antiguas primero."""
+    más antiguas primero.
+
+    Fuente: core.learn.convergence_registry (autoridad canónica, #107).
+    `first_seen` de la entidad canónica es la fecha de nacimiento real de la
+    convergencia. La ruta legacy (convergence_history) queda fuera del
+    circuito operativo.
+    """
     try:
-        from core.learn.convergence_history import get_active
-        rows = get_active() or []
+        from core.learn.convergence_registry import get_canonical_convergences
+        rows = get_canonical_convergences(status="active") or []
     except Exception as exc:
         logger.debug("active_convergence_ages failed: %s", exc)
         return []
@@ -152,14 +158,14 @@ def active_convergence_ages(
     out: List[Dict[str, Any]] = []
     for row in rows:
         try:
-            doms = _parse_domains(row.get("domains"))
+            doms = [d for d in (row.get("domain_a"), row.get("domain_b")) if d]
             if domain and domain not in doms:
                 continue
             out.append({
-                "key": row.get("key", ""),
-                "intent": row.get("intent", "") or "",
+                "key": row.get("convergence_id", ""),
+                "intent": row.get("relationship_type", "") or "",
                 "domains": doms,
-                "age_days": days_since(row.get("timestamp")),
+                "age_days": days_since(row.get("first_seen")),
                 "combined_cc": row.get("combined_cc", 0),
                 "combined_hits": row.get("combined_hits", 0),
             })

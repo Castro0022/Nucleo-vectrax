@@ -449,17 +449,24 @@ def _build_universe_market_view() -> str:
                 f"peso {s['weight']}, tier {s['tier']}"
             )
 
-        # Convergences
-        convs = gi.cross_domain_convergences()
-        market_convs = [c for c in convs if "market" in str(c.get("domains", []))]
+        # Convergences (#107: autoridad canónica, no el detector crudo)
+        try:
+            from core.learn.convergence_registry import get_canonical_convergences
+            active_convs = get_canonical_convergences(status="active")
+        except Exception:
+            active_convs = []
+        market_convs = [
+            c for c in active_convs
+            if "market" in (c.get("domain_a", ""), c.get("domain_b", ""))
+        ]
         if market_convs:
             lines.append("")
             lines.append("🔗 Convergencias activas:")
             for c in market_convs[:5]:
                 lines.append(
-                    f"  {c.get('intent', '?')} — "
+                    f"  {c.get('relationship_type', '?')} — "
                     f"hits:{c.get('combined_hits', 0)} "
-                    f"dominios:{c.get('domains', [])}"
+                    f"dominios:[{c.get('domain_a', '')}, {c.get('domain_b', '')}]"
                 )
 
         # Recent observations from ledger

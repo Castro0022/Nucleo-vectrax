@@ -81,12 +81,12 @@ def _patch_all(stack, *, census=None, engines=None, gi=None,
         return_value=gi if gi is not None else _FakeGI(_GROWTH),
     ))
     stack.enter_context(patch(
-        "core.learn.convergence_history.count_events",
-        return_value={"birth": births, "dissolution": dissolutions},
+        "core.learn.convergence_registry.count_lifecycle_events",
+        return_value={"created": births, "dissolved": dissolutions},
     ))
     stack.enter_context(patch(
-        "core.learn.convergence_history.get_active",
-        return_value=[{} for _ in range(active)],
+        "core.learn.convergence_registry.count_canonical_convergences",
+        return_value=active,
     ))
     stack.enter_context(patch(
         "core.domain_knowledge.list_domains",
@@ -158,8 +158,8 @@ def test_get_global_state_defensive_on_source_failure():
         "core.universe_census.get_census",
         "core.orchestration.get_engine_status",
         "core.learn.gravity_engine.get_gravity_index",
-        "core.learn.convergence_history.count_events",
-        "core.learn.convergence_history.get_active",
+        "core.learn.convergence_registry.count_lifecycle_events",
+        "core.learn.convergence_registry.count_canonical_convergences",
         "core.domain_knowledge.list_domains",
     ]
     with ExitStack() as stack:

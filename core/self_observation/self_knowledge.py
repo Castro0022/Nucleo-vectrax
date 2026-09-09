@@ -11,10 +11,11 @@ EN VIVO y desde datos persistentes reales, la respuesta a cuatro preguntas:
 
 Principios:
   - SOLO LECTURA. No escribe, no crea sistemas paralelos: reutiliza census,
-    evolution_memory, convergence_history, observation_ledger, gravity_engine.
+    evolution_memory, convergence_registry (autoridad canónica, #107),
+    observation_ledger, gravity_engine.
   - NUNCA inventa. Si no hay evidencia real, devuelve cadena vacía.
   - El origen se deriva del store DURABLE más antiguo (snapshots de evolución,
-    convergence_events, stars) — NUNCA del observation_ledger, que se poda a 5000.
+    convergences canonicas, stars) — NUNCA del observation_ledger, que se poda a 5000.
   - Reconstrucción por consulta con caché TTL corta (patrón de self_summary/census).
 
 Creador: Mario Bravo Castro
@@ -224,9 +225,24 @@ def _stars_db_path() -> str:
 
 
 def _convergence_db_path() -> str:
+    """Path de la ruta legacy (core.learn.convergence_history).
+
+    Ya NO se consulta en get_origin()/get_milestones()/trace_provenance()
+    (unificación #107): la autoridad canónica es convergence_registry. Se
+    conserva el helper por si algún consumidor manual/futuro necesita el
+    path, pero no participa del circuito operativo.
+    """
     try:
         import core.learn.convergence_history as CH
         return getattr(CH, "_DB_PATH", "") or ""
+    except Exception:
+        return ""
+
+
+def _convergence_registry_db_path() -> str:
+    try:
+        import core.learn.convergence_registry as CR
+        return getattr(CR, "DB_PATH", "") or ""
     except Exception:
         return ""
 
@@ -258,7 +274,7 @@ def get_origin() -> Dict[str, Any]:
         versionado): la constitución de Vectrax-Core LLC (2026-04-07). Siempre
         presente; no se deriva de logs.
       - first_trace: primera huella verificable / etapa de GESTACIÓN, derivada
-        del store durable más antiguo (stars / convergence_events / snapshots).
+        del store durable más antiguo (stars / convergences canónicas / snapshots).
         Nunca usa el observation_ledger (capado a 5000). Puede faltar ({}).
 
     Devuelve {institutional_birth:{...}, first_trace:{...}|{}}.
@@ -280,7 +296,7 @@ def get_origin() -> Dict[str, Any]:
         if stars_min:
             sources["stars"] = float(stars_min)
         conv_min = _sqlite_scalar(
-            _convergence_db_path(), "SELECT MIN(timestamp) FROM convergence_events"
+            _convergence_registry_db_path(), "SELECT MIN(first_seen) FROM convergences"
         )
         if conv_min:
             sources["convergences"] = float(conv_min)
@@ -334,19 +350,18 @@ def get_milestones(limit: int = 6) -> List[Dict[str, Any]]:
                 "what": "primera huella verificable (gestación)",
             })
 
-        # Primera convergencia (nacimiento más antiguo)
+        # Primera convergencia (nacimiento más antiguo, autoridad canónica #107)
         row = _sqlite_row(
-            _convergence_db_path(),
-            "SELECT intent, star_a, star_b, combined_cc, timestamp "
-            "FROM convergence_events WHERE event='birth' "
-            "ORDER BY timestamp ASC LIMIT 1",
+            _convergence_registry_db_path(),
+            "SELECT relationship_type, entity_a_id, entity_b_id, combined_cc, "
+            "first_seen FROM convergences ORDER BY first_seen ASC LIMIT 1",
         )
         if row is not None:
             try:
-                intent = row["intent"] or "?"
+                intent = row["relationship_type"] or "?"
                 cc = row["combined_cc"] or 0.0
                 milestones.append({
-                    "date": _epoch_to_date(row["timestamp"]),
+                    "date": _epoch_to_date(row["first_seen"]),
                     "what": f"mi primera convergencia ({intent}, cc={cc:.2f})",
                 })
             except Exception:
@@ -500,24 +515,28 @@ def trace_provenance(
         except Exception as exc:
             logger.debug("provenance observations failed: %s", exc)
 
-        # --- Convergencias activas relevantes ---
+        # --- Convergencias activas relevantes (autoridad canónica, #107) ---
         try:
-            from core.learn.convergence_history import get_active
-            active = get_active()
+            from core.learn.convergence_registry import get_canonical_convergences
+            active = get_canonical_convergences(status="active")
             picked = []
             for a in active:
-                blob = f"{a.get('intent','')} {a.get('domains','')}"
-                if resolved_domain and resolved_domain not in blob and not _matches(blob):
+                blob = (
+                    f"{a.get('relationship_type','')} "
+                    f"{a.get('domain_a','')} {a.get('domain_b','')}"
+                )
+                doms = (a.get("domain_a"), a.get("domain_b"))
+                if resolved_domain and resolved_domain not in doms and not _matches(blob):
                     continue
                 if not resolved_domain and not _matches(blob):
                     continue
                 picked.append(a)
             for a in (picked or active)[:3]:
                 evidence["convergences"].append({
-                    "intent": a.get("intent", "") or "?",
+                    "intent": a.get("relationship_type", "") or "?",
                     "cc": round(a.get("combined_cc", 0.0), 3),
                     "hits": a.get("combined_hits", 0),
-                    "since": _epoch_to_date(a.get("timestamp")),
+                    "since": _epoch_to_date(a.get("first_seen")),
                 })
         except Exception as exc:
             logger.debug("provenance convergences failed: %s", exc)

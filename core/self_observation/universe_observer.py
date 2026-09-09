@@ -50,11 +50,12 @@ class UniverseSnapshot:
     layers: Dict[str, int] = field(default_factory=dict)
     stars: List[Dict[str, Any]] = field(default_factory=list)
 
-    # ── Convergencias ─────────────────────────────────────────────────────
-    # SAMPLES/DETAIL ONLY. This list mixes in-memory graph edges + up to
-    # 500 raw legacy convergence_events rows (events, not deduplicated
-    # identities). len(snap.convergences) must NEVER be read as a universe
-    # total — the canonical total lives in
+    # ── Convergencias ───────────────────────────────────────────────────────────
+    # SAMPLES/DETAIL ONLY. This list mixes in-memory graph edges + up to 500
+    # rows from the canonical convergence_registry (#107 unification — the
+    # legacy convergence_history/convergence_events ledger is left out of
+    # the operational circuit). len(snap.convergences) must NEVER be read as
+    # a universe total — the canonical total lives in
     # core.universe_census.get_census().convergences_total (backed by
     # core.learn.convergence_registry, not this list).
     convergences: List[Dict[str, Any]] = field(default_factory=list)
@@ -135,7 +136,15 @@ class UniverseSnapshot:
             _grav = self.gravity_total
             _know = self.knowledge_star_count
             _users = self.star_count
-            _conv_total = self.gravity_convergences_total
+            # Fallback SOLO si el censo falla. gravity_engine.cross_domain_
+            # convergences() (self.gravity_convergences_total) es un detector
+            # de candidatos, no una fuente de verdad para consumidores (#107
+            # unificación) — se cae directo al registro canónico, no al crudo.
+            try:
+                from core.learn.convergence_registry import count_canonical_convergences
+                _conv_total = count_canonical_convergences()
+            except Exception:
+                _conv_total = 0
         # Engines (orquestación) — read-only, defensivo.
         try:
             from core.orchestration import get_engine_status
@@ -213,14 +222,16 @@ class UniverseSnapshot:
                 "total": self.gravity_total,
                 "stars": self.gravity_stars,
                 "domains": self.gravity_domains,
-                # Combina: convergencias del gravity_index (cross-domain)
-                # + convergencias históricas de convergence_history.db
-                # El panel lee de gravity.convergences — aquí es donde tiene que estar.
-                "convergences": self.gravity_convergences + self.convergences[:480],
-                # convergences_total = SSOT (census.convergences = gravity_index
-                # cross-domain). El conteo del panel debe ser la verdad del censo;
-                # NO len(lista mostrada), que mezcla edges del grafo + history y
-                # producía 2195 en el canvas frente a 1242 en el SPA/censo.
+                # snap.convergences ya es únicamente: edges del grafo en memoria
+                # + registro canónico de convergencias (#107). gravity_engine
+                # crudo (self.gravity_convergences) NUNCA se mezcla aquí — queda
+                # como detector interno de candidatos (ver _detect_convergence_
+                # changes en autonomous_observer.py), no como fuente para
+                # consumidores. El panel lee de gravity.convergences.
+                "convergences": self.convergences[:500],
+                # convergences_total = SSOT (census.convergences = registro
+                # canónico). El conteo del panel debe ser la verdad del censo;
+                # NO len(lista mostrada), que mezcla edges del grafo + registro.
                 "convergences_total": _conv_total,
             },
             "word_gravity": {
@@ -286,7 +297,12 @@ def _collect_nucleus(snap: UniverseSnapshot) -> None:
 
 
 def _collect_convergences(snap: UniverseSnapshot) -> None:
-    """Llena convergencias: grafo en memoria + convergence_history.db."""
+    """Llena convergencias: grafo en memoria + registro canónico (#107).
+
+    La ruta legacy (core.learn.convergence_history / tabla convergence_events)
+    queda fuera del circuito operativo — no se lee aquí. La autoridad de
+    estado/historial de convergencias es core.learn.convergence_registry.
+    """
     # 1. Graph edges (in-memory, built during star linking)
     try:
         from vectrax.graph import get_graph
@@ -301,33 +317,22 @@ def _collect_convergences(snap: UniverseSnapshot) -> None:
     except Exception as exc:
         logger.debug("graph convergences failed: %s", exc)
 
-    # 2. convergence_history.db — persistent convergence events
+    # 2. Canonical convergence registry — persistent, deduplicated relationships.
     # This is the primary source of convergences visible in the panel.
     try:
-        import sqlite3, os
-        _cdb = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "..", "vault", "convergence_history.db",
-        )
-        _cdb = os.path.normpath(_cdb)
-        if os.path.exists(_cdb):
-            conn = sqlite3.connect(_cdb, timeout=2)
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT * FROM convergence_events ORDER BY ROWID DESC LIMIT 500"
-            ).fetchall()
-            conn.close()
-            for row in rows:
-                d = dict(row)
-                snap.convergences.append({
-                    "star_a": d.get("star_a") or d.get("node_a") or d.get("source") or "",
-                    "star_b": d.get("star_b") or d.get("node_b") or d.get("target") or "",
-                    "similarity": round(float(d.get("similarity") or d.get("weight") or d.get("strength") or 0.5), 4),
-                    "source": "history",
-                    "type": d.get("type") or d.get("event_type") or "convergence",
-                })
+        from core.learn.convergence_registry import get_canonical_convergences
+        rows = get_canonical_convergences(limit=500)
+        for d in rows:
+            snap.convergences.append({
+                "star_a": d.get("entity_a_id", ""),
+                "star_b": d.get("entity_b_id", ""),
+                "similarity": round(float(d.get("combined_cc") or 0.5), 4),
+                "source": "canonical",
+                "type": d.get("relationship_type") or "convergence",
+                "status": d.get("status", ""),
+            })
     except Exception as exc:
-        logger.debug("convergence_history collection failed: %s", exc)
+        logger.debug("convergence registry collection failed: %s", exc)
 
 def _collect_operational(snap: UniverseSnapshot) -> None:
     """Llena campos operacionales desde state_collector."""
