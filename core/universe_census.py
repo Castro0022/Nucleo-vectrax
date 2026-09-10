@@ -59,6 +59,14 @@ class UniverseCensus:
     convergences: int = 0
     convergences_active: int = 0
     convergence_confirmations_total: int = 0
+    # Convergencias CONVERSACIONALES (Corte 1) -- vectrax.db.stars con
+    # star_type='convergence' AND owner != 'vectrax_system'. Mismo concepto
+    # de convergencia que `convergences` de arriba, origen distinto (usuario/
+    # conversacional en vez de dominio); se expone SEPARADO a proposito, sin
+    # fusionar. `_collective` son las coordenadas cross-usuario
+    # (owner='__collective__'); el resto son individuales por owner real.
+    convergences_conversational: int = 0
+    convergences_conversational_collective: int = 0
     patterns: int = 0
     constellations: int = 0
     mass_total: float = 0.0
@@ -104,6 +112,8 @@ class UniverseCensus:
             "convergences": self.convergences,
             "convergences_active": self.convergences_active,
             "convergence_confirmations_total": self.convergence_confirmations_total,
+            "convergences_conversational": self.convergences_conversational,
+            "convergences_conversational_collective": self.convergences_conversational_collective,
             "patterns": self.patterns,
             "constellations": self.constellations,
             "mass_total": round(self.mass_total, 4),
@@ -243,6 +253,35 @@ def _build_census() -> UniverseCensus:
         c.convergence_confirmations_total = get_confirmation_total()
     except Exception as exc:
         logger.debug("census convergence registry failed: %s", exc)
+
+    # === SOURCE 1c: Conversational convergences (Corte 1) ===
+    # Convergencia es un concepto unico independientemente de su origen: esta
+    # fuente expone las convergencias CONVERSACIONALES ya existentes en
+    # vectrax.db.stars (star_type=convergence, owner != 'vectrax_system' --
+    # ese owner marca las pseudo-convergencias de DOMINIO promovidas por
+    # core/gravity_sync.py::_promote_mature_patterns, que deben excluirse
+    # aqui). Se mantiene SEPARADA de `c.convergences` (Source 1b, registro
+    # canonico de dominio) a proposito -- no se fusiona ni se duplica ningun
+    # almacen. Reutiliza exclusivamente vectrax/db.py::get_convergence_stars()
+    # / get_collective_convergence_stars(), ya usadas hoy por
+    # vectrax/convergence_engine.py. Lectura directa en el momento de
+    # construir el censo, igual que las demas fuentes; sin cache adicional
+    # (el TTL de 10s de get_census() ya aplica por igual a toda la funcion).
+    try:
+        from vectrax.db import get_convergence_stars, get_collective_convergence_stars
+        from vectrax.models import COLLECTIVE_OWNER
+
+        _GRAVITY_SYNC_OWNER = "vectrax_system"  # ver core/gravity_sync.py::_SYNC_OWNER
+        _all_conv_stars = get_convergence_stars()  # todos los canales/owners
+        c.convergences_conversational = sum(
+            1 for s in _all_conv_stars
+            if s.owner not in (_GRAVITY_SYNC_OWNER, COLLECTIVE_OWNER)
+        )
+        c.convergences_conversational_collective = len(
+            get_collective_convergence_stars()
+        )
+    except Exception as exc:
+        logger.debug("census conversational convergences failed: %s", exc)
 
     # === SOURCE 2: vectrax.db ===
     try:
