@@ -11,12 +11,21 @@ Detectores:
   - Operator: cambios de estado del worker, cola, errores
   - Health: spikes de errores, señales de percepción
   - Users: nuevos usuarios, picos de actividad
+  - Audit ledger: actividad nueva en audit_ledger.db (Etapa 2)
+  - Domain verification: nuevos resultados verificados en
+    domain_verification/*.jsonl (Etapa 2)
 
 Diseño:
   - Se ejecuta en cada ciclo del meta_loop (~60s)
   - Defensivo: si falla un detector, los demás siguen
   - No hace red, no manda mensajes — solo observa y registra
   - Mantiene el snapshot previo en memoria para comparar
+  - Los detectores de Etapa 2 (audit_ledger, domain_verification)
+    reutilizan exclusivamente lectores ya existentes
+    (core.audit_ledger.query, core.learn.verification_ledger) y se
+    autolimitan con el mismo patrón de intervalo mínimo ya usado en
+    core/meta_loop.py (_IDEA_REFRESH_INTERVAL, _RAM_SNAPSHOT_INTERVAL)
+    para no golpear esas fuentes en cada ciclo de ~2s del daemon.
 
 API pública:
     observe_and_record() -> int   (número de observaciones registradas)
@@ -36,6 +45,18 @@ _prev_snapshot: Optional[Dict[str, Any]] = None
 _prev_gravity: Optional[Dict[str, Any]] = None
 _prev_mode: str = ""            # last active mode (market/memory)
 _daily_reflection_date: str = ""  # date of last daily reflection (YYYY-MM-DD)
+
+# -- Etapa 2: audit_ledger.db + domain_verification/*.jsonl --
+# Mismo patrón de "intervalo mínimo" ya usado en core/meta_loop.py
+# (_IDEA_REFRESH_INTERVAL=900, _RAM_SNAPSHOT_INTERVAL=3600): no crea un
+# mecanismo nuevo, reutiliza el idiom existente para no consultar estas
+# fuentes en cada ciclo de ~2s del daemon.
+_AUDIT_CHECK_INTERVAL = 60          # audit_ledger crece por mensaje; revisar cada 1 min
+_VERIFICATION_CHECK_INTERVAL = 300  # ciclos de verificación de dominio corren cada 6h/24h; 5 min alcanza
+_last_audit_check: float = 0.0
+_last_audit_ledger_id: int = 0      # cursor: id más alto ya observado en audit_ledger
+_last_verification_check: float = 0.0
+_prev_verification_counts: Dict[str, int] = {}  # domain -> n_total visto en el ciclo anterior
 
 
 def observe_and_record() -> int:
@@ -163,6 +184,17 @@ def observe_and_record() -> int:
         recorded += _detect_user_changes(prev, current, record)
     except Exception as exc:
         logger.debug("user detector failed: %s", exc)
+
+    # -- Etapa 2: audit_ledger.db + domain_verification/*.jsonl --
+    try:
+        recorded += _detect_audit_ledger_changes(record)
+    except Exception as exc:
+        logger.debug("audit ledger detector failed: %s", exc)
+
+    try:
+        recorded += _detect_verification_changes(record)
+    except Exception as exc:
+        logger.debug("verification detector failed: %s", exc)
 
     # -- Market Mode: observation depth modulated by bias weight --
     _market_weight = _bias_weights.get("market", 1.0)
@@ -489,6 +521,147 @@ def _detect_market_changes(prev_grav: Optional[dict], curr_grav: dict, record) -
                    star_id=sid,
                    evidence={"prev_hits": prev_hits, "now_hits": curr_hits, "mode": "market"})
             n += 1
+
+    return n
+
+
+# ---------------------------------------------------------------------------
+# Etapa 2 — audit_ledger.db (reutiliza core.audit_ledger.query, existente)
+# ---------------------------------------------------------------------------
+
+def _detect_audit_ledger_changes(record) -> int:
+    """
+    Observa actividad nueva en audit_ledger.db desde la última revisión.
+
+    Reutiliza exclusivamente core.audit_ledger.query() (ventana acotada
+    ORDER BY id DESC LIMIT N, ya existente para /dashboard/audit) — no crea
+    un segundo lector. Cursor de "último id visto" (mismo patrón que
+    meta_loop._last_obs_alert_id) para no reprocesar filas ya observadas.
+    Autolimitado a _AUDIT_CHECK_INTERVAL segundos: audit_ledger.db crece
+    con cada mensaje del sistema, y el daemon corre cada ~2s — sin este
+    throttle se golpearía la DB en cada ciclo.
+    """
+    global _last_audit_check, _last_audit_ledger_id
+    now = time.time()
+    if now - _last_audit_check < _AUDIT_CHECK_INTERVAL:
+        return 0
+    _last_audit_check = now
+
+    try:
+        from core import audit_ledger
+        rows = audit_ledger.query(limit=200)  # ventana acotada, no histórico completo
+    except Exception as exc:
+        logger.debug("audit_ledger query failed: %s", exc)
+        return 0
+    if not rows:
+        return 0
+
+    latest_id = rows[0].get("id", 0) or 0
+
+    if _last_audit_ledger_id == 0:
+        # Primer ciclo: fija el cursor sin generar ruido retroactivo
+        # sobre ~140k filas históricas ya existentes.
+        _last_audit_ledger_id = latest_id
+        return 0
+
+    new_rows = [r for r in rows if (r.get("id", 0) or 0) > _last_audit_ledger_id]
+    window_truncated = bool(new_rows) and (latest_id - _last_audit_ledger_id) > len(rows)
+    _last_audit_ledger_id = latest_id
+    if not new_rows:
+        return 0
+
+    import json as _json
+    by_category: Dict[str, int] = {}
+    for r in new_rows:
+        try:
+            meta = _json.loads(r.get("metadata") or "{}")
+            cat = meta.get("category", "unknown")
+        except Exception:
+            cat = "unknown"
+        by_category[cat] = by_category.get(cat, 0) + 1
+
+    record(
+        "operator", "audit_ledger_activity",
+        f"{len(new_rows)} evento(s) nuevo(s) en audit_ledger: "
+        + ", ".join(f"{k}={v}" for k, v in sorted(by_category.items())),
+        evidence={
+            "count": len(new_rows),
+            "by_category": by_category,
+            "latest_id": latest_id,
+            "window_truncated": window_truncated,
+        },
+    )
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# Etapa 2 — domain_verification/*.jsonl (reutiliza core.learn.verification_ledger)
+# ---------------------------------------------------------------------------
+
+def _detect_verification_changes(record) -> int:
+    """
+    Observa nuevos resultados verificados en domain_verification/*.jsonl.
+
+    Reutiliza exclusivamente core.learn.verification_ledger.load_outcomes()
+    y .domain_score() (ya usados por core/learn/criterion.py) — no crea un
+    segundo lector. load_outcomes() ya cachea el parseo por mtime del
+    archivo, así que un ciclo sin escrituras nuevas no reparsea nada.
+    Autolimitado a _VERIFICATION_CHECK_INTERVAL segundos: algunos de estos
+    archivos son enormes (p. ej. cybersecurity.jsonl, cientos de miles de
+    líneas) y los ciclos de verificación de dominio corren cada 6h/24h, no
+    cada 2s — revisar con esa cadencia evita costo innecesario en el loop
+    del daemon.
+    """
+    global _last_verification_check, _prev_verification_counts
+    now = time.time()
+    if now - _last_verification_check < _VERIFICATION_CHECK_INTERVAL:
+        return 0
+    _last_verification_check = now
+
+    try:
+        from core.learn import verification_ledger as vl
+        vdir = vl._dir()
+        if not os.path.isdir(vdir):
+            return 0
+        domains = sorted(
+            fn[: -len(".jsonl")] for fn in os.listdir(vdir)
+            if fn.endswith(".jsonl")
+        )
+    except Exception as exc:
+        logger.debug("verification_ledger domain listing failed: %s", exc)
+        return 0
+
+    n = 0
+    for domain in domains:
+        try:
+            curr_count = len(vl.load_outcomes(domain))
+        except Exception as exc:
+            logger.debug("verification_ledger load failed for %s: %s", domain, exc)
+            continue
+
+        prev_count = _prev_verification_counts.get(domain)
+        _prev_verification_counts[domain] = curr_count
+        if prev_count is None:
+            continue  # baseline por dominio: sin ruido retroactivo
+
+        delta = curr_count - prev_count
+        if delta <= 0:
+            continue
+
+        wr_txt = ""
+        try:
+            score = vl.domain_score(domain)
+            if score.n_decisive > 0:
+                wr_txt = f", win_rate={score.win_rate:.1f}%"
+        except Exception as exc:
+            logger.debug("verification_ledger domain_score failed for %s: %s", domain, exc)
+
+        record(
+            "domain", "verification_outcome",
+            f"{delta} resultado(s) verificado(s) nuevo(s) en {domain}{wr_txt}",
+            evidence={"domain": domain, "new_outcomes": delta, "total": curr_count},
+        )
+        n += 1
 
     return n
 
