@@ -27,6 +27,26 @@ Diseño:
     core/meta_loop.py (_IDEA_REFRESH_INTERVAL, _RAM_SNAPSHOT_INTERVAL)
     para no golpear esas fuentes en cada ciclo de ~2s del daemon.
 
+Etapa 3 (circuito observación→análisis→patrones→convergencias→ejecución):
+  - domain_verification/*.jsonl YA estaba conectado a análisis/criterio de
+    forma independiente de este observador: core.learn.criterion.
+    rank_domain_evidence() lee core.learn.verification_ledger.
+    subject_scores(domain) directamente, y ese criterio ya está cableado
+    en producción (core/operator/external_gateway.py STEP 4.2a3, Domain
+    Criterion Gate). El ciclo dominio completo — learning_cycle (ingesta)
+    → gravity_engine (patrones) → gravity_sync/domain_knowledge
+    (elevación/convergencia) → verification_cycle (ejecución/verificación)
+    → domain_verification (resultado) → este observador (nueva
+    observación) — ya estaba cerrado antes de esta etapa; no se tocó.
+    Único defecto corregido aquí: `_detect_verification_changes` «etiquetaba
+    la observación con el string literal "domain" en vez del dominio real,
+    lo que le impediría ser encontrada por otros consumidores existentes
+    que filtran por dominio (intents/freight_intents.py, self_knowledge.py).
+  - audit_ledger.db NO tiene ningún consumidor de análisis/patrones/
+    convergencias/ejecución existente al que conectarse sin inventar una
+    pieza nueva (ver CHANGELOG / commit de Etapa 3 para el detalle). No se
+    forzó ninguna conexión ahí.
+
 API pública:
     observe_and_record() -> int   (número de observaciones registradas)
 """
@@ -656,8 +676,14 @@ def _detect_verification_changes(record) -> int:
         except Exception as exc:
             logger.debug("verification_ledger domain_score failed for %s: %s", domain, exc)
 
+        # Etapa 3: el campo `domain` del ledger debe ser el dominio real
+        # ("freight_logistics", "market", ...), no el string literal "domain" —
+        # así lo pueden encontrar los consumidores existentes que ya filtran
+        # por dominio real: core.learn.criterion (via verification_ledger,
+        # ruta independiente ya conectada), intents/freight_intents.py y
+        # core/self_observation/self_knowledge.py (get_by_domain(domain)).
         record(
-            "domain", "verification_outcome",
+            domain, "verification_outcome",
             f"{delta} resultado(s) verificado(s) nuevo(s) en {domain}{wr_txt}",
             evidence={"domain": domain, "new_outcomes": delta, "total": curr_count},
         )
