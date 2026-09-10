@@ -95,11 +95,13 @@ def run_learning_cycle(n_events: Optional[int] = None, provider=None,
 
 
 def _record_ledger(summary: Dict[str, Any]) -> None:
+    # Categoria: MEMORY — el ciclo ingesta/actualiza registros de la memoria
+    # gravitacional de dominio (gravity_engine) via CVE verificadas.
     try:
         from core.operator import ledger_bridge as ledger
         ledger.record_event(
             action="cyber_learning_cycle",
-            category=ledger.EventCategory.LEARNING,
+            category=ledger.EventCategory.MEMORY,
             risk_zone=ledger.RiskZone.GREEN,
             reason=(
                 f"provider={summary.get('provider')} "
@@ -108,5 +110,5 @@ def _record_ledger(summary: Dict[str, Any]) -> None:
             ),
             details=summary,
         )
-    except Exception:
-        pass  # ledger no disponible — el ciclo igual corrió
+    except Exception as exc:
+        logger.error("cyber_learning_cycle: ledger recording failed: %s", exc)

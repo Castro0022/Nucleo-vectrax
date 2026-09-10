@@ -352,11 +352,14 @@ def _append_proposal(p: Proposal) -> None:
 
 
 def _record_ledger(summary: Dict[str, Any]) -> None:
+    # Categoria: REASONING — detecta drift estadistico y genera
+    # recomendaciones de ajuste de umbral (misma clase de actividad que
+    # hypothesis_engine/decision_authority, ya taggeados REASONING).
     try:
         from core.operator import ledger_bridge as ledger
         ledger.record_event(
             action="trading_convergence_learner",
-            category=ledger.EventCategory.LEARNING,
+            category=ledger.EventCategory.REASONING,
             risk_zone=ledger.RiskZone.GREEN,
             reason=(
                 f"proposals={summary.get('proposals_generated')} "
@@ -365,5 +368,5 @@ def _record_ledger(summary: Dict[str, Any]) -> None:
             ),
             details=summary,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error("trading_convergence_learner: ledger recording failed: %s", exc)

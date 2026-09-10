@@ -198,11 +198,13 @@ def _recompute_stale_masses() -> int:
 # ---------------------------------------------------------------------------
 
 def _record_ledger(summary: Dict[str, Any]) -> None:
+    # Categoria: MEMORY — promueve patrones de dominio a estrellas de
+    # vectrax.db y recalcula masa gravitacional (mantenimiento de memoria).
     try:
         from core.operator import ledger_bridge as ledger
         ledger.record_event(
             action="gravity_sync",
-            category=ledger.EventCategory.LEARNING,
+            category=ledger.EventCategory.MEMORY,
             risk_zone=ledger.RiskZone.GREEN,
             reason=(
                 f"promoted={summary.get('patterns_promoted')} "
@@ -210,5 +212,5 @@ def _record_ledger(summary: Dict[str, Any]) -> None:
             ),
             details=summary,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error("gravity_sync: ledger recording failed: %s", exc)

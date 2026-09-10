@@ -231,11 +231,13 @@ def _count_stars_mature(domain: str, min_hits: int = 15):
 
 
 def _record_ledger(summary: Dict[str, Any]) -> None:
+    # Categoria: MEMORY — el ciclo ingesta eventos a la memoria gravitacional
+    # de dominio (gravity_engine) y eleva patrones al domain library.
     try:
         from core.operator import ledger_bridge as ledger
         ledger.record_event(
             action="freight_learning_cycle",
-            category=ledger.EventCategory.LEARNING,
+            category=ledger.EventCategory.MEMORY,
             risk_zone=ledger.RiskZone.GREEN,
             reason=(
                 f"provider={summary.get('provider')} "
@@ -245,5 +247,5 @@ def _record_ledger(summary: Dict[str, Any]) -> None:
             ),
             details=summary,
         )
-    except Exception:
-        pass  # ledger unavailable — cycle still ran
+    except Exception as exc:
+        logger.error("freight_learning_cycle: ledger recording failed: %s", exc)
