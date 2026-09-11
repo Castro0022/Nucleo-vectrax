@@ -89,6 +89,7 @@ async def ingest_event(
         domain=domain,
         event_type=event.event_type,
         data=event.data,
+        event_timestamp=event.timestamp,
     )
 
     if result.get("success"):
