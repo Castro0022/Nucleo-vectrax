@@ -73,7 +73,8 @@ _CRITERION_RE = re.compile(
     r"qu[eé]\s+(?:es|ser[ií]a)\s+mejor|cu[aá]l\s+(?:es\s+)?(?:mejor|preferir[ií]as|elegir[ií]as|recomiendas)|"
     r"prefieres|preferir[ií]as|recomiendas|recomendaci[oó]n|recomi[eé]ndame|"
     r"tu\s+criterio|seg[uú]n\s+(?:lo\s+)?(?:aprendido|observado|tu\s+experiencia)|"
-    r"qu[eé]\s+aprendiste|qu[eé]\s+(?:ves|piensas|crees)|"
+    r"qu[eé]\s+(?:aprendiste|has\s+aprendido)|what\s+have\s+you\s+learned|"
+    r"qu[eé]\s+(?:ves|piensas|crees)|"
     r"compara[rs]?|comparaci[oó]n|"
     r"por\s+qu[eé]\s+.+\bmejor\b|mejor\s+opci[oó]n|qu[eé]\s+elegir[ií]as|"
     r"vale\s+la\s+pena|deber[ií]a"
@@ -90,10 +91,11 @@ _STOPWORDS = set((
     "las le les lo los me mi mis para por que se sin so su sus te ti tu tus un una "
     "uno unos unas y ya el es son ser era como cual cuales cuando donde porque "
     "tiene tienen hay dime opinas opinion opina opinar mejor peor prefieres "
-    "preferirias recomiendas recomendacion criterio segun aprendido observado "
-    "piensas crees compara comparar comparacion elegirias vale pena deberia "
-    "sobre mas muy eso esto esa ese aquello quiero ver puede pueda "
-    "the of to for and or is are what which why how do you think best your"
+    "preferirias recomiendas recomendacion criterio segun aprendido aprendiste "
+    "observado piensas crees compara comparar comparacion elegirias vale pena "
+    "deberia sobre mas muy eso esto esa ese aquello quiero ver puede pueda has "
+    "the of to for and or is are what which why how do you think best your "
+    "have learned"
 ).split())
 
 # Indicadores de DOMINIO (no son el tema concreto de la pregunta).
@@ -173,6 +175,25 @@ def detect_criterion_request(text: str) -> bool:
     if not text:
         return False
     return bool(_CRITERION_RE.search(text))
+
+
+# Sub-caso de `detect_criterion_request`: pregunta específicamente qué ha
+# APRENDIDO Vectrax (distinto de pedir opinión genérica tipo "¿qué opinas?").
+# Se usa para decidir el comportamiento ante AUSENCIA de tema/dominio: una
+# pregunta de aprendizaje sin tema debe PEDIR el tema, no escoger el dominio
+# con más aprendizaje acumulado por su cuenta (que sí es el comportamiento
+# correcto para "¿qué opinas?" sin tema — ver DOMAIN CRITERION gate).
+_LEARNING_INQUIRY_RE = re.compile(
+    r"(?:qu[eé]\s+(?:aprendiste|has\s+aprendido)|what\s+have\s+you\s+learned)",
+    re.IGNORECASE,
+)
+
+
+def is_learning_inquiry(text: str) -> bool:
+    """True si el usuario pregunta específicamente qué ha aprendido Vectrax."""
+    if not text:
+        return False
+    return bool(_LEARNING_INQUIRY_RE.search(text))
 
 
 def known_domains() -> List[str]:

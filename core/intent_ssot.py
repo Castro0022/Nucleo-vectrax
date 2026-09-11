@@ -99,7 +99,25 @@ class IntentDecision:
                      `capability_query` añadida dentro de
                      `_gather_primary_intent_evidence()` (ver
                      `_detect_capability_query`); NO decide primary_intent
-                     ni crea un clasificador nuevo.
+                     ni crea un clasificador nuevo. Se preserva SIN CAMBIOS
+                     por el trabajo de `speech_act` (abajo): es un eje
+                     distinto, con su propio contrato ya fijado por
+                     `tests/test_intent_ssot.py`.
+    speech_act       — "query" | "action" | "" (Diseño A/B/C, Frente A).
+                     Eje ORTOGONAL a `primary_intent`/`capability_query`:
+                     distingue si el mensaje PREGUNTA por una capacidad
+                     ("¿puedes hacer X?") o SOLICITA su ejecución ("haz X").
+                     Se deriva por similitud de embeddings contra dos
+                     conjuntos de oraciones ancla que ilustran la FORMA
+                     gramatical (interrogativo-modal vs imperativo-directivo),
+                     nunca por regex ni enumeración de frases — ver
+                     `_classify_speech_act()`. "" cuando la similitud es baja
+                     o el margen entre ambas clases es insuficiente (no forzar
+                     una rama equivocada). Best-effort: al ser un clasificador
+                     probabilístico, solo se consulta en los dos puntos donde
+                     importá (gate de auto-conocimiento y verificación de
+                     ejecución de acciones); en cualquier otro lugar un valor
+                     ruidoso es inerte.
     """
     primary_intent: str
     domain: str = ""
@@ -110,6 +128,7 @@ class IntentDecision:
     conflicts: List[str] = field(default_factory=list)
     raw_signals: Dict[str, Any] = field(default_factory=dict)
     capability_query: bool = False
+    speech_act: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -122,6 +141,7 @@ class IntentDecision:
             "conflicts": self.conflicts,
             "raw_signals": self.raw_signals,
             "capability_query": self.capability_query,
+            "speech_act": self.speech_act,
         }
 
     def summary(self) -> str:
@@ -193,6 +213,130 @@ _CAPABILITY_QUESTION_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+
+
+# ---------------------------------------------------------------------------
+# speech_act (Diseño A/B/C, Frente A) — acto de habla vía similitud de
+# embeddings contra anclas gramaticales, NO regex/enumeración de frases.
+#
+# Las anclas describen la FORMA del acto de habla (interrogativo-modal vs
+# imperativo-directivo), deliberadamente SIN vocabulario específico de
+# ninguna capacidad (nada de "buscar"/"recordar"/"agenda") — así la clase se
+# aprende por construcción gramatical, no por léxico de dominio, y generaliza
+# a paráfrasis nunca vistas por cercanía semántica en el espacio de
+# embeddings, no por coincidencia de patrón. Añadir una oración nueva a estas
+# listas es "enseñar la categoría", no "agregar una variante de regex": solo
+# hace falta si aparece una FORMA gramatical genuinamente nueva.
+#
+# Umbrales expuestos por env var para calibración sin redeploy (mismo
+# patrón que `VX_SEMANTIC_DOMAIN_GATE_FLOOR`). Calibrados empíricamente
+# contra las 5 conversaciones reales diagnosticadas + los casos negativos
+# ya fijados por `tests/test_intent_ssot.py::TestCapabilityQueryNegative`.
+_SPEECH_ACT_QUERY_ANCHORS: Tuple[str, ...] = (
+    "¿puedes hacer esto?", "¿podrías hacer esto?", "¿eres capaz de esto?",
+    "¿tienes forma de lograr esto?", "¿sabrías cómo hacer esto?",
+    "¿esto lo puedes hacer?", "¿tienes esa capacidad?", "¿esto está a tu alcance?",
+    "can you do this?", "could you do this?", "are you capable of this?",
+    "is this something you can handle?", "do you know how to do this?",
+    "is this within your ability?",
+)
+_SPEECH_ACT_ACTION_ANCHORS: Tuple[str, ...] = (
+    "hazlo ahora", "hazme esto por favor", "necesito que hagas esto ya",
+    "quiero que resuelvas esto", "encárgate de esto", "ocúpate de esto por mí",
+    "ejecuta esto ahora", "procede con esto", "adelante, hazlo",
+    "ya, hazlo de una vez",
+    "búscame algo", "encuéntrame algo", "consígueme algo", "tráeme algo",
+    "resérvame algo", "avísame de algo", "anótame algo", "agéndame algo",
+    "do it now", "please do this for me",
+    "i need this done now", "take care of this for me", "go ahead and do it",
+    "handle this right away", "get this done now", "proceed with this",
+    "find me something", "get me something", "book me something",
+)
+
+# Anclas de dominio "lugar físico/comida" — describen la NECESIDAD en
+# términos genéricos ("comer algo", "un lugar", "un sitio"), nunca cocinas ni
+# verbos de búsqueda específicos, para que "quiero comer italiano cerca"
+# generalice sin que "italiano" (ni ninguna otra cocina) esté enumerada.
+_PLACE_TOPIC_ANCHORS: Tuple[str, ...] = (
+    "quiero comer algo cerca", "busco un lugar para comer",
+    "necesito encontrar un sitio para ir", "dónde puedo comer algo bueno",
+    "quiero ir a comer a algún lado", "necesito un lugar cercano para esto",
+    "busco un negocio cerca de aquí", "i want to eat something nearby",
+    "looking for a place to eat", "i need to find a spot to go",
+    "where can i get good food", "i want to go eat somewhere",
+)
+
+_SPEECH_ACT_MIN_SIM = 0.30
+_SPEECH_ACT_MARGIN = 0.01
+_PLACE_OVERRIDE_THRESHOLD = 0.58
+# primary_intent ya resueltos que son lo bastante genéricos/inespecíficos
+# como para que un override de dominio bien calibrado pueda corregirlos.
+# Nunca se sobreescribe COMMAND/MARKET/IDENTITY/AI_SINGLE/AI_MULTI (ya son
+# decisiones específicas y correctas).
+_DOMAIN_OVERRIDE_ELIGIBLE = frozenset({"online", "memory", "local", "cognitive", ""})
+
+_ANCHOR_CENTROID_CACHE: Dict[str, Any] = {}
+
+
+def _anchor_centroid(cache_key: str, anchors: Tuple[str, ...]):
+    """Centroide normalizado de un conjunto de anclas, cacheado en memoria de
+    proceso (evita re-embeder las mismas ~10-15 oraciones en cada mensaje).
+    Defensivo: propaga la excepción al llamador, que ya la captura."""
+    if cache_key in _ANCHOR_CENTROID_CACHE:
+        return _ANCHOR_CENTROID_CACHE[cache_key]
+    import numpy as np
+    from vectrax.embeddings import embed
+    vecs = [embed(a) for a in anchors]
+    centroid = np.mean(vecs, axis=0)
+    norm = np.linalg.norm(centroid)
+    if norm > 0:
+        centroid = centroid / norm
+    _ANCHOR_CENTROID_CACHE[cache_key] = centroid
+    return centroid
+
+
+def _cosine_to_anchor_set(text: str, cache_key: str, anchors: Tuple[str, ...]) -> float:
+    """Similitud coseno de `text` contra el centroide de `anchors`. 0.0 si el
+    modelo de embeddings no está disponible o falla — nunca lanza, nunca
+    bloquea la resolución de intención."""
+    try:
+        from vectrax.embeddings import embed, cosine_similarity
+        vec = embed(text)
+        centroid = _anchor_centroid(cache_key, anchors)
+        return float(cosine_similarity(vec, centroid))
+    except Exception as exc:
+        logger.debug("embedding similarity unavailable (%s): %s", cache_key, exc)
+        return 0.0
+
+
+def _classify_speech_act(text: str) -> Tuple[str, float]:
+    """(speech_act, confidence) de `text` vía similitud de embeddings.
+
+    NUNCA por regex/keywords: compara el mensaje contra dos centroides de
+    oraciones ancla (forma interrogativa-modal vs imperativa-directiva).
+    "" si la similitud máxima no alcanza el umbral mínimo, o si el margen
+    entre ambas clases es insuficiente para decidir con confianza — en ambos
+    casos es preferible no forzar una rama equivocada. Defensivo: nunca
+    lanza.
+    """
+    if not text or not text.strip():
+        return "", 0.0
+    q_sim = _cosine_to_anchor_set(text, "speech_act_query", _SPEECH_ACT_QUERY_ANCHORS)
+    a_sim = _cosine_to_anchor_set(text, "speech_act_action", _SPEECH_ACT_ACTION_ANCHORS)
+    if q_sim == 0.0 and a_sim == 0.0:
+        return "", 0.0  # embeddings no disponibles
+    best = max(q_sim, a_sim)
+    if best < _SPEECH_ACT_MIN_SIM or abs(q_sim - a_sim) < _SPEECH_ACT_MARGIN:
+        return "", best
+    return ("query", q_sim) if q_sim > a_sim else ("action", a_sim)
+
+
+def _classify_place_topic(text: str) -> float:
+    """Similitud de `text` contra el dominio "lugar físico/comida". Ver
+    `_PLACE_TOPIC_ANCHORS`. Defensivo: nunca lanza (devuelve 0.0)."""
+    if not text or not text.strip():
+        return 0.0
+    return _cosine_to_anchor_set(text, "place_topic", _PLACE_TOPIC_ANCHORS)
 
 
 def _detect_capability_query(text: str, self_ref: Optional[Any] = None) -> bool:
@@ -574,14 +718,45 @@ def resolve_intent(text: str, channel: str = "user", owner: str = "") -> IntentD
 
     # Fase 3, paso 4: capability_query se deriva de la evidencia ya
     # recolectada dentro de _gather_primary_intent_evidence() — no se
-    # recalcula aquí ni se vuelve a invocar el detector.
+    # recalcula aquí ni se vuelve a invocar el detector. Contrato SIN
+    # CAMBIOS (ver tests/test_intent_ssot.py); `speech_act` (abajo) es un
+    # eje independiente que NO redefine este booleano.
     capability_query = any(
         e.source == "self_reference_layer+capability_pattern" and e.claim == "capability_query"
         for e in intent_evidence
     )
 
+    # ══════════════════════════════════════════════════════════════════
+    # Diseño A/B/C, Frente A/B — speech_act (query/action) vía embeddings.
+    # ══════════════════════════════════════════════════════════════════
+    speech_act, speech_act_conf = _classify_speech_act(text)
+    if speech_act:
+        all_evidence.append(Evidence(
+            source="speech_act_embeddings", claim=speech_act,
+            confidence=round(speech_act_conf, 4),
+        ))
+
+    # Override de dominio "place_search" (Frente B, 5.3-5.4): permite que
+    # "quiero comer italiano cerca" resuelva a place_search aunque no
+    # contenga ningún verbo de búsqueda ni la palabra "restaurante" — sin
+    # enumerar cocinas. Solo se aplica sobre primary_intent genéricos
+    # (nunca sobre COMMAND/MARKET/IDENTITY/PLACE_SEARCH ya decidido/etc.).
+    final_primary_intent = primary_intent or ""
+    if final_primary_intent in _DOMAIN_OVERRIDE_ELIGIBLE:
+        place_sim = _classify_place_topic(text)
+        if place_sim >= _PLACE_OVERRIDE_THRESHOLD:
+            all_evidence.append(Evidence(
+                source="place_topic_embeddings", claim="place_search",
+                confidence=round(place_sim, 4),
+            ))
+            final_primary_intent = "place_search"
+            conflicts.append(
+                f"primary_intent: place_topic override ({final_primary_intent}, "
+                f"sim={place_sim:.2f}) sobre '{primary_intent or '(vacío)'}'"
+            )
+
     decision = IntentDecision(
-        primary_intent=primary_intent or "",
+        primary_intent=final_primary_intent,
         domain=domain,
         task_type=task_type,
         voice_intent=voice_intent,
@@ -590,6 +765,7 @@ def resolve_intent(text: str, channel: str = "user", owner: str = "") -> IntentD
         conflicts=conflicts,
         raw_signals=raw_signals or {},
         capability_query=capability_query,
+        speech_act=speech_act,
     )
     logger.info("resolve_intent: %s", decision.summary())
     return decision

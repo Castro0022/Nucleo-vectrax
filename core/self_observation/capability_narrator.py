@@ -27,8 +27,14 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from core.orchestration.bootstrap import HEALTH_AVAILABLE, HEALTH_DEGRADED, HEALTH_UNAVAILABLE
 from core.self_observation.capability_context import CapabilityContext, CapabilityEntry
+from core.self_observation.capability_status import (
+    DETAIL_DEGRADED,
+    DETAIL_READY,
+    DETAIL_UNAUTHORIZED,
+    DETAIL_UNAVAILABLE,
+    derive_detail,
+)
 
 _DEFAULT_LANG = "es"
 
@@ -85,30 +91,23 @@ def _join_names(names: List[str], lang: str) -> str:
 
 
 def _classify_single(entry: CapabilityEntry) -> str:
-    """Clasifica UNA entrada en exactamente una de 4 categorías, derivadas
-    ÚNICAMENTE de los campos compuestos del contrato — nunca se colapsan a
-    una sola etiqueta antes de esta clasificación final:
-      - "unavailable": no existe, no conectada, o health=UNAVAILABLE.
-      - "degraded": conectada pero health=DEGRADED.
-      - "unauthorized": conectada + disponible (health=AVAILABLE) pero
-        authorized=False — la combinación compuesta que un enum único
-        perdería.
-      - "ready": existe, conectada, disponible y autorizada.
+    """Clasifica UNA entrada en exactamente una de 4 categorías
+    (unavailable/degraded/unauthorized/ready), derivadas ÚNICAMENTE de los
+    campos compuestos del contrato.
+
+    NO reimplementa la regla: delega en
+    `capability_status.derive_detail()`, que es la única fuente de verdad de
+    cómo se clasifica una capacidad (y de la que se derivan también las tres
+    categorías confirmada/sin-confirmar/condicional que ve el usuario). Así el
+    narrador y el auto-contexto nunca pueden divergir.
     """
-    if not entry.exists or not entry.connected or entry.health == HEALTH_UNAVAILABLE:
-        return "unavailable"
-    if entry.health == HEALTH_DEGRADED:
-        return "degraded"
-    if not entry.authorized:
-        return "unauthorized"
-    if entry.health == HEALTH_AVAILABLE and entry.authorized:
-        return "ready"
-    return "unavailable"  # combinación inesperada -> honesto por defecto
+    return derive_detail(entry)
 
 
 def _categorize(entries: List[CapabilityEntry]) -> Dict[str, List[CapabilityEntry]]:
     buckets: Dict[str, List[CapabilityEntry]] = {
-        "ready": [], "unauthorized": [], "degraded": [], "unavailable": [],
+        DETAIL_READY: [], DETAIL_UNAUTHORIZED: [],
+        DETAIL_DEGRADED: [], DETAIL_UNAVAILABLE: [],
     }
     for entry in entries:
         buckets[_classify_single(entry)].append(entry)
@@ -118,7 +117,9 @@ def _categorize(entries: List[CapabilityEntry]) -> Dict[str, List[CapabilityEntr
 def _describe_gaps(lang: str, gaps: List[CapabilityEntry]) -> str:
     if not gaps:
         return ""
-    buckets: Dict[str, List[str]] = {"unavailable": [], "degraded": [], "unauthorized": []}
+    buckets: Dict[str, List[str]] = {
+        DETAIL_UNAVAILABLE: [], DETAIL_DEGRADED: [], DETAIL_UNAUTHORIZED: [],
+    }
     for entry in gaps:
         category = _classify_single(entry)
         if category in buckets:
@@ -129,7 +130,7 @@ def _describe_gaps(lang: str, gaps: List[CapabilityEntry]) -> str:
     # Orden estable (no depende de dict ordering accidental): unavailable
     # primero (lo más severo: ni conecta), luego degraded, luego
     # unauthorized (existe y funciona, solo falta permiso).
-    for category in ("unavailable", "degraded", "unauthorized"):
+    for category in (DETAIL_UNAVAILABLE, DETAIL_DEGRADED, DETAIL_UNAUTHORIZED):
         names = buckets[category]
         if names:
             parts.append(templates[category].format(names=_join_names(names, lang)))
@@ -171,7 +172,7 @@ def narrate(context: CapabilityContext, lang: str = _DEFAULT_LANG) -> str:
 
     buckets = _categorize(context.entries)
     summary = _SUMMARY_TEMPLATE[lang].format(
-        ready=len(buckets["ready"]), total=len(context.entries),
+        ready=len(buckets[DETAIL_READY]), total=len(context.entries),
     )
 
     sentences = [summary]

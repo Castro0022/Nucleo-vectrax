@@ -390,6 +390,64 @@ def add_task(
         return None
 
 
+def add_task_structured(
+    user_id: str,
+    chat_id: int,
+    content: str,
+    when_text: str,
+    tz: str = "America/New_York",
+) -> Optional[Dict[str, Any]]:
+    """Crea una tarea programada a partir de parámetros YA estructurados
+    (Diseño A/B/C, Frente C): `content` es el texto del recordatorio, ya sin
+    ruido conversacional; `when_text` es la expresión temporal en lenguaje
+    natural tal como la escribió el usuario ("mañana", "el viernes a las
+    7am", "en 30 minutos").
+
+    Reutiliza `parse_schedule()` ÚNICAMENTE para resolver FECHA/HORA a partir
+    de `when_text` — eso sigue siendo NLP de fecha legítimo ("mañana" →
+    timestamp), no interpretación de mensaje conversacional completo. NUNCA
+    vuelve a extraer el texto del recordatorio desde `when_text`/`content`
+    vía `_extract_reminder_text()` — `content` se usa tal cual.
+    """
+    parsed = parse_schedule(when_text, tz=tz) or {}
+    schedule_type = parsed.get("schedule_type", "once")
+    next_run = parsed.get("next_run") or (time.time() + 86400)
+    time_expr = parsed.get("time_expr", "09:00")
+    days_of_week = parsed.get("days_of_week", "")
+    action_type = parsed.get("action_type", "reminder")
+    message = (content or "").strip() or parsed.get("message") or "\u23f0 Recordatorio"
+    original_text = f"{content} | {when_text}".strip(" |")
+
+    try:
+        db = _conn()
+        db.execute(
+            """INSERT INTO scheduled_tasks
+               (user_id, chat_id, action_type, message, original_text,
+                schedule_type, time_expr, days_of_week, next_run, timezone, enabled, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,1,?)""",
+            (
+                user_id, chat_id, action_type, message,
+                original_text, schedule_type, time_expr,
+                days_of_week, next_run, tz, time.time(),
+            ),
+        )
+        task_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.commit()
+        db.close()
+        return {
+            "id": task_id,
+            "action_type": action_type,
+            "message": message,
+            "schedule_type": schedule_type,
+            "time_expr": time_expr,
+            "days_of_week": days_of_week,
+            "next_run": next_run,
+        }
+    except Exception as exc:
+        logger.error("add_task_structured failed: %s", exc)
+        return None
+
+
 def list_tasks(user_id: str) -> List[Dict[str, Any]]:
     """List active tasks for a user."""
     try:
