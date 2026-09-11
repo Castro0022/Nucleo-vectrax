@@ -1796,7 +1796,15 @@ class ExternalGateway:
                             noise=0.1,
                             law_signal=_ls,
                         )
-                        get_observer().evaluate(_law_em)
+                        _pp_record = get_observer().evaluate(_law_em)
+                        # Guardar el outcome_id para cerrar el ciclo de
+                        # ConvergenceLearner más abajo, tras el Response
+                        # Auditor (única señal real de resultado posterior
+                        # disponible en este mismo flujo — ver record_outcome
+                        # más abajo). Non-fatal: getattr defensivo.
+                        _pp_outcome_id = getattr(
+                            _pp_record, "learner_outcome_id", None
+                        )
                         logger.info(
                             "Pipeline: law_signal → PresenciaObserver | %s",
                             _ls.summary(),
@@ -1918,6 +1926,34 @@ class ExternalGateway:
                 _audit_passed = not _audit_rewritten
             except Exception as exc:
                 logger.debug("Response auditor failed (passthrough): %s", exc)
+
+        # ── CONVERGENCE LEARNER — cerrar ciclo observar→aprender ──────────
+        # Si PresenciaObserver evaluó una violación de leyes más arriba y
+        # generó un outcome_id, el Response Auditor (justo encima) es la
+        # única señal real e independiente de "resultado posterior" ya
+        # disponible en este flujo: si tuvo que reescribir la respuesta,
+        # es evidencia real de degradación; si no, no se fabrica una
+        # mejora — se registra NEUTRAL (ausencia de problema detectado).
+        # Non-fatal, no bloquea ni altera la respuesta.
+        if locals().get("_pp_outcome_id"):
+            try:
+                from core.nucleus.convergence_learner import (
+                    get_learner, OutcomeQuality,
+                )
+                _pp_quality = (
+                    OutcomeQuality.DEGRADED if _audit_rewritten
+                    else OutcomeQuality.NEUTRAL
+                )
+                get_learner().record_outcome(
+                    _pp_outcome_id,
+                    _pp_quality,
+                    detail=(
+                        "response_auditor_rewrote" if _audit_rewritten
+                        else "response_auditor_passed"
+                    ),
+                )
+            except Exception as _cl_exc:
+                logger.debug("ConvergenceLearner record_outcome failed (non-fatal): %s", _cl_exc)
 
         # ── POINT C: Presence Policy — filtrar genérico, comprimir abstracto ─
         # Fase 4: excluida para respuestas grounded — su filtro léxico

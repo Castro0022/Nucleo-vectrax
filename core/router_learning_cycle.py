@@ -1,11 +1,14 @@
 """
-Vectrax Router Learning Cycle — Ciclo de Aprendizaje Continuo
-===============================================================
+Vectrax Router Learning Cycle — Ciclo de Aprendizaje Bajo Demanda
+===================================================================
 Observa decisiones del router, detecta conflictos recurrentes entre
 semántico y regex, analiza pesos entre capas, y genera propuestas
 concretas de mejora.
 
-Modo: OBSERVACIÓN + PROPUESTA CONTINUA.
+Modo: ON-DEMAND — no tiene loop ni scheduler propio. Se invoca
+manualmente vía `vx router-learn cycle` (CLI, ver cli/vx_main.py) o
+programáticamente llamando a `run_cycle()` (requiere `activate()`
+previo; confirmado por auditoría real contra producción, Corte 3).
 NUNCA aplica cambios sin aprobación del creador.
 
 Integra:
@@ -86,9 +89,12 @@ class LearningProposal:
 
 class RouterLearningCycle:
     """
-    Ciclo de aprendizaje continuo del router.
+    Ciclo de aprendizaje bajo demanda del router (ON-DEMAND, no continuo).
 
     Observa, detecta patrones, y genera propuestas sin aplicar cambios.
+    No hay ningún scheduler ni loop que invoque run_cycle() automáticamente;
+    cada ciclo debe dispararse explícitamente (CLI `vx router-learn cycle`
+    o llamada directa).
 
     Usage::
 
@@ -115,7 +121,7 @@ class RouterLearningCycle:
     # =====================================================================
 
     def activate(self) -> Dict[str, Any]:
-        """Activate continuous learning cycle."""
+        """Activate the on-demand learning cycle (enables run_cycle() to act)."""
         from core import state_manager
         state = state_manager.load()
         prev = state.get("router_learning_mode", "inactive")
@@ -126,7 +132,7 @@ class RouterLearningCycle:
         return {"previous_mode": prev, "new_mode": "active"}
 
     def deactivate(self) -> Dict[str, Any]:
-        """Deactivate continuous learning cycle."""
+        """Deactivate the on-demand learning cycle (run_cycle() becomes a no-op)."""
         from core import state_manager
         state = state_manager.load()
         prev = state.get("router_learning_mode", "inactive")

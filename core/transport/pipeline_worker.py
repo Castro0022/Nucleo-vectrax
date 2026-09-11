@@ -1188,6 +1188,7 @@ def run_worker() -> None:
     # abajo) — evita que estos ciclos disparen MAIN_LOOP_WATCHDOG.
     last_gravity_sync  = _startup  # gravity index → vectrax.db sync (every 6h)
     last_trading_conv  = _startup  # trading convergence learner (every 24h)
+    last_active_learning = _startup  # ActiveLearningOrchestrator.run_cycle() (every 30 min)
     last_mem_check = _startup  # memory watchdog
     last_stuck_recovery = _startup  # stuck processing recovery
 
@@ -1402,6 +1403,48 @@ def run_worker() -> None:
             # por encima de MAIN_LOOP_WATCHDOG_TIMEOUT (60s), causando
             # os._exit(1) cada ~6h sin completar un solo ciclo. Ver auditoría
             # E2E 2026-09-02.
+
+            # Active Learning cycle — conecta run_cycle() del orchestrator ya
+            # existente (core/learn/active_learning.py), huérfano hasta ahora
+            # (sin invocador de producción). Reutiliza _run_bounded() (mismo
+            # helper ya usado por freight/real_estate/cyber) en vez del patrón
+            # `with ThreadPoolExecutor() as pool:` de market_learning_cycle,
+            # que bloquea en __exit__ pese al timeout (ver comentario arriba).
+            # is_active() es el propio guard del orchestrator (state_manager
+            # learning_mode==ACTIVE_LEARNING) — si no está activo, run_cycle()
+            # es un no-op inmediato. Cadencia: no existe una frecuencia
+            # específica ya definida para este motor; se reutiliza la misma
+            # (30 min) que market_learning_cycle por ser el ciclo periodico
+            # analogo mas cercano ya establecido en este loop.
+            try:
+                _ACTIVE_LEARNING_INTERVAL = 1800  # 30 min
+                _ACTIVE_LEARNING_TIMEOUT = 60      # max 60s for the whole cycle
+                if time.time() - last_active_learning > _ACTIVE_LEARNING_INTERVAL:
+                    from core.learn.active_learning import get_orchestrator
+                    _al_orch = get_orchestrator()
+                    if _al_orch.is_active():
+                        _al_result, _al_timed_out = _run_bounded(
+                            _al_orch.run_cycle,
+                            _ACTIVE_LEARNING_TIMEOUT,
+                            pool_name="active_learning",
+                        )
+                        if _al_timed_out:
+                            logger.warning(
+                                "ACTIVE_LEARNING_TIMEOUT | cycle exceeded %ds",
+                                _ACTIVE_LEARNING_TIMEOUT,
+                            )
+                        elif _al_result and not _al_result.get("skipped"):
+                            logger.info(
+                                "Active learning: patterns=%d hyp=%d rules=%d %.2fs",
+                                _al_result.get("patterns_detected", 0),
+                                _al_result.get("hypotheses_generated", 0),
+                                _al_result.get("rules_promoted", 0),
+                                _al_result.get("elapsed_seconds", 0),
+                            )
+                    last_active_learning = time.time()
+            except Exception as _al_exc:
+                logger.debug("Active learning cycle error (passthrough): %s", _al_exc)
+                last_active_learning = time.time()
 
             # Gravity sync — mature domain patterns → vectrax.db stars + mass recompute (every 6h)
             # Bridges the two star systems: gravity_index.json → visual universe.
