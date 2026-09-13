@@ -39,6 +39,7 @@ from typing import Optional
 from core.operator.read_tool_intent import (
     ReadFileRequest,
     SymbolLookupRequest,
+    is_protected_path,
     parse_read_file_request,
     parse_symbol_lookup_request,
 )
@@ -213,7 +214,10 @@ def _resolve_symbol_location(
         root = os.path.abspath(_PROJECT_ROOT)
         if not (abs_path == root or abs_path.startswith(root + os.sep)):
             return None  # nunca fuera del sandbox ya autorizado
-        return os.path.relpath(abs_path, root)
+        rel = os.path.relpath(abs_path, root)
+        if is_protected_path(rel):
+            return None  # defensa en profundidad, misma denylist que el parser
+        return rel
     except Exception as exc:
         logger.debug("read_tool_bridge: symbol resolution failed: %s", exc)
         return None

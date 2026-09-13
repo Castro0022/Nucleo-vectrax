@@ -1236,18 +1236,26 @@ class ExternalGateway:
             logger.debug("Self-reference layer failed (passthrough): %s", _sr_exc)
 
         # ══════════════════════════════════════════════════════════════
-        # STEP 4.2a2b: PUENTE A — READ_ONLY tool bridge (2026-09-13)
+        # STEP 4.2a2b: PUENTE A — READ_ONLY tool bridge (2026-09-13, abierto a
+        # todos los usuarios el mismo día tras validación end-to-end real en
+        # Telegram con el creador)
         # Usuario → Intent determinista → Capability gate → local_filesystem.read
-        # → evidencia → respuesta. Gateado por VX_TOOL_BRIDGE_READ_ONLY (default
-        # OFF) y restringido al creador en esta primera versión — superficie de
-        # ataque mínima mientras se valida Puente A. El LLM NUNCA decide qué
-        # herramienta existe (eso ya lo decidió el parser determinista de
-        # read_tool_intent.py); solo puede redactar tono sobre la evidencia real
-        # leida, con anclaje estricto (ver read_tool_bridge._compose_grounded_response).
+        # → evidencia → respuesta. Gateado Únicamente por VX_TOOL_BRIDGE_READ_ONLY
+        # (default OFF). Ya NO restringido al creador — la restricción
+        # creator-only de la primera versión se retiró tras validar en
+        # producción; los bléindajes que protegen esta apertura NO dependen de
+        # quién pregunta, sino del propio Puente A: `_safe_path()` (sandbox al
+        # repo), `is_protected_path()` (deniega .env/vault/keys/secrets/.git/
+        # .ssh aunque tengan extensión permitida), la whitelist de extensiones
+        # de texto, y el permiso "read" único otorgado al connector (nunca
+        # "write"). El LLM NUNCA decide qué herramienta existe (eso ya lo
+        # decidió el parser determinista de read_tool_intent.py); solo puede
+        # redactar tono sobre la evidencia real leida, con anclaje estricto
+        # (ver read_tool_bridge._compose_grounded_response).
         # ══════════════════════════════════════════════════════════════
         _domain_resolved = False
         _domain_source = ""
-        if not response_text and _is_creator_uid(user_id):
+        if not response_text:
             _rtb_t0 = time.perf_counter()
             try:
                 from core.operator.read_tool_bridge import is_enabled as _rtb_enabled

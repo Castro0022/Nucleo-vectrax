@@ -77,6 +77,29 @@ def _is_allowed_extension(path: str) -> bool:
     return any(lowered.endswith(ext) for ext in ALLOWED_TEXT_EXTENSIONS)
 
 
+# Directorios/archivos SIEMPRE protegidos, aunque estén dentro del sandbox
+# del repo (`_safe_path()` solo impide ESCAPAR de la raíz, no impide leer
+# secretos que viven DENTRO de ella) y aunque tengan una extensión permitida
+# (p.ej. "keys/api_key.json" tiene extensión .json permitida pero NUNCA debe
+# ser legible). Comparación por SEGMENTO de ruta completo (no substring), para
+# no bloquear coincidencias parciales legítimas como "vault_docs/README.md".
+PROTECTED_PATH_SEGMENTS = frozenset({
+    "vault", "keys", "secrets", ".git", ".ssh", ".env", ".venv",
+})
+
+
+def is_protected_path(path: str) -> bool:
+    """True si `path` toca un directorio/archivo protegido en cualquier
+    segmento de la ruta. Fail-closed: ante cualquier error, se considera
+    protegida (nunca se abre por duda). Reutilizada por read_tool_bridge.py
+    para la resolución por símbolo — fuente única de la denylist."""
+    try:
+        parts = [p.lower() for p in path.replace("\\", "/").split("/") if p]
+        return any(p in PROTECTED_PATH_SEGMENTS for p in parts)
+    except Exception:
+        return True
+
+
 def parse_read_file_request(text: str) -> Optional[ReadFileRequest]:
     """Detecta el patrón "abre/lee <path> [y dime qué hace <symbol>]".
 
@@ -101,6 +124,8 @@ def parse_read_file_request(text: str) -> Optional[ReadFileRequest]:
         # validación real y autoritativa sigue siendo _safe_path(), esto
         # es solo una señal de confianza adicional para el parser.
         if path.startswith("/") or path.startswith("~") or ".." in path:
+            return None
+        if is_protected_path(path):
             return None
 
         symbol: Optional[str] = None

@@ -7,11 +7,19 @@ Covers:
      normal conversation / self-aware / domain questions.
   2. Path traversal and absolute paths rejected before touching the connector.
   3. Non-text extensions rejected before touching the connector.
-  4. Capability gate: only READ_ONLY + healthy + connected authorizes.
-  5. Happy path against a real fixture file: exactly one read() call tracked,
+  4. Protected paths (.env, vault/, keys/, secrets/, .git/, .ssh/) rejected
+     even when the extension is otherwise allowed (2026-09-13, promotion to
+     all users).
+  5. Capability gate: only READ_ONLY + healthy + connected authorizes.
+  6. Happy path against a real fixture file: exactly one read() call tracked,
      zero write() calls, response contains real file content.
-  6. Flag OFF (default) → external_gateway behavior unchanged.
-  7. Non-creator with flag ON → bridge does not activate.
+  7. Flag OFF (default) → external_gateway behavior unchanged.
+
+Nota (2026-09-13): la restricción creator-only de la primera versión de
+Puente A se retiró tras validación end-to-end real en producción —
+resolve_file_read() nunca aplicó ese gate a nivel de módulo (siempre vivió
+en external_gateway.py); ver TestSymbolLookupResolution para el test que
+documenta ese límite.
 """
 from __future__ import annotations
 
@@ -25,6 +33,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.operator.read_tool_intent import (  # noqa: E402
+    is_protected_path,
     parse_read_file_request,
     parse_symbol_lookup_request,
 )
@@ -71,6 +80,28 @@ class TestParseReadFileRequest(unittest.TestCase):
     def test_rejects_absolute_path(self):
         self.assertIsNone(parse_read_file_request("abre /etc/passwd.py"))
         self.assertIsNone(parse_read_file_request("abre ~/secrets.py"))
+
+    def test_rejects_protected_paths_even_with_allowed_extension(self):
+        """Regresión crítica (promoción a todos los usuarios, 2026-09-13):
+        .json/.yaml/.txt SON extensiones permitidas, pero rutas dentro de
+        directorios protegidos deben rechazarse igual — _safe_path() solo
+        impide ESCAPAR del repo, no impide leer secretos que viven DENTRO."""
+        self.assertIsNone(parse_read_file_request("abre .env"))
+        self.assertIsNone(parse_read_file_request("lee .env"))
+        self.assertIsNone(parse_read_file_request("abre keys/api_key.json"))
+        self.assertIsNone(parse_read_file_request("lee secrets/token.json"))
+        self.assertIsNone(parse_read_file_request("abre keys/config.yaml"))
+        self.assertIsNone(parse_read_file_request("muéstrame vault/config.txt"))
+        self.assertIsNone(parse_read_file_request("abre .git/config"))
+        self.assertIsNone(parse_read_file_request("lee .ssh/id_rsa.txt"))
+
+    def test_does_not_block_legitimate_lookalike_names(self):
+        """La denylist compara por SEGMENTO completo de ruta, no substring —
+        un directorio real que solo CONTIENE la palabra protegida como
+        prefijo/sufijo no debe bloquearse falsamente."""
+        r = parse_read_file_request("abre vault_docs/README.md")
+        self.assertIsNotNone(r)
+        self.assertEqual(r.path, "vault_docs/README.md")
 
 
 class TestParseSymbolLookupRequest(unittest.TestCase):
@@ -273,9 +304,26 @@ class TestSymbolLookupResolution(unittest.TestCase):
         self.assertNotEqual(result, "")
 
 
+class TestIsProtectedPath(unittest.TestCase):
+    def test_flags_sensitive_segments(self):
+        for p in (
+            ".env", "vault/foo.json", "keys/bar.yaml", "secrets/baz.txt",
+            ".git/config", ".ssh/id_rsa.txt", "a/b/vault/c.json",
+        ):
+            self.assertTrue(is_protected_path(p), p)
+
+    def test_allows_lookalike_names(self):
+        for p in ("vault_docs/README.md", "my_keys_util.py", "secretsauce.py"):
+            self.assertFalse(is_protected_path(p), p)
+
+
 class TestExternalGatewayIntegration(unittest.TestCase):
     """Flag OFF (default) must leave existing behavior byte-for-byte
-    unchanged; non-creator with flag ON must not activate the bridge."""
+    unchanged. Puente A is open to ALL users (2026-09-13) — the creator-only
+    restriction from the first version was removed after end-to-end
+    production validation; safety now rests entirely on _safe_path(),
+    is_protected_path(), the extension whitelist, and read-only permissions
+    — none of which depend on who is asking."""
 
     def test_flag_off_by_default(self):
         from core.operator import read_tool_bridge as rtb
@@ -287,6 +335,19 @@ class TestExternalGatewayIntegration(unittest.TestCase):
             self.assertTrue(rtb.is_enabled())
         with patch.dict(os.environ, {"VX_TOOL_BRIDGE_READ_ONLY": "0"}):
             self.assertFalse(rtb.is_enabled())
+
+    def test_gateway_no_longer_gates_on_creator_uid(self):
+        """Verificación estática de que el STEP de Puente A en
+        external_gateway.py ya no condiciona su activación a
+        _is_creator_uid(user_id) — evita una regresión silenciosa si alguien
+        reintroduce el gate accidentalmente."""
+        import inspect
+        from core.operator import external_gateway
+        src = inspect.getsource(external_gateway.ExternalGateway._do_receive_message)
+        start = src.index("PUENTE A")
+        end = src.index("DOMAIN CRITERION GATE")
+        step_src = src[start:end]
+        self.assertNotIn("_is_creator_uid", step_src)
 
 
 if __name__ == "__main__":
