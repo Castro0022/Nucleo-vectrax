@@ -216,8 +216,24 @@ class CycleObserver:
         obs.commit()   # persiste y dispara learning si hay fallos
     """
 
-    def __init__(self, channel: str = "telegram", user_tier: str = "free") -> None:
-        self._cycle = OperationalCycle(channel=channel, user_tier=user_tier)
+    def __init__(
+        self,
+        channel: str = "telegram",
+        user_tier: str = "free",
+        cycle_id: str = "",
+    ) -> None:
+        # cycle_id (auditoría 2026-09-11/13): si el caller ya tiene un
+        # correlation_id para esta request (external_gateway.py), lo
+        # reutiliza como id de este ciclo en vez de generar uno nuevo
+        # desconectado — permite unir op_cycles.db con el resto de la
+        # telemetría (ledger, router_activation.jsonl) por el mismo ID.
+        # Si se omite, se genera uno nuevo (comportamiento previo).
+        if cycle_id:
+            self._cycle = OperationalCycle(
+                id=cycle_id, channel=channel, user_tier=user_tier,
+            )
+        else:
+            self._cycle = OperationalCycle(channel=channel, user_tier=user_tier)
         self._act_start: float = 0.0
 
     # -- Pasos del ciclo ---------------------------------------------------

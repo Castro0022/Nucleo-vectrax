@@ -436,7 +436,7 @@ def _stage_timer(name: str, msg_id: str):
     return _timer()
 
 
-def _gw_worker(_q, _uid, _content, _channel):
+def _gw_worker(_q, _uid, _content, _channel, _mid=None):
     """Subprocess entry for the external_gateway stage (Linux/fork path).
 
     MODULE-LEVEL (not nested inside _process_one) so it stays picklable under
@@ -446,11 +446,21 @@ def _gw_worker(_q, _uid, _content, _channel):
     every reply fall back to graceful degradation. On macOS the in-process path
     in _process_one is used instead (spawn would also cold-import
     torch/embeddings per message).
+
+    _mid: id de mensaje de la cola (auditoría 2026-09-11/13, Gap 3). Se
+    propaga como correlation_id para que toda la telemetría interna del
+    gateway (ledger, router_activation.jsonl, op_cycles.db) use el MISMO
+    identificador que ya aparece en los logs de este worker (msg.id),
+    permitiendo trazar una request de extremo a extremo. Puramente
+    observacional — no cambia el resultado devuelto.
     """
     try:
         from core.operator.external_gateway import ExternalGateway
         _gw = ExternalGateway()
-        _r = _gw.receive_message(user_id=_uid, content=_content, channel=_channel)
+        _r = _gw.receive_message(
+            user_id=_uid, content=_content, channel=_channel,
+            correlation_id=_mid,
+        )
         _q.put({
             "response": _r.response,
             "source": _r.source,
@@ -573,11 +583,18 @@ def _process_one(msg):
                         user_id=msg.user_id,
                         content=msg.content,
                         channel=msg.channel,
+                        # Gap 3 (auditoría 2026-09-11/13): msg.id pasa a ser
+                        # el correlation_id usado dentro del gateway, en vez
+                        # de generarse uno nuevo desconectado. Con esto,
+                        # msg.id (ya presente en todos los logs de este
+                        # worker) es el MISMO id que aparece en el ledger,
+                        # router_activation.jsonl y op_cycles.db.
+                        correlation_id=msg.id,
                     )
                     result = _gw_future.result(timeout=GATEWAY_TIMEOUT)
                 except _TEg:
                     logger.warning(
-                        "GW_TIMEOUT %s | external_gateway exceeded %.0fs (in-process)",
+                        "GW_TIMEOUT correlation_id=%s | external_gateway exceeded %.0fs (in-process)",
                         msg.id, GATEWAY_TIMEOUT,
                     )
                     result = None
@@ -593,7 +610,10 @@ def _process_one(msg):
                     _result_q = _mp.Queue(maxsize=1)
                     _proc = _mp.Process(
                         target=_gw_worker,
-                        args=(_result_q, msg.user_id, msg.content, msg.channel),
+                        # Gap 3 (auditoría 2026-09-11/13): msg.id viaja como
+                        # _mid -> correlation_id, mismo motivo que en la rama
+                        # macOS de arriba.
+                        args=(_result_q, msg.user_id, msg.content, msg.channel, msg.id),
                         daemon=True,
                     )
                     _proc.start()
@@ -602,7 +622,7 @@ def _process_one(msg):
                     if _proc.is_alive():
                         # Process hung — kill it for real
                         logger.warning(
-                            "GW_TIMEOUT %s | external_gateway exceeded %.0fs — killing subprocess PID %d",
+                            "GW_TIMEOUT correlation_id=%s | external_gateway exceeded %.0fs — killing subprocess PID %d",
                             msg.id, GATEWAY_TIMEOUT, _proc.pid,
                         )
                         _proc.kill()

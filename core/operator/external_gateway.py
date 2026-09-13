@@ -375,6 +375,7 @@ class ExternalGateway:
         user_id: str,
         content: str,
         channel: str = DEFAULT_CHANNEL,
+        correlation_id: Optional[str] = None,
     ) -> GatewayResult:
         """Recibe un mensaje externo y lo procesa a través del bus.
 
@@ -384,8 +385,18 @@ class ExternalGateway:
         produced the response (greeting, intake, store, full pipeline, ...).
         This keeps the stat consistent across every return path instead of
         only the full-pipeline one.
+
+        Args:
+            correlation_id: si el caller ya tiene un identificador para este
+                mensaje (p.ej. el `id` de la cola en pipeline_worker.py),
+                pasándolo aquí evita generar uno nuevo desconectado —
+                permite trazar la request de extremo a extremo con el mismo
+                ID en logs, ledger, router_activation.jsonl y op_cycles.db.
+                Si se omite, se genera uno nuevo (comportamiento previo).
         """
-        result = self._do_receive_message(user_id, content, channel)
+        result = self._do_receive_message(
+            user_id, content, channel, correlation_id=correlation_id,
+        )
         if getattr(result, "processed", False):
             self._total_responded += 1
 
@@ -629,6 +640,7 @@ class ExternalGateway:
         user_id: str,
         content: str,
         channel: str = DEFAULT_CHANNEL,
+        correlation_id: Optional[str] = None,
     ) -> GatewayResult:
         """
         Procesa un mensaje externo a través del bus (implementación).
@@ -637,12 +649,25 @@ class ExternalGateway:
             user_id: Identificador del usuario externo.
             content: Contenido del mensaje.
             channel: Canal de origen (web, telegram, api, webhook, custom).
+            correlation_id: ID externo a reutilizar (ver receive_message()).
+                Si es falsy, se genera uno nuevo como antes.
 
         Returns:
             GatewayResult con la respuesta del sistema.
         """
         ts = time.time()
-        correlation_id = uuid.uuid4().hex[:12]
+        if not correlation_id:
+            correlation_id = uuid.uuid4().hex[:12]
+
+        # Observabilidad (Gap 4 auditoría 2026-09-11/13): el correlation_id
+        # nunca aparecía en texto legible de log — solo en payloads/JSONL/DB.
+        # Esta línea es lo primero que permite "grep" un correlation_id en
+        # worker.log y saber que la request arrancó aquí. No cambia ningún
+        # comportamiento, solo observa.
+        logger.info(
+            "Pipeline: request received | correlation_id=%s | user=%s | channel=%s",
+            correlation_id, user_id[:20] if user_id else "", channel,
+        )
 
         # Validar canal
         if channel not in ALLOWED_CHANNELS:
@@ -690,7 +715,9 @@ class ExternalGateway:
                 _user_tier = get_tier(user_id).value
             except Exception:
                 pass
-            _cycle_obs = CycleObserver(channel=channel, user_tier=_user_tier)
+            _cycle_obs = CycleObserver(
+                channel=channel, user_tier=_user_tier, cycle_id=correlation_id,
+            )
         except Exception:
             pass
 
@@ -2738,7 +2765,20 @@ class ExternalGateway:
                 # Fallback explícito a ONLINE cuando Places falla
                 logger.info("Pipeline: PLACE SEARCH empty, falling back to ONLINE")
                 from vectrax.resolver import resolve_online
+                _online_t0 = time.perf_counter()
                 resolution = resolve_online(content, internal_channel, user_id)
+                try:
+                    from core.observability.router_activation import (
+                        record_activate as _rec_online,
+                    )
+                    if act_log is not None:
+                        _rec_online(
+                            act_log, "online_search",
+                            reason="places_to_online",
+                            latency_ms=(time.perf_counter() - _online_t0) * 1000.0,
+                        )
+                except Exception:
+                    pass
                 answer = resolution.sovereign_answer or resolution.answer or ""
                 resolve_mode = "places_to_online"
                 if answer:
@@ -2837,7 +2877,7 @@ class ExternalGateway:
                     )
                     answer = self._generate_cognitive_response(
                         content, user_id, internal_channel, "",
-                        extra_context=extra_context,
+                        extra_context=extra_context, act_log=act_log,
                     )
                     resolve_mode = "llm"
                     if answer:
@@ -2891,7 +2931,7 @@ class ExternalGateway:
                     # Generar via LLM con el contexto disponible
                     answer = self._generate_cognitive_response(
                         content, user_id, internal_channel, "",
-                        extra_context=extra_context,
+                        extra_context=extra_context, act_log=act_log,
                     )
                     resolve_mode = "llm"
                     if answer:
@@ -2906,7 +2946,21 @@ class ExternalGateway:
                     # como última opción (no perder respuesta).
 
                 from vectrax.resolver import resolve_online
+                _online_t0 = time.perf_counter()
                 resolution = resolve_online(content, internal_channel, user_id)
+                try:
+                    from core.observability.router_activation import (
+                        record_activate as _rec_online,
+                    )
+                    if act_log is not None:
+                        _rec_online(
+                            act_log, "online_search",
+                            reason="resolve_online",
+                            latency_ms=(time.perf_counter() - _online_t0) * 1000.0,
+                            engines_used=getattr(resolution, "engines_used", None),
+                        )
+                except Exception:
+                    pass
                 answer = resolution.sovereign_answer or resolution.answer or ""
                 resolve_mode = "online"
                 if answer:
@@ -2931,7 +2985,20 @@ class ExternalGateway:
                 except Exception:
                     pass
                 from vectrax.resolver import resolve_online
+                _online_t0 = time.perf_counter()
                 resolution = resolve_online(content, internal_channel, user_id)
+                try:
+                    from core.observability.router_activation import (
+                        record_activate as _rec_online,
+                    )
+                    if act_log is not None:
+                        _rec_online(
+                            act_log, "online_search",
+                            reason="local_to_online",
+                            latency_ms=(time.perf_counter() - _online_t0) * 1000.0,
+                        )
+                except Exception:
+                    pass
                 answer = resolution.sovereign_answer or resolution.answer or ""
                 resolve_mode = "local_to_online"
                 if answer:
@@ -2953,7 +3020,7 @@ class ExternalGateway:
                     pass
                 answer = self._generate_cognitive_response(
                     content, user_id, internal_channel, local_ctx,
-                    extra_context=extra_context,
+                    extra_context=extra_context, act_log=act_log,
                 )
                 if answer:
                     sr.record_feedback(smart_route, success=True, word_count=word_count)
@@ -2975,7 +3042,7 @@ class ExternalGateway:
 
                 answer = self._generate_cognitive_response(
                     content, user_id, internal_channel, local_ctx,
-                    extra_context=extra_context,
+                    extra_context=extra_context, act_log=act_log,
                 )
                 if answer:
                     sr.record_feedback(smart_route, success=True, word_count=word_count)
@@ -3049,7 +3116,7 @@ class ExternalGateway:
         # ── Generación LLM — respuesta real del sistema ────────────
         answer = self._generate_cognitive_response(
             content, user_id, internal_channel, memory_context,
-            extra_context=extra_context,
+            extra_context=extra_context, act_log=act_log,
         )
         resolve_mode = "llm"
 
@@ -3123,6 +3190,7 @@ class ExternalGateway:
         channel: str,
         memory_context: str = "",
         extra_context: str = "",
+        act_log: Optional[Any] = None,
     ) -> str:
         """
         Genera respuesta usando el Intelligence Router (multi-IA).
@@ -3134,8 +3202,15 @@ class ExternalGateway:
             _resolve_via_pipeline_v2 (incluye identity_anchor +
             CREATOR MODE + PERCEPCIÓN OPERACIONAL). Es race-safe —
             ya no se lee de self.
+          act_log: RouterActivationLog opcional (auditoría 2026-09-11/13,
+            Gap 1). Si se pasa, cada uno de los 4 intentos internos
+            (Intelligence Bridge, OpenAI directo, Ollama local, síntesis de
+            memoria) registra su latencia real con time.perf_counter() en
+            router_activation.jsonl bajo el mismo correlation_id. Puramente
+            observacional: no cambia el orden, los proveedores, ni la
+            lógica de fallback existente.
         """
-        # ── PRESENCIA PURA — bloqueo de tokens externos ────────────────────
+        # ── PRESENCIA PURA — bloqueo de tokens externos ──────────────────
         # Si el modo está activo, retornar inmediatamente sin llamar
         # al Intelligence Router ni al fallback de OpenAI.
         try:
@@ -3144,8 +3219,24 @@ class ExternalGateway:
                 return ""
         except Exception:
             pass
-        # ─────────────────────────────────────────────────────
+        # ──────────────────────────────────────────────
         from vectrax.identity_layer import build_prompt
+
+        def _record_llm_stage(name: str, latency_ms: float, ok: bool, note: str = "") -> None:
+            """Registro defensivo, no-fatal, de una sub-etapa LLM (Gap 1)."""
+            if act_log is None:
+                return
+            try:
+                from core.observability.router_activation import (
+                    record_activate as _rec_llm,
+                )
+                _rec_llm(
+                    act_log, name,
+                    reason=(note or ("success" if ok else "empty_or_failed")),
+                    latency_ms=latency_ms,
+                )
+            except Exception:
+                pass
 
         # Merge contexts: extra (pipeline-level) primero, luego memory
         # (resolver-level). El bloque CREATOR queda al inicio del prompt.
@@ -3159,6 +3250,7 @@ class ExternalGateway:
 
         # Intentar vía Intelligence Bridge (multi-modelo)
         # system_prompt=None — los providers inyectan VECTRAX_SYSTEM_PROMPT
+        _t0 = time.perf_counter()
         try:
             from vectrax.intelligence_bridge import (
                 initialize,
@@ -3181,42 +3273,93 @@ class ExternalGateway:
                         result.get("model", "?"),
                         result.get("tokens", "?"),
                     )
+                    _record_llm_stage(
+                        "llm_intelligence_bridge",
+                        (time.perf_counter() - _t0) * 1000.0, True,
+                        note=f"provider={result.get('provider', '?')}",
+                    )
                     return result["content"].strip()
                 else:
                     logger.warning(
                         "LLM route_single failed: %s",
                         result.get("error", "unknown"),
                     )
+                    _record_llm_stage(
+                        "llm_intelligence_bridge",
+                        (time.perf_counter() - _t0) * 1000.0, False,
+                        note="route_single_failed",
+                    )
+            else:
+                _record_llm_stage(
+                    "llm_intelligence_bridge",
+                    (time.perf_counter() - _t0) * 1000.0, False,
+                    note="not_ready",
+                )
         except Exception as exc:
             logger.warning("Intelligence Bridge unavailable: %s", exc)
+            _record_llm_stage(
+                "llm_intelligence_bridge",
+                (time.perf_counter() - _t0) * 1000.0, False,
+                note=f"exception:{type(exc).__name__}",
+            )
 
         # Fallback: OpenAI directo si el bridge falla
+        _t0 = time.perf_counter()
         try:
             answer = self._generate_openai_direct(prompt)
+            _record_llm_stage(
+                "llm_openai_direct",
+                (time.perf_counter() - _t0) * 1000.0, bool(answer),
+            )
             if answer:
                 return answer
         except Exception as exc:
             logger.warning("OpenAI direct fallback failed: %s", exc)
+            _record_llm_stage(
+                "llm_openai_direct",
+                (time.perf_counter() - _t0) * 1000.0, False,
+                note=f"exception:{type(exc).__name__}",
+            )
 
         # Fallback: Ollama local (no rate limits, no billing)
+        _t0 = time.perf_counter()
         try:
             answer = self._generate_ollama_local(prompt)
+            _record_llm_stage(
+                "llm_ollama_local",
+                (time.perf_counter() - _t0) * 1000.0, bool(answer),
+            )
             if answer:
                 logger.info("LLM response via Ollama local")
                 return answer
         except Exception as exc:
             logger.debug("Ollama local fallback failed: %s", exc)
+            _record_llm_stage(
+                "llm_ollama_local",
+                (time.perf_counter() - _t0) * 1000.0, False,
+                note=f"exception:{type(exc).__name__}",
+            )
 
         # Fallback: synthesize from memory/gravity without any LLM
+        _t0 = time.perf_counter()
         try:
             answer = self._synthesize_from_context(
                 content, user_id, extra_context, memory_context,
+            )
+            _record_llm_stage(
+                "llm_memory_synthesis",
+                (time.perf_counter() - _t0) * 1000.0, bool(answer),
             )
             if answer:
                 logger.info("Response via memory synthesis (no LLM) | len=%d", len(answer))
                 return answer
         except Exception as exc:
             logger.debug("Memory synthesis fallback failed: %s", exc)
+            _record_llm_stage(
+                "llm_memory_synthesis",
+                (time.perf_counter() - _t0) * 1000.0, False,
+                note=f"exception:{type(exc).__name__}",
+            )
 
         return ""
 
