@@ -53,6 +53,10 @@ CREATE TABLE IF NOT EXISTS convergence_lifecycle_events (
 );
 CREATE INDEX IF NOT EXISTS idx_lifecycle_convergence
     ON convergence_lifecycle_events(convergence_id);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_timestamp
+    ON convergence_lifecycle_events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_event
+    ON convergence_lifecycle_events(event);
 CREATE TABLE IF NOT EXISTS convergence_event_map (
     event_id INTEGER PRIMARY KEY,
     convergence_id TEXT,
@@ -427,7 +431,19 @@ def build_context(limit: int = 5, db_path: Optional[str] = None) -> str:
     if not events:
         return ""
 
-    active = get_canonical_convergences(status="active", db_path=db_path)
+    # Perf fix (incidente self_aware_context_build ~130s, 2026-09-13):
+    # build_context() solo muestra las 3 convergencias activas mas
+    # relevantes (ver `active[:3]` mas abajo), pero antes cargaba TODAS
+    # las filas activas de la tabla `convergences` (66k+ en produccion)
+    # solo para descartar el resto. El total mostrado ("Activas ahora: N")
+    # sigue siendo el conteo real via count_canonical_convergences()
+    # (usa idx_convergences_status, ya existente) — mismo comportamiento
+    # visible, sin traer filas de mas.
+    active_count = count_canonical_convergences(status="active", db_path=db_path)
+    active_top = (
+        get_canonical_convergences(status="active", limit=3, db_path=db_path)
+        if active_count else []
+    )
     counts = count_lifecycle_events(db_path=db_path)
 
     lines = [
@@ -435,9 +451,9 @@ def build_context(limit: int = 5, db_path: Optional[str] = None) -> str:
         f"{counts.get('dissolved', 0)} disoluciones]",
     ]
 
-    if active:
-        lines.append(f"Activas ahora: {len(active)}")
-        for a in active[:3]:
+    if active_count:
+        lines.append(f"Activas ahora: {active_count}")
+        for a in active_top:
             ts = datetime.fromtimestamp(a["last_seen"]).strftime("%m/%d %H:%M")
             lines.append(
                 f"  {a.get('relationship_type') or '?'} | "
