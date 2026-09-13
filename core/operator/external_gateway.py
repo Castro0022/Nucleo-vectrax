@@ -635,6 +635,107 @@ class ExternalGateway:
             )
             return original_proposal, False, [], "grounding_failed"
 
+    def _active_capability_gate(
+        self, strategy_value: str, *, lang: str, user_id: str, act_log=None,
+    ) -> Tuple[str, str]:
+        """Promoción activa de VX_CAPABILITY_SELF_AWARENESS (2026-09-13) para
+        rutas del SmartRouter que dependen de una capacidad externa
+        verificable (online/places).
+
+        SmartRouter ya decidió `strategy_value` (`SmartRoute.strategy.value`)
+        — esta función NUNCA sustituye esa decisión, solo valida si la
+        capacidad que esa ruta necesita existe, está conectada, autorizada y
+        saludable, reutilizando EXACTAMENTE `CapabilityContext`
+        (`build_capability_context`) y el narrador determinista existente
+        (`capability_narrator.narrate`, el mismo que ya usa la Fase 4 para
+        el auto-conocimiento) — no crea otro catálogo, router ni verificador.
+
+        Devuelve `("", "")` cuando no hay gate (flags apagados, ruta sin
+        capacidad mapeada, capacidad saludable, o evidencia insuficiente):
+        en ese caso el caller ejecuta la herramienta real exactamente igual
+        que antes. Devuelve `(texto_grounded, "capability_gap:<nombre>")`
+        SOLO cuando la capacidad está verificada como no disponible / no
+        autorizada / degradada — el caller entonces NUNCA llama a la
+        herramienta ni al LLM para esa ruta, evitando que se fabrique una
+        afirmación sobre una incapacidad real.
+
+        Fail-safe estricto: cualquier excepción retorna `("", "")` (deja
+        pasar — comportamiento previo, nunca bloquea por un fallo técnico
+        propio de este gate).
+        """
+        if not _env_flag_on("VX_CAPABILITY_SELF_AWARENESS"):
+            return "", ""
+        if not _env_flag_on("VX_CAPABILITY_RESPONSE_GROUNDING"):
+            return "", ""
+        if lang not in _CAPABILITY_NARRATOR_LANGS:
+            return "", ""
+
+        try:
+            from core.self_observation.capability_context import (
+                CapabilityContext, build_capability_context,
+                capability_for_route, record_capability_gap,
+            )
+
+            cap_name = capability_for_route(strategy_value)
+            if not cap_name:
+                return "", ""
+
+            ctx = build_capability_context(None)
+            entry = next((e for e in ctx.entries if e.name == cap_name), None)
+            if entry is None:
+                return "", ""  # sin evidencia -> no bloquear (fail-safe)
+
+            from core.orchestration.bootstrap import HEALTH_AVAILABLE
+            if entry.health == HEALTH_AVAILABLE and entry.authorized:
+                return "", ""  # capacidad verificada OK -> ejecutar como siempre
+
+            try:
+                record_capability_gap(
+                    capability_name=entry.name,
+                    health=entry.health,
+                    authorized=entry.authorized,
+                    reason=entry.reason,
+                    obs_type="active_route_gate",
+                )
+            except Exception:
+                pass
+
+            from core.self_observation.capability_narrator import narrate
+            gap_ctx = CapabilityContext(
+                query_domain=ctx.query_domain,
+                query_task_type=ctx.query_task_type,
+                query_capability=True,
+                entries=ctx.entries,
+                gaps=[entry],
+                fallback_sources=ctx.fallback_sources,
+            )
+            grounded = narrate(gap_ctx, lang=lang) or ""
+            if not grounded:
+                return "", ""
+
+            logger.info(
+                "Pipeline: CAPABILITY-GATE active | route=%s | capability=%s | "
+                "health=%s | authorized=%s | user=%s",
+                strategy_value, entry.name, entry.health, entry.authorized,
+                user_id[:20],
+            )
+            try:
+                from core.observability.router_activation import (
+                    record_activate as _rec_cg,
+                )
+                if act_log is not None:
+                    _rec_cg(
+                        act_log, "capability_gate",
+                        reason=f"{entry.name}:{entry.health}:authorized={entry.authorized}",
+                    )
+            except Exception:
+                pass
+
+            return grounded, f"capability_gap:{entry.name}"
+        except Exception as exc:
+            logger.debug("Active capability gate failed (passthrough): %s", exc)
+            return "", ""
+
     def _do_receive_message(
         self,
         user_id: str,
@@ -2811,7 +2912,34 @@ class ExternalGateway:
                 except Exception:
                     pass
 
-            # ── AUTO-EXECUTE según estrategia ──────────────────────
+            # ══════════════════════════════════════════════════════════
+            # ACTIVE CAPABILITY GATE — promoción Fase 3→Fase 4 (2026-09-13)
+            # ══════════════════════════════════════════════════════════
+            # SmartRouter ya decidió la ruta arriba — esto NO la sustituye,
+            # solo valida (ambos flags VX_CAPABILITY_SELF_AWARENESS +
+            # VX_CAPABILITY_RESPONSE_GROUNDING activos) si la capacidad
+            # externa que RESOLVE_ONLINE/RESOLVE_PLACES necesitan existe,
+            # está conectada, autorizada y saludable ANTES de ejecutarla.
+            # Disponible -> se ejecuta la herramienta real de siempre, sin
+            # ningún cambio. No disponible/autorizada/saludable -> se
+            # responde con la narración determinista existente en vez de
+            # dejar que la ruta/LLM fabriquen una afirmación. Con ambos
+            # flags en OFF (default) esta llamada es un no-op inmediato.
+            _cap_gate_text, _cap_gate_mode = self._active_capability_gate(
+                smart_route.strategy.value,
+                lang=self._detect_user_lang(user_id, content),
+                user_id=user_id, act_log=act_log,
+            )
+            if _cap_gate_text:
+                sr.record_feedback(smart_route, success=True, word_count=word_count)
+                logger.info(
+                    "Pipeline: CAPABILITY-GATE blocked route | strategy=%s | "
+                    "mode=%s | user=%s",
+                    smart_route.strategy.value, _cap_gate_mode, user_id[:20],
+                )
+                return _cap_gate_text, _cap_gate_mode
+
+            # ── AUTO-EXECUTE según estrategia ──────────────────────────
 
             # Búsqueda de lugar físico (semántico → Google Places)
             if smart_route.strategy == Strategy.RESOLVE_PLACES:

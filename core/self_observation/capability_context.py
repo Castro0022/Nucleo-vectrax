@@ -152,6 +152,14 @@ _CAPABILITY_CATALOG: Dict[str, Dict[str, Any]] = {
         "kind": "capability", "group": "proveedores",
         "module": "vectrax.resolver", "attr": "resolve_online",
     },
+    # Google Places (2026-09-13, cierre self-awareness → ejecución real):
+    # respalda la ruta `Strategy.RESOLVE_PLACES` del SmartRouter
+    # (external_gateway._try_place_search). Mismo patrón que online_search:
+    # una fila más del catalogo existente, no un inventario nuevo.
+    "places_search": {
+        "kind": "capability", "group": "proveedores",
+        "module": "vectrax.integrations.place_search", "attr": "search_places",
+    },
     "llm_providers": {
         "kind": "integration", "group": "proveedores",
         "module": "vectrax.intelligence_bridge", "attr": "is_ready",
@@ -192,6 +200,31 @@ _CAPABILITY_CATALOG: Dict[str, Dict[str, Any]] = {
 _FALLBACK_CANDIDATES: Tuple[str, ...] = (
     "online_search", "criterion", "freight_query", "market_observer",
 )
+
+# ---------------------------------------------------------------------------
+# capability_for_route (2026-09-13) — cierre self-awareness → ejecución real.
+# ---------------------------------------------------------------------------
+# Mapeo MINIMO y explicito de `Strategy.value` (core.smart_router, decisión
+# YA tomada por SmartRouter/IntentDecision — esta tabla no la reemplaza, solo
+# indica qué fila de ESTE MISMO catálogo respalda esa ruta) a un nombre de
+# `CapabilityEntry`. Rutas sin dependencia de una capacidad externa
+# verificable (memory/local/identity/market/cognitive/...) no aparecen aquí
+# a propósito: para ellas el gate de autoconocimiento nunca se activa.
+_ROUTE_CAPABILITY_MAP: Dict[str, str] = {
+    "resolve_online": "online_search",
+    "resolve_places": "places_search",
+}
+
+
+def capability_for_route(route: Optional[str]) -> Optional[str]:
+    """Nombre de la entrada del catálogo que respalda `route`
+    (`SmartRoute.strategy.value`, p.ej. "resolve_online"), o `None` si esa
+    ruta no depende de una capacidad externa verificable. No decide nada
+    por sí mismo — es una tabla de consulta sobre datos ya existentes.
+    """
+    if not route:
+        return None
+    return _ROUTE_CAPABILITY_MAP.get(route)
 
 
 def _check_module_health(module: str, attr: Optional[str] = None) -> Tuple[bool, str, str]:
