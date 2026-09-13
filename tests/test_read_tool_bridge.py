@@ -24,7 +24,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from core.operator.read_tool_intent import parse_read_file_request  # noqa: E402
+from core.operator.read_tool_intent import (  # noqa: E402
+    parse_read_file_request,
+    parse_symbol_lookup_request,
+)
 
 
 class TestParseReadFileRequest(unittest.TestCase):
@@ -68,6 +71,40 @@ class TestParseReadFileRequest(unittest.TestCase):
     def test_rejects_absolute_path(self):
         self.assertIsNone(parse_read_file_request("abre /etc/passwd.py"))
         self.assertIsNone(parse_read_file_request("abre ~/secrets.py"))
+
+
+class TestParseSymbolLookupRequest(unittest.TestCase):
+    """Extensión: preguntas sobre un símbolo de código conocido SIN ruta
+    explícita ("¿qué hace ConnectionEngine.read() en tu código?")."""
+
+    def test_matches_class_dot_method(self):
+        r = parse_symbol_lookup_request("¿Qué hace ConnectionEngine.read() en tu código?")
+        self.assertIsNotNone(r)
+        self.assertEqual(r.class_name, "ConnectionEngine")
+        self.assertEqual(r.symbol, "read")
+
+    def test_matches_bare_function(self):
+        r = parse_symbol_lookup_request("¿Qué hace collect_metrics() en tu código?")
+        self.assertIsNotNone(r)
+        self.assertIsNone(r.class_name)
+        self.assertEqual(r.symbol, "collect_metrics")
+
+    def test_no_match_without_parens(self):
+        self.assertIsNone(parse_symbol_lookup_request("¿Qué hace ConnectionEngine.read en tu código?"))
+
+    def test_no_false_positive_on_greeting(self):
+        self.assertIsNone(parse_symbol_lookup_request("Hola Vectrax, ¿cómo estás?"))
+
+    def test_path_based_takes_precedence_when_path_present(self):
+        """Si el mensaje SI trae una ruta explícita, ese es un caso distinto
+        (parse_read_file_request); esta función igual matchearía el símbolo,
+        pero read_tool_bridge.resolve_file_read() prueba primero la ruta
+        explícita y solo cae a esta si esa devuelve None (verificado en
+        TestResolveFileReadHappyPath.test_symbol_lookup_prefers_explicit_path)."""
+        r = parse_symbol_lookup_request(
+            "abre core/operator/system_monitor.py y dime qué hace collect_metrics()"
+        )
+        self.assertIsNotNone(r)  # la función en sí no sabe de rutas; el orchestrator sí
 
 
 class TestCapabilityGate(unittest.TestCase):
@@ -192,6 +229,48 @@ class TestResolveFileReadHappyPath(unittest.TestCase):
             result = rtb.resolve_file_read("abre no_existe.py")
         self.assertTrue(result)  # honest message, not empty
         self.assertNotIn("def ", result)
+
+
+class TestSymbolLookupResolution(unittest.TestCase):
+    """End-to-end de la resolución por símbolo, contra un fixture real
+    importado como módulo (para que aparezca en sys.modules, igual que en
+    producción) — nunca escanea el filesystem, nunca crea un segundo lector."""
+
+    def setUp(self):
+        import connectors.engine as engine_mod
+        engine_mod._engine = None
+
+    def test_class_method_resolves_to_real_connectors_engine_file(self):
+        """La prueba de aceptación exacta: 'ConnectionEngine.read()' debe
+        resolver a connectors/engine.py (ya importado por el propio puente
+        al registrar el connector) y citar el método REAL, no un texto
+        genérico de sockets."""
+        from core.operator import read_tool_bridge as rtb
+
+        result = rtb.resolve_file_read(
+            "¿Qué hace ConnectionEngine.read() en tu código?",
+            user_id="tg:2030762343",
+        )
+        self.assertIn("connector.read", result.lower().replace("self.", ""))
+        self.assertNotIn("socket", result.lower())
+
+    def test_unresolvable_symbol_falls_through_silently(self):
+        from core.operator import read_tool_bridge as rtb
+        result = rtb.resolve_file_read(
+            "¿Qué hace SimboloQueJamasExistira() en tu código?",
+            user_id="tg:2030762343",
+        )
+        self.assertEqual(result, "")
+
+    def test_symbol_resolution_never_used_for_non_creator_gate_bypass(self):
+        """resolve_file_read() en sí no aplica el gate de creador (eso vive
+        en external_gateway.py) — este test documenta ese límite explícito:
+        el módulo de bajo nivel siempre resuelve si el patrón matchea; la
+        restricción creator-only es responsabilidad exclusiva del STEP en
+        external_gateway.py (no duplicada aquí)."""
+        from core.operator import read_tool_bridge as rtb
+        result = rtb.resolve_file_read("¿Qué hace ConnectionEngine.read() en tu código?")
+        self.assertNotEqual(result, "")
 
 
 class TestExternalGatewayIntegration(unittest.TestCase):

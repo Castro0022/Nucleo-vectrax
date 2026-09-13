@@ -54,9 +54,22 @@ class ReadFileRequest:
     """Resultado determinista del parser. `path` siempre viene relativo
     (nunca absoluto) — la validación de sandbox real ocurre después, en
     `LocalFilesystemConnector._safe_path()` (reutilizada, no reimplementada
-    aquí)."""
+    aquí). `class_name` solo se puebla cuando la petición vino de
+    `parse_symbol_lookup_request()` (sin ruta explícita) — permite acotar
+    la extracción del símbolo al método de ESA clase específica."""
     path: str
     symbol: Optional[str] = None
+    class_name: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class SymbolLookupRequest:
+    """Petición de lectura por SÍMBOLO conocido (sin ruta explícita en el
+    mensaje) — p.ej. "¿qué hace ConnectionEngine.read() en tu código?".
+    `class_name` es None cuando el símbolo es una función/clase suelta
+    ("qué hace collect_metrics()")."""
+    symbol: str
+    class_name: Optional[str] = None
 
 
 def _is_allowed_extension(path: str) -> bool:
@@ -96,5 +109,46 @@ def parse_read_file_request(text: str) -> Optional[ReadFileRequest]:
             symbol = sym_match.group(1).strip()
 
         return ReadFileRequest(path=path, symbol=symbol)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Preguntas sobre un símbolo de código CONOCIDO, sin ruta explícita en el
+# mensaje — p.ej. "¿qué hace ConnectionEngine.read() en tu código?". Es un
+# patrón SEPARADO de `parse_read_file_request()`: el llamador solo debe
+# probarlo cuando el parser de ruta explícita ya devolvió None. La
+# resolución de DÓNDE vive ese símbolo (a qué archivo corresponde) NO ocurre
+# aquí — este módulo solo reconoce el patrón de texto; la resolución real
+# vive en read_tool_bridge.py, reutilizando exclusivamente el mismo
+# connector/sandbox ya autorizado (nunca escanea el filesystem a ciegas).
+# ---------------------------------------------------------------------------
+
+_SYMBOL_LOOKUP_RE = re.compile(
+    r"(?:qu[eé]\s+hace|explica(?:me)?|what\s+does|explain)\s+[`\"']?"
+    r"([A-Za-z_][A-Za-z0-9_]*)"                # Clase o símbolo suelto
+    r"(?:\.([A-Za-z_][A-Za-z0-9_]*))?"          # .metodo opcional
+    r"\s*\(\s*\)",                              # requiere "()" — evita
+                                                 # matchear texto casual
+    re.IGNORECASE,
+)
+
+
+def parse_symbol_lookup_request(text: str) -> Optional[SymbolLookupRequest]:
+    """Detecta "qué hace/explica/what does <Simbolo>[.<metodo>]()" SIN ruta.
+
+    Sólo debe probarse cuando `parse_read_file_request()` ya devolvió None
+    para el mismo mensaje. Devuelve `None` si no matchea; nunca lanza.
+    """
+    if not text:
+        return None
+    try:
+        match = _SYMBOL_LOOKUP_RE.search(text)
+        if not match:
+            return None
+        first, second = match.group(1), match.group(2)
+        if second:
+            return SymbolLookupRequest(class_name=first, symbol=second)
+        return SymbolLookupRequest(class_name=None, symbol=first)
     except Exception:
         return None

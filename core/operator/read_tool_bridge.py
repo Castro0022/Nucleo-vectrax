@@ -29,12 +29,19 @@ creador — ver `core/operator/external_gateway.py`.
 from __future__ import annotations
 
 import ast
+import inspect
 import logging
 import os
 import pathlib
+import sys
 from typing import Optional
 
-from core.operator.read_tool_intent import ReadFileRequest, parse_read_file_request
+from core.operator.read_tool_intent import (
+    ReadFileRequest,
+    SymbolLookupRequest,
+    parse_read_file_request,
+    parse_symbol_lookup_request,
+)
 
 logger = logging.getLogger("vectrax.operator.read_tool_bridge")
 
@@ -115,24 +122,101 @@ def _ensure_connector_registered() -> bool:
 # Extracción determinista de símbolo (AST, no regex sobre código)
 # ---------------------------------------------------------------------------
 
-def _extract_symbol_snippet(source: str, symbol: str) -> Optional[str]:
+def _extract_symbol_snippet(
+    source: str, symbol: str, class_name: Optional[str] = None,
+) -> Optional[str]:
     """Extrae la definición de `symbol` (función o clase) de `source` vía
-    `ast` — determinista, nunca ejecuta el código. Devuelve el texto fuente
-    exacto de esa definición (docstring + firma + cuerpo), o None si no se
-    encuentra. Nunca lanza."""
+    `ast` — determinista, nunca ejecuta el código. Si `class_name` se
+    especifica, busca `symbol` como MÉTODO dentro de ESA clase específica
+    (evita ambigüedad si dos clases del mismo archivo definen un método
+    homónimo). Devuelve el texto fuente exacto de esa definición (docstring +
+    firma + cuerpo), o None si no se encuentra. Nunca lanza."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return None
     lines = source.splitlines()
+
+    def _slice(node: ast.AST) -> str:
+        start = node.lineno - 1
+        end = getattr(node, "end_lineno", None) or (start + 40)
+        return "\n".join(lines[start:end])[:_MAX_SNIPPET_CHARS]
+
+    if class_name:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == class_name:
+                for sub in node.body:
+                    if (
+                        isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and sub.name == symbol
+                    ):
+                        return _slice(sub)
+                return None  # la clase existe en el archivo, el método no
+        return None  # la clase no está definida en este archivo
+
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if node.name == symbol:
-                start = node.lineno - 1
-                end = getattr(node, "end_lineno", None) or (start + 40)
-                snippet = "\n".join(lines[start:end])
-                return snippet[:_MAX_SNIPPET_CHARS]
+                return _slice(node)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Resolución de SÍMBOLO → ruta (sin ruta explícita en el mensaje del usuario)
+# ---------------------------------------------------------------------------
+# Alcance deliberado y honesto: busca Únicamente entre los módulos YA
+# cargados en el proceso en ejecución (`sys.modules`) — nunca escanea el
+# filesystem a ciegas, nunca importa módulos arbitrarios por adivinanza, y
+# nunca crea un segundo lector: la ruta resuelta se entrega EXACTAMENTE al
+# mismo `local_filesystem.read()`/`_safe_path()` de siempre. Si el símbolo
+# no está entre los módulos ya importados, se devuelve None (nunca inventa
+# una ruta) y el llamador cae al pipeline normal, idéntico al comportamiento
+# previo para símbolos no resolubles.
+
+def _resolve_symbol_location(
+    class_name: Optional[str], symbol: str,
+) -> Optional[str]:
+    """Devuelve la ruta relativa (dentro del sandbox del repo) donde vive
+    `class_name.symbol` (o la función/clase suelta `symbol` si `class_name`
+    es None), o None si no puede resolverse con certeza. Nunca lanza."""
+    try:
+        target: Optional[object] = None
+        for mod in list(sys.modules.values()):
+            if mod is None:
+                continue
+            try:
+                if class_name:
+                    candidate = getattr(mod, class_name, None)
+                    if (
+                        candidate is not None
+                        and inspect.isclass(candidate)
+                        and hasattr(candidate, symbol)
+                    ):
+                        target = candidate
+                        break
+                else:
+                    candidate = getattr(mod, symbol, None)
+                    if candidate is not None and (
+                        inspect.isfunction(candidate) or inspect.isclass(candidate)
+                    ):
+                        target = candidate
+                        break
+            except Exception:
+                continue
+        if target is None:
+            return None
+
+        source_file = inspect.getsourcefile(target)
+        if not source_file:
+            return None
+        abs_path = os.path.abspath(source_file)
+        root = os.path.abspath(_PROJECT_ROOT)
+        if not (abs_path == root or abs_path.startswith(root + os.sep)):
+            return None  # nunca fuera del sandbox ya autorizado
+        return os.path.relpath(abs_path, root)
+    except Exception as exc:
+        logger.debug("read_tool_bridge: symbol resolution failed: %s", exc)
+        return None
 
 
 def _file_overview_snippet(source: str) -> str:
@@ -198,7 +282,20 @@ def resolve_file_read(content: str, user_id: str = "") -> str:
     al pipeline normal sin ningún efecto observable. Nunca lanza."""
     request: Optional[ReadFileRequest] = parse_read_file_request(content)
     if request is None:
-        return ""
+        # Fallback: pregunta por un símbolo de código conocido sin ruta
+        # explícita ("¿qué hace ConnectionEngine.read() en tu código?").
+        symbol_req: Optional[SymbolLookupRequest] = parse_symbol_lookup_request(content)
+        if symbol_req is None:
+            return ""
+        rel_path = _resolve_symbol_location(symbol_req.class_name, symbol_req.symbol)
+        if rel_path is None:
+            # No se puede resolver con certeza a qué archivo corresponde —
+            # nunca se inventa una ruta. Cae al pipeline normal, idéntico al
+            # comportamiento previo a esta extensión.
+            return ""
+        request = ReadFileRequest(
+            path=rel_path, symbol=symbol_req.symbol, class_name=symbol_req.class_name,
+        )
 
     if not _capability_authorized():
         logger.debug("read_tool_bridge: local_filesystem not authorized READ_ONLY, skipping")
@@ -226,7 +323,9 @@ def resolve_file_read(content: str, user_id: str = "") -> str:
         return f"{request.path} existe pero está vacío."
 
     if request.symbol:
-        snippet = _extract_symbol_snippet(source, request.symbol)
+        snippet = _extract_symbol_snippet(
+            source, request.symbol, class_name=request.class_name,
+        )
         if snippet is None:
             return (
                 f"Leí {request.path}, pero no encontré una función o clase "
