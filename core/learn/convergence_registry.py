@@ -209,6 +209,64 @@ def normalize_candidate(
     }, None
 
 
+def _last_lifecycle_event(
+    conn: sqlite3.Connection, convergence_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Most recent lifecycle row for `convergence_id`, or None if never
+    recorded. Read via the same connection/transaction so it sees writes
+    already made earlier in the same `record_convergence_snapshot` call."""
+    row = conn.execute(
+        """SELECT event, combined_cc, combined_hits
+        FROM convergence_lifecycle_events
+        WHERE convergence_id=? ORDER BY id DESC LIMIT 1""",
+        (convergence_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _lifecycle_state_changed(
+    conn: sqlite3.Connection,
+    convergence_id: str,
+    event: str,
+    combined_cc: Optional[float],
+    combined_hits: Optional[int],
+) -> bool:
+    """True if writing this lifecycle event would represent a REAL
+    state/materiality change vs. the last one recorded for this
+    convergence_id. False if it would be a pure repeat (no-op noise).
+
+    Perf fix (Fase 2 Paso 1, incidente 178.5M filas en
+    convergence_lifecycle_events, 2026-09-13): `record_convergence_snapshot`
+    corre ~cada 2s desde `meta_loop`/`autonomous_observer` y antes insertaba
+    un evento "confirmed" por cada candidato activo en CADA ciclo, aunque
+    nada hubiera cambiado. Los campos que representan estado/materialidad
+    de una convergencia ya existen en el esquema y ya se usan como tales en
+    el resto del sistema:
+      - `event`: la etapa del ciclo de vida (created/confirmed/dissolved/
+        reappeared) — un cambio de etapa es SIEMPRE una transición real
+        (p.ej. created -> confirmed, active -> dissolved).
+      - `combined_cc` / `combined_hits`: la evidencia numérica de la
+        convergencia (ya usados como umbrales de materialidad en
+        gravity_engine.ALERT_MIN_CC/ALERT_MIN_HITS). Si la etapa es la
+        misma y estos valores no cambiaron, no hay nada nuevo que auditar.
+    No se inventa ningún umbral nuevo: comparación EXACTA contra el último
+    valor ya registrado (combined_cc ya viene redondeado a 4 decimales
+    desde gravity_engine._match_pair, así que no hay ruido de float entre
+    ciclos sin cambios reales). Nunca cambia confirmation_count/last_seen
+    en `convergences` — esos siguen actualizándose siempre; solo se filtra
+    la fila redundante en `convergence_lifecycle_events`.
+    """
+    last = _last_lifecycle_event(conn, convergence_id)
+    if last is None:
+        return True
+    if last["event"] != event:
+        return True
+    return (
+        last["combined_cc"] != combined_cc
+        or last["combined_hits"] != combined_hits
+    )
+
+
 def record_convergence_snapshot(
     candidates: List[Dict[str, Any]],
     live_fingerprints: Optional[Dict[str, str]] = None,
@@ -300,15 +358,19 @@ def record_convergence_snapshot(
                 )
                 lifecycle = "reappeared"
                 result["reappeared"] += 1
-            conn.execute(
-                """INSERT INTO convergence_lifecycle_events
-                (convergence_id, event, timestamp, combined_cc, combined_hits)
-                VALUES (?,?,?,?,?)""",
-                (
-                    convergence_id, lifecycle, now,
-                    data["combined_cc"], data["combined_hits"],
-                ),
-            )
+            if _lifecycle_state_changed(
+                conn, convergence_id, lifecycle,
+                data["combined_cc"], data["combined_hits"],
+            ):
+                conn.execute(
+                    """INSERT INTO convergence_lifecycle_events
+                    (convergence_id, event, timestamp, combined_cc, combined_hits)
+                    VALUES (?,?,?,?,?)""",
+                    (
+                        convergence_id, lifecycle, now,
+                        data["combined_cc"], data["combined_hits"],
+                    ),
+                )
 
         for convergence_id in active_ids - set(current):
             conn.execute(
@@ -317,11 +379,12 @@ def record_convergence_snapshot(
                 WHERE convergence_id=?""",
                 (now, convergence_id),
             )
-            conn.execute(
-                """INSERT INTO convergence_lifecycle_events
-                (convergence_id, event, timestamp) VALUES (?,?,?)""",
-                (convergence_id, "dissolved", now),
-            )
+            if _lifecycle_state_changed(conn, convergence_id, "dissolved", None, None):
+                conn.execute(
+                    """INSERT INTO convergence_lifecycle_events
+                    (convergence_id, event, timestamp) VALUES (?,?,?)""",
+                    (convergence_id, "dissolved", now),
+                )
             result["dissolved"] += 1
         conn.commit()
     finally:

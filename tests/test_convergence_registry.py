@@ -382,5 +382,102 @@ class TestLifecycleEvents(_TempRegistryMixin, unittest.TestCase):
         self.assertIn("market:AAPL", text)
 
 
+class TestLifecycleMaterialityDedup(_TempRegistryMixin, unittest.TestCase):
+    """Fase 2 Paso 1 (incidente 178.5M filas, 2026-09-13): record_convergence_snapshot
+    ya NO debe insertar una fila en convergence_lifecycle_events cuando el
+    estado/materialidad (event, combined_cc, combined_hits) es idéntico al
+    último registrado para esa convergence_id. confirmation_count/last_seen
+    en `convergences` siguen actualizándose siempre (no cambia este test).
+    """
+
+    def _candidate(self, star_a="market:AAPL", star_b="unknown:xyz",
+                    domains=("market", "unknown"), cc=0.5, hits=3):
+        return {
+            "type": "intent_overlap", "star_a": star_a, "star_b": star_b,
+            "combined_cc": cc, "combined_hits": hits, "domains": list(domains),
+        }
+
+    def _lifecycle_row_count(self) -> int:
+        conn = connect(self.db_path)
+        try:
+            return conn.execute(
+                "SELECT COUNT(*) FROM convergence_lifecycle_events"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_new_convergence_produces_exactly_one_row(self):
+        """nueva convergencia -> 1 fila nueva."""
+        live = {"market:AAPL": "market", "unknown:xyz": "unknown"}
+        record_convergence_snapshot([self._candidate()], live, self.db_path)
+        self.assertEqual(self._lifecycle_row_count(), 1)
+        events = get_recent_lifecycle_events(limit=10, db_path=self.db_path)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event"], "created")
+
+    def test_same_state_repeated_yields_zero_new_rows(self):
+        """mismo estado repetido -> 0 filas nuevas.
+
+        Sequence: created (row 1) -> confirmed, same evidence as creation
+        would still be a stage change so it counts as real (row 2) -> then
+        repeating the EXACT same confirmed state must add nothing.
+        """
+        live = {"market:AAPL": "market", "unknown:xyz": "unknown"}
+        candidate = self._candidate(cc=0.5, hits=3)
+
+        record_convergence_snapshot([candidate], live, self.db_path)  # created
+        record_convergence_snapshot([candidate], live, self.db_path)  # created->confirmed: real
+        rows_after_first_confirm = self._lifecycle_row_count()
+        self.assertEqual(rows_after_first_confirm, 2)
+
+        # Repeat the identical candidate (same cc/hits) three more times —
+        # steady state, nothing materially new to audit.
+        for _ in range(3):
+            result = record_convergence_snapshot([candidate], live, self.db_path)
+            self.assertEqual(result["confirmed"], 1)  # logical confirmation still counted
+
+        self.assertEqual(self._lifecycle_row_count(), rows_after_first_confirm)
+
+        # confirmation_count / last_seen must still advance every call —
+        # only the lifecycle audit row is deduplicated, not the counter.
+        conn = connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT confirmation_count FROM convergences"
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertEqual(row["confirmation_count"], 5)  # 1 create + 4 confirms
+
+    def test_real_change_in_evidence_produces_one_new_row(self):
+        """transición real (evidencia cambió) -> 1 fila nueva."""
+        live = {"market:AAPL": "market", "unknown:xyz": "unknown"}
+        candidate = self._candidate(cc=0.5, hits=3)
+        record_convergence_snapshot([candidate], live, self.db_path)  # created
+        record_convergence_snapshot([candidate], live, self.db_path)  # confirmed (real)
+        rows_before = self._lifecycle_row_count()
+
+        # Identical state again — must NOT add a row.
+        record_convergence_snapshot([candidate], live, self.db_path)
+        self.assertEqual(self._lifecycle_row_count(), rows_before)
+
+        # Real change: combined_hits grew (new evidence) — must add exactly 1 row.
+        grown = self._candidate(cc=0.5, hits=7)
+        record_convergence_snapshot([grown], live, self.db_path)
+        self.assertEqual(self._lifecycle_row_count(), rows_before + 1)
+
+    def test_real_transition_to_dissolved_produces_one_new_row(self):
+        """transición real (active -> dissolved) -> 1 fila nueva."""
+        live = {"market:AAPL": "market", "unknown:xyz": "unknown"}
+        candidate = self._candidate()
+        record_convergence_snapshot([candidate], live, self.db_path)  # created
+        record_convergence_snapshot([candidate], live, self.db_path)  # confirmed
+        rows_before = self._lifecycle_row_count()
+
+        dissolve_result = record_convergence_snapshot([], live, self.db_path)
+        self.assertEqual(dissolve_result["dissolved"], 1)
+        self.assertEqual(self._lifecycle_row_count(), rows_before + 1)
+
+
 if __name__ == "__main__":
     unittest.main()
