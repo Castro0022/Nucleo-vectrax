@@ -107,6 +107,11 @@ class ConvergenceRecord:
     # Learning
     hypothesis_fed: bool = False
     rule_matched: bool = False
+    # Strategic reasoning (ReasoningEngine integration — auditoría 2026-09-13)
+    reasoning_ran: bool = False
+    reasoning_recommendation: str = ""
+    reasoning_risk_level: str = ""
+    reasoning_error: str = ""
     # Meta
     governor_mode: str = ""
     convergence_time_ms: float = 0.0
@@ -133,6 +138,10 @@ class ConvergenceRecord:
             "action_recommended": self.action_recommended,
             "hypothesis_fed": self.hypothesis_fed,
             "rule_matched": self.rule_matched,
+            "reasoning_ran": self.reasoning_ran,
+            "reasoning_recommendation": self.reasoning_recommendation,
+            "reasoning_risk_level": self.reasoning_risk_level,
+            "reasoning_error": self.reasoning_error,
             "governor_mode": self.governor_mode,
             "convergence_time_ms": round(self.convergence_time_ms, 2),
             "created_at": self.created_at,
@@ -659,11 +668,133 @@ class TotalConvergenceEngine:
         except Exception:
             pass
 
-        # Contradiction detection (simplified — full engine used when
-        # ReasoningEngine is available with CognitiveContext)
-        record.contradictions = 0  # baseline; full analysis in synthesis
+        # Contradiction detection + evaluación estratégica completa vía
+        # ReasoningEngine (riesgo, impacto, escenarios, contradicciones
+        # reales contra principios/decisiones pasadas, validación
+        # constitucional). Una sola invocación por ciclo. Fail-safe: si
+        # falla o no hay evidencia suficiente, contradictions queda en 0
+        # y el resto del ciclo continúa exactamente igual que antes
+        # (auditoría 2026-09-13 → conexión mínima 2026-09-13).
+        record.contradictions = 0  # baseline; ajustado por _run_reasoning si corre OK
+        record = self._run_reasoning(record, content)
 
         record.phases_completed.append(ConvergencePhase.ANALYSIS.value)
+        return record
+
+    # =====================================================================
+    # Reasoning bridge — ConvergenceRecord -> CognitiveContext -> ReasoningEngine
+    # =====================================================================
+
+    @staticmethod
+    def _build_cognitive_context(record: ConvergenceRecord):
+        """
+        Adaptador mínimo: construye un CognitiveContext (cognition.types)
+        a partir de un ConvergenceRecord ya clasificado/analizado.
+
+        No duplica modelos: reutiliza CognitiveContext/CognitiveSignal tal
+        como los define cognition/types.py. No transporta contenido crudo
+        del mensaje — solo metadatos ya abstraídos por las fases previas
+        (tipo, intención, dominio, riesgo, novedad).
+        """
+        from cognition.types import (
+            CognitiveContext, CognitiveSignal, SignalCategory, SignalSource,
+        )
+
+        if record.risk_level == "high":
+            category = SignalCategory.ANOMALY
+        elif not record.is_novel:
+            category = SignalCategory.PATTERN
+        elif record.is_novel:
+            category = SignalCategory.CHANGE
+        else:
+            category = SignalCategory.NOISE
+
+        priority = max(0.0, min(1.0, record.coherence_score or 0.0))
+
+        signal = CognitiveSignal(
+            source="total_convergence",
+            source_type=SignalSource.INTERNAL,
+            category=category,
+            priority=priority,
+            summary=(
+                f"type={record.input_type} intent={record.intent} "
+                f"domain={record.domain} impact={record.impact}"
+            )[:200],
+            intent=record.intent,
+            metadata={"convergence_id": record.id, "is_novel": record.is_novel},
+        )
+
+        if record.governor_mode == "recover":
+            system_health = "unhealthy"
+        elif record.governor_mode == "cautious":
+            system_health = "degraded"
+        else:
+            system_health = "healthy"
+
+        return CognitiveContext(
+            signals=[signal],
+            signal_count=1,
+            dominant_category=category,
+            avg_priority=priority,
+            governor_mode=record.governor_mode or "observe",
+            system_health=system_health,
+            changes_detected=1 if record.is_novel else 0,
+            metadata={"convergence_record_id": record.id, "domain": record.domain},
+        )
+
+    def _run_reasoning(
+        self,
+        record: ConvergenceRecord,
+        content: str,
+    ) -> ConvergenceRecord:
+        """
+        Invoca ReasoningEngine.reason() UNA vez por ciclo, usando el
+        adaptador ConvergenceRecord -> CognitiveContext. No reemplaza
+        ninguna fase existente: solo anota record.reasoning_* para que
+        _phase_synthesis() decida si escala la acción recomendada.
+
+        Fail-safe estricto: cualquier fallo (motor no disponible,
+        excepción en cualquier sub-motor, evidencia insuficiente) deja el
+        record exactamente como las fases 1-4 ya lo dejaron — nunca
+        bloquea, ejecuta ni inventa una acción nueva por sí mismo.
+        """
+        try:
+            reasoning = self._get_reasoning()
+            if reasoning is None:
+                record.reasoning_error = "reasoning_engine_unavailable"
+                return record
+
+            context = self._build_cognitive_context(record)
+
+            mem_ctx = None
+            memory = self._get_memory()
+            if memory:
+                try:
+                    mem_ctx = memory.query(intent=record.intent)
+                except Exception:
+                    mem_ctx = None
+
+            # Descripción abstracta para ContradictionDetector — nunca el
+            # contenido crudo del mensaje.
+            description = (
+                f"{record.input_type}:{record.intent}:{record.domain}"
+            )[:200]
+
+            result = reasoning.reason(context, mem_ctx, description=description)
+
+            record.reasoning_ran = True
+            record.reasoning_recommendation = result.recommendation
+            record.reasoning_risk_level = result.risk_level
+            record.contradictions = len(result.contradictions)
+
+        except Exception as exc:
+            # Fail-safe: no inventar razonamiento, no tocar action_recommended
+            # ni ningún otro campo ya calculado por las fases previas.
+            record.reasoning_error = str(exc)[:200]
+            logger.warning(
+                "ReasoningEngine failed (fail-safe, no action change): %s", exc,
+            )
+
         return record
 
     # =====================================================================
@@ -702,6 +833,25 @@ class TotalConvergenceEngine:
         # Default
         else:
             record.action_recommended = "proceed"
+
+        # Escalación por razonamiento estratégico (ReasoningEngine, Fase 4).
+        # Nunca reemplaza la decisión heurística de arriba: solo la endurece
+        # si ReasoningEngine detectó algo más grave. proceed no cambia nada;
+        # review conserva la decisión previa pero la marca para revisión (a
+        # menos que ya fuera block); block fuerza el bloqueo, que
+        # should_block()/convergence_hook ya hacen cumplir en producción
+        # (mecanismo de bloqueo ya existente, sin arquitectura nueva).
+        if record.reasoning_ran and not record.reasoning_error:
+            _strictness = {"proceed": 0, "learn_only": 0, "review": 1, "block": 2}
+            current_rank = _strictness.get(record.action_recommended, 0)
+            reasoning_rank = _strictness.get(record.reasoning_recommendation, 0)
+            if reasoning_rank > current_rank:
+                logger.info(
+                    "Reasoning escalation: %s -> %s (risk=%s)",
+                    record.action_recommended, record.reasoning_recommendation,
+                    record.reasoning_risk_level,
+                )
+                record.action_recommended = record.reasoning_recommendation
 
         self._ledger.append(EpisodicEvent(
             event_type="CONVERGENCE_SYNTHESIZED",

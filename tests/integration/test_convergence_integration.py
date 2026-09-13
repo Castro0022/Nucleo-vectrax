@@ -605,3 +605,191 @@ class TestMultipleSources:
         )
         assert record is not None
         assert record.action_recommended in ("proceed", "review", "learn_only", "block")
+
+
+# ---------------------------------------------------------------------------
+# 9. ReasoningEngine conectado al ciclo vivo (auditoría 2026-09-13 → fix)
+# ---------------------------------------------------------------------------
+
+class TestReasoningEngineIntegration:
+    """
+    Verifica que ReasoningEngine.reason() se ejecuta realmente desde el
+    ciclo vivo de total_convergence.py (Fase 4 — Análisis, vía
+    TotalConvergenceEngine._run_reasoning()), y que su recomendación
+    (proceed/review/block) escala correctamente la acción final sin
+    reemplazar las fases existentes. También verifica el fail-safe.
+    """
+
+    def test_reasoning_actually_runs_for_real_message(self):
+        """
+        Sin mocks: prueba con evidencia real que el ciclo vivo invoca
+        ReasoningEngine end-to-end (adaptador + sub-motores reales).
+        """
+        from core.convergence_hook import run_convergence_cycle
+
+        record = run_convergence_cycle(
+            "quiero registrar una nota nueva sobre el proyecto",
+            source="test",
+            owner="reasoning_test_user",
+        )
+        assert record is not None
+        assert record.reasoning_ran is True, (
+            "ReasoningEngine.reason() no se ejecutó desde el ciclo real"
+        )
+        assert record.reasoning_recommendation in ("proceed", "review", "block")
+        assert record.reasoning_risk_level in ("LOW", "MEDIUM", "HIGH", "CRITICAL")
+        assert record.reasoning_error == ""
+
+    def test_reasoning_proceed_does_not_force_block_or_review(self):
+        """recommendation=proceed no debe escalar nada (rank 0, nunca sube)."""
+        from core.nucleus.total_convergence import TotalConvergenceEngine
+        from core.convergence_hook import run_convergence_cycle
+        from cognition.types import ReasoningResult
+
+        fake_result = ReasoningResult(
+            risk_score=0.05, risk_level="LOW", recommendation="proceed",
+        )
+        mock_reasoning = MagicMock()
+        mock_reasoning.reason.return_value = fake_result
+
+        with patch.object(
+            TotalConvergenceEngine, "_get_reasoning", return_value=mock_reasoning,
+        ):
+            record = run_convergence_cycle(
+                "mensaje normal de bajo riesgo",
+                source="test", owner="u_proceed",
+            )
+
+        assert record is not None
+        assert mock_reasoning.reason.called, "ReasoningEngine.reason() no fue invocado"
+        assert record.reasoning_recommendation == "proceed"
+        assert record.reasoning_error == ""
+
+    def test_reasoning_review_marks_for_review_without_blocking(self):
+        """
+        recommendation=review debe dejar la acción final en rank >= review
+        (conserva la decisión previa, la marca para revisión) SIN bloquear
+        should_block().
+        """
+        from core.nucleus.total_convergence import TotalConvergenceEngine
+        from core.convergence_hook import run_convergence_cycle, should_block
+        from cognition.types import ReasoningResult
+
+        fake_result = ReasoningResult(
+            risk_score=0.5, risk_level="MEDIUM", recommendation="review",
+            contradictions=["conflicto potencial con decisión previa"],
+        )
+        mock_reasoning = MagicMock()
+        mock_reasoning.reason.return_value = fake_result
+
+        with patch.object(
+            TotalConvergenceEngine, "_get_reasoning", return_value=mock_reasoning,
+        ):
+            record = run_convergence_cycle(
+                "mensaje que dispara revisión simulada",
+                source="test", owner="u_review",
+            )
+
+        assert record is not None
+        assert mock_reasoning.reason.called
+        assert record.reasoning_recommendation == "review"
+        _strictness = {"proceed": 0, "learn_only": 0, "review": 1, "block": 2}
+        assert _strictness[record.action_recommended] >= 1, (
+            f"La acción final ({record.action_recommended}) no quedó marcada "
+            "para revisión"
+        )
+        assert should_block(record) is False, (
+            "review no debe bloquear la ejecución — solo marcar"
+        )
+
+    def test_reasoning_block_blocks_via_existing_mechanism(self):
+        """
+        recommendation=block debe forzar action_recommended='block',
+        activando el mecanismo de bloqueo YA EXISTENTE
+        (convergence_hook.should_block → pipeline_worker no responde).
+        No se crea ningún mecanismo nuevo.
+        """
+        from core.nucleus.total_convergence import TotalConvergenceEngine
+        from core.convergence_hook import run_convergence_cycle, should_block
+        from cognition.types import ReasoningResult
+
+        fake_result = ReasoningResult(
+            risk_score=0.95, risk_level="CRITICAL", recommendation="block",
+            constitutional_pass=False,
+            constitutional_reasons=["CF-004 Riesgo Sistémico"],
+        )
+        mock_reasoning = MagicMock()
+        mock_reasoning.reason.return_value = fake_result
+
+        with patch.object(
+            TotalConvergenceEngine, "_get_reasoning", return_value=mock_reasoning,
+        ):
+            record = run_convergence_cycle(
+                "mensaje que dispara bloqueo simulado",
+                source="test", owner="u_block",
+            )
+
+        assert record is not None
+        assert mock_reasoning.reason.called
+        assert record.reasoning_recommendation == "block"
+        assert record.action_recommended == "block", (
+            "ReasoningEngine.block no escaló la acción final a 'block'"
+        )
+        assert should_block(record) is True, (
+            "El mecanismo de bloqueo ya existente (should_block) no se activó"
+        )
+
+    def test_reasoning_failure_is_fail_safe(self):
+        """
+        Si ReasoningEngine lanza una excepción, el ciclo NO debe romperse,
+        NO debe inventar una acción, y debe registrar el fallo en
+        reasoning_error dejando el resto del comportamiento intacto.
+        """
+        from core.nucleus.total_convergence import TotalConvergenceEngine
+        from core.convergence_hook import run_convergence_cycle
+
+        mock_reasoning = MagicMock()
+        mock_reasoning.reason.side_effect = RuntimeError("boom: evidencia insuficiente")
+
+        with patch.object(
+            TotalConvergenceEngine, "_get_reasoning", return_value=mock_reasoning,
+        ):
+            record = run_convergence_cycle(
+                "mensaje que dispara fallo simulado del razonador",
+                source="test", owner="u_fail",
+            )
+
+        assert record is not None, (
+            "El ciclo completo no debe romperse si ReasoningEngine falla"
+        )
+        assert mock_reasoning.reason.called
+        assert record.reasoning_ran is False
+        assert record.reasoning_error != ""
+        assert "boom" in record.reasoning_error
+        # El comportamiento seguro existente se mantiene: acción válida,
+        # fases completas, sin bloqueo inventado.
+        assert record.action_recommended in (
+            "proceed", "review", "block", "learn_only",
+        )
+        assert "synthesis" in record.phases_completed
+        assert "gravitation" in record.phases_completed
+
+    def test_reasoning_unavailable_is_fail_safe(self):
+        """Si _get_reasoning() retorna None, el ciclo continúa sin cambios."""
+        from core.nucleus.total_convergence import TotalConvergenceEngine
+        from core.convergence_hook import run_convergence_cycle
+
+        with patch.object(
+            TotalConvergenceEngine, "_get_reasoning", return_value=None,
+        ):
+            record = run_convergence_cycle(
+                "mensaje sin reasoning engine disponible",
+                source="test", owner="u_unavailable",
+            )
+
+        assert record is not None
+        assert record.reasoning_ran is False
+        assert record.reasoning_error == "reasoning_engine_unavailable"
+        assert record.action_recommended in (
+            "proceed", "review", "block", "learn_only",
+        )
