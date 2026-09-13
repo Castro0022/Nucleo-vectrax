@@ -176,7 +176,17 @@ def detect_criterion_request(text: str) -> bool:
 
 
 def known_domains() -> List[str]:
-    """Dominios reales con aprendizaje (gravity + domain_library), sin ruido."""
+    """Dominios reales con aprendizaje (gravity + domain_library +
+    verification_ledger), sin ruido.
+
+    Fix 2026-09-13: se agrega verification_ledger como tercera fuente.
+    Dominios como cybersecurity tienen evidencia REAL y verificada
+    (vault/domain_verification/cybersecurity.jsonl) pero nunca tuvieron
+    registros en gravity_engine ni un archivo en domain_knowledge — sin
+    esta fuente, detect_domain() nunca podía encontrarlos aunque la
+    evidencia existiera y build_criterion_result() la recuperara
+    correctamente cuando se le pasaba el dominio de forma explícita.
+    """
     doms = set()
     try:
         from core.learn.gravity_engine import get_gravity_index
@@ -192,6 +202,13 @@ def known_domains() -> List[str]:
                 doms.add(d)
     except Exception as exc:
         logger.debug("known_domains library error: %s", exc)
+    try:
+        from core.learn import verification_ledger as _vled
+        for d in _vled.list_domains():
+            if d and d not in _EXCLUDE_DOMAINS:
+                doms.add(d)
+    except Exception as exc:
+        logger.debug("known_domains verification_ledger error: %s", exc)
     return sorted(doms)
 
 

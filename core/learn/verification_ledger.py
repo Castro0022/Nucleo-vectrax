@@ -177,6 +177,26 @@ def subject_scores(domain: str, min_decisive: int = 1,
     return scores
 
 
+def list_domains() -> List[str]:
+    """Dominios con al menos un archivo de verificación persistido
+    (<vault>/domain_verification/{domain}.jsonl). Solo lectura de nombres
+    de archivo — no carga ni parsea contenido. Excluye backups (.bak.*)
+    y cualquier archivo que no termine en .jsonl. Fix 2026-09-13: esta
+    fuente de evidencia REAL (freight/cybersecurity/...) nunca estaba
+    representada en `criterion.known_domains()`, que solo miraba
+    gravity_engine + domain_knowledge — por eso un dominio con evidencia
+    verificada real (p. ej. cybersecurity) nunca podía ser detectado por
+    `detect_domain()` para el Domain Criterion Gate."""
+    d = _dir()
+    if not os.path.isdir(d):
+        return []
+    out: List[str] = []
+    for f in os.listdir(d):
+        if f.endswith(".jsonl") and ".bak." not in f:
+            out.append(f[: -len(".jsonl")])
+    return sorted(out)
+
+
 def clear_domain(domain: str) -> None:
     """Solo para tests / reinicio controlado."""
     try:
