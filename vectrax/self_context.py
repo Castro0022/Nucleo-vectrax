@@ -23,7 +23,7 @@ import os
 import re
 import sqlite3
 import time
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger("vectrax.self_context")
 
@@ -138,6 +138,7 @@ def resolve_self_aware(
     query: str,
     lang: str = "es",
     user_id: str = "",
+    act_log: Optional[Any] = None,
 ) -> str:
     """
     Genera una respuesta auto-consciente usando el LLM con el auto-contexto
@@ -145,8 +146,35 @@ def resolve_self_aware(
 
     Intenta Intelligence Bridge primero, luego OpenAI directo.
     Retorna cadena vacía si no hay LLM disponible.
+
+    Observabilidad (incidente 173s, correlation_id=25b0c3b3fd68, 2026-09-13):
+    mide por separado dos fases que antes quedaban fusionadas en un solo
+    bloque opaco:
+      - "self_aware_context_build": construir build_self_aware_prompt()/
+        build_self_context() (lecturas locales/DB, censo, deploy memory,
+        capability gate, etc.) — trabajo de análisis, no I/O externo.
+      - "self_aware_provider_call": Intelligence Bridge + OpenAI directo —
+        espera bloqueada a un proveedor externo.
+    Si `act_log` se pasa (Fase A, core.observability.router_activation), se
+    registran ambos tiempos en router_activation.jsonl. No cambia ninguna
+    lógica de fallback/orden/timeouts; act_log=None preserva el
+    comportamiento anterior exacto.
     """
+    _t0 = time.perf_counter()
     prompt = build_self_aware_prompt(query, lang=lang, user_id=user_id)
+    _context_ms = (time.perf_counter() - _t0) * 1000.0
+    if act_log is not None:
+        try:
+            from core.observability.router_activation import record_activate
+            record_activate(
+                act_log, "self_aware_context_build", latency_ms=_context_ms,
+            )
+        except Exception:
+            pass
+
+    _t1 = time.perf_counter()
+    _provider_used = "none"
+    _result_text = ""
 
     # Intelligence Bridge
     try:
@@ -155,23 +183,37 @@ def resolve_self_aware(
             result = route_single(prompt)
             if result.get("success") and result.get("content"):
                 logger.info("Self-aware response via Intelligence Bridge")
-                return result["content"].strip()
+                _provider_used = "intelligence_bridge"
+                _result_text = result["content"].strip()
     except Exception as exc:
         logger.debug("Intelligence Bridge unavailable for self-aware: %s", exc)
 
     # OpenAI directo vía util compartido (context-agnostic; identidad + api_gate
     # + circuit centralizados en core.llm_call). Conserva la temperatura/timeout
     # propios del self-aware (0.4 / 15s).
-    try:
-        from core.llm_call import complete
-        res = complete(prompt, temperature=0.4, timeout=15.0)
-        if res.ok and res.text:
-            logger.info("Self-aware response via OpenAI direct")
-            return res.text
-    except Exception as exc:
-        logger.debug("OpenAI self-aware failed: %s", exc)
+    if not _result_text:
+        try:
+            from core.llm_call import complete
+            res = complete(prompt, temperature=0.4, timeout=15.0)
+            if res.ok and res.text:
+                logger.info("Self-aware response via OpenAI direct")
+                _provider_used = "openai_direct"
+                _result_text = res.text
+        except Exception as exc:
+            logger.debug("OpenAI self-aware failed: %s", exc)
 
-    return ""
+    if act_log is not None:
+        try:
+            from core.observability.router_activation import record_activate
+            record_activate(
+                act_log, "self_aware_provider_call",
+                reason=_provider_used,
+                latency_ms=(time.perf_counter() - _t1) * 1000.0,
+            )
+        except Exception:
+            pass
+
+    return _result_text
 
 
 # ---------------------------------------------------------------------------

@@ -1421,7 +1421,9 @@ class ExternalGateway:
                 if _self_ref_hit:
                     from core.language_gate import get_user_language
                     _lang = get_user_language(user_id, content)
-                    _self_answer = resolve_self_aware(content, lang=_lang, user_id=user_id)
+                    _self_answer = resolve_self_aware(
+                        content, lang=_lang, user_id=user_id, act_log=_act_log,
+                    )
                     if _self_answer:
                         response_text = _self_answer
                         _self_resolved = True
