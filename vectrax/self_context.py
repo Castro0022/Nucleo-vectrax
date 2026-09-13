@@ -124,12 +124,17 @@ USER QUESTION: {query}
 RESPONSE (from what already exists: real, concrete and in a natural tone):"""
 
 
-def build_self_aware_prompt(query: str, lang: str = "es", user_id: str = "") -> str:
+def build_self_aware_prompt(
+    query: str, lang: str = "es", user_id: str = "",
+    act_log: Optional[Any] = None,
+) -> str:
     """
     Construye un prompt donde el auto-contexto es la fuente primaria obligatoria.
     El LLM NO puede ignorarlo ni completar con información genérica.
     """
-    self_ctx = build_self_context(lang=lang, user_id=user_id, query=query)
+    self_ctx = build_self_context(
+        lang=lang, user_id=user_id, query=query, act_log=act_log,
+    )
     template = _SELF_PROMPT_ES if lang == "es" else _SELF_PROMPT_EN
     return template.format(self_context=self_ctx, query=query)
 
@@ -161,7 +166,9 @@ def resolve_self_aware(
     comportamiento anterior exacto.
     """
     _t0 = time.perf_counter()
-    prompt = build_self_aware_prompt(query, lang=lang, user_id=user_id)
+    prompt = build_self_aware_prompt(
+        query, lang=lang, user_id=user_id, act_log=act_log,
+    )
     _context_ms = (time.perf_counter() - _t0) * 1000.0
     if act_log is not None:
         try:
@@ -442,7 +449,34 @@ def _is_capability_query(query: str) -> bool:
         return False
 
 
-def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> str:
+def _sub_stage(act_log: Optional[Any], name: str, t0: float, **extra: Any) -> None:
+    """Registra la latencia de una subllamada de build_self_context.
+
+    Observabilidad (incidente 173s/130s, correlation_id=3aa60101ba34,
+    2026-09-13): el Cronómetro 1 (self_aware_context_build) confirmó que
+    build_self_context() es el cuello de botella (~130s de ~144s totales),
+    no la espera al proveedor LLM. Este helper mide cada una de sus
+    subllamadas por separado para aislar cuál de ellas concentra el tiempo.
+    No cambia ninguna lógica ni el resultado de build_self_context();
+    act_log=None es un no-op (mismo patrón que resolve_self_aware, Fase A).
+    """
+    if act_log is None:
+        return
+    try:
+        from core.observability.router_activation import record_activate
+        record_activate(
+            act_log, name,
+            latency_ms=(time.perf_counter() - t0) * 1000.0,
+            **extra,
+        )
+    except Exception:
+        pass
+
+
+def build_self_context(
+    lang: str = "es", user_id: str = "", query: str = "",
+    act_log: Optional[Any] = None,
+) -> str:
     """
     Construye el contexto de auto-observación de Vectrax.
 
@@ -454,8 +488,13 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
     the creator's name — prevents the LLM from calling users "Mario".
     """
     import os
+    _t0 = time.perf_counter()
     stats = _read_live_stats()
+    _sub_stage(act_log, "self_ctx_stats", _t0)
+
+    _t0 = time.perf_counter()
     universe = _read_universe_state()
+    _sub_stage(act_log, "self_ctx_universe_state", _t0)
 
     # Detect if this is the creator
     creator_uid = os.environ.get("VX_CREATOR_ID", "2030762343")
@@ -515,6 +554,7 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
             )
 
     # Evolution — longitudinal comparison (yesterday, 7d, 30d)
+    _t0 = time.perf_counter()
     try:
         from core.self_observation.evolution_memory import get_evolution_context
         evolution = get_evolution_context()
@@ -522,9 +562,11 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
             base += "\n\n" + evolution
     except Exception as _ev_exc:
         logger.debug("Evolution context failed: %s", _ev_exc)
+    _sub_stage(act_log, "self_ctx_evolution", _t0)
 
     # Deploy memory — recent commits + modified modules (creator only)
     if is_creator:
+        _t0 = time.perf_counter()
         try:
             from core.self_observation.deployment_memory import deploy_summary
             ds = deploy_summary()
@@ -543,9 +585,11 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
                 base += "\n\n" + "\n".join(lines)
         except Exception as _dm_exc:
             logger.debug("Deploy memory failed: %s", _dm_exc)
+        _sub_stage(act_log, "self_ctx_deploy_memory", _t0)
 
     # Codebase structure — Vectrax knows its own modules (creator only)
     if is_creator:
+        _t0 = time.perf_counter()
         try:
             lines = ["[MI ESTRUCTURA — módulos principales en /app]"]
             import os as _os
@@ -569,10 +613,12 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
             base += "\n\n" + "\n".join(lines)
         except Exception as _cs_exc:
             logger.debug("Codebase structure failed: %s", _cs_exc)
+        _sub_stage(act_log, "self_ctx_codebase_structure", _t0)
 
     # Convergence registry (canonical, #107) — births, deaths, active details.
     # The legacy convergence_history ledger is left out of the operational
     # circuit; this reads exclusively from convergence_registry.
+    _t0 = time.perf_counter()
     try:
         from core.learn.convergence_registry import build_context as _conv_ctx
         conv_history = _conv_ctx(limit=5)
@@ -580,52 +626,65 @@ def build_self_context(lang: str = "es", user_id: str = "", query: str = "") -> 
             base += "\n\n" + conv_history
     except Exception as _ch_exc:
         logger.debug("Convergence registry context failed: %s", _ch_exc)
+    _sub_stage(act_log, "self_ctx_convergence_registry", _t0)
 
     # Market observation awareness
     market_ctx = ""
+    _t0 = time.perf_counter()
     try:
         from connectors.etoro.market_context import get_watchlist_summary
         market_ctx = get_watchlist_summary()
     except Exception:
         pass
+    _sub_stage(act_log, "self_ctx_market_context", _t0)
 
     # Autonomous observations (persistent memory of what Vectrax observed)
+    _t0 = time.perf_counter()
     obs_ctx = _read_recent_observations()
+    _sub_stage(act_log, "self_ctx_recent_observations", _t0)
 
     # Engines (orchestration layer) — qué motores tengo conectados/activos.
     # Fase 3, paso 6: si el mensaje es una pregunta específica de capacidades,
     # el nuevo sistema de autoconocimiento verificable de la Fase 3 ya
     # construye un resumen con más detalle (exists/connected/authorized/
     # health por motor); evita duplicar aquí un resumen menos preciso.
+    _t0 = time.perf_counter()
     engines_ctx = "" if _is_capability_query(query) else _read_engines_state()
+    _sub_stage(act_log, "self_ctx_engines_state", _t0)
 
     # Narrativa por-dominio grounded — material real para comentar de forma casual
     # QUÉ está observando Vectrax en cada dominio (no es un reporte formal).
     dom_obs = ""
+    _t0 = time.perf_counter()
     try:
         from core.system_report import build_domain_observations
         dom_obs = build_domain_observations(lang=lang)
     except Exception as _do_exc:
         logger.debug("domain observations failed: %s", _do_exc)
+    _sub_stage(act_log, "self_ctx_domain_observations", _t0)
 
     # Antigüedad real (DESDE CUÁNDO) — deltas verificables ya calculados, para que
     # el LLM pueda decir "llevo observando X desde hace N días" sin inferir tiempo.
     dur_obs = ""
+    _t0 = time.perf_counter()
     try:
         from core.trend_reader import build_duration_digest
         dur_obs = build_duration_digest(lang=lang)
     except Exception as _dur_exc:
         logger.debug("duration digest failed: %s", _dur_exc)
+    _sub_stage(act_log, "self_ctx_duration_digest", _t0)
 
     # Autoconocimiento con procedencia — origen/hitos/procedencia según el query.
     # Reutiliza census/evolution/convergence_history/observation_ledger/gravity.
     # Reconstruido en vivo; vacío si el query no lo implica o no hay evidencia.
     self_knowledge_ctx = ""
+    _t0 = time.perf_counter()
     try:
         from core.self_observation.self_knowledge import build_self_knowledge_context
         self_knowledge_ctx = build_self_knowledge_context(query, lang=lang, user_id=user_id)
     except Exception as _sk_exc:
         logger.debug("self_knowledge context failed: %s", _sk_exc)
+    _sub_stage(act_log, "self_ctx_self_knowledge", _t0)
 
     parts = [base]
     if universe:
