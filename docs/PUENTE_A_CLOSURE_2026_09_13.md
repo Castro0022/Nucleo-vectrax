@@ -131,6 +131,29 @@ código desplegado → `source=read_tool_bridge`, reads=1, writes=0.
 - Personalidad/estilo conversacional — sin cambios (mismo `core.llm_call`,
   mismo anclaje de fidelidad).
 
+## Confirmación final de seguridad — secuencia temporal verificada
+
+Pregunta cerrada explícitamente antes de dar por terminado Puente A: ¿existió
+alguna ventana en producción donde Puente A estuviera disponible para
+usuarios no-creador SIN `is_protected_path()`? **Respuesta: NO**, verificado
+cruzando el timestamp de cada commit con el timestamp real del restart del
+supervisor que lo cargó en el proceso vivo (`~/.vectrax/supervisor.err`):
+
+| Commit | Timestamp commit | Restart real (PID pipeline_worker) | Estado en el proceso vivo |
+|---|---|---|---|
+| `9d97fba` | 2026-09-13 15:50:04 -0400 | 16:04:00 (PID 80930) | creator-only ON · sin `is_protected_path` (no existía) |
+| `8928c85` | 2026-09-13 16:20:40 -0400 | 16:21:04 (PID 82229) | creator-only ON · sin `is_protected_path` (no existía) |
+| `456207a` | 2026-09-13 16:39:25 -0400 | 16:39:44 (PID 84130) | creator-only OFF · `is_protected_path` ON — ambos en el MISMO commit y MISMO restart |
+
+`is_protected_path()` y la eliminación de `_is_creator_uid(user_id)` viven en
+el mismo diff de `456207a` (un solo commit, 4 archivos). Un proceso Python no
+recarga módulos en caliente: pasa de "código viejo completo" a "código nuevo
+completo" en el instante del restart, sin estado intermedio. Por lo tanto, en
+todo momento real de producción: o bien (a) creator-only bloqueaba a todo
+no-creador incondicionalmente (16:04:00–16:39:44), o bien (b) creator-only
+estaba retirado con `is_protected_path` ya activo (desde 16:39:44) — nunca la
+combinación insegura de ambos ausentes a la vez.
+
 ## Archivos
 
 - `core/operator/read_tool_intent.py` — parsers (ruta + símbolo) +
