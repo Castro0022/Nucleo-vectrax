@@ -1236,6 +1236,53 @@ class ExternalGateway:
             logger.debug("Self-reference layer failed (passthrough): %s", _sr_exc)
 
         # ══════════════════════════════════════════════════════════════
+        # STEP 4.2a2b: PUENTE A — READ_ONLY tool bridge (2026-09-13)
+        # Usuario → Intent determinista → Capability gate → local_filesystem.read
+        # → evidencia → respuesta. Gateado por VX_TOOL_BRIDGE_READ_ONLY (default
+        # OFF) y restringido al creador en esta primera versión — superficie de
+        # ataque mínima mientras se valida Puente A. El LLM NUNCA decide qué
+        # herramienta existe (eso ya lo decidió el parser determinista de
+        # read_tool_intent.py); solo puede redactar tono sobre la evidencia real
+        # leida, con anclaje estricto (ver read_tool_bridge._compose_grounded_response).
+        # ══════════════════════════════════════════════════════════════
+        _domain_resolved = False
+        _domain_source = ""
+        if not response_text and _is_creator_uid(user_id):
+            _rtb_t0 = time.perf_counter()
+            try:
+                from core.operator.read_tool_bridge import is_enabled as _rtb_enabled
+                if _rtb_enabled():
+                    from core.operator.read_tool_bridge import resolve_file_read
+                    _rtb_answer = resolve_file_read(content, user_id=user_id)
+                    if _rtb_answer:
+                        response_text = _rtb_answer
+                        _domain_resolved = True
+                        _domain_source = "read_tool_bridge"
+                        logger.info(
+                            "Pipeline: READ-TOOL-BRIDGE resolved | user=%s | len=%d",
+                            user_id[:20], len(_rtb_answer),
+                        )
+                    try:
+                        from core.observability.router_activation import (
+                            record_activate as _rec_rtb, record_skip as _skip_rtb,
+                        )
+                        if _act_log is not None:
+                            if _rtb_answer:
+                                _rec_rtb(
+                                    _act_log, "read_tool_bridge", reason="resolved",
+                                    latency_ms=(time.perf_counter() - _rtb_t0) * 1000.0,
+                                )
+                            else:
+                                _skip_rtb(
+                                    _act_log, "read_tool_bridge",
+                                    reason="no read-file pattern matched",
+                                )
+                    except Exception:
+                        pass
+            except Exception as _rtb_exc:
+                logger.debug("read_tool_bridge failed (passthrough): %s", _rtb_exc)
+
+        # ══════════════════════════════════════════════════════════════
         # STEP 4.2a3: DOMAIN CRITERION GATE (cross-dominio) — la divisa de Vectrax
         # ══════════════════════════════════════════════════════════════
         # Precedencia sobre el narrador SELF-AWARE y sobre el LLM. El objetivo de
@@ -1248,8 +1295,10 @@ class ExternalGateway:
         # Guard: consultas de PRECIO/datos de mercado sin pedido de opinión las
         # maneja el intercept de mercado en pipeline_v2 (no las secuestra).
         # Solo lectura de evidencia; no toca aprendizaje/thresholds/datos.
-        _domain_resolved = False
-        _domain_source = ""
+        # NOTA: _domain_resolved/_domain_source se inicializan ANTES (STEP
+        # 4.2a2b, Puente A) para no pisar su resultado si ya resolvió — este
+        # bloque solo corre (y solo puede setearlos) cuando `response_text`
+        # sigue vacío.
         if not response_text:
             try:
                 from core.learn.criterion import (

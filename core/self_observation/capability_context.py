@@ -69,6 +69,22 @@ logger = logging.getLogger("vectrax.self_observation.capability_context")
 # esa combinación se pierde si se reduce a una sola etiqueta (por eso NO es
 # un enum único).
 
+# Reversibilidad (Puente A/B, 2026-09-13): propiedad del catálogo de
+# capacidades que gobierna qué puede ejecutarse autónomamente y bajo qué
+# gate. Eje independiente de `health`/`authorized` — una capacidad puede
+# estar AVAILABLE+authorized y aun así ser IRREVERSIBLE_CRITICAL (nunca
+# ejecución autónoma). No reemplaza ningún inventario existente; vive junto
+# a exists/connected/authorized/health en la misma `CapabilityEntry`.
+REVERSIBILITY_READ_ONLY = "READ_ONLY"
+REVERSIBILITY_REVERSIBLE_WRITE = "REVERSIBLE_WRITE"
+REVERSIBILITY_BEHAVIOR_CHANGE = "BEHAVIOR_CHANGE"
+REVERSIBILITY_IRREVERSIBLE_CRITICAL = "IRREVERSIBLE_CRITICAL"
+# Default para entradas aún no clasificadas explícitamente — nunca se asume
+# READ_ONLY por omisión (lo contrario sería inseguro); una capacidad
+# UNCLASSIFIED simplemente no participa de ningún puente autónomo todavía.
+REVERSIBILITY_UNCLASSIFIED = "UNCLASSIFIED"
+
+
 @dataclass(frozen=True)
 class CapabilityEntry:
     """Una fila del inventario de capacidades, con evidencia trazable."""
@@ -82,6 +98,7 @@ class CapabilityEntry:
     reason: str            # detalle determinista, saneado (nunca secretos/rutas/env)
     evidence_source: str   # qué función produjo el dato (trazabilidad)
     observed_at: float     # timestamp de la observación real (no cacheado)
+    reversibility: str = REVERSIBILITY_UNCLASSIFIED  # ver constantes arriba
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -95,6 +112,7 @@ class CapabilityEntry:
             "reason": self.reason,
             "evidence_source": self.evidence_source,
             "observed_at": self.observed_at,
+            "reversibility": self.reversibility,
         }
 
 
@@ -156,6 +174,16 @@ _CAPABILITY_CATALOG: Dict[str, Dict[str, Any]] = {
     "freight_query": {
         "kind": "service", "group": "otros",
         "module": "intents.freight_intents", "attr": "resolve_freight_query",
+    },
+    # Puente A (2026-09-13): lectura de archivos locales sandboxed, usada por
+    # core.operator.read_tool_bridge. Única entrada del catálogo clasificada
+    # explícitamente como READ_ONLY por ahora — el resto queda UNCLASSIFIED
+    # hasta que Puente B lo necesite (no se re-audita todo el catálogo aquí).
+    "local_filesystem": {
+        "kind": "capability", "group": "herramientas",
+        "module": "connectors.adapters.local_filesystem",
+        "attr": "LocalFilesystemConnector",
+        "reversibility": REVERSIBILITY_READ_ONLY,
     },
 }
 
@@ -313,6 +341,7 @@ def build_capability_context(decision: Any) -> CapabilityContext:
             reason=_sanitize_reason(reason),
             evidence_source="capability_context._CAPABILITY_CATALOG",
             observed_at=now,
+            reversibility=spec.get("reversibility", REVERSIBILITY_UNCLASSIFIED),
         ))
 
     by_name = {entry.name: entry for entry in entries}
