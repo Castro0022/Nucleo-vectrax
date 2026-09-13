@@ -256,6 +256,20 @@ Centralized 429 protection with exponential backoff across all OpenAI/Gemini cal
 File: `core/api_gate.py`
 API: `GET /v1/dashboard/api_gates`
 
+### 🔎 Puente A — herramienta READ_ONLY de lectura de archivos
+Vectrax puede leer un archivo específico del propio repositorio y responder desde esa evidencia real, sin cargar el repo completo y sin que el LLM decida qué herramienta existe. Primera pieza de una arquitectura de puentes de herramientas (Puente A = solo lectura; Puente B, futuro = escrituras reversibles, gobernado por la propiedad `reversibility` del catálogo de capacidades).
+
+**Pipeline**: `Usuario → Intent determinista → Capability gate → local_filesystem.read → evidencia → respuesta`.
+
+- **Intent determinista** (`core/operator/read_tool_intent.py`) — regex acotado (es/en) detecta "abre/lee/muéstrame `<path>` ... qué hace `<función>`". Extrae ruta relativa + símbolo opcional. Rechaza rutas absolutas, traversal (`..`) y extensiones no-texto (`.db`, `.png`, etc.) antes de tocar cualquier connector.
+- **Capability gate** (`core/self_observation/capability_context.py`) — nuevo campo `reversibility` en `CapabilityEntry` (`READ_ONLY` / `REVERSIBLE_WRITE` / `BEHAVIOR_CHANGE` / `IRREVERSIBLE_CRITICAL`, default `UNCLASSIFIED`). Solo `local_filesystem` está clasificada `READ_ONLY` por ahora — el resto del catálogo queda sin clasificar hasta que un puente futuro lo necesite.
+- **Ejecución** (`core/operator/read_tool_bridge.py`) — reutiliza `LocalFilesystemConnector.read()` / `ConnectionEngine.read()` y su sandbox (`_safe_path()`, confinado a la raíz del repo) ya existentes en la Universal Connector Engine (UCE); ningún lector nuevo, ningún permiso ampliado (solo `"read"`). Si se pidió un símbolo, lo extrae vía `ast` (determinista, nunca ejecuta el código leído).
+- **Composición narrativa con anclaje estricto** — el fragmento real se pasa al LLM (`core.llm_call.complete`) solo para redactar tono en la voz de Vectrax; el LLM no puede alterar, contradecir ni inventar hechos respecto a lo leído. Si no puede componer con fidelidad, la respuesta cae a citar el fragmento literal en vez de especular.
+- **Restricciones de esta primera versión**: gateado por `VX_TOOL_BRIDGE_READ_ONLY` (default OFF — cero cambio de comportamiento hasta activarlo) y restringido al creador, mientras se valida en producción.
+
+Files: `core/operator/read_tool_intent.py`, `core/operator/read_tool_bridge.py`, `core/operator/external_gateway.py` (STEP 4.2a2b), `core/self_observation/capability_context.py`
+Tests: `tests/test_read_tool_bridge.py` (18 tests: parser positivo/negativo, path traversal, extensión no-texto, capability gate, conteo real de llamadas `read()`/`write()` vía el tracker de la UCE, variación de estado real entre lecturas, símbolo inexistente nunca inventa, no-creador bloqueado, flag OFF sin cambios)
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -2357,6 +2371,10 @@ Files:
 ---
 
 ## 📋 Changelog
+
+### 2026-09-13
+- **feat(operator): Puente A — herramienta READ_ONLY de lectura de archivos con evidencia** — `Usuario → Intent determinista → Capability gate → local_filesystem.read → evidencia → respuesta`, gateado por `VX_TOOL_BRIDGE_READ_ONLY` (default OFF) y restringido al creador en esta primera versión. Nuevo campo `reversibility` en `CapabilityEntry` (`READ_ONLY`/`REVERSIBLE_WRITE`/`BEHAVIOR_CHANGE`/`IRREVERSIBLE_CRITICAL`), catalogando `local_filesystem` como `READ_ONLY`. Reutiliza `LocalFilesystemConnector.read()`/`ConnectionEngine.read()` y su sandbox (`_safe_path()`) ya existentes — ningún lector nuevo, ningún permiso ampliado. Extracción de símbolo vía `ast`; composición narrativa con anclaje estricto (el LLM redacta tono, nunca hechos; fallback a cita literal si no puede ser fiel). Verificado end-to-end contra el pipeline real: 1 sola llamada `read()`, 0 `write()`, respuesta con evidencia real de `system_monitor.py::collect_metrics()`. Nueva sección *Puente A*. `tests/test_read_tool_bridge.py` (18 tests). Ver issue de cierre para el detalle de despliegue.
+- **fix(perf): incidente self_aware_context_build (~130–173s) — respuestas perdidas en Telegram por `GATEWAY_TIMEOUT=30s`** — Diagnosticado con dos cronómetros (`self_aware_context_build` vs `self_aware_provider_call`) y 12 subllamadas instrumentadas en `build_self_context()`: el 93% del tiempo se consumía en `core.learn.convergence_registry.build_context()` contra `vault/convergence_history.db` (17.4GB). Fase 1: índices en `convergence_lifecycle_events(timestamp, event)` + `get_canonical_convergences(limit=3)` en vez de cargar 66,059 filas (−96% en `self_aware_context_build`, −85% en latencia total, ya bajo el timeout). Fase 2 Paso 1: `convergence_registry.record_convergence_snapshot()` dejó de insertar eventos de lifecycle repetidos sin cambio material (causa raíz de 178.5M+ filas acumuladas) — verificado 0 filas nuevas en ventanas limpias de 60s/180s post-deploy. Sin DELETE/VACUUM/poda de los registros históricos. Cierre: `docs/SELF_AWARE_LATENCY_INCIDENT_2026_09_13.md`.
 
 ### 2026-08-13
 - **feat: detección de dominio en el motor de intención + consumo en el gateway** (PRs #93, #94) — `SemanticClassifier` expone el dominio de la consulta en su salida (`SemanticResult.domain`/`domain_confidence`, aditivo/retrocompatible) mediante un híbrido keyword-first (`criterion.detect_domain`) + fallback semántico por embeddings contra prototipos por dominio construidos desde `known_domains()` (dinámico), reutilizando el vector del boost de intención (caché de 1 ranura, sin doble encode). El gate de criterio del gateway (STEP 4.2a3) lo consume vía `_resolve_query_domain()`: dominio semántico si su confianza alcanza el umbral, si no `detect_domain()` léxico; consultas ambiguas → sin dominio. Detrás de `VX_SEMANTIC_DOMAIN` (default ON) / `VX_SEMANTIC_DOMAIN_FLOOR` / `VX_SEMANTIC_DOMAIN_GATE_FLOOR`. Nueva sección *Detección de dominio (motor de intención)*. Tests `TestDomainDetection` + `TestResolveQueryDomain`.
