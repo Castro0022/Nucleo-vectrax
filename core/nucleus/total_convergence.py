@@ -36,12 +36,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core import state_manager
 from core.learn.episodic import get_ledger, EpisodicEvent
@@ -228,6 +229,55 @@ _HIGH_COHERENCE_THRESHOLD = 0.75
 _CC_OBS_FIRST_SIGHTING = 0.5   # sin cambios: comportamiento histórico intacto
 _CC_OBS_CONFIRMED = 0.9        # repetición EXACTA, consistente (sin contradicciones)
 _CC_OBS_CONTRADICTED = 0.2     # repetición EXACTA, pero contradicha por ReasoningEngine
+
+# Victoria B (2026-09-17) — selección de capacidad por el Núcleo cuando la
+# evidencia de memoria es insuficiente
+# ==============================================================================
+# Auditoría previa (alcance único de este ticket): `CapabilityEntry.name` +
+# `.health` + `.authorized` (core/self_observation/capability_context.py) YA
+# distinguen el PROPÓSITO de cada capacidad de forma determinista —
+# "online_search", "places_search", "market_observer", "llm_providers" son
+# nombres ya existentes y estables del mismo catálogo que usa
+# `capability_for_route()`. NO se requiere enriquecer `CapabilityEntry`: basta
+# con consultar esos nombres ya existentes, exactamente como ya hace
+# `external_gateway._active_capability_gate()`. `_FALLBACK_CANDIDATES` (ese
+# mismo módulo) NO incluye "places_search" ni "llm_providers" — pertenece a
+# una función distinta (narración de fallback al usuario) que no se toca aquí;
+# por eso la disponibilidad se resuelve DIRECTO desde `ctx.entries` para los 4
+# nombres que este mapeo necesita, sin modificar `capability_context.py`.
+#
+# Mapea `intent_ssot.IntentDecision.primary_intent` (valores de
+# `core.smart_router.Intent`, YA calculados por el SSOT existente — sin
+# tocarlo) al nombre de `CapabilityEntry` que respalda esa ruta. Deliberado:
+# memory/local/identity/command/ai_single/ai_multi quedan FUERA — no dependen
+# de una capacidad externa verificable (mismo criterio que ya aplica
+# `capability_for_route()` para excluirlas de su propio mapeo). "cognitive"
+# se resuelve aparte (ver `_build_nucleus_decision`) porque además exige
+# riesgo estratégico bajo, no solo disponibilidad de capacidad.
+_INTENT_CAPABILITY_NAME: Dict[str, str] = {
+    "online": "online_search",
+    "place_search": "places_search",
+    "market": "market_observer",
+}
+
+# Los 4 nombres de CapabilityEntry que este ticket necesita consultar por
+# disponibilidad+autorización real (fuera del recorte de _FALLBACK_CANDIDATES).
+_TRACKED_CAPABILITY_NAMES: Tuple[str, ...] = (
+    "online_search", "places_search", "market_observer", "llm_providers",
+)
+
+# Petición EXPLÍCITA de búsqueda online — SOLO para la excepción de
+# prioridad (Victoria B, caso 4): "online" es el intent GENÉRICO de
+# fallback de `core.smart_router._classify_regex()` para CUALQUIER pregunta
+# factual (incluida una ya convergida por evidencia), a diferencia de
+# "market"/"place_search" que solo se activan con patrones específicos. Sin
+# esta mención textual explícita, tratar CUALQUIER intent=online como
+# "petición explícita" rompería la Regresión de Victoria A (la misma
+# pregunta repetida ya convergida dejaría de responder por evidencia).
+_EXPLICIT_ONLINE_RE = re.compile(
+    r"\b(?:online|internet|en\s+la\s+web|en\s+internet)\b",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -809,7 +859,7 @@ class TotalConvergenceEngine:
         # patrón de bridge no invasivo que _run_reasoning() arriba — UNA
         # consulta por ciclo, resultado anotado en record.capability_snapshot,
         # nunca decide action_recommended por sí mismo.
-        record = self._run_capability_check(record)
+        record = self._run_capability_check(record, content)
 
         record.phases_completed.append(ConvergencePhase.ANALYSIS.value)
         return record
@@ -977,6 +1027,7 @@ class TotalConvergenceEngine:
     def _run_capability_check(
         self,
         record: ConvergenceRecord,
+        content: str,
     ) -> ConvergenceRecord:
         """
         Consulta `core.self_observation.capability_context.build_capability_context()`
@@ -986,30 +1037,88 @@ class TotalConvergenceEngine:
         `_phase_synthesis()` es quien decide si usa este snapshot para poblar
         `NucleusDecision.candidate_strategy`.
 
-        `build_capability_context()` acepta `decision: Any` y solo lee
-        `.domain` / `.task_type` / `.capability_query` vía `getattr` (ver su
-        propia firma) — no requiere una `IntentDecision` real de
-        `intent_ssot.py` (protegido, sin tocar), un objeto mínimo alcanza.
+        Victoria B (2026-09-17): ahora TAMBIÉN resuelve una `IntentDecision`
+        REAL vía `core.intent_ssot.resolve_intent()` — el SSOT de intención
+        ya existente, protegido (se LEE, nunca se modifica). Antes se usaba
+        un shim con `domain=record.domain` (clasificador de RUTA DE ARCHIVO
+        de `core.learn.constitution`, siempre "unknown" para texto
+        conversacional) y `capability_query=False` fijo; ahora, cuando
+        `resolve_intent()` responde, el shim usa su `domain`/`task_type`/
+        `capability_query` reales — sin alterar `record.domain` (otros
+        consumidores de ese campo, p.ej. gravity/rules_store, siguen
+        exactamente igual). Si `resolve_intent()` falla, se degrada al shim
+        anterior sin cambio de comportamiento.
+
+        También resuelve, para las 4 capacidades relevantes a este ticket
+        (`_TRACKED_CAPABILITY_NAMES`), disponibilidad+autorización real
+        directo desde `ctx.entries` — `_FALLBACK_CANDIDATES` (módulo de
+        capability_context) no incluye "places_search" ni "llm_providers"
+        (pertenece a otra función, narración de fallback; no se toca), así
+        que `fallback_sources` por sí solo no alcanza para ese subconjunto.
 
         Fail-safe estricto: cualquier fallo deja `capability_snapshot` vacío
         (`{}`) y el resto del ciclo continúa exactamente igual que antes.
         """
         try:
             from core.self_observation.capability_context import (
-                build_capability_context,
+                build_capability_context, HEALTH_AVAILABLE,
             )
 
-            class _CapabilityQueryShim:
-                """Adaptador mínimo, solo para esta consulta — nunca se
-                importa ni se construye un `IntentDecision` real aquí."""
-                domain = record.domain if record.domain != "unknown" else None
-                task_type = None
-                capability_query = False
+            intent_decision = None
+            try:
+                from core.intent_ssot import resolve_intent
+                intent_decision = resolve_intent(content)
+            except Exception as exc:
+                logger.debug(
+                    "intent_ssot.resolve_intent unavailable (fail-safe, "
+                    "shim legado): %s", exc,
+                )
+
+            if intent_decision is not None and intent_decision.primary_intent:
+                class _CapabilityQueryShim:
+                    """IntentDecision real (intent_ssot) cuando está
+                    disponible — ver docstring arriba."""
+                    domain = intent_decision.domain or (
+                        record.domain if record.domain != "unknown" else None
+                    )
+                    task_type = intent_decision.task_type or None
+                    capability_query = intent_decision.capability_query
+            else:
+                class _CapabilityQueryShim:
+                    """Shim legado (comportamiento idéntico al anterior a
+                    Victoria B) cuando `resolve_intent()` no respondió."""
+                    domain = record.domain if record.domain != "unknown" else None
+                    task_type = None
+                    capability_query = False
 
             ctx = build_capability_context(_CapabilityQueryShim())
+            by_name = {e.name: e for e in ctx.entries}
+            capability_available = {
+                name: bool(
+                    by_name[name].health == HEALTH_AVAILABLE
+                    and by_name[name].authorized
+                )
+                for name in _TRACKED_CAPABILITY_NAMES
+                if name in by_name
+            }
+
             record.capability_snapshot = {
                 "fallback_sources": list(ctx.fallback_sources),
                 "gap_names": [g.name for g in ctx.gaps[:10]],
+                # Victoria B: señales retenidas ABSTRACTAS (nunca contenido
+                # crudo del mensaje) para que _build_nucleus_decision()
+                # seleccione capacidad por Strategy — nunca un segundo router.
+                "intent_primary": (
+                    intent_decision.primary_intent if intent_decision else ""
+                ),
+                "intent_domain": (
+                    intent_decision.domain if intent_decision else ""
+                ),
+                "intent_confidence": round(
+                    intent_decision.confidence if intent_decision else 0.0, 4,
+                ),
+                "capability_available": capability_available,
+                "explicit_online_request": bool(_EXPLICIT_ONLINE_RE.search(content or "")),
             }
         except Exception as exc:
             logger.debug(
@@ -1104,19 +1213,34 @@ class TotalConvergenceEngine:
     def _build_nucleus_decision(record: ConvergenceRecord):
         """
         Construye la `NucleusDecision` a partir de lo que las fases previas
-        YA calcularon — no introduce ninguna señal nueva, solo compone:
+        YA calcularon:
 
+          0. (Victoria B, 2026-09-17) Petición EXPLÍCITA del usuario tiene
+             prioridad sobre la evidencia retenida — nunca se sustituye
+             silenciosamente una herramienta pedida por otra. "market"/
+             "place_search" son señales ya específicas en `intent_ssot`
+             (nunca el fallback genérico de cualquier pregunta factual);
+             "online" sí lo es, así que ahí se exige además
+             `explicit_online_request` (mención textual explícita) para no
+             romper la Regresión de Victoria A.
           1. Evidencia suficiente (criterios ya existentes: `is_novel`,
              `prior_patterns_found`, `coherence_score`, `memory_evidence`
              no vacío) -> `Strategy.ANSWER_FROM_EVIDENCE`. Sin política de
              TTL/vigencia — fuera de alcance de este ticket.
-          2. Si no hay evidencia suficiente, consulta `capability_snapshot`
-             (ya poblado por `_run_capability_check()` en Fase 4): si hay
-             una capacidad de fallback disponible+autorizada, propone la
-             `Strategy` correspondiente.
-          3. Si ninguna de las dos aplica, `candidate_strategy=None` —
-             `SmartRouter.route()` debe entonces comportarse exactamente
-             igual que hoy (selección desde texto, sin cambios).
+          2. (Victoria B) Si no hay evidencia suficiente, el Núcleo consulta
+             Capability Context y selecciona por sí mismo una capacidad
+             disponible+autorizada, mapeando `IntentDecision.primary_intent`
+             (`intent_ssot`, ya calculado en `_run_capability_check()`) contra
+             `Strategy` — nunca contra `Intent` directamente, y nunca
+             reimplementando un segundo router general: online ->
+             RESOLVE_ONLINE, place_search -> RESOLVE_PLACES, market ->
+             RESOLVE_MARKET, cognitive -> ROUTE_COGNITIVE (solo si
+             ReasoningEngine ya calculó riesgo LOW en este mismo ciclo).
+          3. Si ninguna de las anteriores aplica (ambigüedad, capacidad no
+             disponible, o intent fuera de este mapeo — memory/local/
+             identity/command/ai_single/ai_multi), `candidate_strategy=None`
+             — `SmartRouter.route()` se comporta exactamente igual que hoy
+             (selección desde texto, sin cambios).
 
         Fail-safe estricto: cualquier fallo (import, atributo faltante)
         devuelve una `NucleusDecision` vacía (`candidate_strategy=None`),
@@ -1134,6 +1258,14 @@ class TotalConvergenceEngine:
         reason = ""
         evidence: Dict[str, Any] = {}
 
+        intent_primary = record.capability_snapshot.get("intent_primary", "")
+        capability_available: Dict[str, bool] = (
+            record.capability_snapshot.get("capability_available", {}) or {}
+        )
+        explicit_online = bool(
+            record.capability_snapshot.get("explicit_online_request", False)
+        )
+
         has_sufficient_evidence = (
             not record.is_novel
             and record.prior_patterns_found > 0
@@ -1141,7 +1273,38 @@ class TotalConvergenceEngine:
             and bool(record.memory_evidence)
         )
 
-        if has_sufficient_evidence:
+        # Paso 0 (Victoria B): prioridad de petición explícita — evaluada
+        # ANTES del gate de evidencia, para que gane incluso cuando hay
+        # evidencia suficiente disponible.
+        explicit_strategy = None
+        explicit_capability = ""
+        if intent_primary == "market" and capability_available.get("market_observer"):
+            explicit_strategy = Strategy.RESOLVE_MARKET
+            explicit_capability = "market_observer"
+        elif intent_primary == "place_search" and capability_available.get("places_search"):
+            explicit_strategy = Strategy.RESOLVE_PLACES
+            explicit_capability = "places_search"
+        elif (
+            intent_primary == "online"
+            and explicit_online
+            and capability_available.get("online_search")
+        ):
+            explicit_strategy = Strategy.RESOLVE_ONLINE
+            explicit_capability = "online_search"
+
+        if explicit_strategy is not None:
+            candidate_strategy = explicit_strategy
+            confidence = 0.85
+            reason = (
+                f"petición explícita del usuario (intent={intent_primary}) + "
+                f"capacidad '{explicit_capability}' disponible/autorizada — "
+                f"no se sustituye por evidencia retenida"
+            )
+            evidence = {
+                "capability_selected": explicit_capability,
+                "intent_primary": intent_primary,
+            }
+        elif has_sufficient_evidence:
             candidate_strategy = Strategy.ANSWER_FROM_EVIDENCE
             confidence = round(record.coherence_score, 4)
             reason = (
@@ -1151,21 +1314,48 @@ class TotalConvergenceEngine:
             )
             evidence = dict(record.memory_evidence)
         else:
-            fallback_sources = list(
-                record.capability_snapshot.get("fallback_sources", []) or []
-            )
-            if record.domain == "market" and any(
-                "market" in src for src in fallback_sources
+            # Victoria B: sin evidencia suficiente -> selección de capacidad
+            # por Strategy usando IntentDecision (intent_ssot, solo lectura)
+            # + disponibilidad/autorización real de Capability Context.
+            _cap_name = _INTENT_CAPABILITY_NAME.get(intent_primary, "")
+            if _cap_name and capability_available.get(_cap_name):
+                candidate_strategy = {
+                    "online": Strategy.RESOLVE_ONLINE,
+                    "place_search": Strategy.RESOLVE_PLACES,
+                    "market": Strategy.RESOLVE_MARKET,
+                }[intent_primary]
+                confidence = 0.5 if intent_primary == "market" else 0.4
+                reason = (
+                    f"sin evidencia suficiente; intent={intent_primary} + "
+                    f"capacidad '{_cap_name}' disponible/autorizada"
+                )
+                evidence = {"capability_selected": _cap_name}
+            elif (
+                intent_primary == "cognitive"
+                and capability_available.get("llm_providers")
+                and record.reasoning_ran
+                and record.reasoning_risk_level == "LOW"
             ):
+                candidate_strategy = Strategy.ROUTE_COGNITIVE
+                confidence = 0.4
+                reason = (
+                    "sin evidencia suficiente; intent=cognitive + capacidad "
+                    "'llm_providers' disponible/autorizada, riesgo LOW"
+                )
+                evidence = {"capability_selected": "llm_providers"}
+            elif record.domain == "market" and capability_available.get("market_observer"):
+                # Compatibilidad retroactiva: señal de record.domain (motor
+                # de clasificación de dominio existente) cuando intent_ssot
+                # no resolvió intent=market por alguna razón (p.ej. fallo).
                 candidate_strategy = Strategy.RESOLVE_MARKET
                 confidence = 0.5
                 reason = "domain=market + capacidad de mercado disponible/autorizada"
-            elif "online_search" in fallback_sources:
-                candidate_strategy = Strategy.RESOLVE_ONLINE
-                confidence = 0.4
-                reason = "sin evidencia suficiente; online_search disponible/autorizada"
+                evidence = {"capability_selected": "market_observer"}
             else:
-                reason = "sin evidencia suficiente ni capacidad de fallback disponible"
+                reason = (
+                    "sin evidencia suficiente ni capacidad identificable "
+                    "(ambigüedad -> comportamiento legacy)"
+                )
 
         return NucleusDecision(
             candidate_strategy=candidate_strategy,

@@ -162,8 +162,16 @@ class TestBuildNucleusDecision:
         assert decision.candidate_strategy != Strategy.ANSWER_FROM_EVIDENCE
 
     def test_unknown_question_with_online_capability_available(self):
+        """Victoria B: contrato actualizado de `capability_snapshot`
+        (`intent_primary` + `capability_available`), no ya el
+        `fallback_sources` crudo (que ni siquiera incluye "places_search"/
+        "llm_providers" — ver comentario junto a `_TRACKED_CAPABILITY_NAMES`
+        en total_convergence.py)."""
         record = self._record(
-            capability_snapshot={"fallback_sources": ["online_search"]},
+            capability_snapshot={
+                "intent_primary": "online",
+                "capability_available": {"online_search": True},
+            },
         )
         decision = TotalConvergenceEngine._build_nucleus_decision(record)
         assert decision.candidate_strategy == Strategy.RESOLVE_ONLINE
@@ -171,7 +179,10 @@ class TestBuildNucleusDecision:
     def test_unknown_question_market_domain_with_market_capability(self):
         record = self._record(
             domain="market",
-            capability_snapshot={"fallback_sources": ["market_observer"]},
+            capability_snapshot={
+                "intent_primary": "market",
+                "capability_available": {"market_observer": True},
+            },
         )
         decision = TotalConvergenceEngine._build_nucleus_decision(record)
         assert decision.candidate_strategy == Strategy.RESOLVE_MARKET
@@ -181,6 +192,183 @@ class TestBuildNucleusDecision:
         decision = TotalConvergenceEngine._build_nucleus_decision(record)
         assert decision.candidate_strategy is None
         assert decision.has_candidate is False
+
+
+# ---------------------------------------------------------------------------
+# Victoria B (2026-09-17) — selección de capacidad por Strategy cuando la
+# evidencia es insuficiente, y prioridad de petición explícita.
+# ---------------------------------------------------------------------------
+
+class TestVictoriaBCapabilitySelection:
+    """Cubre, a nivel de `_build_nucleus_decision()`, los 6 casos de
+    aceptación del ticket Victoria B (verificación end-to-end real en
+    producción por separado)."""
+
+    def _record(self, **overrides) -> ConvergenceRecord:
+        base = dict(
+            domain="unknown",
+            is_novel=True,
+            prior_patterns_found=0,
+            coherence_score=0.0,
+            memory_evidence={},
+            capability_snapshot={},
+        )
+        base.update(overrides)
+        return ConvergenceRecord(**base)
+
+    def test_case1_online_new_question_selects_resolve_online(self):
+        record = self._record(
+            capability_snapshot={
+                "intent_primary": "online",
+                "capability_available": {"online_search": True},
+            },
+        )
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy == Strategy.RESOLVE_ONLINE
+        assert decision.evidence["capability_selected"] == "online_search"
+
+    def test_case2_places_selects_resolve_places(self):
+        record = self._record(
+            capability_snapshot={
+                "intent_primary": "place_search",
+                "capability_available": {"places_search": True},
+            },
+        )
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy == Strategy.RESOLVE_PLACES
+        assert decision.evidence["capability_selected"] == "places_search"
+
+    def test_case3_market_selects_resolve_market(self):
+        record = self._record(
+            capability_snapshot={
+                "intent_primary": "market",
+                "capability_available": {"market_observer": True},
+            },
+        )
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy == Strategy.RESOLVE_MARKET
+        assert decision.evidence["capability_selected"] == "market_observer"
+
+    def test_case4_explicit_online_wins_over_sufficient_evidence(self):
+        """Petición explícita ('online' mencionado textualmente) tiene
+        prioridad incluso cuando la evidencia retenida SERÍA suficiente
+        para ANSWER_FROM_EVIDENCE — nunca se sustituye silenciosamente."""
+        record = self._record(
+            is_novel=False,
+            prior_patterns_found=5,
+            coherence_score=_HIGH_COHERENCE_THRESHOLD + 0.1,
+            memory_evidence={"cc_entry": {"cc_score": 0.9}},
+            capability_snapshot={
+                "intent_primary": "online",
+                "capability_available": {"online_search": True},
+                "explicit_online_request": True,
+            },
+        )
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy == Strategy.RESOLVE_ONLINE
+        assert "explícita" in decision.reason
+
+    def test_case4b_explicit_market_wins_over_sufficient_evidence_without_keyword(self):
+        """market/place_search NO necesitan mención textual explícita —
+        intent_ssot ya las trata como señal específica (nunca el fallback
+        genérico de cualquier pregunta), así que también ganan sobre
+        evidencia suficiente."""
+        record = self._record(
+            is_novel=False,
+            prior_patterns_found=5,
+            coherence_score=_HIGH_COHERENCE_THRESHOLD + 0.1,
+            memory_evidence={"cc_entry": {"cc_score": 0.9}},
+            capability_snapshot={
+                "intent_primary": "market",
+                "capability_available": {"market_observer": True},
+            },
+        )
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy == Strategy.RESOLVE_MARKET
+
+    def test_case4c_online_without_explicit_keyword_does_not_override_evidence(self):
+        """Regresión de Victoria A (implícita en el caso 4): intent=online
+        SIN mención textual explícita NO debe robarle la respuesta a
+        evidencia suficiente — de lo contrario cualquier pregunta factual
+        repetida (clasificada online por defecto) rompería ANSWER_FROM_EVIDENCE."""
+        record = self._record(
+            is_novel=False,
+            prior_patterns_found=5,
+            coherence_score=_HIGH_COHERENCE_THRESHOLD + 0.1,
+            memory_evidence={"cc_entry": {"cc_score": 0.9}},
+            capability_snapshot={
+                "intent_primary": "online",
+                "capability_available": {"online_search": True},
+                "explicit_online_request": False,
+            },
+        )
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy == Strategy.ANSWER_FROM_EVIDENCE
+
+    def test_case5_ambiguous_intent_yields_none(self):
+        """intent fuera del mapeo (memory/local/identity/...) -> ambigüedad,
+        candidate_strategy=None -> comportamiento legacy."""
+        record = self._record(
+            capability_snapshot={
+                "intent_primary": "memory",
+                "capability_available": {"online_search": True},
+            },
+        )
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy is None
+
+    def test_case5b_capability_unavailable_yields_none(self):
+        """intent=online pero la capacidad NO está disponible/autorizada ->
+        ambigüedad, nunca se inventa una Strategy sin respaldo real."""
+        record = self._record(
+            capability_snapshot={
+                "intent_primary": "online",
+                "capability_available": {"online_search": False},
+            },
+        )
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy is None
+
+    def test_case6_regression_answer_from_evidence_unaffected(self):
+        """Regresión de Victoria A explícita: evidencia suficiente sin
+        ninguna señal de intent_ssot (capability_snapshot vacío, como si
+        intent_ssot no estuviera disponible) sigue produciendo
+        ANSWER_FROM_EVIDENCE exactamente igual."""
+        record = self._record(
+            is_novel=False,
+            prior_patterns_found=3,
+            coherence_score=_HIGH_COHERENCE_THRESHOLD + 0.05,
+            memory_evidence={"cc_entry": {"cc_score": 0.9}},
+            capability_snapshot={},
+        )
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy == Strategy.ANSWER_FROM_EVIDENCE
+
+    def test_cognitive_requires_low_risk_from_reasoning(self):
+        """cognitive solo se propone si ReasoningEngine YA calculó riesgo
+        LOW en este ciclo — nunca reimplementa la degradación a multi-modelo
+        que ya hace select_strategy()/evaluate_policy()."""
+        record = self._record(
+            capability_snapshot={
+                "intent_primary": "cognitive",
+                "capability_available": {"llm_providers": True},
+            },
+            reasoning_ran=True,
+            reasoning_risk_level="HIGH",
+        )
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy is None
+
+        record_low_risk = self._record(
+            capability_snapshot={
+                "intent_primary": "cognitive",
+                "capability_available": {"llm_providers": True},
+            },
+            reasoning_ran=True,
+            reasoning_risk_level="LOW",
+        )
+        decision_low_risk = TotalConvergenceEngine._build_nucleus_decision(record_low_risk)
+        assert decision_low_risk.candidate_strategy == Strategy.ROUTE_COGNITIVE
 
 
 # ---------------------------------------------------------------------------
