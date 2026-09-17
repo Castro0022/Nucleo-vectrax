@@ -799,7 +799,11 @@ def _process_one(msg):
                 loc = get_user_location(msg.user_id)
                 if loc:
                     from vectrax.integrations.place_search import search_places
-                    pr = search_places(msg.content, user_location=loc)
+                    from core.operator.execution_context import ExecutionContext, ORIGIN_USER
+                    _places_ctx = ExecutionContext(
+                        origin=ORIGIN_USER, action="resolve_places", actor_id=str(msg.user_id),
+                    )
+                    pr = search_places(msg.content, user_location=loc, execution_context=_places_ctx)
                     if pr.get("found") and pr.get("results"):
                         for p in pr["results"][:3]:
                             _tg_venue(msg.chat_id, p)

@@ -29,7 +29,10 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.operator.execution_context import ExecutionContext
 
 logger = logging.getLogger("vectrax.llm_call")
 
@@ -43,6 +46,7 @@ LLMStatus = Literal[
     "no_key",        # OPENAI_API_KEY ausente (no disponible)
     "gate_closed",   # api_gate cerrado por backoff 429 (no disponible)
     "circuit_open",  # circuit breaker abierto (no disponible)
+    "blocked",       # pre_execution_gate denegó la operación (ENFORCE, no intentado)
     "empty",         # HTTP 200 pero contenido vacío (intentado, sin texto)
     "http_error",    # 429/4xx/5xx (intentado, falló)
     "exception",     # red/parseo/timeout (intentado, falló)
@@ -107,6 +111,7 @@ def complete(
     max_tokens: int = 500,
     temperature: float = 0.7,
     timeout: float = 30.0,
+    execution_context: Optional["ExecutionContext"] = None,
 ) -> LLMResult:
     """Llamada LLM directa (OpenAI, httpx sync). Defensiva; NUNCA lanza.
 
@@ -115,6 +120,11 @@ def complete(
         system_prompt: si es None se usa `effective_system_prompt()` (identidad
             soberana VECTRAX_SYSTEM_PROMPT). Un valor explícito lo sobreescribe.
         max_tokens / temperature / timeout: parámetros de generación.
+        execution_context: frontera constitucional PRE-ejecución ("llm").
+            Callers de este módulo fuera de las 4 fronteras (`self_context.py`,
+            `criterion.py`, `read_tool_bridge.py`) no lo pasan aún — quedan
+            observados en SHADOW sin cambio de comportamiento hasta que se
+            migren en un PR futuro.
 
     Returns:
         LLMResult(ok, text, status, provider, model, error). `text` no vacío solo
@@ -144,6 +154,15 @@ def complete(
             return LLMResult(False, "", "circuit_open", model=model)
     except Exception:
         pass
+
+    # === PRE-EXECUTION CONSTITUTIONAL GATE (frontera "llm") ===
+    from core.operator import pre_execution_gate
+    gate_decision = pre_execution_gate.authorize("llm", execution_context)
+    if not gate_decision.should_execute:
+        return LLMResult(
+            False, "", "blocked", model=model,
+            error=f"pre_execution_gate:{gate_decision.execution}",
+        )
 
     # 4) System prompt — identidad soberana por defecto
     try:

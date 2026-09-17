@@ -572,6 +572,7 @@ def search_places(
     user_location: Optional[Dict[str, float]] = None,
     max_results: int = DEFAULT_MAX_RESULTS,
     language: str = DEFAULT_LANGUAGE,
+    execution_context: Any = None,
 ) -> Dict[str, Any]:
     """
     Busca lugares reales basándose en la consulta del usuario.
@@ -581,6 +582,10 @@ def search_places(
         user_location: Dict con "lat" y "lng" del usuario. Opcional.
         max_results: Máximo de resultados a devolver.
         language: Código de idioma para resultados.
+        execution_context: frontera constitucional PRE-ejecución ("places").
+            Punto de inserción único — cubre a los 3 callers conocidos
+            (`external_gateway.py`, `telegram_gateway.py::_places()`,
+            `pipeline_worker.py`) sin necesidad de gatear en cada uno.
 
     Returns:
         Dict con:
@@ -601,6 +606,18 @@ def search_places(
 
     api_key = _get_api_key()
     if not api_key:
+        return {
+            "found": False,
+            "results": [],
+            "query_used": user_query,
+            "search_type": "",
+            "message": "Búsqueda de lugares no disponible en este momento.",
+        }
+
+    # === PRE-EXECUTION CONSTITUTIONAL GATE (frontera "places") ===
+    from core.operator import pre_execution_gate
+    gate_decision = pre_execution_gate.authorize("places", execution_context)
+    if not gate_decision.should_execute:
         return {
             "found": False,
             "results": [],
