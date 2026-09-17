@@ -96,6 +96,15 @@ class ConvergenceRecord:
     # Memory connections
     memory_connections: int = 0
     prior_patterns_found: int = 0
+    # Root-cause fix (2026-09-17): cuántas veces CCTracker (core/learn/
+    # constitution.py) ya había observado este fingerprint EXACTO (sha256
+    # completo del contenido) ANTES de este ciclo. 0 = primer contacto.
+    # Distinto de `prior_patterns_found`, que también cuenta coincidencias
+    # por INTENT (más ruidoso — muchos mensajes sin relación comparten
+    # intent). Este campo es la señal precisa de "confirmación real
+    # repetida" que usa `_compute_cc_observation_score()` para no inflar
+    # `coherence_score` con matches genéricos.
+    exact_repeat_count: int = 0
     # Evidencia real retenida (NucleusDecision ticket, 2026-09-17): las
     # variables intermedias de `_phase_memory()` ya no se descartan tras
     # colapsarlas a los 2 enteros de arriba. Abstracta (nombres/scores/ids
@@ -146,6 +155,7 @@ class ConvergenceRecord:
             "phases_completed": self.phases_completed,
             "memory_connections": self.memory_connections,
             "prior_patterns_found": self.prior_patterns_found,
+            "exact_repeat_count": self.exact_repeat_count,
             "memory_evidence": self.memory_evidence,
             "capability_snapshot": self.capability_snapshot,
             "nucleus_decision": (
@@ -195,6 +205,29 @@ _ERROR_INDICATORS = {
 # Tracker). Sin criterio equivalente reutilizable ya existente para "evidencia
 # de memoria suficiente para responder sin resolver", se define aquí explícito.
 _HIGH_COHERENCE_THRESHOLD = 0.75
+
+# Root-cause fix (2026-09-17) — semántica histórica de CCTracker.observation_score
+# ==============================================================================
+# `core/learn/constitution.py` documenta `observation_score` como "the intent
+# confidence from the latest observation": el EMA (CC_DECAY_ALPHA=0.3) es quien
+# acumula CONSISTENCIA a través del tiempo; cada llamada a `update()` debe
+# aportar la confianza REAL de ESA observación puntual. Así lo hacen los demás
+# consumidores reales (p.ej. `core/learn/ingestion.py` pasa
+# `intent.confidence`, nunca un valor fijo).
+#
+# El bug de causa raíz en `_phase_analysis()` era alimentar SIEMPRE
+# `max(record.coherence_score, 0.5)` — un piso constante sin relación con si
+# la observación era realmente nueva, confirmada o contradictoria. Esa
+# fórmula converge matemáticamente a exactamente 0.5 (demostrado con datos
+# reales de producción: 772 fingerprints, 0 por encima de 0.75) y por lo
+# tanto NUNCA puede cruzar `_HIGH_COHERENCE_THRESHOLD`.
+#
+# Fix: `_compute_cc_observation_score()` (más abajo) sustituye ese piso fijo
+# por una señal basada en evidencia real — SIN tocar `CCTracker` (ya es
+# correcto, lo usan otros consumidores) ni `_HIGH_COHERENCE_THRESHOLD`.
+_CC_OBS_FIRST_SIGHTING = 0.5   # sin cambios: comportamiento histórico intacto
+_CC_OBS_CONFIRMED = 0.9        # repetición EXACTA, consistente (sin contradicciones)
+_CC_OBS_CONTRADICTED = 0.2     # repetición EXACTA, pero contradicha por ReasoningEngine
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +643,12 @@ class TotalConvergenceEngine:
             if cc_entry:
                 record.coherence_score = cc_entry.cc_score
                 record.is_novel = False
+                # Root-cause fix (2026-09-17): capturar cuántas veces YA se
+                # observó este fingerprint EXACTO antes de este ciclo — la
+                # señal precisa que _compute_cc_observation_score() usa para
+                # distinguir "confirmación real repetida" de matches
+                # genéricos por intent (ver comentario del campo).
+                record.exact_repeat_count = cc_entry.observations
                 connections += 1
                 evidence["cc_entry"] = {
                     "cc_score": cc_entry.cc_score,
@@ -729,20 +768,6 @@ class TotalConvergenceEngine:
         else:
             record.risk_level = "medium"
 
-        # Constitution CC update
-        try:
-            from core.learn.constitution import get_cc_tracker
-            cc = get_cc_tracker()
-            cc_entry = cc.update(
-                fingerprint=record.input_fingerprint,
-                observation_score=max(record.coherence_score, 0.5),
-                domain=record.domain,
-                intent=record.intent,
-            )
-            record.coherence_score = cc_entry.cc_score
-        except Exception:
-            pass
-
         # Contradiction detection + evaluación estratégica completa vía
         # ReasoningEngine (riesgo, impacto, escenarios, contradicciones
         # reales contra principios/decisiones pasadas, validación
@@ -750,8 +775,35 @@ class TotalConvergenceEngine:
         # falla o no hay evidencia suficiente, contradictions queda en 0
         # y el resto del ciclo continúa exactamente igual que antes
         # (auditoría 2026-09-13 → conexión mínima 2026-09-13).
+        #
+        # Root-cause fix (2026-09-17): este bloque se movió ANTES del update
+        # de CC (más abajo) porque _compute_cc_observation_score() necesita
+        # record.contradictions YA resuelto para distinguir una confirmación
+        # consistente de una contradicha. Esto NO cambia lo que ReasoningEngine
+        # ve: _build_cognitive_context() usa record.coherence_score, que en
+        # este punto sigue siendo el valor ya persistido en _phase_memory()
+        # (el del ciclo anterior) — idéntico al que tenía antes de este cambio,
+        # ya que el propio update de CC de abajo aún no corrió.
         record.contradictions = 0  # baseline; ajustado por _run_reasoning si corre OK
         record = self._run_reasoning(record, content)
+
+        # Constitution CC update — observation_score ahora refleja la señal
+        # REAL de ESTA observación (repetición exacta + consistencia), no un
+        # piso fijo. Ver el bloque de comentarios junto a _CC_OBS_* arriba y
+        # `_compute_cc_observation_score()` abajo para el razonamiento
+        # completo. No modifica CCTracker ni _HIGH_COHERENCE_THRESHOLD.
+        try:
+            from core.learn.constitution import get_cc_tracker
+            cc = get_cc_tracker()
+            cc_entry = cc.update(
+                fingerprint=record.input_fingerprint,
+                observation_score=self._compute_cc_observation_score(record),
+                domain=record.domain,
+                intent=record.intent,
+            )
+            record.coherence_score = cc_entry.cc_score
+        except Exception:
+            pass
 
         # Capability Context (NucleusDecision ticket, 2026-09-17): mismo
         # patrón de bridge no invasivo que _run_reasoning() arriba — UNA
@@ -761,6 +813,46 @@ class TotalConvergenceEngine:
 
         record.phases_completed.append(ConvergencePhase.ANALYSIS.value)
         return record
+
+    @staticmethod
+    def _compute_cc_observation_score(record: ConvergenceRecord) -> float:
+        """Confianza REAL de esta observación puntual para alimentar el EMA
+        de `CCTracker` (core/learn/constitution.py) — root-cause fix
+        2026-09-17. No modifica `CCTracker` ni `_HIGH_COHERENCE_THRESHOLD`
+        (0.75): solo corrige QUÉ score se le pasa, preservando la semántica
+        histórica documentada allí ("observation_score is the intent
+        confidence from the latest observation") y ya usada así por otros
+        consumidores reales (`core/learn/ingestion.py` pasa
+        `intent.confidence`, nunca un piso fijo).
+
+        Reglas (fail-safe, deterministas, sin I/O):
+          - Primer contacto con este fingerprint EXACTO
+            (`exact_repeat_count == 0`, poblado en `_phase_memory()` desde
+            `CCEntry.observations`): sin evidencia previa que corroborar ->
+            mismo piso histórico 0.5 (comportamiento IDÉNTICO al anterior
+            para el primer mensaje — compatibilidad exacta).
+          - Repetición EXACTA de ese mismo fingerprint, SIN contradicciones
+            detectadas por ReasoningEngine en este ciclo
+            (`contradictions == 0`): confirmación real y consistente -> score
+            alto. El EMA (alpha=0.3) necesita varias confirmaciones
+            consecutivas para cruzar 0.75 — nunca en una sola observación
+            (ver tests/test_nucleus_decision.py::TestCCObservationScore).
+          - Repetición EXACTA CON contradicciones (`contradictions > 0`): la
+            evidencia se contradice a sí misma -> score bajo, que EMPUJA
+            cc_score hacia abajo en la siguiente actualización EMA en vez de
+            reforzarlo.
+
+        Deliberadamente NO usa `record.is_novel` (también lo apaga un match
+        genérico por `intent` en `memory.query()`, que puede dispararse para
+        mensajes sin relación real entre sí) ni `prior_patterns_found` (mismo
+        motivo) — usa `exact_repeat_count`, que solo aumenta cuando
+        `CCTracker` ya vio ESTE fingerprint exacto antes.
+        """
+        if record.exact_repeat_count <= 0:
+            return _CC_OBS_FIRST_SIGHTING
+        if record.contradictions > 0:
+            return _CC_OBS_CONTRADICTED
+        return _CC_OBS_CONFIRMED
 
     # =====================================================================
     # Reasoning bridge — ConvergenceRecord -> CognitiveContext -> ReasoningEngine
