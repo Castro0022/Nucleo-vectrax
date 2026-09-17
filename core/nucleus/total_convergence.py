@@ -96,6 +96,22 @@ class ConvergenceRecord:
     # Memory connections
     memory_connections: int = 0
     prior_patterns_found: int = 0
+    # Evidencia real retenida (NucleusDecision ticket, 2026-09-17): las
+    # variables intermedias de `_phase_memory()` ya no se descartan tras
+    # colapsarlas a los 2 enteros de arriba. Abstracta (nombres/scores/ids
+    # cortos), nunca contenido crudo del mensaje — mismo criterio de
+    # privacidad que ya aplica el resto del motor. `memory_connections`/
+    # `prior_patterns_found` se preservan sin cambios para no romper a
+    # quien ya los consume (convergence_hook.py, ledger, etc.).
+    memory_evidence: Dict[str, Any] = field(default_factory=dict)
+    # Snapshot minimo de Capability Context (poblado por
+    # `_run_capability_check()`, fase ANÁLISIS) — qué capacidades de
+    # fallback están disponibles/autorizadas para esta consulta.
+    capability_snapshot: Dict[str, Any] = field(default_factory=dict)
+    # Acción operativa candidata (Strategy) que el Núcleo propone a
+    # SmartRouter, o None si no hay evidencia/capacidad suficiente. Ver
+    # `core/nucleus/nucleus_decision.py`.
+    nucleus_decision: Optional[Any] = None
     gravitational_tier: str = ""
     # Analysis
     risk_level: str = "low"
@@ -130,6 +146,12 @@ class ConvergenceRecord:
             "phases_completed": self.phases_completed,
             "memory_connections": self.memory_connections,
             "prior_patterns_found": self.prior_patterns_found,
+            "memory_evidence": self.memory_evidence,
+            "capability_snapshot": self.capability_snapshot,
+            "nucleus_decision": (
+                self.nucleus_decision.to_dict()
+                if self.nucleus_decision is not None else None
+            ),
             "gravitational_tier": self.gravitational_tier,
             "risk_level": self.risk_level,
             "coherence_score": round(self.coherence_score, 4),
@@ -166,6 +188,13 @@ _ERROR_INDICATORS = {
     "error", "exception", "traceback", "failed", "crash",
     "fallo", "excepción", "bug", "broken", "roto",
 }
+
+# NucleusDecision ticket (2026-09-17): umbral NUEVO, introducido para este
+# ticket — no reutiliza `learning_gate.COHERENCE_THRESHOLD` (0.5) porque mide
+# algo distinto (similitud a embeddings de patrones, no `cc_score` del CC
+# Tracker). Sin criterio equivalente reutilizable ya existente para "evidencia
+# de memoria suficiente para responder sin resolver", se define aquí explícito.
+_HIGH_COHERENCE_THRESHOLD = 0.75
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +554,14 @@ class TotalConvergenceEngine:
         """
         connections = 0
         prior_patterns = 0
+        # Evidencia real retenida (NucleusDecision ticket, 2026-09-17): cada
+        # bloque abajo, además de sumar a los contadores (comportamiento sin
+        # cambios), guarda una versión ABSTRACTA (conteos, ids/tags cortos,
+        # scores — nunca contenido crudo del mensaje) de qué encontró antes
+        # de descartar la variable. Defensivo: `getattr`/`.get()` con default
+        # en todos lados porque las fuentes son motores lazy-import que
+        # pueden no exponer los mismos atributos entre versiones.
+        evidence: Dict[str, Any] = {}
 
         # --- Memoria Inmediata (perception buffer) ---
         perception = self._get_perception()
@@ -538,6 +575,11 @@ class TotalConvergenceEngine:
                     and record.intent.lower() in (s.intent or "").lower()
                 ]
                 connections += len(related)
+                if related:
+                    evidence["immediate"] = {
+                        "count": len(related),
+                        "intents": [getattr(s, "intent", "") for s in related[:5]],
+                    }
             except Exception:
                 pass
 
@@ -550,6 +592,13 @@ class TotalConvergenceEngine:
                 connections += len(similar)
                 if similar:
                     record.is_novel = False
+                    evidence["gravity_similar"] = {
+                        "count": len(similar),
+                        "tiers": [getattr(s, "tier", "") for s in similar[:5]],
+                        "fingerprints": [
+                            getattr(s, "fingerprint", "")[:16] for s in similar[:5]
+                        ],
+                    }
             except Exception:
                 pass
 
@@ -562,6 +611,11 @@ class TotalConvergenceEngine:
                 record.coherence_score = cc_entry.cc_score
                 record.is_novel = False
                 connections += 1
+                evidence["cc_entry"] = {
+                    "cc_score": cc_entry.cc_score,
+                    "domain": getattr(cc_entry, "domain", ""),
+                    "intent": getattr(cc_entry, "intent", ""),
+                }
         except Exception:
             pass
 
@@ -576,6 +630,16 @@ class TotalConvergenceEngine:
                 connections += len(mem_ctx.graph_connections)
                 if mem_ctx.related_patterns:
                     record.is_novel = False
+                if mem_ctx.related_decisions or mem_ctx.related_patterns or mem_ctx.graph_connections:
+                    evidence["structural_memory"] = {
+                        "related_decisions": len(mem_ctx.related_decisions),
+                        "related_patterns": len(mem_ctx.related_patterns),
+                        "graph_connections": len(mem_ctx.graph_connections),
+                        "pattern_ids": [
+                            getattr(p, "id", str(p)[:32])
+                            for p in list(mem_ctx.related_patterns)[:5]
+                        ],
+                    }
             except Exception:
                 pass
 
@@ -590,6 +654,11 @@ class TotalConvergenceEngine:
                     or any(record.intent.lower() in t.lower() for t in h.tags)
                 ]
                 connections += len(related_hyps)
+                if related_hyps:
+                    evidence["hypotheses"] = {
+                        "count": len(related_hyps),
+                        "ids": [getattr(h, "id", "") for h in related_hyps[:5]],
+                    }
             except Exception:
                 pass
 
@@ -604,12 +673,18 @@ class TotalConvergenceEngine:
                 ]
                 if matched_rules:
                     record.rule_matched = True
+                    evidence["matched_rules"] = {
+                        "count": len(matched_rules),
+                        "ids": [r.get("id", "") for r in matched_rules[:5]],
+                        "patterns": [r.get("pattern", "")[:60] for r in matched_rules[:5]],
+                    }
                 connections += len(matched_rules)
             except Exception:
                 pass
 
         record.memory_connections = connections
         record.prior_patterns_found = prior_patterns
+        record.memory_evidence = evidence
 
         self._ledger.append(EpisodicEvent(
             event_type="CONVERGENCE_MEMORY_LINKED",
@@ -677,6 +752,12 @@ class TotalConvergenceEngine:
         # (auditoría 2026-09-13 → conexión mínima 2026-09-13).
         record.contradictions = 0  # baseline; ajustado por _run_reasoning si corre OK
         record = self._run_reasoning(record, content)
+
+        # Capability Context (NucleusDecision ticket, 2026-09-17): mismo
+        # patrón de bridge no invasivo que _run_reasoning() arriba — UNA
+        # consulta por ciclo, resultado anotado en record.capability_snapshot,
+        # nunca decide action_recommended por sí mismo.
+        record = self._run_capability_check(record)
 
         record.phases_completed.append(ConvergencePhase.ANALYSIS.value)
         return record
@@ -798,6 +879,54 @@ class TotalConvergenceEngine:
         return record
 
     # =====================================================================
+    # Capability bridge — ConvergenceRecord -> CapabilityContext (NucleusDecision)
+    # =====================================================================
+
+    def _run_capability_check(
+        self,
+        record: ConvergenceRecord,
+    ) -> ConvergenceRecord:
+        """
+        Consulta `core.self_observation.capability_context.build_capability_context()`
+        UNA vez por ciclo — mismo patrón de bridge no invasivo que
+        `_run_reasoning()`: el resultado se anota en `record.capability_snapshot`
+        y NUNCA decide `action_recommended` ni ninguna otra fase por sí mismo.
+        `_phase_synthesis()` es quien decide si usa este snapshot para poblar
+        `NucleusDecision.candidate_strategy`.
+
+        `build_capability_context()` acepta `decision: Any` y solo lee
+        `.domain` / `.task_type` / `.capability_query` vía `getattr` (ver su
+        propia firma) — no requiere una `IntentDecision` real de
+        `intent_ssot.py` (protegido, sin tocar), un objeto mínimo alcanza.
+
+        Fail-safe estricto: cualquier fallo deja `capability_snapshot` vacío
+        (`{}`) y el resto del ciclo continúa exactamente igual que antes.
+        """
+        try:
+            from core.self_observation.capability_context import (
+                build_capability_context,
+            )
+
+            class _CapabilityQueryShim:
+                """Adaptador mínimo, solo para esta consulta — nunca se
+                importa ni se construye un `IntentDecision` real aquí."""
+                domain = record.domain if record.domain != "unknown" else None
+                task_type = None
+                capability_query = False
+
+            ctx = build_capability_context(_CapabilityQueryShim())
+            record.capability_snapshot = {
+                "fallback_sources": list(ctx.fallback_sources),
+                "gap_names": [g.name for g in ctx.gaps[:10]],
+            }
+        except Exception as exc:
+            logger.debug(
+                "Capability check failed (fail-safe, no action change): %s", exc,
+            )
+
+        return record
+
+    # =====================================================================
     # Phase 5: SÍNTESIS
     # =====================================================================
 
@@ -870,8 +999,90 @@ class TotalConvergenceEngine:
             },
         ))
 
+        record.nucleus_decision = self._build_nucleus_decision(record)
+
         record.phases_completed.append(ConvergencePhase.SYNTHESIS.value)
         return record
+
+    # =====================================================================
+    # NucleusDecision — acción operativa candidata (ticket 2026-09-17)
+    # =====================================================================
+
+    @staticmethod
+    def _build_nucleus_decision(record: ConvergenceRecord):
+        """
+        Construye la `NucleusDecision` a partir de lo que las fases previas
+        YA calcularon — no introduce ninguna señal nueva, solo compone:
+
+          1. Evidencia suficiente (criterios ya existentes: `is_novel`,
+             `prior_patterns_found`, `coherence_score`, `memory_evidence`
+             no vacío) -> `Strategy.ANSWER_FROM_EVIDENCE`. Sin política de
+             TTL/vigencia — fuera de alcance de este ticket.
+          2. Si no hay evidencia suficiente, consulta `capability_snapshot`
+             (ya poblado por `_run_capability_check()` en Fase 4): si hay
+             una capacidad de fallback disponible+autorizada, propone la
+             `Strategy` correspondiente.
+          3. Si ninguna de las dos aplica, `candidate_strategy=None` —
+             `SmartRouter.route()` debe entonces comportarse exactamente
+             igual que hoy (selección desde texto, sin cambios).
+
+        Fail-safe estricto: cualquier fallo (import, atributo faltante)
+        devuelve una `NucleusDecision` vacía (`candidate_strategy=None`),
+        nunca bloquea ni altera `record`.
+        """
+        try:
+            from core.smart_router import Strategy
+            from core.nucleus.nucleus_decision import NucleusDecision
+        except Exception as exc:
+            logger.debug("NucleusDecision unavailable (fail-safe, no candidate): %s", exc)
+            return None
+
+        candidate_strategy = None
+        confidence = 0.0
+        reason = ""
+        evidence: Dict[str, Any] = {}
+
+        has_sufficient_evidence = (
+            not record.is_novel
+            and record.prior_patterns_found > 0
+            and record.coherence_score >= _HIGH_COHERENCE_THRESHOLD
+            and bool(record.memory_evidence)
+        )
+
+        if has_sufficient_evidence:
+            candidate_strategy = Strategy.ANSWER_FROM_EVIDENCE
+            confidence = round(record.coherence_score, 4)
+            reason = (
+                f"evidencia suficiente: prior_patterns_found="
+                f"{record.prior_patterns_found}, coherence_score="
+                f"{record.coherence_score:.2f} >= {_HIGH_COHERENCE_THRESHOLD}"
+            )
+            evidence = dict(record.memory_evidence)
+        else:
+            fallback_sources = list(
+                record.capability_snapshot.get("fallback_sources", []) or []
+            )
+            if record.domain == "market" and any(
+                "market" in src for src in fallback_sources
+            ):
+                candidate_strategy = Strategy.RESOLVE_MARKET
+                confidence = 0.5
+                reason = "domain=market + capacidad de mercado disponible/autorizada"
+            elif "online_search" in fallback_sources:
+                candidate_strategy = Strategy.RESOLVE_ONLINE
+                confidence = 0.4
+                reason = "sin evidencia suficiente; online_search disponible/autorizada"
+            else:
+                reason = "sin evidencia suficiente ni capacidad de fallback disponible"
+
+        return NucleusDecision(
+            candidate_strategy=candidate_strategy,
+            evidence=evidence,
+            capability=dict(record.capability_snapshot),
+            confidence=confidence,
+            reason=reason,
+            source="total_convergence",
+        )
 
     # =====================================================================
     # Phase 6: GRAVITACIÓN

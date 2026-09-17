@@ -436,7 +436,7 @@ def _stage_timer(name: str, msg_id: str):
     return _timer()
 
 
-def _gw_worker(_q, _uid, _content, _channel, _mid=None):
+def _gw_worker(_q, _uid, _content, _channel, _mid=None, _nucleus_decision=None):
     """Subprocess entry for the external_gateway stage (Linux/fork path).
 
     MODULE-LEVEL (not nested inside _process_one) so it stays picklable under
@@ -453,6 +453,11 @@ def _gw_worker(_q, _uid, _content, _channel, _mid=None):
     identificador que ya aparece en los logs de este worker (msg.id),
     permitiendo trazar una request de extremo a extremo. Puramente
     observacional — no cambia el resultado devuelto.
+
+    _nucleus_decision: `core.nucleus.nucleus_decision.NucleusDecision`
+    opcional (ticket 2026-09-17) — mismo patrón de propagación que `_mid`
+    de arriba. Debe ser picklable (dataclass simple con tipos básicos +
+    enum `Strategy`) para cruzar el límite de `multiprocessing.Process`.
     """
     try:
         from core.operator.external_gateway import ExternalGateway
@@ -460,6 +465,7 @@ def _gw_worker(_q, _uid, _content, _channel, _mid=None):
         _r = _gw.receive_message(
             user_id=_uid, content=_content, channel=_channel,
             correlation_id=_mid,
+            nucleus_decision=_nucleus_decision,
         )
         _q.put({
             "response": _r.response,
@@ -590,6 +596,16 @@ def _process_one(msg):
                         # worker) es el MISMO id que aparece en el ledger,
                         # router_activation.jsonl y op_cycles.db.
                         correlation_id=msg.id,
+                        # NucleusDecision (ticket 2026-09-17): mismo patrón
+                        # de propagación que correlation_id de arriba.
+                        # `_conv_record` es None si el ciclo de convergencia
+                        # falló/hizo timeout arriba — en ese caso se propaga
+                        # `None` (comportamiento sin cambios, ver contrato de
+                        # `SmartRouter.route()`).
+                        nucleus_decision=(
+                            getattr(_conv_record, "nucleus_decision", None)
+                            if _conv_record is not None else None
+                        ),
                     )
                     result = _gw_future.result(timeout=GATEWAY_TIMEOUT)
                 except _TEg:
@@ -612,8 +628,14 @@ def _process_one(msg):
                         target=_gw_worker,
                         # Gap 3 (auditoría 2026-09-11/13): msg.id viaja como
                         # _mid -> correlation_id, mismo motivo que en la rama
-                        # macOS de arriba.
-                        args=(_result_q, msg.user_id, msg.content, msg.channel, msg.id),
+                        # macOS de arriba. NucleusDecision (2026-09-17) viaja
+                        # con el mismo patrón — debe ser picklable para cruzar
+                        # el proceso hijo.
+                        args=(
+                            _result_q, msg.user_id, msg.content, msg.channel, msg.id,
+                            getattr(_conv_record, "nucleus_decision", None)
+                            if _conv_record is not None else None,
+                        ),
                         daemon=True,
                     )
                     _proc.start()

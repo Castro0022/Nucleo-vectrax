@@ -72,6 +72,13 @@ class Strategy(str, Enum):
     ROUTE_COGNITIVE = "route_cognitive"    # razonamiento profundo (perception→reason)
     EXECUTE_COMMAND = "execute_command"     # ejecutar comando del sistema
     BLOCKED         = "blocked"            # bloqueado por política
+    # Nucleus -> SmartRouter (ticket NucleusDecision, 2026-09-17): el Núcleo
+    # ya tiene evidencia real retenida (memoria/patrones previos) suficiente
+    # para responder SIN invocar ningún resolver externo. Nunca seleccionada
+    # por `select_strategy()` desde texto — solo llega vía `NucleusDecision.
+    # candidate_strategy` cuando `SmartRouter.route()` recibe una candidata
+    # ya cerrada.
+    ANSWER_FROM_EVIDENCE = "answer_from_evidence"
 
 
 class PolicyAction(str, Enum):
@@ -960,6 +967,7 @@ class SmartRouter:
         text: str,
         channel: str = "user",
         owner: str = "",
+        nucleus_decision: Optional[Any] = None,
     ) -> SmartRoute:
         """
         Pipeline completo de routing inteligente.
@@ -968,6 +976,15 @@ class SmartRouter:
             text: Mensaje del usuario.
             channel: Canal (creator/user).
             owner: Identidad del propietario.
+            nucleus_decision: `core.nucleus.nucleus_decision.NucleusDecision`
+                opcional, propagada desde `TotalConvergenceEngine` a través
+                de la misma cadena que ya usa `correlation_id`. Cuando trae
+                un `candidate_strategy` válido, esa estrategia se usa TAL
+                CUAL — `select_strategy()` NO se ejecuta para volver a
+                decidir desde texto (contrato del ticket NucleusDecision,
+                2026-09-17). Con `nucleus_decision=None` o
+                `candidate_strategy=None`, comportamiento idéntico al
+                anterior, sin excepción.
 
         Returns:
             SmartRoute con la decisión completa.
@@ -999,16 +1016,34 @@ class SmartRouter:
         # Paso 3: Evaluar política
         policy_action = self.evaluate_policy(intent, topic, risk_level)
 
-        # Paso 4: Seleccionar estrategia
+        # Paso 4: Seleccionar estrategia — salvo que el Núcleo ya haya
+        # cerrado una candidata (`NucleusDecision.candidate_strategy`), en
+        # cuyo caso `select_strategy()` NO se ejecuta: no se vuelve a decidir
+        # desde texto (contrato del ticket NucleusDecision, 2026-09-17).
         # Inject owner into signals so select_strategy can check memory depth
         intent_signals["owner"] = owner
-        strategy, providers, confidence, reason = self.select_strategy(
-            intent, topic, risk_level, policy_action, intent_signals,
-        )
-        logger.info(
-            "select_strategy: %s providers=%s conf=%.2f reason=%s",
-            strategy.value, providers, confidence, reason,
-        )
+        _nucleus_candidate = getattr(nucleus_decision, "candidate_strategy", None)
+        if _nucleus_candidate is not None:
+            strategy = _nucleus_candidate
+            providers = []
+            confidence = float(getattr(nucleus_decision, "confidence", 0.0) or 0.0)
+            reason = (
+                getattr(nucleus_decision, "reason", "")
+                or "Estrategia preseleccionada por NucleusDecision"
+            )
+            logger.info(
+                "NucleusDecision preselected strategy=%s (select_strategy() "
+                "NOT invoked) | reason=%s",
+                strategy.value, reason,
+            )
+        else:
+            strategy, providers, confidence, reason = self.select_strategy(
+                intent, topic, risk_level, policy_action, intent_signals,
+            )
+            logger.info(
+                "select_strategy: %s providers=%s conf=%.2f reason=%s",
+                strategy.value, providers, confidence, reason,
+            )
 
         # Construir metadata agregada (sin contenido del mensaje)
         provider_scores = {}
@@ -1030,6 +1065,18 @@ class SmartRouter:
             "domain": decision.domain,
             "intent_confidence": round(decision.confidence, 4),
             "intent_evidence_sources": [e.source for e in decision.evidence],
+            # Ticket NucleusDecision (2026-09-17): trazabilidad de si esta
+            # request fue preseleccionada por el Núcleo, y transporte de
+            # `evidence`/`capability` hacia el dispatcher de ejecución
+            # (`external_gateway.py::_resolve_via_pipeline`) SIN añadir un
+            # campo nuevo a `SmartRoute` — reutiliza `metadata`, que ya es
+            # el catch-all genérico de la dataclass.
+            "nucleus_preselected": _nucleus_candidate is not None,
+            "nucleus_decision": (
+                nucleus_decision.to_dict()
+                if nucleus_decision is not None and hasattr(nucleus_decision, "to_dict")
+                else None
+            ),
         }
 
         # Extraer comando si aplica

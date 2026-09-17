@@ -376,6 +376,7 @@ class ExternalGateway:
         content: str,
         channel: str = DEFAULT_CHANNEL,
         correlation_id: Optional[str] = None,
+        nucleus_decision: Optional[Any] = None,
     ) -> GatewayResult:
         """Recibe un mensaje externo y lo procesa a través del bus.
 
@@ -393,9 +394,14 @@ class ExternalGateway:
                 permite trazar la request de extremo a extremo con el mismo
                 ID en logs, ledger, router_activation.jsonl y op_cycles.db.
                 Si se omite, se genera uno nuevo (comportamiento previo).
+            nucleus_decision: `core.nucleus.nucleus_decision.NucleusDecision`
+                opcional (mismo patrón de propagación que `correlation_id` de
+                arriba) — viaja intacta hasta `SmartRouter.route()`. `None`
+                (default) preserva el comportamiento actual sin cambios.
         """
         result = self._do_receive_message(
             user_id, content, channel, correlation_id=correlation_id,
+            nucleus_decision=nucleus_decision,
         )
         if getattr(result, "processed", False):
             self._total_responded += 1
@@ -742,6 +748,7 @@ class ExternalGateway:
         content: str,
         channel: str = DEFAULT_CHANNEL,
         correlation_id: Optional[str] = None,
+        nucleus_decision: Optional[Any] = None,
     ) -> GatewayResult:
         """
         Procesa un mensaje externo a través del bus (implementación).
@@ -752,6 +759,8 @@ class ExternalGateway:
             channel: Canal de origen (web, telegram, api, webhook, custom).
             correlation_id: ID externo a reutilizar (ver receive_message()).
                 Si es falsy, se genera uno nuevo como antes.
+            nucleus_decision: ver `receive_message()` — se reenvía tal cual
+                hasta `_resolve_via_pipeline_v2()`.
 
         Returns:
             GatewayResult con la respuesta del sistema.
@@ -1792,6 +1801,7 @@ class ExternalGateway:
                     act_log=_act_log,
                     gravity_lock=_gravity_lock,
                     provenance=_pipeline_prov,
+                    nucleus_decision=nucleus_decision,
                 )
                 try:
                     from core.observability.router_activation import (
@@ -2542,6 +2552,49 @@ class ExternalGateway:
             logger.warning("Market resolve failed: %s", exc)
             return f"Error técnico en módulo de mercado: {exc}"
 
+    # -- Respuesta directa desde evidencia del Núcleo (ANSWER_FROM_EVIDENCE) --
+
+    @staticmethod
+    def _build_answer_from_evidence(evidence: Dict[str, Any], lang: str = "es") -> str:
+        """
+        Construye una respuesta corta y honesta EXCLUSIVAMENTE a partir de
+        `NucleusDecision.evidence` (ticket 2026-09-17) — nunca llama a
+        ningún resolver externo (memoria/online/places/market/llm), nunca
+        hace I/O. `evidence` es la versión ABSTRACTA ya retenida por
+        `_phase_memory()` (conteos, ids/tags cortos, scores — nunca
+        contenido crudo del mensaje), así que la respuesta describe QUÉ
+        encontró el Núcleo, no reconstruye un texto libre inventado.
+
+        Devuelve cadena vacía si no hay nada representable — el caller
+        decide qué hacer en ese caso (nunca cae a un resolver externo desde
+        aquí).
+        """
+        if not evidence:
+            return ""
+        try:
+            parts: List[str] = []
+            cc = evidence.get("cc_entry") or {}
+            if cc.get("cc_score") is not None:
+                parts.append(f"coherencia={cc['cc_score']:.2f}")
+            struct = evidence.get("structural_memory") or {}
+            if struct.get("related_patterns"):
+                parts.append(f"{struct['related_patterns']} patrones previos relacionados")
+            gsim = evidence.get("gravity_similar") or {}
+            if gsim.get("count"):
+                parts.append(f"{gsim['count']} coincidencias gravitacionales")
+            rules = evidence.get("matched_rules") or {}
+            if rules.get("count"):
+                parts.append(f"{rules['count']} regla(s) aprendida(s) aplicable(s)")
+            if not parts:
+                return ""
+            joined = ", ".join(parts)
+            if lang == "en":
+                return f"Already have this grounded from prior evidence ({joined})."
+            return f"Ya tengo esto identificado por evidencia previa ({joined})."
+        except Exception as exc:
+            logger.debug("_build_answer_from_evidence failed: %s", exc)
+            return ""
+
     # -- Búsqueda de lugares reales ------------------------------------------
 
     @staticmethod
@@ -2606,6 +2659,7 @@ class ExternalGateway:
         act_log=None,
         gravity_lock: bool = False,
         provenance: Optional[dict] = None,
+        nucleus_decision: Optional[Any] = None,
     ) -> Tuple[str, str]:
         """
         Pipeline cognitivo unificado con clasificación semántica.
@@ -2620,6 +2674,8 @@ class ExternalGateway:
             act_log: opcional, router_activation.RouterActivationLog para
                      registrar el guard de follow-up si se dispara.
             gravity_lock: if True, SmartRouter must NOT route to ONLINE.
+            nucleus_decision: ver `receive_message()` — se reenvía tal cual
+                hasta `_resolve_via_pipeline()`.
 
         Returns:
             (response_text, source_path) donde source_path es "places",
@@ -2633,6 +2689,7 @@ class ExternalGateway:
             user_id, content, channel,
             extra_context=extra_context, act_log=act_log,
             gravity_lock=gravity_lock, provenance=provenance,
+            nucleus_decision=nucleus_decision,
         )
         if answer:
             return answer, source_path
@@ -2708,6 +2765,7 @@ class ExternalGateway:
         act_log=None,
         gravity_lock: bool = False,
         provenance: Optional[dict] = None,
+        nucleus_decision: Optional[Any] = None,
     ) -> Tuple[str, str]:
         """
         Pipeline cognitivo completo para mensajes externos.
@@ -2715,6 +2773,7 @@ class ExternalGateway:
         Flujo (con SmartRouter + clasificación semántica):
           1. SmartRouter clasifica intent semántico + contexto + estrategia
           2. Según estrategia:
+             - ANSWER_FROM_EVIDENCE → respuesta directa desde NucleusDecision
              - RESOLVE_PLACES   → Google Places
              - RESOLVE_IDENTITY → memoria de usuario
              - RESOLVE_ONLINE   → resolve_online (multi-motor)
@@ -2723,6 +2782,10 @@ class ExternalGateway:
              - ROUTE_SINGLE/MULTI/COGNITIVE → LLM
           3. Fallback a resolver cognitivo si SmartRouter falló
           4. Fallback final a generación LLM
+
+        Args:
+            nucleus_decision: `core.nucleus.nucleus_decision.NucleusDecision`
+                opcional, propagada tal cual hasta `sr.route()` más abajo.
 
         Returns:
             (answer, source_path) donde source_path refleja la estrategia
@@ -2920,7 +2983,10 @@ class ExternalGateway:
         try:
             from core.smart_router import get_smart_router, Strategy
             sr = get_smart_router()
-            smart_route = sr.route(content, internal_channel, user_id)
+            smart_route = sr.route(
+                content, internal_channel, user_id,
+                nucleus_decision=nucleus_decision,
+            )
             logger.info(
                 "Pipeline: SmartRouter → %s (topic=%s, risk=%s, conf=%.2f)",
                 smart_route.strategy.value,
@@ -2964,7 +3030,32 @@ class ExternalGateway:
                 )
                 return _cap_gate_text, _cap_gate_mode
 
-            # ── AUTO-EXECUTE según estrategia ──────────────────────────
+            # ── AUTO-EXECUTE según estrategia ────────────────────────
+
+            # NucleusDecision (ticket 2026-09-17): el Núcleo ya tenía evidencia
+            # suficiente — responde DIRECTO desde esa evidencia, CERO resolvers
+            # externos, CERO I/O externo. `smart_route.metadata["nucleus_decision"]`
+            # lo puso `SmartRouter.route()` sin agregar un campo nuevo a
+            # `SmartRoute` (reutiliza el catch-all `metadata` existente).
+            if smart_route.strategy == Strategy.ANSWER_FROM_EVIDENCE:
+                resolve_mode = "answer_from_evidence"
+                _nd = smart_route.metadata.get("nucleus_decision") or {}
+                answer = self._build_answer_from_evidence(
+                    _nd.get("evidence") or {}, lang=self._detect_user_lang(user_id, content),
+                )
+                if answer:
+                    sr.record_feedback(smart_route, success=True, word_count=word_count)
+                    logger.info(
+                        "Pipeline: ANSWER_FROM_EVIDENCE resolved | len=%d | zero external I/O",
+                        len(answer),
+                    )
+                    return answer, resolve_mode
+                # Evidencia vacía/no representable como texto — NUNCA cae a un
+                # resolver externo desde esta rama (contrato del ticket); si
+                # falla, continúa al resto del dispatcher solo si alguna otra
+                # condición aplica (en la práctica, ninguna otra strategy
+                # coincide con ANSWER_FROM_EVIDENCE, así que cae al fallback
+                # cognitivo clásico de más abajo).
 
             # Búsqueda de lugar físico (semántico → Google Places)
             if smart_route.strategy == Strategy.RESOLVE_PLACES:
