@@ -771,6 +771,36 @@ class TotalConvergenceEngine:
             except Exception:
                 pass
 
+        # --- Victoria C: evidencia externa ya capturada (RESOLVE_ONLINE/
+        # PLACES/MARKET/ROUTE_COGNITIVE de un mensaje anterior con el MISMO
+        # fingerprint) --- "BUSQUÉ → RECIBÍ EVIDENCIA → AHORA PUEDO APRENDERLA".
+        # RULE 6: solo lookup + merge en record.memory_evidence, usando el
+        # mecanismo existente (mismo patrón que los bloques de arriba) — NO
+        # toca _HIGH_COHERENCE_THRESHOLD/_compute_cc_observation_score()/el
+        # gate de ANSWER_FROM_EVIDENCE en `_build_nucleus_decision()`.
+        try:
+            from core.self_observation import observation_ledger as _obs_ledger
+            _ext_evidence = _obs_ledger.get_evidence(record.input_fingerprint)
+            if _ext_evidence:
+                record.is_novel = False
+                prior_patterns += len(_ext_evidence)
+                connections += len(_ext_evidence)
+                evidence["external_evidence"] = {
+                    "count": len(_ext_evidence),
+                    "source_types": [
+                        e.get("obs_type", "") for e in _ext_evidence[:5]
+                    ],
+                    "sources": [
+                        (e.get("evidence") or {}).get("source", "")
+                        for e in _ext_evidence[:5]
+                    ],
+                    "latest_observed_at": (
+                        _ext_evidence[0].get("evidence") or {}
+                    ).get("observed_at", ""),
+                }
+        except Exception:
+            pass
+
         record.memory_connections = connections
         record.prior_patterns_found = prior_patterns
         record.memory_evidence = evidence
@@ -1364,6 +1394,11 @@ class TotalConvergenceEngine:
             confidence=confidence,
             reason=reason,
             source="total_convergence",
+            # Victoria C: SIEMPRE se fija, sin importar la rama de arriba
+            # (incluida la de ambigüedad/candidate_strategy=None) — el cable
+            # de retorno de evidencia externa necesita el fingerprint incluso
+            # cuando el Núcleo no propone ninguna estrategia candidata.
+            fingerprint=record.input_fingerprint,
         )
 
     # =====================================================================

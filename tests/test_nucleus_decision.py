@@ -193,6 +193,26 @@ class TestBuildNucleusDecision:
         assert decision.candidate_strategy is None
         assert decision.has_candidate is False
 
+    def test_fingerprint_always_set_regardless_of_candidate(self):
+        """Victoria C: `fingerprint` viaja SIEMPRE, incluso en la rama de
+        ambigüedad (`candidate_strategy=None`) — el cable de retorno de
+        evidencia externa lo necesita independientemente de la decisión."""
+        record = self._record(input_fingerprint="fp-ambiguous")
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy is None
+        assert decision.fingerprint == "fp-ambiguous"
+
+        record2 = self._record(
+            input_fingerprint="fp-evidence",
+            is_novel=False,
+            prior_patterns_found=3,
+            coherence_score=_HIGH_COHERENCE_THRESHOLD + 0.05,
+            memory_evidence={"cc_entry": {"cc_score": 0.9}},
+        )
+        decision2 = TotalConvergenceEngine._build_nucleus_decision(record2)
+        assert decision2.candidate_strategy == Strategy.ANSWER_FROM_EVIDENCE
+        assert decision2.fingerprint == "fp-evidence"
+
 
 # ---------------------------------------------------------------------------
 # Victoria B (2026-09-17) — selección de capacidad por Strategy cuando la
@@ -535,6 +555,56 @@ class TestCoherenceScoreProgressionEndToEnd:
             )
             prev = entry.cc_score
         assert prev < _HIGH_COHERENCE_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
+# Victoria C — _phase_memory() external evidence lookup bridge
+# ---------------------------------------------------------------------------
+
+class TestPhaseMemoryExternalEvidenceLookup:
+    """`_phase_memory()` debe incorporar evidencia externa ya almacenada
+    (RESOLVE_ONLINE/PLACES/MARKET/ROUTE_COGNITIVE de un mensaje previo con
+    el MISMO fingerprint) en `record.memory_evidence['external_evidence']`,
+    sin tocar `_HIGH_COHERENCE_THRESHOLD`/`_compute_cc_observation_score()`/
+    el gate de `_build_nucleus_decision()`.
+    """
+
+    def test_stored_evidence_is_merged_into_memory_evidence(self):
+        from core.self_observation import observation_ledger as ol
+        ol.init_ledger()
+        fp = "phase-memory-fp-1"
+        ol.record_evidence(fp, "online", "respuesta previa", source="ddg")
+
+        engine = TotalConvergenceEngine()
+        record = ConvergenceRecord(input_fingerprint=fp, intent="unknown")
+        result = engine._phase_memory(record, "cualquier contenido")
+
+        assert "external_evidence" in result.memory_evidence
+        assert result.memory_evidence["external_evidence"]["count"] == 1
+        assert result.memory_evidence["external_evidence"]["source_types"] == ["online"]
+        assert result.is_novel is False
+        assert result.prior_patterns_found >= 1
+
+    def test_no_stored_evidence_leaves_memory_evidence_unaffected(self):
+        engine = TotalConvergenceEngine()
+        record = ConvergenceRecord(
+            input_fingerprint="phase-memory-fp-nonexistent", intent="unknown",
+        )
+        result = engine._phase_memory(record, "contenido nuevo")
+        assert "external_evidence" not in result.memory_evidence
+
+    def test_lookup_failure_is_fail_safe(self):
+        """Si observation_ledger falla al consultar, _phase_memory() no debe
+        romperse — el resto del ciclo sigue funcionando sin evidencia
+        externa (comportamiento equivalente a no tener evidencia)."""
+        engine = TotalConvergenceEngine()
+        record = ConvergenceRecord(input_fingerprint="fp-boom", intent="unknown")
+        with patch(
+            "core.self_observation.observation_ledger.get_evidence",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = engine._phase_memory(record, "contenido")
+        assert "external_evidence" not in result.memory_evidence
 
 
 if __name__ == "__main__":

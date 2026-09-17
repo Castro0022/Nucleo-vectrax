@@ -436,7 +436,7 @@ def _stage_timer(name: str, msg_id: str):
     return _timer()
 
 
-def _gw_worker(_q, _uid, _content, _channel, _mid=None, _nucleus_decision=None):
+def _gw_worker(_q, _uid, _content, _channel, _mid=None, _nucleus_decision=None, _input_fingerprint=None):
     """Subprocess entry for the external_gateway stage (Linux/fork path).
 
     MODULE-LEVEL (not nested inside _process_one) so it stays picklable under
@@ -458,6 +458,12 @@ def _gw_worker(_q, _uid, _content, _channel, _mid=None, _nucleus_decision=None):
     opcional (ticket 2026-09-17) — mismo patrón de propagación que `_mid`
     de arriba. Debe ser picklable (dataclass simple con tipos básicos +
     enum `Strategy`) para cruzar el límite de `multiprocessing.Process`.
+
+    _input_fingerprint: Victoria C (2026-09-17) — el MISMO
+    `ConvergenceRecord.input_fingerprint` de este ciclo, propagado con el
+    mismo patrón independiente de `_nucleus_decision` (debe funcionar
+    incluso cuando `_nucleus_decision` es `None`, p.ej. si el Núcleo no
+    propuso ninguna estrategia candidata pero el ciclo sí corrió).
     """
     try:
         from core.operator.external_gateway import ExternalGateway
@@ -466,6 +472,7 @@ def _gw_worker(_q, _uid, _content, _channel, _mid=None, _nucleus_decision=None):
             user_id=_uid, content=_content, channel=_channel,
             correlation_id=_mid,
             nucleus_decision=_nucleus_decision,
+            input_fingerprint=_input_fingerprint,
         )
         _q.put({
             "response": _r.response,
@@ -606,6 +613,12 @@ def _process_one(msg):
                             getattr(_conv_record, "nucleus_decision", None)
                             if _conv_record is not None else None
                         ),
+                        # Victoria C (2026-09-17): mismo patrón independiente
+                        # que nucleus_decision de arriba.
+                        input_fingerprint=(
+                            getattr(_conv_record, "input_fingerprint", None)
+                            if _conv_record is not None else None
+                        ),
                     )
                     result = _gw_future.result(timeout=GATEWAY_TIMEOUT)
                 except _TEg:
@@ -634,6 +647,9 @@ def _process_one(msg):
                         args=(
                             _result_q, msg.user_id, msg.content, msg.channel, msg.id,
                             getattr(_conv_record, "nucleus_decision", None)
+                            if _conv_record is not None else None,
+                            # Victoria C (2026-09-17): mismo patrón independiente.
+                            getattr(_conv_record, "input_fingerprint", None)
                             if _conv_record is not None else None,
                         ),
                         daemon=True,
