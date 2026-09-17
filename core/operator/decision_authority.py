@@ -78,6 +78,12 @@ AUTO_ACTIONS = frozenset({
     "resolve_market",
     "resolve_places",
     "resolve_identity",
+    # "resolve_llm" registrado junto a sus hermanas (resolve_online/market/
+    # places) por consistencia: las 4 fronteras del pre-execution gate
+    # (core/operator/pre_execution_gate.py) son igualmente no-destructivas/
+    # reversibles, y deben comportarse igual en la rama CAUTION (auto-
+    # aprobada) salvo que is_irreversible cambie en el futuro.
+    "resolve_llm",
     "transcribe_voice",
 
     # Memoria y aprendizaje

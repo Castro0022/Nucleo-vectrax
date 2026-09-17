@@ -559,13 +559,21 @@ def _build_task_message(task: Dict) -> str:
         # Try to get live market data
         try:
             from intents.market_intents import detect_market_intent, handle_market_intent
+            from core.operator.execution_context import ExecutionContext, ORIGIN_SYSTEM
+            # origin=SYSTEM real: disparado por run_scheduler_tick(), sin
+            # turno de usuario vivo. No se inventa `classification` de
+            # texto conversacional — se describe la operación real.
+            _sched_mkt_ctx = ExecutionContext(
+                origin=ORIGIN_SYSTEM, action="resolve_market",
+                actor_id="scheduler", operation="MARKET_READ", trigger="SCHEDULED",
+            )
             detected = detect_market_intent(msg)
             if detected:
-                result = handle_market_intent(detected[0], detected[1])
+                result = handle_market_intent(detected[0], detected[1], execution_context=_sched_mkt_ctx)
                 if result.get("success") and result.get("response"):
                     return f"📈 Mercado programado:\n{result['response']}"
             # Default: BTC
-            result = handle_market_intent("bitcoin_status", {"symbol": "BTCUSDT"})
+            result = handle_market_intent("bitcoin_status", {"symbol": "BTCUSDT"}, execution_context=_sched_mkt_ctx)
             if result.get("success") and result.get("response"):
                 return f"📈 Mercado:\n{result['response']}"
         except Exception:

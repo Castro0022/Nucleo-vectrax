@@ -48,6 +48,7 @@ from core.intelligence.synthesizer import (
     SynthesizedResult,
 )
 from core.intelligence.feedback import PerformanceFeedback
+from core.operator.execution_context import ExecutionContext
 
 logger = logging.getLogger("vectrax.intelligence.router")
 
@@ -174,12 +175,21 @@ class IntelligenceRouter:
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        execution_context: Optional[ExecutionContext] = None,
     ) -> SingleQueryResult:
         """
         Route a prompt to the single best model and return the response.
 
         Uses ModelRouter for scoring, then dispatches via the provider registry.
         Falls back through circuit breaker if primary fails.
+
+        Args:
+            execution_context: frontera constitucional PRE-ejecución ("llm").
+                Ausente -> tratado como "sin contexto" por
+                `pre_execution_gate.authorize()` (SHADOW: sin cambio de
+                comportamiento; ENFORCE: fail-closed). UNA sola autorización
+                cubre tanto el intento primario como el fallback interno de
+                este método — no se re-consulta por cada intento.
         """
         t0 = time.time()
 
@@ -187,6 +197,16 @@ class IntelligenceRouter:
         decision = self._model_router.route(prompt, context)
         provider_name = decision.primary.provider
         model_name = decision.primary.model
+
+        # === PRE-EXECUTION CONSTITUTIONAL GATE (frontera "llm") ===
+        from core.operator import pre_execution_gate
+        gate_decision = pre_execution_gate.authorize("llm", execution_context)
+        if not gate_decision.should_execute:
+            return SingleQueryResult(
+                routing_decision=decision,
+                error=f"pre_execution_gate:{gate_decision.execution}",
+                latency_ms=(time.time() - t0) * 1000,
+            )
 
         # Interaction-learning state — recorded EXACTLY ONCE in `finally`,
         # after the provider/fallback path completes (router-level SSOT for
@@ -360,6 +380,7 @@ class IntelligenceRouter:
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        execution_context: Optional[ExecutionContext] = None,
     ) -> ParallelQueryResult:
         """
         Query multiple models in parallel.
@@ -370,6 +391,11 @@ class IntelligenceRouter:
             system_prompt: Optional system prompt.
             temperature: Generation temperature.
             max_tokens: Max tokens per response.
+            execution_context: frontera constitucional PRE-ejecución ("llm"),
+                operación de FAN-OUT — UNA sola autorización cubre todo el
+                conjunto de proveedores solicitado. `query_synthesized()`
+                llama a este método internamente, así que también queda
+                cubierto sin autorización duplicada.
 
         Returns:
             ParallelQueryResult with per-provider results.
@@ -381,6 +407,22 @@ class IntelligenceRouter:
             return ParallelQueryResult(
                 providers_queried=0, providers_succeeded=0,
             )
+
+        # === PRE-EXECUTION CONSTITUTIONAL GATE (frontera "llm", fan-out) ===
+        from core.operator import pre_execution_gate
+        requested_targets = list(provider_map.keys())
+        gate_decision = pre_execution_gate.authorize(
+            "llm", execution_context, requested_targets=requested_targets,
+        )
+        if not gate_decision.should_execute:
+            return ParallelQueryResult(providers_queried=0, providers_succeeded=0)
+        if gate_decision.authorized_targets is not None:
+            authorized = set(gate_decision.authorized_targets)
+            if authorized != set(requested_targets):
+                provider_map = {k: v for k, v in provider_map.items() if k in authorized}
+                model_map = {k: v for k, v in model_map.items() if k in authorized}
+                if not provider_map:
+                    return ParallelQueryResult(providers_queried=0, providers_succeeded=0)
 
         request = GenerateRequest(
             prompt=prompt,
@@ -412,6 +454,7 @@ class IntelligenceRouter:
         system_prompt: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        execution_context: Optional[ExecutionContext] = None,
     ) -> SynthesizedQueryResult:
         """
         Full cognitive query: parallel → synthesize → feedback.
@@ -430,6 +473,8 @@ class IntelligenceRouter:
             system_prompt: Optional system prompt.
             temperature: Generation temperature.
             max_tokens: Max tokens per response.
+            execution_context: propagado tal cual a `query_parallel()` — no
+                crea un segundo fan-out ni una segunda autorización separada.
 
         Returns:
             SynthesizedQueryResult with best content, synthesis, and metadata.
@@ -447,6 +492,7 @@ class IntelligenceRouter:
             system_prompt=system_prompt,
             temperature=temperature,
             max_tokens=max_tokens,
+            execution_context=execution_context,
         )
 
         # Step 3: Synthesize

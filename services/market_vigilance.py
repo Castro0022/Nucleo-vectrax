@@ -202,8 +202,21 @@ class MarketVigilance:
         if prev != mode:
             logger.warning("[VIGILANCE] Modo cambiado: %s → %s", prev, mode)
 
-    def fetch_state(self, symbol: str) -> Optional[MarketState]:
-        """Fetch current market state from available sources."""
+    def fetch_state(self, symbol: str, execution_context: Any = None) -> Optional[MarketState]:
+        """Fetch current market state from available sources.
+
+        `execution_context`: frontera constitucional PRE-ejecución
+        ("market") — executor INDEPENDIENTE de `handle_market_intent()`
+        (`intents/market_intents.py`). `_try_market_resolve()` cae aquí
+        directamente cuando `detect_market_intent()` no detecta intención,
+        sin pasar nunca por `handle_market_intent()` — por eso necesita su
+        propio insertion point, no comparte cache con él.
+        """
+        # === PRE-EXECUTION CONSTITUTIONAL GATE (frontera "market") ===
+        from core.operator import pre_execution_gate
+        gate_decision = pre_execution_gate.authorize("market", execution_context)
+        if not gate_decision.should_execute:
+            return None
         data = get_coin_details(symbol)
         if not data.get("success"):
             return None

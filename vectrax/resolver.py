@@ -1108,12 +1108,20 @@ def _interpret_with_llm(
     query: str,
     snippets: List[str],
     lang: str = "es",
+    execution_context=None,
 ) -> str:
     """
     Intelligent interpretation: pass search results through LLM to produce
     an analyzed, synthesized response instead of raw snippet assembly.
 
     Falls back to empty string if LLM is unavailable.
+
+    `execution_context` (parámetro, frontera "online" del caller): esta
+    interpretación es una frontera DISTINTA ("llm") anidada dentro de
+    `resolve_online()`. NO hereda el veredicto de `online` — se deriva un
+    `ExecutionContext` independiente (`.derive("resolve_llm")`) que reutiliza
+    solo los campos de transporte, y se autoriza UNA vez aquí, cubriendo
+    ambos intentos (bridge + OpenAI directo) de este mismo método.
     """
     context = "\n".join(f"- {s}" for s in snippets if s.strip())
     if not context:
@@ -1122,11 +1130,18 @@ def _interpret_with_llm(
     prompt_template = _INTERPRET_PROMPT_ES if lang == "es" else _INTERPRET_PROMPT_EN
     prompt = prompt_template.format(query=query, context=context)
 
+    # === PRE-EXECUTION CONSTITUTIONAL GATE (frontera "llm", independiente) ===
+    llm_ctx = execution_context.derive("resolve_llm") if execution_context is not None else None
+    from core.operator import pre_execution_gate
+    llm_gate_decision = pre_execution_gate.authorize("llm", llm_ctx)
+    if not llm_gate_decision.should_execute:
+        return ""
+
     # Try Intelligence Bridge (multi-model)
     try:
         from vectrax.intelligence_bridge import is_ready, route_single
         if is_ready():
-            result = route_single(prompt)
+            result = route_single(prompt, execution_context=llm_ctx)
             if result.get("success") and result.get("content"):
                 interpreted = result["content"].strip()
                 logger.info(
@@ -1199,6 +1214,7 @@ def resolve_online(
     text: str,
     channel: str,
     owner: str,
+    execution_context=None,
 ) -> Resolution:
     """
     Build a search query from the user's question, search the web
@@ -1211,11 +1227,33 @@ def resolve_online(
       3. Fallback to structured synthesis if LLM unavailable
 
     Mode: comprensión > copia — always analyze, never copy.
+
+    `execution_context`: frontera constitucional PRE-ejecución ("online").
+    UNA sola autorización cubre el fallback interno completo de
+    `_search_multi_engine()` (Tavily→DDG→Brave→Google CSE). La
+    interpretación LLM anidada (`_interpret_with_llm`) es una frontera
+    DISTINTA ("llm") con su PROPIA autorización independiente — ver
+    `ExecutionContext.derive()`.
     """
     # Build query: use the question directly
     query = text.strip().rstrip("?").strip()
     if len(query) > 200:
         query = query[:200]
+
+    # === PRE-EXECUTION CONSTITUTIONAL GATE (frontera "online") ===
+    from core.operator import pre_execution_gate
+    online_gate_decision = pre_execution_gate.authorize("online", execution_context)
+    if not online_gate_decision.should_execute:
+        lang0 = _detect_lang(text)
+        labels0 = _get_labels(lang0)
+        return Resolution(
+            mode="online",
+            answer=f"pre_execution_gate:{online_gate_decision.execution}",
+            sovereign_answer=labels0["no_info"],
+            sources=[],
+            search_query=query,
+            engines_used=[],
+        )
 
     sources, engines_used = _search_multi_engine(query, max_results=5)
 
@@ -1242,7 +1280,7 @@ def resolve_online(
 
     # ══ INTELLIGENT INTERPRETATION ══
     # Priority: LLM analysis > structured synthesis
-    sovereign = _interpret_with_llm(text, snippets, lang=lang)
+    sovereign = _interpret_with_llm(text, snippets, lang=lang, execution_context=execution_context)
 
     # Fallback: structured synthesis (if LLM unavailable)
     if not sovereign:
@@ -1272,6 +1310,7 @@ def resolve(
     text: str,
     channel: str,
     owner: str,
+    execution_context=None,
 ) -> Resolution:
     """
     Main entry point: classify → route → resolve.
@@ -1280,6 +1319,9 @@ def resolve(
     - local  → searches memory stars; falls back to online if
                no matches OR top match relevance < threshold
     - online → searches the web
+
+    `execution_context`: propagado tal cual a `resolve_online()` (frontera
+    "online") en ambos caminos que pueden llegar a la web.
     """
     mode = classify(text)
     logger.info("Resolver: text=%r → mode=%s (channel=%s, owner=%s)",
@@ -1300,9 +1342,9 @@ def resolve(
                 "falling back to online",
                 result.context_stars, result.top_score,
             )
-            result = resolve_online(text, channel, owner)
+            result = resolve_online(text, channel, owner, execution_context=execution_context)
             result.fallback_from = "local"
         return result
 
     # mode == "online"
-    return resolve_online(text, channel, owner)
+    return resolve_online(text, channel, owner, execution_context=execution_context)

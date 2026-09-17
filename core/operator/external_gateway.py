@@ -2471,14 +2471,23 @@ class ExternalGateway:
     # -- Market data resolve ------------------------------------------------
 
     @staticmethod
-    def _try_market_resolve(content: str) -> str:
+    def _try_market_resolve(content: str, user_id: str = "") -> str:
         """
         Resolve market queries via the Vectrax market module.
 
         Uses market_vigilance for analysis + classification,
         and market intents for natural language formatting.
         Returns formatted response or empty string.
+
+        Construye AQUÍ (no en el caller) el `ExecutionContext` de la
+        frontera "market" — cubre ambos executors independientes:
+        `handle_market_intent()` y el fallback directo a
+        `MarketVigilance.fetch_state()`.
         """
+        from core.operator.execution_context import ExecutionContext, ORIGIN_USER
+        market_ctx = ExecutionContext(
+            origin=ORIGIN_USER, action="resolve_market", actor_id=user_id,
+        )
         try:
             from intents.market_intents import detect_market_intent, handle_market_intent
 
@@ -2487,7 +2496,7 @@ class ExternalGateway:
                 # Fallback: try a direct vigilance snapshot
                 from services.market_vigilance import MarketVigilance
                 v = MarketVigilance()
-                state = v.fetch_state("BTCUSDT")
+                state = v.fetch_state("BTCUSDT", execution_context=market_ctx)
                 if state is None:
                     return "Error: no se pudo obtener datos de mercado. Fuentes no disponibles."
                 result = v.evaluate(state)
@@ -2503,7 +2512,7 @@ class ExternalGateway:
                 return "\n".join(lines)
 
             intent_name, params = detected
-            result = handle_market_intent(intent_name, params)
+            result = handle_market_intent(intent_name, params, execution_context=market_ctx)
 
             if result.get("success"):
                 # Prefer natural language response if available
@@ -2572,7 +2581,11 @@ class ExternalGateway:
                 except Exception:
                     pass
 
-            result = search_places(content, user_location=user_location)
+            from core.operator.execution_context import ExecutionContext, ORIGIN_USER
+            places_ctx = ExecutionContext(
+                origin=ORIGIN_USER, action="resolve_places", actor_id=user_id,
+            )
+            result = search_places(content, user_location=user_location, execution_context=places_ctx)
 
             if result.get("found") and result.get("message"):
                 return result["message"]
@@ -2727,7 +2740,19 @@ class ExternalGateway:
         else:
             internal_channel = _INTERNAL_CHANNEL_MAP.get(channel, "user")
 
-        # ══════════════════════════════════════════════════════════════
+        # === PRE-EXECUTION CONSTITUTIONAL GATE — contextos por frontera ===
+        # `online_ctx`: los 3 sitios de `resolve_online()` más abajo
+        # (places→online, RESOLVE_ONLINE, local→online) son estrategias
+        # MUTUAMENTE EXCLUYENTES por request — nunca se ejecuta más de una
+        # por mensaje, así que compartir el mismo objeto es seguro (no hay
+        # cache cruzado real entre ellas).
+        from core.operator.execution_context import ExecutionContext as _PipelineExecutionContext
+        from core.operator.execution_context import ORIGIN_USER as _PIPELINE_ORIGIN_USER
+        online_ctx = _PipelineExecutionContext(
+            origin=_PIPELINE_ORIGIN_USER, action="resolve_online", actor_id=user_id,
+        )
+
+        # ═════════════════════════════════════════════════════════════
         # IDENTITY CONTEXT — built once, travels through all layers
         # ══════════════════════════════════════════════════════════════
         try:
@@ -2854,7 +2879,7 @@ class ExternalGateway:
                     from intents.market_intents import detect_market_intent
                     _mkt = detect_market_intent(content)
                     if _mkt:
-                        _mkt_answer = self._try_market_resolve(content)
+                        _mkt_answer = self._try_market_resolve(content, user_id=user_id)
                         if _mkt_answer:
                             logger.info(
                                 "Pipeline: PRE-ROUTER MARKET intercept | intent=%s",
@@ -2953,7 +2978,7 @@ class ExternalGateway:
                 logger.info("Pipeline: PLACE SEARCH empty, falling back to ONLINE")
                 from vectrax.resolver import resolve_online
                 _online_t0 = time.perf_counter()
-                resolution = resolve_online(content, internal_channel, user_id)
+                resolution = resolve_online(content, internal_channel, user_id, execution_context=online_ctx)
                 try:
                     from core.observability.router_activation import (
                         record_activate as _rec_online,
@@ -3042,7 +3067,7 @@ class ExternalGateway:
 
             # Consulta de mercado (crypto, stocks, análisis técnico)
             if smart_route.strategy == Strategy.RESOLVE_MARKET:
-                answer = self._try_market_resolve(content)
+                answer = self._try_market_resolve(content, user_id=user_id)
                 resolve_mode = "market"
                 if answer:
                     sr.record_feedback(smart_route, success=True, word_count=word_count)
@@ -3134,7 +3159,7 @@ class ExternalGateway:
 
                 from vectrax.resolver import resolve_online
                 _online_t0 = time.perf_counter()
-                resolution = resolve_online(content, internal_channel, user_id)
+                resolution = resolve_online(content, internal_channel, user_id, execution_context=online_ctx)
                 try:
                     from core.observability.router_activation import (
                         record_activate as _rec_online,
@@ -3173,7 +3198,7 @@ class ExternalGateway:
                     pass
                 from vectrax.resolver import resolve_online
                 _online_t0 = time.perf_counter()
-                resolution = resolve_online(content, internal_channel, user_id)
+                resolution = resolve_online(content, internal_channel, user_id, execution_context=online_ctx)
                 try:
                     from core.observability.router_activation import (
                         record_activate as _rec_online,
@@ -3435,97 +3460,120 @@ class ExternalGateway:
 
         prompt = build_prompt(content, full_context, user_id)
 
-        # Intentar vía Intelligence Bridge (multi-modelo)
-        # system_prompt=None — los providers inyectan VECTRAX_SYSTEM_PROMPT
-        _t0 = time.perf_counter()
-        try:
-            from vectrax.intelligence_bridge import (
-                initialize,
-                is_ready,
-                route_single,
-            )
-            if not is_ready():
-                init_result = initialize()
-                logger.info(
-                    "Intelligence Router initialized: %s",
-                    init_result.get("providers_detected", []),
-                )
+        # === PRE-EXECUTION CONSTITUTIONAL GATE (frontera "llm") ===
+        # UNA sola autorización cubre los 3 intentos externos secuenciales de
+        # abajo (Intelligence Bridge, OpenAI directo, Ollama local) — son
+        # resiliencia de UNA misma operación lógica ("generar respuesta LLM
+        # para este turno"), no 3 operaciones separadas. `llm_ctx` se
+        # construye aquí y se propaga; cada intento la reutiliza desde el
+        # cache de `pre_execution_gate` (paso 0) en vez de re-evaluar los 7
+        # principios una segunda o tercera vez.
+        from core.operator.execution_context import ExecutionContext as _LLMExecutionContext
+        from core.operator.execution_context import ORIGIN_USER as _LLM_ORIGIN_USER
+        from core.operator import pre_execution_gate as _pre_execution_gate
 
-            if is_ready():
-                result = route_single(prompt)
-                if result.get("success") and result.get("content"):
+        llm_ctx = _LLMExecutionContext(
+            origin=_LLM_ORIGIN_USER, action="resolve_llm",
+            actor_id=user_id, classification=channel,
+        )
+        llm_gate_decision = _pre_execution_gate.authorize("llm", llm_ctx)
+        _record_llm_stage(
+            "llm_pre_execution_gate", 0.0, llm_gate_decision.should_execute,
+            note=llm_gate_decision.execution,
+        )
+
+        if llm_gate_decision.should_execute:
+            # Intentar vía Intelligence Bridge (multi-modelo)
+            # system_prompt=None — los providers inyectan VECTRAX_SYSTEM_PROMPT
+            _t0 = time.perf_counter()
+            try:
+                from vectrax.intelligence_bridge import (
+                    initialize,
+                    is_ready,
+                    route_single,
+                )
+                if not is_ready():
+                    init_result = initialize()
                     logger.info(
-                        "LLM response via %s (%s) | tokens=%s",
-                        result.get("provider", "?"),
-                        result.get("model", "?"),
-                        result.get("tokens", "?"),
+                        "Intelligence Router initialized: %s",
+                        init_result.get("providers_detected", []),
                     )
-                    _record_llm_stage(
-                        "llm_intelligence_bridge",
-                        (time.perf_counter() - _t0) * 1000.0, True,
-                        note=f"provider={result.get('provider', '?')}",
-                    )
-                    return result["content"].strip()
+
+                if is_ready():
+                    result = route_single(prompt, execution_context=llm_ctx)
+                    if result.get("success") and result.get("content"):
+                        logger.info(
+                            "LLM response via %s (%s) | tokens=%s",
+                            result.get("provider", "?"),
+                            result.get("model", "?"),
+                            result.get("tokens", "?"),
+                        )
+                        _record_llm_stage(
+                            "llm_intelligence_bridge",
+                            (time.perf_counter() - _t0) * 1000.0, True,
+                            note=f"provider={result.get('provider', '?')}",
+                        )
+                        return result["content"].strip()
+                    else:
+                        logger.warning(
+                            "LLM route_single failed: %s",
+                            result.get("error", "unknown"),
+                        )
+                        _record_llm_stage(
+                            "llm_intelligence_bridge",
+                            (time.perf_counter() - _t0) * 1000.0, False,
+                            note="route_single_failed",
+                        )
                 else:
-                    logger.warning(
-                        "LLM route_single failed: %s",
-                        result.get("error", "unknown"),
-                    )
                     _record_llm_stage(
                         "llm_intelligence_bridge",
                         (time.perf_counter() - _t0) * 1000.0, False,
-                        note="route_single_failed",
+                        note="not_ready",
                     )
-            else:
+            except Exception as exc:
+                logger.warning("Intelligence Bridge unavailable: %s", exc)
                 _record_llm_stage(
                     "llm_intelligence_bridge",
                     (time.perf_counter() - _t0) * 1000.0, False,
-                    note="not_ready",
+                    note=f"exception:{type(exc).__name__}",
                 )
-        except Exception as exc:
-            logger.warning("Intelligence Bridge unavailable: %s", exc)
-            _record_llm_stage(
-                "llm_intelligence_bridge",
-                (time.perf_counter() - _t0) * 1000.0, False,
-                note=f"exception:{type(exc).__name__}",
-            )
 
-        # Fallback: OpenAI directo si el bridge falla
-        _t0 = time.perf_counter()
-        try:
-            answer = self._generate_openai_direct(prompt)
-            _record_llm_stage(
-                "llm_openai_direct",
-                (time.perf_counter() - _t0) * 1000.0, bool(answer),
-            )
-            if answer:
-                return answer
-        except Exception as exc:
-            logger.warning("OpenAI direct fallback failed: %s", exc)
-            _record_llm_stage(
-                "llm_openai_direct",
-                (time.perf_counter() - _t0) * 1000.0, False,
-                note=f"exception:{type(exc).__name__}",
-            )
+            # Fallback: OpenAI directo si el bridge falla
+            _t0 = time.perf_counter()
+            try:
+                answer = self._generate_openai_direct(prompt, execution_context=llm_ctx)
+                _record_llm_stage(
+                    "llm_openai_direct",
+                    (time.perf_counter() - _t0) * 1000.0, bool(answer),
+                )
+                if answer:
+                    return answer
+            except Exception as exc:
+                logger.warning("OpenAI direct fallback failed: %s", exc)
+                _record_llm_stage(
+                    "llm_openai_direct",
+                    (time.perf_counter() - _t0) * 1000.0, False,
+                    note=f"exception:{type(exc).__name__}",
+                )
 
-        # Fallback: Ollama local (no rate limits, no billing)
-        _t0 = time.perf_counter()
-        try:
-            answer = self._generate_ollama_local(prompt)
-            _record_llm_stage(
-                "llm_ollama_local",
-                (time.perf_counter() - _t0) * 1000.0, bool(answer),
-            )
-            if answer:
-                logger.info("LLM response via Ollama local")
-                return answer
-        except Exception as exc:
-            logger.debug("Ollama local fallback failed: %s", exc)
-            _record_llm_stage(
-                "llm_ollama_local",
-                (time.perf_counter() - _t0) * 1000.0, False,
-                note=f"exception:{type(exc).__name__}",
-            )
+            # Fallback: Ollama local (no rate limits, no billing)
+            _t0 = time.perf_counter()
+            try:
+                answer = self._generate_ollama_local(prompt, execution_context=llm_ctx)
+                _record_llm_stage(
+                    "llm_ollama_local",
+                    (time.perf_counter() - _t0) * 1000.0, bool(answer),
+                )
+                if answer:
+                    logger.info("LLM response via Ollama local")
+                    return answer
+            except Exception as exc:
+                logger.debug("Ollama local fallback failed: %s", exc)
+                _record_llm_stage(
+                    "llm_ollama_local",
+                    (time.perf_counter() - _t0) * 1000.0, False,
+                    note=f"exception:{type(exc).__name__}",
+                )
 
         # Fallback: synthesize from memory/gravity without any LLM
         _t0 = time.perf_counter()
@@ -3551,7 +3599,9 @@ class ExternalGateway:
         return ""
 
     @staticmethod
-    def _generate_openai_direct(prompt: str) -> str:
+    def _generate_openai_direct(
+        prompt: str, execution_context: Optional[Any] = None,
+    ) -> str:
         """
         Fallback directo a OpenAI vía core.llm_call.complete (context-agnostic).
 
@@ -3559,10 +3609,16 @@ class ExternalGateway:
         (str vacío si no disponible o falla). Identidad (VECTRAX_SYSTEM_PROMPT),
         api_gate (backoff 429) y circuit breaker quedan centralizados en
         core.llm_call, y sirven igual en contexto sync (Telegram) o async (API).
+
+        `execution_context` (frontera "llm") se propaga tal cual a
+        `core.llm_call.complete()` — que ya trae su propio gate. No se
+        vuelve a autorizar aquí (el cache de `resolved_decision` en el
+        contexto evita una segunda evaluación si ya se resolvió arriba en
+        `_generate_cognitive_response`).
         """
         try:
             from core.llm_call import complete
-            res = complete(prompt)
+            res = complete(prompt, execution_context=execution_context)
             if res.ok and res.text:
                 logger.info("OpenAI direct fallback: response generated")
                 return res.text
@@ -3573,12 +3629,22 @@ class ExternalGateway:
     # -- Ollama local fallback ------------------------------------------------
 
     @staticmethod
-    def _generate_ollama_local(prompt: str) -> str:
+    def _generate_ollama_local(
+        prompt: str, execution_context: Optional[Any] = None,
+    ) -> str:
         """
         Fallback to local Ollama instance (no rate limits, no billing).
         Requires Ollama running on the server with a model pulled.
         Returns empty string if Ollama is not available.
         """
+        # === PRE-EXECUTION CONSTITUTIONAL GATE (frontera "llm") ===
+        # Reutiliza la MISMA autorización de la cadena de 3 pasos (cache por
+        # correlation_id) si `execution_context` ya trae `resolved_decision`
+        # de un intento anterior (bridge/openai directo) en esta operación.
+        from core.operator import pre_execution_gate
+        gate_decision = pre_execution_gate.authorize("llm", execution_context)
+        if not gate_decision.should_execute:
+            return ""
         try:
             import httpx
             resp = httpx.post(

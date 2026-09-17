@@ -294,8 +294,29 @@ def _extract_params(intent: str, match: re.Match, text: str) -> Dict[str, Any]:
 
 # ── Intent Handlers ─────────────────────────────────────────────────
 
-def handle_market_intent(intent: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Route a market intent to its handler."""
+def handle_market_intent(
+    intent: str, params: Dict[str, Any], execution_context: Any = None,
+) -> Dict[str, Any]:
+    """Route a market intent to its handler.
+
+    `execution_context`: frontera constitucional PRE-ejecución ("market").
+    Punto de inserción único — cubre `external_gateway.py`, los 3 sitios
+    de `telegram_gateway.py`, y `core/scheduler.py` (origin=SYSTEM) sin
+    gatear en cada uno. NO cubre el executor independiente
+    `services.market_vigilance.MarketVigilance.fetch_state()` — ese tiene
+    su propio insertion point porque `_try_market_resolve()` cae ahí
+    directamente cuando `detect_market_intent()` no detecta intención
+    (nunca llega a esta función).
+    """
+    # === PRE-EXECUTION CONSTITUTIONAL GATE (frontera "market") ===
+    from core.operator import pre_execution_gate
+    gate_decision = pre_execution_gate.authorize("market", execution_context)
+    if not gate_decision.should_execute:
+        return {
+            "success": False,
+            "error": f"pre_execution_gate:{gate_decision.execution}",
+        }
+
     handlers = {
         "market_price": _handle_price,
         "bitcoin_status": _handle_crypto_status,

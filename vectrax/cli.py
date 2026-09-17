@@ -439,8 +439,13 @@ def _handle_ai_command(prompt: str, session_id: str, ib, mem):
             f"(gravity={echo.gravity_score:.3f}, layer={echo.layer})"
         )
 
+    from core.operator.execution_context import ExecutionContext, ORIGIN_USER
+    _ai_ctx = ExecutionContext(
+        origin=ORIGIN_USER, action="resolve_llm", actor_id="creator",
+        correlation_id=session_id,
+    )
     with console.status("[bold cyan]◈ Consultando inteligencia…[/bold cyan]"):
-        result = ib.route_single(prompt, system_prompt=sys_prompt)
+        result = ib.route_single(prompt, system_prompt=sys_prompt, execution_context=_ai_ctx)
 
     db.insert_message(session_id, "mario", f"/ai {prompt}")
 
@@ -485,8 +490,13 @@ def _handle_multi_command(prompt: str, session_id: str, ib, mem):
             f"(gravity={echo.gravity_score:.3f}, layer={echo.layer})"
         )
 
+    from core.operator.execution_context import ExecutionContext, ORIGIN_USER
+    _multi_ctx = ExecutionContext(
+        origin=ORIGIN_USER, action="resolve_llm", actor_id="creator",
+        correlation_id=session_id,
+    )
     with console.status("[bold magenta]◈ Consultando múltiples modelos…[/bold magenta]"):
-        result = ib.query_multi(prompt, system_prompt=sys_prompt)
+        result = ib.query_multi(prompt, system_prompt=sys_prompt, execution_context=_multi_ctx)
 
     db.insert_message(session_id, "mario", f"/multi {prompt}")
 

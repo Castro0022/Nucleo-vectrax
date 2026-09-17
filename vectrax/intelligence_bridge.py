@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger("vectrax.intelligence_bridge")
 
@@ -130,9 +130,13 @@ def route_single(
     *,
     context: Optional[str] = None,
     system_prompt: Optional[str] = None,
+    execution_context: Optional[Any] = None,
 ) -> Dict:
     """
     Route a prompt to the best single model and return the response.
+
+    `execution_context`: frontera constitucional PRE-ejecución ("llm"),
+    propagado tal cual a `IntelligenceRouter.route()`.
 
     Returns dict with keys: success, content, provider, model, latency_ms, error.
     """
@@ -145,6 +149,7 @@ def route_single(
             prompt,
             context=context,
             system_prompt=system_prompt,
+            execution_context=execution_context,
         ))
         if result.success and result.response:
             return {
@@ -171,9 +176,14 @@ def query_multi(
     *,
     context: Optional[str] = None,
     system_prompt: Optional[str] = None,
+    execution_context: Optional[Any] = None,
 ) -> Dict:
     """
     Query all available models in parallel, synthesize, and return the best.
+
+    `execution_context`: frontera constitucional PRE-ejecución ("llm"),
+    operación de fan-out — propagado tal cual a
+    `IntelligenceRouter.query_synthesized()`.
 
     Returns dict with keys: success, content, best_provider, consensus_score,
     providers_compared, task_type, latency_ms, synthesis.
@@ -187,6 +197,7 @@ def query_multi(
             prompt,
             context=context,
             system_prompt=system_prompt,
+            execution_context=execution_context,
         ))
         if result.best_content:
             return {

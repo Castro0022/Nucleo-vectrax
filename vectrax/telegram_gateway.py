@@ -724,9 +724,13 @@ class TelegramGateway:
         ):
             try:
                 from intents.market_intents import detect_market_intent, handle_market_intent
+                from core.operator.execution_context import ExecutionContext, ORIGIN_USER
+                _mkt_ctx = ExecutionContext(
+                    origin=ORIGIN_USER, action="resolve_market", actor_id=user_id,
+                )
                 detected = detect_market_intent(text)
                 if detected:
-                    result = handle_market_intent(detected[0], detected[1])
+                    result = handle_market_intent(detected[0], detected[1], execution_context=_mkt_ctx)
                     if result.get("success") and result.get("response"):
                         return result["response"]
             except Exception:
@@ -1826,6 +1830,10 @@ class TelegramGateway:
             elif cmd in ("btc", "eth", "sol", "bnb", "xrp"):
                 # /vx btc [price|trend|1h]
                 from intents.market_intents import detect_market_intent, handle_market_intent
+                from core.operator.execution_context import ExecutionContext, ORIGIN_USER
+                _vx_mkt_ctx = ExecutionContext(
+                    origin=ORIGIN_USER, action="resolve_market", actor_id=tg_uid,
+                )
                 raw = f"{cmd} {arg}" if arg else cmd
                 detected = detect_market_intent(raw)
                 if not detected:
@@ -1833,7 +1841,7 @@ class TelegramGateway:
                                 else "market_price",
                                 {"symbol": cmd.upper() + "USDT"})
                 intent_name, params = detected
-                result = handle_market_intent(intent_name, params)
+                result = handle_market_intent(intent_name, params, execution_context=_vx_mkt_ctx)
                 if result.get("success") and result.get("response"):
                     self._send(cid, result["response"])
                 elif result.get("data"):
@@ -3296,11 +3304,15 @@ class TelegramGateway:
 
             elif sub == "snapshot":
                 from intents.market_intents import detect_market_intent, handle_market_intent
+                from core.operator.execution_context import ExecutionContext, ORIGIN_USER
+                _snap_ctx = ExecutionContext(
+                    origin=ORIGIN_USER, action="resolve_market", actor_id=tg_uid,
+                )
                 raw = "vx market snapshot"
                 detected = detect_market_intent(raw)
                 if detected:
                     intent_name, params = detected
-                    result = handle_market_intent(intent_name, params)
+                    result = handle_market_intent(intent_name, params, execution_context=_snap_ctx)
                     if result.get("success") and result.get("response"):
                         self._send(cid, result["response"])
                         return
@@ -3836,7 +3848,11 @@ class TelegramGateway:
             loc = get_user_location(tg_uid)
             if loc:
                 from vectrax.integrations.place_search import search_places
-                r = search_places(text, user_location=loc)
+                from core.operator.execution_context import ExecutionContext, ORIGIN_USER
+                _places_ctx = ExecutionContext(
+                    origin=ORIGIN_USER, action="resolve_places", actor_id=tg_uid,
+                )
+                r = search_places(text, user_location=loc, execution_context=_places_ctx)
                 if r.get("found") and r.get("results"):
                     for p in r["results"][:3]:
                         self._venue(cid, p)
