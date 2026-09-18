@@ -2675,6 +2675,18 @@ class ExternalGateway:
         contenido crudo del mensaje), así que la respuesta describe QUÉ
         encontró el Núcleo, no reconstruye un texto libre inventado.
 
+        Victoria C — corrección "Corte 3" (PR #120, revisión post-E2E de
+        provenance): si `evidence["external_evidence"]["items"]` trae
+        provenance real ya capturada por `_capture_evidence()`
+        (RESOLVE_ONLINE/PLACES/MARKET/ROUTE_COGNITIVE), se cita la fuente
+        MÁS RECIENTE (`source`/`source_reference`/`observed_at`, cuando
+        existan) como una parte más del resumen. Esto SOLO enriquece el
+        TEXTO ya construido — no cambia en absoluto QUIÉN decide llegar
+        aquí (`_build_nucleus_decision()`/Victoria A, gate intacto), ni el
+        fingerprint, ni ninguna resolución de referencias conversacionales.
+        Sin `external_evidence`, el comportamiento es EXACTAMENTE el
+        anterior.
+
         Devuelve cadena vacía si no hay nada representable — el caller
         decide qué hacer en ese caso (nunca cae a un resolver externo desde
         aquí).
@@ -2695,6 +2707,33 @@ class ExternalGateway:
             rules = evidence.get("matched_rules") or {}
             if rules.get("count"):
                 parts.append(f"{rules['count']} regla(s) aprendida(s) aplicable(s)")
+
+            # Victoria C (Corte 3): provenance real de la evidencia externa
+            # cacheada, si existe. `items[0]` es la MÁS RECIENTE
+            # (get_evidence() ya ordena por recencia). Defensivo en cada
+            # campo — cualquiera puede faltar sin romper el resto.
+            ext_items = (evidence.get("external_evidence") or {}).get("items") or []
+            if ext_items:
+                latest = ext_items[0] or {}
+                source = (latest.get("source") or "").strip()
+                source_reference = (latest.get("source_reference") or "").strip()
+                # source_reference puede traer varias referencias separadas
+                # por coma (ver _capture_evidence) — citar solo la primera
+                # evita un resumen inmanejable.
+                first_reference = (
+                    source_reference.split(",")[0].strip() if source_reference else ""
+                )
+                observed_at = (latest.get("observed_at") or "").strip()
+                prov_bits = [b for b in (source, first_reference) if b]
+                if prov_bits:
+                    prov_text = " — ".join(prov_bits)
+                    if observed_at:
+                        prov_text += f" ({observed_at})"
+                    parts.append(
+                        f"prior source: {prov_text}" if lang == "en"
+                        else f"fuente previa: {prov_text}"
+                    )
+
             if not parts:
                 return ""
             joined = ", ".join(parts)

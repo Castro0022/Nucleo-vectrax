@@ -417,6 +417,94 @@ class TestBuildAnswerFromEvidence:
         assert text
         assert "grounded" in text.lower()
 
+    # -- Victoria C (Corte 3): provenance real de external_evidence --------
+
+    def test_external_evidence_items_surfaces_real_source_reference(self):
+        """Con `external_evidence.items[].source_reference`, la respuesta
+        DEBE conservar/exponer la provenance real almacenada (RESOLVE_ONLINE/
+        PLACES/MARKET/ROUTE_COGNITIVE ya capturados por `_capture_evidence()`),
+        no solo un conteo abstracto."""
+        from core.operator.external_gateway import ExternalGateway
+        evidence = {
+            "cc_entry": {"cc_score": 0.87},
+            "external_evidence": {
+                "count": 1,
+                "items": [{
+                    "content": "La capital de Botsuana es Gaborone.",
+                    "source_type": "online",
+                    "source": "tavily",
+                    "source_reference": "https://es.wikipedia.org/wiki/Gaborone,https://otra.example",
+                    "observed_at": "2026-09-18T00:12:29+00:00",
+                    "correlation_id": "corr-1",
+                    "confidence": None,
+                }],
+            },
+        }
+        text = ExternalGateway._build_answer_from_evidence(evidence)
+        assert text
+        assert "tavily" in text
+        assert "https://es.wikipedia.org/wiki/Gaborone" in text
+        assert "2026-09-18T00:12:29+00:00" in text
+        # Solo la primera referencia (evita citar todas las URLs crudas).
+        assert "otra.example" not in text
+
+    def test_external_evidence_alone_still_produces_text(self):
+        """Si `external_evidence` es la ÚNICA señal presente (sin cc_entry/
+        structural_memory/gravity_similar/matched_rules), la respuesta ya
+        no debe quedar vacía — antes de esta corrección, `parts` quedaba
+        vacío y se devolvía ""."""
+        from core.operator.external_gateway import ExternalGateway
+        evidence = {
+            "external_evidence": {
+                "count": 1,
+                "items": [{
+                    "source": "tavily",
+                    "source_reference": "https://example.com/page",
+                    "observed_at": "2026-01-01T00:00:00+00:00",
+                }],
+            },
+        }
+        text = ExternalGateway._build_answer_from_evidence(evidence)
+        assert text
+        assert "tavily" in text
+        assert "https://example.com/page" in text
+
+    def test_without_external_evidence_behavior_unchanged(self):
+        """Sin `external_evidence` en absoluto, el comportamiento previo
+        queda intacto — mismo texto que antes de esta corrección."""
+        from core.operator.external_gateway import ExternalGateway
+        text = ExternalGateway._build_answer_from_evidence(
+            {"cc_entry": {"cc_score": 0.87}},
+        )
+        assert text == "Ya tengo esto identificado por evidencia previa (coherencia=0.87)."
+
+    def test_empty_external_evidence_items_does_not_add_provenance(self):
+        """`external_evidence` presente pero sin `items` (o vacío) no debe
+        agregar ningún texto de provenance — fail-safe defensivo."""
+        from core.operator.external_gateway import ExternalGateway
+        evidence = {
+            "cc_entry": {"cc_score": 0.87},
+            "external_evidence": {"count": 0, "items": []},
+        }
+        text = ExternalGateway._build_answer_from_evidence(evidence)
+        assert text == "Ya tengo esto identificado por evidencia previa (coherencia=0.87)."
+
+    def test_external_evidence_english_provenance_label(self):
+        from core.operator.external_gateway import ExternalGateway
+        evidence = {
+            "external_evidence": {
+                "count": 1,
+                "items": [{
+                    "source": "tavily",
+                    "source_reference": "https://example.com/page",
+                    "observed_at": "",
+                }],
+            },
+        }
+        text = ExternalGateway._build_answer_from_evidence(evidence, lang="en")
+        assert "prior source" in text
+        assert "tavily" in text
+
 
 # ---------------------------------------------------------------------------
 # _compute_cc_observation_score() — root-cause fix (2026-09-17)
