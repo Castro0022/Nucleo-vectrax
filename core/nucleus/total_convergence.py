@@ -774,29 +774,45 @@ class TotalConvergenceEngine:
         # --- Victoria C: evidencia externa ya capturada (RESOLVE_ONLINE/
         # PLACES/MARKET/ROUTE_COGNITIVE de un mensaje anterior con el MISMO
         # fingerprint) --- "BUSQUÉ → RECIBÍ EVIDENCIA → AHORA PUEDO APRENDERLA".
-        # RULE 6: solo lookup + merge en record.memory_evidence, usando el
-        # mecanismo existente (mismo patrón que los bloques de arriba) — NO
-        # toca _HIGH_COHERENCE_THRESHOLD/_compute_cc_observation_score()/el
-        # gate de ANSWER_FROM_EVIDENCE en `_build_nucleus_decision()`.
+        #
+        # Corrección (PR #120, revisión post-merge-review): este bloque es
+        # PURAMENTE INFORMATIVO, no madurativo. La sola EXISTENCIA de
+        # evidencia externa cacheada NUNCA fabrica novedad/patrones/
+        # conexiones — esas señales siguen perteneciendo EXCLUSIVAMENTE a
+        # Gravity (`gravity_similar` arriba), CCTracker (`cc_entry` arriba) y
+        # Memory Engine (`structural_memory` arriba). Por eso este bloque NO
+        # toca `record.is_novel`, `prior_patterns` ni `connections` — solo
+        # deja la evidencia disponible en `record.memory_evidence` para que
+        # `_build_answer_from_evidence()` (external_gateway.py) pueda citarla
+        # SI Y SOLO SI el gate de Victoria A (`_HIGH_COHERENCE_THRESHOLD` +
+        # `_compute_cc_observation_score()`, ambos sin tocar) ya decidió
+        # independientemente que hay evidencia suficiente.
         try:
             from core.self_observation import observation_ledger as _obs_ledger
             _ext_evidence = _obs_ledger.get_evidence(record.input_fingerprint)
             if _ext_evidence:
-                record.is_novel = False
-                prior_patterns += len(_ext_evidence)
-                connections += len(_ext_evidence)
                 evidence["external_evidence"] = {
                     "count": len(_ext_evidence),
-                    "source_types": [
-                        e.get("obs_type", "") for e in _ext_evidence[:5]
-                    ],
-                    "sources": [
-                        (e.get("evidence") or {}).get("source", "")
+                    "items": [
+                        {
+                            "content": (e.get("evidence") or {}).get("content", ""),
+                            "source_type": e.get("obs_type", ""),
+                            "source": (e.get("evidence") or {}).get("source", ""),
+                            "source_reference": (
+                                e.get("evidence") or {}
+                            ).get("source_reference", ""),
+                            "observed_at": (
+                                e.get("evidence") or {}
+                            ).get("observed_at", ""),
+                            "correlation_id": (
+                                e.get("evidence") or {}
+                            ).get("correlation_id", ""),
+                            "confidence": (
+                                e.get("evidence") or {}
+                            ).get("confidence"),
+                        }
                         for e in _ext_evidence[:5]
                     ],
-                    "latest_observed_at": (
-                        _ext_evidence[0].get("evidence") or {}
-                    ).get("observed_at", ""),
                 }
         except Exception:
             pass

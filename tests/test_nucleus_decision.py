@@ -564,26 +564,127 @@ class TestCoherenceScoreProgressionEndToEnd:
 class TestPhaseMemoryExternalEvidenceLookup:
     """`_phase_memory()` debe incorporar evidencia externa ya almacenada
     (RESOLVE_ONLINE/PLACES/MARKET/ROUTE_COGNITIVE de un mensaje previo con
-    el MISMO fingerprint) en `record.memory_evidence['external_evidence']`,
-    sin tocar `_HIGH_COHERENCE_THRESHOLD`/`_compute_cc_observation_score()`/
-    el gate de `_build_nucleus_decision()`.
+    el MISMO fingerprint) en `record.memory_evidence['external_evidence']`
+    de forma PURAMENTE INFORMATIVA — nunca madurativa.
+
+    Corrección post-review de PR #120: la sola existencia de evidencia
+    cacheada NO puede fabricar novedad, patrones, conexiones ni maduración.
+    Esas señales siguen perteneciendo exclusivamente a Gravity/CCTracker/
+    Memory Engine (Victoria A). El gate de `ANSWER_FROM_EVIDENCE` en
+    `_build_nucleus_decision()`, `_HIGH_COHERENCE_THRESHOLD` y
+    `_compute_cc_observation_score()` permanecen intocados.
     """
 
-    def test_stored_evidence_is_merged_into_memory_evidence(self):
+    @staticmethod
+    def _isolated_engine() -> TotalConvergenceEngine:
+        """`TotalConvergenceEngine()` usa singletons LAZY reales (Gravity,
+        Memory Engine, hypothesis engine, rules store, perception) que en
+        este entorno apuntan a datos REALES de producción — no aislados por
+        test. Para probar el bloque de evidencia externa de forma pura (sin
+        contaminación de patrones/gravedad reales que ya existan para el
+        texto de prueba), se fuerzan esos getters a `None` — exactamente el
+        mismo camino ya defensivo que el motor usa cuando esos módulos no
+        están disponibles (`except ImportError: return None`)."""
+        engine = TotalConvergenceEngine()
+        engine._get_perception = lambda: None
+        engine._get_gravity = lambda: None
+        engine._get_memory = lambda: None
+        engine._get_hypothesis_engine = lambda: None
+        engine._get_rules_store = lambda: None
+        return engine
+
+    def test_stored_evidence_does_not_flip_is_novel(self):
+        """Una sola evidencia externa almacenada NO cambia `is_novel` —
+        `ConvergenceRecord` por defecto nace `is_novel=True`, y debe seguir
+        así tras el lookup si ningún otro mecanismo (Gravity/CC/Memory) lo
+        cambió."""
         from core.self_observation import observation_ledger as ol
         ol.init_ledger()
-        fp = "phase-memory-fp-1"
+        fp = "phase-memory-fp-novelty"
         ol.record_evidence(fp, "online", "respuesta previa", source="ddg")
 
-        engine = TotalConvergenceEngine()
+        engine = self._isolated_engine()
         record = ConvergenceRecord(input_fingerprint=fp, intent="unknown")
-        result = engine._phase_memory(record, "cualquier contenido")
+        assert record.is_novel is True  # baseline antes del ciclo
+        with patch("core.learn.constitution.get_cc_tracker", side_effect=ImportError):
+            result = engine._phase_memory(record, "cualquier contenido")
 
         assert "external_evidence" in result.memory_evidence
-        assert result.memory_evidence["external_evidence"]["count"] == 1
-        assert result.memory_evidence["external_evidence"]["source_types"] == ["online"]
-        assert result.is_novel is False
-        assert result.prior_patterns_found >= 1
+        assert result.is_novel is True, (
+            "La evidencia externa cacheada NO debe fabricar novedad — "
+            "is_novel solo lo cambian Gravity/CCTracker/Memory Engine"
+        )
+
+    def test_stored_evidence_does_not_increment_prior_patterns_found(self):
+        from core.self_observation import observation_ledger as ol
+        ol.init_ledger()
+        fp = "phase-memory-fp-patterns"
+        ol.record_evidence(fp, "online", "respuesta previa", source="ddg")
+
+        engine = self._isolated_engine()
+        record = ConvergenceRecord(input_fingerprint=fp, intent="unknown")
+        with patch("core.learn.constitution.get_cc_tracker", side_effect=ImportError):
+            result = engine._phase_memory(record, "cualquier contenido")
+
+        assert "external_evidence" in result.memory_evidence
+        assert result.prior_patterns_found == 0, (
+            "La evidencia externa cacheada NO debe incrementar "
+            "prior_patterns_found — esa señal es exclusiva de Gravity/Memory Engine"
+        )
+
+    def test_stored_evidence_does_not_increment_memory_connections(self):
+        from core.self_observation import observation_ledger as ol
+        ol.init_ledger()
+        fp = "phase-memory-fp-connections"
+        ol.record_evidence(fp, "online", "respuesta previa", source="ddg")
+
+        engine = self._isolated_engine()
+        record = ConvergenceRecord(input_fingerprint=fp, intent="unknown")
+        with patch("core.learn.constitution.get_cc_tracker", side_effect=ImportError):
+            result = engine._phase_memory(record, "cualquier contenido")
+
+        assert "external_evidence" in result.memory_evidence
+        assert result.memory_connections == 0, (
+            "La evidencia externa cacheada NO debe incrementar "
+            "memory_connections — esa señal es exclusiva de los mecanismos "
+            "ya existentes (immediate/gravity/cc/structural_memory/hyp/rules)"
+        )
+
+    def test_stored_evidence_appears_complete_in_memory_evidence(self):
+        """La evidencia recuperada debe entrar COMPLETA (no colapsada a
+        conteos) en `memory_evidence['external_evidence']['items']`: content,
+        source_type, source, source_reference, observed_at, correlation_id,
+        confidence."""
+        from core.self_observation import observation_ledger as ol
+        ol.init_ledger()
+        fp = "phase-memory-fp-complete"
+        ol.record_evidence(
+            fp, "online", "La capital de Botsuana es Gaborone.",
+            correlation_id="corr-xyz", source="tavily",
+            source_reference="https://es.wikipedia.org/wiki/Gaborone",
+            query="capital de Botsuana", confidence=0.9,
+        )
+
+        engine = self._isolated_engine()
+        record = ConvergenceRecord(input_fingerprint=fp, intent="unknown")
+        with patch("core.learn.constitution.get_cc_tracker", side_effect=ImportError):
+            result = engine._phase_memory(record, "cualquier contenido")
+
+        ext = result.memory_evidence["external_evidence"]
+        assert ext["count"] == 1
+        item = ext["items"][0]
+        assert item["content"] == "La capital de Botsuana es Gaborone."
+        assert item["source_type"] == "online"
+        assert item["source"] == "tavily"
+        assert item["source_reference"] == "https://es.wikipedia.org/wiki/Gaborone"
+        assert item["correlation_id"] == "corr-xyz"
+        assert item["confidence"] == 0.9
+        assert item["observed_at"]  # no vacío
+        # Aislado de Gravity/CC/Memory reales: is_novel/prior_patterns/
+        # connections siguen en su baseline, la evidencia es SOLO informativa.
+        assert result.is_novel is True
+        assert result.prior_patterns_found == 0
+        assert result.memory_connections == 0
 
     def test_no_stored_evidence_leaves_memory_evidence_unaffected(self):
         engine = TotalConvergenceEngine()
@@ -605,6 +706,72 @@ class TestPhaseMemoryExternalEvidenceLookup:
         ):
             result = engine._phase_memory(record, "contenido")
         assert "external_evidence" not in result.memory_evidence
+
+
+# ---------------------------------------------------------------------------
+# Victoria C — Victoria A's gate remains the ONLY mechanism that decides
+# ANSWER_FROM_EVIDENCE, even when external_evidence is present.
+# ---------------------------------------------------------------------------
+
+class TestExternalEvidenceNeverBypassesVictoriaAGate:
+    """`_build_nucleus_decision()` sigue usándo EXCLUSIVAMENTE
+    `is_novel`/`prior_patterns_found`/`coherence_score` (poblados por
+    Gravity/CCTracker/Memory Engine) para decidir `ANSWER_FROM_EVIDENCE`.
+    La presencia de `external_evidence` en `memory_evidence` NUNCA
+    sustituye ese gate por sí sola."""
+
+    def _record(self, **overrides) -> ConvergenceRecord:
+        base = dict(
+            domain="unknown",
+            is_novel=True,
+            prior_patterns_found=0,
+            coherence_score=0.0,
+            memory_evidence={},
+            capability_snapshot={},
+        )
+        base.update(overrides)
+        return ConvergenceRecord(**base)
+
+    def test_external_evidence_alone_does_not_trigger_answer_from_evidence(self):
+        """memory_evidence contiene SOLO 'external_evidence' (is_novel sigue
+        True, prior_patterns_found sigue 0, coherence_score sigue 0.0 —
+        exactamente lo que produce ahora _phase_memory()). El gate de
+        Victoria A NO debe activarse: sigue exigiendo is_novel=False +
+        prior_patterns_found>0 + coherence_score>=threshold."""
+        record = self._record(
+            memory_evidence={
+                "external_evidence": {
+                    "count": 1,
+                    "items": [{
+                        "content": "algo", "source_type": "online",
+                        "source": "tavily", "source_reference": "https://x",
+                        "observed_at": "2026-01-01T00:00:00+00:00",
+                        "correlation_id": "c1", "confidence": None,
+                    }],
+                },
+            },
+        )
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy != Strategy.ANSWER_FROM_EVIDENCE
+
+    def test_gate_only_fires_when_gravity_cc_memory_independently_qualify(self):
+        """Con external_evidence presente PERO is_novel/prior_patterns/
+        coherence YA satisfechos por los mecanismos reales (Gravity/CC/
+        Memory) — el mismo criterio de siempre, sin cambios —
+        ANSWER_FROM_EVIDENCE sí se activa, exactamente igual que si
+        external_evidence no existiera."""
+        record = self._record(
+            is_novel=False,
+            prior_patterns_found=3,
+            coherence_score=_HIGH_COHERENCE_THRESHOLD + 0.05,
+            memory_evidence={
+                "cc_entry": {"cc_score": 0.9},
+                "external_evidence": {"count": 1, "items": [{"content": "algo"}]},
+            },
+        )
+        decision = TotalConvergenceEngine._build_nucleus_decision(record)
+        assert decision.candidate_strategy == Strategy.ANSWER_FROM_EVIDENCE
+        assert decision.evidence == record.memory_evidence
 
 
 if __name__ == "__main__":
