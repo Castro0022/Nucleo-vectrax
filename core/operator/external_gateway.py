@@ -377,6 +377,7 @@ class ExternalGateway:
         channel: str = DEFAULT_CHANNEL,
         correlation_id: Optional[str] = None,
         nucleus_decision: Optional[Any] = None,
+        input_fingerprint: Optional[str] = None,
     ) -> GatewayResult:
         """Recibe un mensaje externo y lo procesa a través del bus.
 
@@ -398,10 +399,17 @@ class ExternalGateway:
                 opcional (mismo patrón de propagación que `correlation_id` de
                 arriba) — viaja intacta hasta `SmartRouter.route()`. `None`
                 (default) preserva el comportamiento actual sin cambios.
+            input_fingerprint: Victoria C (2026-09-17) — el MISMO
+                `ConvergenceRecord.input_fingerprint` de este ciclo, propagado
+                de forma INDEPENDIENTE de `nucleus_decision` (debe llegar
+                hasta el punto de escritura de evidencia incluso cuando
+                `nucleus_decision` es `None`). `None` (default) preserva el
+                comportamiento actual: sin fingerprint no se escribe evidencia.
         """
         result = self._do_receive_message(
             user_id, content, channel, correlation_id=correlation_id,
             nucleus_decision=nucleus_decision,
+            input_fingerprint=input_fingerprint,
         )
         if getattr(result, "processed", False):
             self._total_responded += 1
@@ -749,6 +757,7 @@ class ExternalGateway:
         channel: str = DEFAULT_CHANNEL,
         correlation_id: Optional[str] = None,
         nucleus_decision: Optional[Any] = None,
+        input_fingerprint: Optional[str] = None,
     ) -> GatewayResult:
         """
         Procesa un mensaje externo a través del bus (implementación).
@@ -761,6 +770,9 @@ class ExternalGateway:
                 Si es falsy, se genera uno nuevo como antes.
             nucleus_decision: ver `receive_message()` — se reenvía tal cual
                 hasta `_resolve_via_pipeline_v2()`.
+            input_fingerprint: ver `receive_message()` — se reenvía tal cual
+                hasta `_resolve_via_pipeline_v2()`, independiente de
+                `nucleus_decision`.
 
         Returns:
             GatewayResult con la respuesta del sistema.
@@ -1802,6 +1814,7 @@ class ExternalGateway:
                     gravity_lock=_gravity_lock,
                     provenance=_pipeline_prov,
                     nucleus_decision=nucleus_decision,
+                    input_fingerprint=input_fingerprint,
                 )
                 try:
                     from core.observability.router_activation import (
@@ -2481,7 +2494,12 @@ class ExternalGateway:
     # -- Market data resolve ------------------------------------------------
 
     @staticmethod
-    def _try_market_resolve(content: str, user_id: str = "") -> str:
+    def _try_market_resolve(
+        content: str,
+        user_id: str = "",
+        input_fingerprint: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> str:
         """
         Resolve market queries via the Vectrax market module.
 
@@ -2493,6 +2511,11 @@ class ExternalGateway:
         frontera "market" — cubre ambos executors independientes:
         `handle_market_intent()` y el fallback directo a
         `MarketVigilance.fetch_state()`.
+
+        Victoria C: `input_fingerprint`/`correlation_id` (opcionales) se usan
+        para capturar evidencia estructurada (RULE 4/5) tras cada ejecución
+        exitosa de CUALQUIERA de los dos executors — nunca bloquea ni altera
+        la respuesta si faltan o si la captura falla.
         """
         from core.operator.execution_context import ExecutionContext, ORIGIN_USER
         market_ctx = ExecutionContext(
@@ -2519,7 +2542,23 @@ class ExternalGateway:
                 ]
                 if result.missing:
                     lines.append("Falta: " + "; ".join(result.missing[:2]))
-                return "\n".join(lines)
+                _market_text = "\n".join(lines)
+                ExternalGateway._capture_evidence(
+                    fingerprint=input_fingerprint,
+                    correlation_id=correlation_id,
+                    source_type="market",
+                    content=_market_text,
+                    source="market_vigilance",
+                    source_reference=state.symbol,
+                    query=content,
+                    extra={
+                        "price": state.price,
+                        "change_24h": state.change_24h,
+                        "change_7d": state.change_7d,
+                        "signal_state": result.signal_state,
+                    },
+                )
+                return _market_text
 
             intent_name, params = detected
             result = handle_market_intent(intent_name, params, execution_context=market_ctx)
@@ -2527,16 +2566,39 @@ class ExternalGateway:
             if result.get("success"):
                 # Prefer natural language response if available
                 response = result.get("response", "")
+                data = result.get("data", {})
                 if response:
+                    ExternalGateway._capture_evidence(
+                        fingerprint=input_fingerprint,
+                        correlation_id=correlation_id,
+                        source_type="market",
+                        content=response,
+                        source="market_intents",
+                        source_reference=str(
+                            data.get("symbol", "") if isinstance(data, dict) else ""
+                        ),
+                        query=content,
+                        extra={"intent": intent_name},
+                    )
                     return response
 
                 # Fallback: format data directly
-                data = result.get("data", {})
                 if isinstance(data, dict) and "price" in data:
                     sym = data.get("symbol", "?")
                     price = data.get("price", 0)
                     change = data.get("change_pct", 0)
-                    return f"{sym}: ${price:,.2f} ({change:+.2f}%)"
+                    _market_text = f"{sym}: ${price:,.2f} ({change:+.2f}%)"
+                    ExternalGateway._capture_evidence(
+                        fingerprint=input_fingerprint,
+                        correlation_id=correlation_id,
+                        source_type="market",
+                        content=_market_text,
+                        source="market_intents",
+                        source_reference=str(sym),
+                        query=content,
+                        extra={"intent": intent_name},
+                    )
+                    return _market_text
 
                 # If it's a status/test response, format the data
                 if intent_name in ("vx_market_status", "vx_market_test"):
@@ -2552,6 +2614,54 @@ class ExternalGateway:
             logger.warning("Market resolve failed: %s", exc)
             return f"Error técnico en módulo de mercado: {exc}"
 
+    # -- Victoria C: cable de retorno de evidencia externa -------------------
+    # "BUSQUÉ → RECIBÍ EVIDENCIA → AHORA PUEDO APRENDERLA". Wrapper fail-safe
+    # — nunca lanza, nunca bloquea la respuesta al usuario — que persiste
+    # evidencia estructurada en `observation_ledger` (RULE 2: reutiliza el
+    # store existente, no crea uno nuevo) keyed por el `input_fingerprint`
+    # ORIGINAL de `TotalConvergenceEngine` (RULE 3: nunca recalculado aquí).
+
+    @staticmethod
+    def _capture_evidence(
+        *,
+        fingerprint: Optional[str],
+        correlation_id: Optional[str],
+        source_type: str,
+        content: str,
+        source: str = "",
+        source_reference: str = "",
+        query: str = "",
+        confidence: Optional[float] = None,
+        scope: str = "GLOBAL",
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persiste una pieza de evidencia externa tras una ejecución exitosa
+        de RESOLVE_ONLINE/RESOLVE_PLACES/RESOLVE_MARKET/ROUTE_COGNITIVE
+        (RULE 4). Sin `fingerprint` no hay forma de recuperarla después
+        (RULE 3), así que se omite silenciosamente. `scope` distinto de
+        "GLOBAL" también se omite (RULE 8) — lo decide `record_evidence()`.
+        """
+        if not fingerprint or not content:
+            return
+        try:
+            from core.self_observation import observation_ledger
+            observation_ledger.record_evidence(
+                fingerprint=fingerprint,
+                source_type=source_type,
+                content=content,
+                correlation_id=correlation_id or "",
+                source=source,
+                source_reference=source_reference,
+                query=query,
+                confidence=confidence,
+                scope=scope,
+                extra=extra,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Victoria C evidence capture skipped (%s): %s", source_type, exc,
+            )
+
     # -- Respuesta directa desde evidencia del Núcleo (ANSWER_FROM_EVIDENCE) --
 
     @staticmethod
@@ -2564,6 +2674,18 @@ class ExternalGateway:
         `_phase_memory()` (conteos, ids/tags cortos, scores — nunca
         contenido crudo del mensaje), así que la respuesta describe QUÉ
         encontró el Núcleo, no reconstruye un texto libre inventado.
+
+        Victoria C — corrección "Corte 3" (PR #120, revisión post-E2E de
+        provenance): si `evidence["external_evidence"]["items"]` trae
+        provenance real ya capturada por `_capture_evidence()`
+        (RESOLVE_ONLINE/PLACES/MARKET/ROUTE_COGNITIVE), se cita la fuente
+        MÁS RECIENTE (`source`/`source_reference`/`observed_at`, cuando
+        existan) como una parte más del resumen. Esto SOLO enriquece el
+        TEXTO ya construido — no cambia en absoluto QUIÉN decide llegar
+        aquí (`_build_nucleus_decision()`/Victoria A, gate intacto), ni el
+        fingerprint, ni ninguna resolución de referencias conversacionales.
+        Sin `external_evidence`, el comportamiento es EXACTAMENTE el
+        anterior.
 
         Devuelve cadena vacía si no hay nada representable — el caller
         decide qué hacer en ese caso (nunca cae a un resolver externo desde
@@ -2585,6 +2707,33 @@ class ExternalGateway:
             rules = evidence.get("matched_rules") or {}
             if rules.get("count"):
                 parts.append(f"{rules['count']} regla(s) aprendida(s) aplicable(s)")
+
+            # Victoria C (Corte 3): provenance real de la evidencia externa
+            # cacheada, si existe. `items[0]` es la MÁS RECIENTE
+            # (get_evidence() ya ordena por recencia). Defensivo en cada
+            # campo — cualquiera puede faltar sin romper el resto.
+            ext_items = (evidence.get("external_evidence") or {}).get("items") or []
+            if ext_items:
+                latest = ext_items[0] or {}
+                source = (latest.get("source") or "").strip()
+                source_reference = (latest.get("source_reference") or "").strip()
+                # source_reference puede traer varias referencias separadas
+                # por coma (ver _capture_evidence) — citar solo la primera
+                # evita un resumen inmanejable.
+                first_reference = (
+                    source_reference.split(",")[0].strip() if source_reference else ""
+                )
+                observed_at = (latest.get("observed_at") or "").strip()
+                prov_bits = [b for b in (source, first_reference) if b]
+                if prov_bits:
+                    prov_text = " — ".join(prov_bits)
+                    if observed_at:
+                        prov_text += f" ({observed_at})"
+                    parts.append(
+                        f"prior source: {prov_text}" if lang == "en"
+                        else f"fuente previa: {prov_text}"
+                    )
+
             if not parts:
                 return ""
             joined = ", ".join(parts)
@@ -2598,7 +2747,12 @@ class ExternalGateway:
     # -- Búsqueda de lugares reales ------------------------------------------
 
     @staticmethod
-    def _try_place_search(content: str, user_id: str = "") -> str:
+    def _try_place_search(
+        content: str,
+        user_id: str = "",
+        input_fingerprint: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+    ) -> str:
         """
         Detecta intención de búsqueda de lugar y resuelve vía Google Places.
 
@@ -2606,6 +2760,13 @@ class ExternalGateway:
         negocio, tienda o servicio, devuelve datos reales de la API.
         Usa la ubicación almacenada del usuario si está disponible.
         Nunca inventa datos.
+
+        Victoria C: `input_fingerprint`/`correlation_id` (opcionales) capturan
+        evidencia estructurada (RULE 4/5) cuando `found=True`. `scope` se deja
+        en GLOBAL: los resultados son datos públicos del negocio/lugar (sin
+        PII); la dependencia de la ubicación del usuario que generó el
+        `query_used` queda documentada como límite conocido (RULE 8), no
+        como dato personal almacenado.
 
         Returns:
             Respuesta formateada con lugares reales, o cadena vacía si
@@ -2641,6 +2802,19 @@ class ExternalGateway:
             result = search_places(content, user_location=user_location, execution_context=places_ctx)
 
             if result.get("found") and result.get("message"):
+                _place_ids = [
+                    p.get("place_id", "") for p in (result.get("results") or [])[:5]
+                ]
+                ExternalGateway._capture_evidence(
+                    fingerprint=input_fingerprint,
+                    correlation_id=correlation_id,
+                    source_type="places",
+                    content=result["message"],
+                    source="google_places",
+                    source_reference=",".join(p for p in _place_ids if p),
+                    query=result.get("query_used", ""),
+                    extra={"search_type": result.get("search_type", "")},
+                )
                 return result["message"]
 
             return result.get("message", "")
@@ -2660,6 +2834,7 @@ class ExternalGateway:
         gravity_lock: bool = False,
         provenance: Optional[dict] = None,
         nucleus_decision: Optional[Any] = None,
+        input_fingerprint: Optional[str] = None,
     ) -> Tuple[str, str]:
         """
         Pipeline cognitivo unificado con clasificación semántica.
@@ -2676,6 +2851,9 @@ class ExternalGateway:
             gravity_lock: if True, SmartRouter must NOT route to ONLINE.
             nucleus_decision: ver `receive_message()` — se reenvía tal cual
                 hasta `_resolve_via_pipeline()`.
+            input_fingerprint: ver `receive_message()` — se reenvía tal cual
+                hasta `_resolve_via_pipeline()`, independiente de
+                `nucleus_decision`.
 
         Returns:
             (response_text, source_path) donde source_path es "places",
@@ -2690,6 +2868,7 @@ class ExternalGateway:
             extra_context=extra_context, act_log=act_log,
             gravity_lock=gravity_lock, provenance=provenance,
             nucleus_decision=nucleus_decision,
+            input_fingerprint=input_fingerprint,
         )
         if answer:
             return answer, source_path
@@ -2766,6 +2945,7 @@ class ExternalGateway:
         gravity_lock: bool = False,
         provenance: Optional[dict] = None,
         nucleus_decision: Optional[Any] = None,
+        input_fingerprint: Optional[str] = None,
     ) -> Tuple[str, str]:
         """
         Pipeline cognitivo completo para mensajes externos.
@@ -2786,11 +2966,23 @@ class ExternalGateway:
         Args:
             nucleus_decision: `core.nucleus.nucleus_decision.NucleusDecision`
                 opcional, propagada tal cual hasta `sr.route()` más abajo.
+            input_fingerprint: Victoria C (2026-09-17) — el MISMO
+                `ConvergenceRecord.input_fingerprint` de este ciclo. Usado
+                para escribir evidencia estructurada en `observation_ledger`
+                tras una ejecución exitosa de RESOLVE_ONLINE/PLACES/MARKET/
+                ROUTE_COGNITIVE (ver `_capture_evidence()`), independiente
+                de `nucleus_decision`.
 
         Returns:
             (answer, source_path) donde source_path refleja la estrategia
             real del SmartRouter que resolvió el mensaje.
         """
+        # Victoria C: correlation_id derivado del mismo act_log.message_id
+        # que ya usa el resto del pipeline para telemetría — no se genera uno
+        # nuevo desconectado.
+        _evidence_correlation_id = (
+            getattr(act_log, "message_id", None) if act_log is not None else None
+        )
         resolve_mode = "llm"
         answer = ""
         word_count = len(content.split())
@@ -3059,7 +3251,11 @@ class ExternalGateway:
 
             # Búsqueda de lugar físico (semántico → Google Places)
             if smart_route.strategy == Strategy.RESOLVE_PLACES:
-                answer = self._try_place_search(content, user_id=user_id)
+                answer = self._try_place_search(
+                    content, user_id=user_id,
+                    input_fingerprint=input_fingerprint,
+                    correlation_id=_evidence_correlation_id,
+                )
                 resolve_mode = "places"
                 if answer:
                     sr.record_feedback(smart_route, success=True, word_count=word_count)
@@ -3085,6 +3281,17 @@ class ExternalGateway:
                 answer = resolution.sovereign_answer or resolution.answer or ""
                 resolve_mode = "places_to_online"
                 if answer:
+                    self._capture_evidence(
+                        fingerprint=input_fingerprint,
+                        correlation_id=_evidence_correlation_id,
+                        source_type="online",
+                        content=answer,
+                        source=",".join(getattr(resolution, "engines_used", None) or []),
+                        source_reference=",".join(
+                            s.url for s in (getattr(resolution, "sources", None) or [])[:5]
+                        ),
+                        query=getattr(resolution, "search_query", "") or "",
+                    )
                     sr.record_feedback(smart_route, success=True, used_fallback=True, fallback_strategy="online", word_count=word_count)
                     return answer, resolve_mode
 
@@ -3158,7 +3365,11 @@ class ExternalGateway:
 
             # Consulta de mercado (crypto, stocks, análisis técnico)
             if smart_route.strategy == Strategy.RESOLVE_MARKET:
-                answer = self._try_market_resolve(content, user_id=user_id)
+                answer = self._try_market_resolve(
+                    content, user_id=user_id,
+                    input_fingerprint=input_fingerprint,
+                    correlation_id=_evidence_correlation_id,
+                )
                 resolve_mode = "market"
                 if answer:
                     sr.record_feedback(smart_route, success=True, word_count=word_count)
@@ -3267,6 +3478,17 @@ class ExternalGateway:
                 answer = resolution.sovereign_answer or resolution.answer or ""
                 resolve_mode = "online"
                 if answer:
+                    self._capture_evidence(
+                        fingerprint=input_fingerprint,
+                        correlation_id=_evidence_correlation_id,
+                        source_type="online",
+                        content=answer,
+                        source=",".join(getattr(resolution, "engines_used", None) or []),
+                        source_reference=",".join(
+                            s.url for s in (getattr(resolution, "sources", None) or [])[:5]
+                        ),
+                        query=getattr(resolution, "search_query", "") or "",
+                    )
                     sr.record_feedback(smart_route, success=True, word_count=word_count)
                     logger.info("Pipeline: ONLINE resolved | engines=%s | len=%d", resolution.engines_used, len(answer))
                     return answer, resolve_mode
@@ -3305,6 +3527,17 @@ class ExternalGateway:
                 answer = resolution.sovereign_answer or resolution.answer or ""
                 resolve_mode = "local_to_online"
                 if answer:
+                    self._capture_evidence(
+                        fingerprint=input_fingerprint,
+                        correlation_id=_evidence_correlation_id,
+                        source_type="online",
+                        content=answer,
+                        source=",".join(getattr(resolution, "engines_used", None) or []),
+                        source_reference=",".join(
+                            s.url for s in (getattr(resolution, "sources", None) or [])[:5]
+                        ),
+                        query=getattr(resolution, "search_query", "") or "",
+                    )
                     sr.record_feedback(smart_route, success=True, used_fallback=True, fallback_strategy="online", word_count=word_count)
                     return answer, resolve_mode
 
@@ -3346,6 +3579,11 @@ class ExternalGateway:
                 answer = self._generate_cognitive_response(
                     content, user_id, internal_channel, local_ctx,
                     extra_context=extra_context, act_log=act_log,
+                    # Victoria C (RULE 4): captura evidencia model_inference
+                    # SOLO en este call site (ROUTE_SINGLE/MULTI/COGNITIVE),
+                    # no en los demás usos de _generate_cognitive_response.
+                    input_fingerprint=input_fingerprint,
+                    evidence_correlation_id=_evidence_correlation_id,
                 )
                 if answer:
                     sr.record_feedback(smart_route, success=True, word_count=word_count)
@@ -3494,6 +3732,8 @@ class ExternalGateway:
         memory_context: str = "",
         extra_context: str = "",
         act_log: Optional[Any] = None,
+        input_fingerprint: Optional[str] = None,
+        evidence_correlation_id: Optional[str] = None,
     ) -> str:
         """
         Genera respuesta usando el Intelligence Router (multi-IA).
@@ -3512,6 +3752,14 @@ class ExternalGateway:
             router_activation.jsonl bajo el mismo correlation_id. Puramente
             observacional: no cambia el orden, los proveedores, ni la
             lógica de fallback existente.
+          input_fingerprint/evidence_correlation_id: Victoria C (2026-09-17)
+            — opcionales, SOLO pasados por el call site de ROUTE_SINGLE/
+            ROUTE_MULTI/ROUTE_COGNITIVE (RULE 4). Cuando `input_fingerprint`
+            es truthy, cada respuesta LLM exitosa de abajo se captura como
+            evidencia `source_type="model_inference"` (RULE 5: NUNCA tratada
+            como evidencia primaria externa). El resto de call sites de este
+            método (gravity_lock, followup guard, RESOLVE_MEMORY, fallback
+            final) los dejan en `None` — sin captura, comportamiento actual.
         """
         # ── PRESENCIA PURA — bloqueo de tokens externos ──────────────────
         # Si el modo está activo, retornar inmediatamente sin llamar
@@ -3604,7 +3852,17 @@ class ExternalGateway:
                             (time.perf_counter() - _t0) * 1000.0, True,
                             note=f"provider={result.get('provider', '?')}",
                         )
-                        return result["content"].strip()
+                        _llm_answer = result["content"].strip()
+                        self._capture_evidence(
+                            fingerprint=input_fingerprint,
+                            correlation_id=evidence_correlation_id,
+                            source_type="model_inference",
+                            content=_llm_answer,
+                            source=str(result.get("provider", "")),
+                            source_reference=str(result.get("model", "")),
+                            query=content,
+                        )
+                        return _llm_answer
                     else:
                         logger.warning(
                             "LLM route_single failed: %s",
@@ -3638,6 +3896,14 @@ class ExternalGateway:
                     (time.perf_counter() - _t0) * 1000.0, bool(answer),
                 )
                 if answer:
+                    self._capture_evidence(
+                        fingerprint=input_fingerprint,
+                        correlation_id=evidence_correlation_id,
+                        source_type="model_inference",
+                        content=answer,
+                        source="openai",
+                        query=content,
+                    )
                     return answer
             except Exception as exc:
                 logger.warning("OpenAI direct fallback failed: %s", exc)
@@ -3657,6 +3923,14 @@ class ExternalGateway:
                 )
                 if answer:
                     logger.info("LLM response via Ollama local")
+                    self._capture_evidence(
+                        fingerprint=input_fingerprint,
+                        correlation_id=evidence_correlation_id,
+                        source_type="model_inference",
+                        content=answer,
+                        source="ollama_local",
+                        query=content,
+                    )
                     return answer
             except Exception as exc:
                 logger.debug("Ollama local fallback failed: %s", exc)

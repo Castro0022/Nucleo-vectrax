@@ -65,6 +65,14 @@ class NucleusDecision:
     confidence: float = 0.0
     reason: str = ""
     source: str = "total_convergence"
+    # Victoria C (2026-09-17): el MISMO `ConvergenceRecord.input_fingerprint`
+    # de este ciclo — nunca recalculado. Viaja aquí ADEMÁS de propagarse por
+    # su propio canal independiente (`input_fingerprint` en la cadena
+    # `pipeline_worker.py` → ... → `ExternalGateway`), para que cualquier
+    # consumidor de `NucleusDecision` (p.ej. `smart_route.metadata`) tenga
+    # acceso directo sin tener que threadear un segundo parámetro. Vacío
+    # ("") preserva el comportamiento actual sin cambios.
+    fingerprint: str = ""
 
     @property
     def has_candidate(self) -> bool:
@@ -83,4 +91,5 @@ class NucleusDecision:
             "confidence": round(self.confidence, 4),
             "reason": self.reason,
             "source": self.source,
+            "fingerprint": self.fingerprint,
         }

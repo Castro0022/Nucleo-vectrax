@@ -75,3 +75,72 @@ class TestRecordTimestamp:
         row = ol.get_recent(1)[0]
         ts = datetime.fromisoformat(row["timestamp"])
         assert (datetime.now(timezone.utc) - ts).total_seconds() < 5
+
+
+class TestVictoriaCEvidence:
+    """record_evidence()/get_evidence() — Victoria C cable de retorno.
+
+    "BUSQUÉ → RECIBÍ EVIDENCIA → AHORA PUEDO APRENDERLA". Reutiliza
+    autonomous_observations (RULE 2), keyed por fingerprint (RULE 3).
+    """
+
+    def test_record_evidence_writes_with_correct_domain_and_star_id(self):
+        row_id = ol.record_evidence(
+            "abc123fingerprint", "online", "La capital de Francia es París.",
+            correlation_id="corr-1", source="duckduckgo",
+            source_reference="https://example.com/paris",
+            query="capital de Francia",
+        )
+        assert row_id != -1
+        rows = ol.get_by_domain(ol.EVIDENCE_DOMAIN, limit=10)
+        assert len(rows) == 1
+        assert rows[0]["star_id"] == "abc123fingerprint"
+        assert rows[0]["obs_type"] == "online"
+        assert rows[0]["evidence"]["content"] == "La capital de Francia es París."
+        assert rows[0]["evidence"]["correlation_id"] == "corr-1"
+        assert rows[0]["evidence"]["source"] == "duckduckgo"
+        assert rows[0]["evidence"]["scope"] == "GLOBAL"
+
+    def test_get_evidence_retrieves_by_exact_fingerprint(self):
+        ol.record_evidence("fp-A", "places", "Farmacia Cruz Verde a 200m.")
+        ol.record_evidence("fp-B", "market", "BTC: $65,000.")
+        result_a = ol.get_evidence("fp-A")
+        result_b = ol.get_evidence("fp-B")
+        assert len(result_a) == 1
+        assert result_a[0]["evidence"]["content"] == "Farmacia Cruz Verde a 200m."
+        assert len(result_b) == 1
+        assert result_b[0]["evidence"]["content"] == "BTC: $65,000."
+        assert ol.get_evidence("fp-nonexistent") == []
+
+    def test_get_evidence_most_recent_first(self):
+        ol.record_evidence("fp-multi", "online", "primera respuesta")
+        ol.record_evidence("fp-multi", "online", "segunda respuesta (mas reciente)")
+        rows = ol.get_evidence("fp-multi")
+        assert len(rows) == 2
+        assert rows[0]["evidence"]["content"] == "segunda respuesta (mas reciente)"
+
+    def test_record_evidence_empty_fingerprint_skipped(self):
+        row_id = ol.record_evidence("", "online", "contenido")
+        assert row_id == -1
+        assert ol.get_by_domain(ol.EVIDENCE_DOMAIN, limit=10) == []
+
+    def test_record_evidence_non_global_scope_skipped(self):
+        """RULE 8: sin isolation por usuario, scope!=GLOBAL nunca se escribe."""
+        row_id = ol.record_evidence(
+            "fp-personal", "model_inference", "dato personal del usuario",
+            scope="USER",
+        )
+        assert row_id == -1
+        assert ol.get_evidence("fp-personal") == []
+
+    def test_record_evidence_model_inference_source_type_preserved(self):
+        """RULE 5: COGNITIVE se marca source_type=model_inference y no se
+        distingue especialmente en el store — el consumidor decide cómo
+        tratarla, pero el tag debe sobrevivir intacto."""
+        ol.record_evidence(
+            "fp-cog", "model_inference", "respuesta generada por el LLM",
+            source="openai", source_reference="gpt-4o-mini",
+        )
+        rows = ol.get_evidence("fp-cog")
+        assert rows[0]["obs_type"] == "model_inference"
+        assert rows[0]["evidence"]["source_type"] == "model_inference"
