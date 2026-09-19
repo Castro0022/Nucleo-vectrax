@@ -571,7 +571,40 @@ def _process_one(msg):
                     return True
             except Exception:
                 pass
-        # ───────────────────────────────────────────────────────────────────────
+
+        # ── NÚCLEO: AUTORIDAD ÚNICA DE DECISIÓN (reunificación 2026-09-19) ─────
+        # Reutiliza el _conv_record YA calculado arriba (NUNCA vuelve a correr
+        # el ciclo de convergencia). `decide_from_record()` aplica identidad
+        # (alias owner->mario) + overrides de autoconocimiento + evidencia
+        # propia del Núcleo o SmartRouter como candidato auxiliar + validación
+        # de capacidad, y devuelve el MISMO tipo `NucleusDecision` que
+        # `SmartRouter.route()` ya sabe honrar tal cual cuando trae una
+        # `candidate_strategy` cerrada (contrato existente, no modificado:
+        # ver `smart_router.py::route()`). Fail-safe estricto: si algo falla
+        # aquí, `_nucleus_decision` cae a `_conv_record.nucleus_decision`
+        # (comportamiento previo, sin cambios) y el pipeline continúa igual.
+        _nucleus_decision = (
+            getattr(_conv_record, "nucleus_decision", None)
+            if _conv_record is not None else None
+        )
+        try:
+            from core.nucleus.nucleus_authority import get_nucleus_authority
+            _nucleus_decision, _nucleus_trace = get_nucleus_authority().decide_from_record(
+                msg.content, channel=msg.channel or "telegram", owner=msg.user_id,
+                source="telegram", record=_conv_record,
+            )
+            logger.info(
+                "NUCLEUS_AUTHORITY %s | authority=nucleus final_action=%s "
+                "candidate_source=%s memory_consulted=%s capability=%s",
+                msg.id, _nucleus_trace.final_action, _nucleus_trace.candidate_source,
+                _nucleus_trace.memory_consulted, _nucleus_trace.capability_selected,
+            )
+        except Exception as _na_exc:
+            logger.debug(
+                "NucleusAuthority.decide_from_record failed (fail-safe, "
+                "comportamiento legacy sin cambios): %s", _na_exc,
+            )
+        # ───────────────────────────────────────────────────────────────────────────────
 
         # ── EXTERNAL GATEWAY (Router → Self Context → Núcleo → OpenAI Direct) ──
         # macOS uses the 'spawn' start method, where multiprocessing (a) can't
@@ -603,16 +636,12 @@ def _process_one(msg):
                         # worker) es el MISMO id que aparece en el ledger,
                         # router_activation.jsonl y op_cycles.db.
                         correlation_id=msg.id,
-                        # NucleusDecision (ticket 2026-09-17): mismo patrón
-                        # de propagación que correlation_id de arriba.
-                        # `_conv_record` es None si el ciclo de convergencia
-                        # falló/hizo timeout arriba — en ese caso se propaga
-                        # `None` (comportamiento sin cambios, ver contrato de
-                        # `SmartRouter.route()`).
-                        nucleus_decision=(
-                            getattr(_conv_record, "nucleus_decision", None)
-                            if _conv_record is not None else None
-                        ),
+                        # Reunificación 2026-09-17->2026-09-19: `_nucleus_decision`
+                        # ahora la produce `NucleusAuthority.decide_from_record()`
+                        # (ver bloque NÚCLEO arriba) en vez de leerse directo de
+                        # `_conv_record.nucleus_decision` — mismo tipo de dato,
+                        # mismo contrato de consumo en `SmartRouter.route()`.
+                        nucleus_decision=_nucleus_decision,
                         # Victoria C (2026-09-17): mismo patrón independiente
                         # que nucleus_decision de arriba.
                         input_fingerprint=(
@@ -646,8 +675,10 @@ def _process_one(msg):
                         # el proceso hijo.
                         args=(
                             _result_q, msg.user_id, msg.content, msg.channel, msg.id,
-                            getattr(_conv_record, "nucleus_decision", None)
-                            if _conv_record is not None else None,
+                            # Reunificación: `_nucleus_decision` (ver bloque
+                            # NÚCLEO arriba) en vez de leer directo de
+                            # `_conv_record.nucleus_decision`.
+                            _nucleus_decision,
                             # Victoria C (2026-09-17): mismo patrón independiente.
                             getattr(_conv_record, "input_fingerprint", None)
                             if _conv_record is not None else None,

@@ -197,6 +197,39 @@ _COGNITIVE_PATTERN = re.compile(
 # Tópicos sensibles que elevan el riesgo
 _SENSITIVE_TOPICS = {"trading", "health", "financial", "security"}
 
+# ---------------------------------------------------------------------------
+# Detección GENERAL de comandos de búsqueda de lugar (auditoría 2026-09-19,
+# reunificación) — regla de dos capas, no una frase exclusiva:
+#   1. Un verbo de acción de búsqueda/recomendación ("busca", "encuéntrame",
+#      "muéstrame", "recomiéndame", "find", "show me", ...)
+#   2. Y, además, un sustantivo de tipo de lugar (restaurante/hotel/bar/...)
+#      O una señal de proximidad ("cerca", "cercano", "nearby", ...).
+# Cualquier combinación de ambas capas activa Intent.PLACE_SEARCH — cubre
+# "busca hoteles", "encuéntrame un bar cerca", "muéstrame farmacias
+# cercanas", etc. sin hardcodear ninguna frase concreta.
+# ---------------------------------------------------------------------------
+_PLACE_ACTION_RE = re.compile(
+    r"\b(?:busca(?:me)?|buscar|encu[eé]ntra(?:me)?|encontrar|mu[eé]stra(?:me)?|"
+    r"recomi[eé]nda(?:me)?|ll[eé]vame\s+a|find|search\s+for|show\s+me|look\s+for|"
+    r"where\s+(?:is|are|can\s+i\s+find))\b",
+    re.IGNORECASE,
+)
+_PLACE_NOUN_RE = re.compile(
+    r"\b(?:restaurante(?:s)?|restaurants?|hotel(?:es)?|hotels?|caf[eé](?:s)?|"
+    r"cafeter[ií]a(?:s)?|bar(?:es)?|bars?|tienda(?:s)?|shops?|stores?|"
+    r"farmacia(?:s)?|pharmac(?:y|ies)|negocio(?:s)?|business(?:es)?|"
+    r"lugar(?:es)?|place(?:s)?|sitio(?:s)?|gasolinera(?:s)?|"
+    r"supermercado(?:s)?|supermarkets?|parque(?:s)?|park(?:s)?|museo(?:s)?|"
+    r"museums?|cine(?:s)?|cinemas?|hospital(?:es)?|hospitals?|banco(?:s)?|"
+    r"banks?|peluquer[ií]a(?:s)?|gimnasio(?:s)?|gyms?)\b",
+    re.IGNORECASE,
+)
+_PLACE_PROXIMITY_RE = re.compile(
+    r"\bcerca(?:no|nos|na|nas)?\b|\balrededor\b|\bnearby\b|\bnear\s+me\b|"
+    r"\baround\s+here\b",
+    re.IGNORECASE,
+)
+
 # Market data query patterns (detected before topic keywords)
 _MARKET_PATTERN = re.compile(
     r"(?:"
@@ -504,8 +537,18 @@ class SmartRouter:
         has_market = bool(_MARKET_PATTERN.search(text))
         regex_signals["market_query"] = has_market
 
+        # Comando general de búsqueda de lugar: verbo de acción + (sustantivo
+        # de lugar O señal de proximidad). Ver constantes arriba — cubre
+        # cualquier lugar/negocio, no una frase concreta.
+        has_place_search = bool(_PLACE_ACTION_RE.search(text)) and (
+            bool(_PLACE_NOUN_RE.search(text)) or bool(_PLACE_PROXIMITY_RE.search(text))
+        )
+        regex_signals["place_search_query"] = has_place_search
+
         if has_market:
             return Intent.MARKET, regex_signals
+        if has_place_search:
+            return Intent.PLACE_SEARCH, regex_signals
         if has_local_keywords:
             return Intent.LOCAL, regex_signals
         if has_cognitive and word_count >= _COGNITIVE_MIN_WORDS:
@@ -578,6 +621,27 @@ class SmartRouter:
                 )
                 logger.info(
                     "classify_intent: MARKET via regex override (sem=%s conf=%.2f)",
+                    semantic_intent.value, sem_conf,
+                )
+                return regex_intent, signals
+
+            # Excepción (auditoría 2026-09-19, reunificación): si regex
+            # detecta un comando GENERAL de búsqueda de lugar (verbo de
+            # acción + sustantivo de lugar/proximidad, ver _PLACE_ACTION_RE/
+            # _PLACE_NOUN_RE/_PLACE_PROXIMITY_RE), tiene prioridad — mismo
+            # patrón que el override de MARKET. Órdenes imperativas sin '?'
+            # ("busca X", "muéstrame Y cerca") son una señal específica y
+            # fiable que el clasificador semántico puede no capturar con
+            # confianza suficiente.
+            if not aligned and regex_intent == Intent.PLACE_SEARCH:
+                signals["classification_method"] = "regex_override"
+                signals["regex_agrees"] = False
+                signals["decision_note"] = (
+                    f"regex PLACE_SEARCH overrides semantic={semantic_intent.value} "
+                    f"(sem_conf={sem_conf:.2f}) — comando general de búsqueda de lugar"
+                )
+                logger.info(
+                    "classify_intent: PLACE_SEARCH via regex override (sem=%s conf=%.2f)",
                     semantic_intent.value, sem_conf,
                 )
                 return regex_intent, signals
