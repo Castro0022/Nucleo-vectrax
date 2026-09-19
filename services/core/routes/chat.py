@@ -31,111 +31,79 @@ async def chat(
     ctx: AuthContext = Depends(require_permission("event.write")),
 ):
     """
-    Sovereign Chat: classify → investigate silently → respond cleanly.
+    Sovereign Chat — ADAPTADOR DE I/O PURO (reunificación 2026-09-19).
 
-    - MEMORY: ingest as star, confirm briefly.
-    - LOCAL/ONLINE: resolve and return clean sovereign answer.
-    - Internal details (sources, mode, engines) stored for audit/debug only.
+    Este endpoint YA NO clasifica ni decide nada: delega íntegramente en
+    `core.nucleus.nucleus_authority.NucleusAuthority`, la misma autoridad de
+    decisión que usa el canal de Telegram (`core/transport/pipeline_worker.py`).
+    `vectrax.resolver.classify()` dejó de ser un decisor de producto — sus
+    funciones `resolve_local()`/`resolve_online()` ahora son ejecutores puros,
+    invocados únicamente por orden del Núcleo (ver `nucleus_authority.py`).
     """
     try:
         from vectrax import db
-        from vectrax.engine import ingest
-        from vectrax.resolver import resolve, _detect_lang, _get_labels
+        from core.nucleus.nucleus_authority import get_nucleus_authority
 
         db.init_db()
 
-        # ── CICLO DE CONVERGENCIA TOTAL (7 fases obligatorias) ────────────────
-        # Fases garantizadas ANTES de generar respuesta:
-        #   [3] Memoria Estructural → conecta con patrones previos
-        #   [6] Gravitación         → almacena en núcleo según peso
-        try:
-            from core.convergence_hook import run_convergence_cycle
-            run_convergence_cycle(
-                body.text,
-                source="api",
-                channel=ctx.channel,
-                owner=ctx.owner,
-            )
-        except Exception as _ce:
-            logger.warning("convergence_hook non-fatal (api): %s", _ce)
+        # ── AUTORIDAD ÚNICA: el Núcleo decide, ejecuta y autoriza evidencia ──
+        # (incluye internamente el ciclo de convergencia total, fases 1-7,
+        # y la consulta auxiliar a SmartRouter cuando el Núcleo no tiene
+        # evidencia/capacidad propia suficiente — ver nucleus_authority.py)
+        nr = get_nucleus_authority().resolve(
+            body.text, channel=ctx.channel, owner=ctx.owner, source="api",
+        )
         # ─────────────────────────────────────────────────────────────────────
 
-        # ---- Resolve --------------------------------------------------------
-        resolution = resolve(body.text, ctx.channel, ctx.owner)
-        mode = resolution.mode  # "memory" | "local" | "online"
-
-        # ---- MEMORY mode: ingest as before ----------------------------------
-        if mode == "memory":
-            star = ingest(
-                text=body.text,
-                success=body.success,
+        # ---- MEMORY: mismo contrato de respuesta que antes ------------------
+        if nr.final_action == "MEMORY":
+            star_id = (nr.evidence or {}).get("star_id", "")
+            repetition_count = (nr.evidence or {}).get("repetition_count", 1)
+            _log_learning(body.text, "memory", [], "", ctx.channel, ctx.owner)
+            _shadow_observe(body.text, "memory", nr.answer, ctx.owner)
+            _maybe_speak(nr.answer)
+            return ChatResponse(
+                star_id=star_id,
+                content=body.text,
                 channel=ctx.channel,
                 owner=ctx.owner,
-            )
-            lang = _detect_lang(body.text)
-            labels = _get_labels(lang)
-            sovereign = labels["registered"] if star.repetition_count == 1 else labels["updated"]
-            # Log learning
-            _log_learning(body.text, "memory", [], "", ctx.channel, ctx.owner)
-
-            _shadow_observe(body.text, "memory", sovereign, ctx.owner)
-            _maybe_speak(sovereign)
-
-            return ChatResponse(
-                star_id=star.id,
-                content=star.content,
-                layer=star.layer,
-                gravity_score=round(star.gravity_score, 4),
-                repetition_count=star.repetition_count,
-                channel=star.channel,
-                owner=star.owner,
-                is_duplicate=star.repetition_count > 1,
-                message="Star created" if star.repetition_count == 1 else "Star updated (near-duplicate)",
+                is_duplicate=repetition_count > 1,
+                message="Star created" if repetition_count == 1 else "Star updated (near-duplicate)",
                 resolve_mode="memory",
-                sovereign_answer=sovereign,
+                sovereign_answer=nr.answer,
             )
 
-        # ---- LOCAL / ONLINE mode: return sovereign answer -------------------
+        # ---- LOCAL/IDENTITY/ONLINE/PLACES/MARKET/CLARIFICATION --------------
+        mode = nr.final_action.lower()
         sources = [
-            SourceItem(title=s.title, url=s.url, snippet=s.snippet)
-            for s in resolution.sources
+            SourceItem(title=t, url="", snippet="")
+            for t in (nr.evidence or {}).get("sources", [])
         ]
 
-        # Audit online research (including fallback escalations)
-        if mode == "online":
-            action = "chat.online_research"
-            if resolution.fallback_from:
-                action = "chat.fallback_local_to_online"
-            _audit_online(ctx, body.text, resolution.search_query, len(sources), action=action)
+        if nr.final_action == "ONLINE":
+            _audit_online(
+                ctx, body.text, body.text, len(sources),
+                action="chat.online_research",
+            )
 
-        # Determine resolution pattern for learning
-        pattern = mode
-        if resolution.fallback_from:
-            pattern = f"{resolution.fallback_from}→{mode}"
-
-        # Log learning
         _log_learning(
-            body.text, pattern,
-            resolution.engines_used,
-            resolution.sovereign_answer[:100],
-            ctx.channel, ctx.owner,
+            body.text, mode, [], nr.answer[:100], ctx.channel, ctx.owner,
         )
-
-        _shadow_observe(body.text, mode, resolution.sovereign_answer, ctx.owner)
-        _maybe_speak(resolution.sovereign_answer)
+        _shadow_observe(body.text, mode, nr.answer, ctx.owner)
+        _maybe_speak(nr.answer)
 
         return ChatResponse(
             content=body.text,
             channel=ctx.channel,
             owner=ctx.owner,
-            message=f"Resolved via {mode}",
+            message=f"Resolved via nucleus:{mode}",
             resolve_mode=mode,
-            sovereign_answer=resolution.sovereign_answer,
-            answer=resolution.answer,
+            sovereign_answer=nr.answer,
+            answer=nr.answer,
             sources=sources,
-            context_stars=resolution.context_stars,
-            search_query=resolution.search_query,
-            fallback_from=resolution.fallback_from,
+            context_stars=(nr.evidence or {}).get("context_stars", 0),
+            search_query=body.text if nr.final_action == "ONLINE" else "",
+            fallback_from="",
         )
 
     except Exception as exc:

@@ -35,12 +35,20 @@ def _get_token_manager() -> TokenManager:
 
 @dataclass
 class AuthContext:
-    """Identity resolved from a bearer token."""
+    """Identity resolved from a bearer token.
+
+    `owner` es la identidad CANONICA resuelta via `vectrax.identity_aliases
+    .resolve_owner()` (reunificacion 2026-09-19) -- usada para escribir en
+    el canal creator (`validate_creator_ownership()` exige "mario"). `username`
+    conserva el valor ORIGINAL del token/sesion fisica, para auditoria/logs
+    (trazabilidad de que sesion escribio que, incluso cuando `owner` fue
+    resuelto por alias).
+    """
     user_id: str
     username: str
     role: str       # owner | operator | viewer
     channel: str    # creator | user
-    owner: str      # username (used as 'owner' param for engine/db)
+    owner: str      # identidad CANONICA (post alias) usada para engine/db
 
 
 # ---------------------------------------------------------------------------
@@ -69,12 +77,21 @@ async def require_token(
             detail="Invalid or expired API token",
         )
 
+    # Reunificacion 2026-09-19: resolver alias de identidad (p.ej. "owner" ->
+    # "mario") SOLO para el campo `owner` (usado por engine/db). No se
+    # modifica ni revoca ningun token; `username` original se preserva.
+    try:
+        from vectrax.identity_aliases import resolve_owner
+        canonical_owner = resolve_owner(info.owner)
+    except Exception:
+        canonical_owner = info.owner
+
     return AuthContext(
         user_id=info.user_id,
         username=info.username,
         role=info.role,
         channel=info.channel,
-        owner=info.owner,
+        owner=canonical_owner,
     )
 
 
