@@ -572,41 +572,45 @@ def _process_one(msg):
             except Exception:
                 pass
 
-        # ── NÚCLEO: AUTORIDAD ÚNICA DE DECISIÓN (reunificación 2026-09-19) ─────
-        # Reutiliza el _conv_record YA calculado arriba (NUNCA vuelve a correr
-        # el ciclo de convergencia). `decide_from_record()` aplica identidad
-        # (alias owner->mario) + overrides de autoconocimiento + evidencia
-        # propia del Núcleo o SmartRouter como candidato auxiliar + validación
-        # de capacidad, y devuelve el MISMO tipo `NucleusDecision` que
-        # `SmartRouter.route()` ya sabe honrar tal cual cuando trae una
-        # `candidate_strategy` cerrada (contrato existente, no modificado:
-        # ver `smart_router.py::route()`). Fail-safe estricto: si algo falla
-        # aquí, `_nucleus_decision` cae a `_conv_record.nucleus_decision`
-        # (comportamiento previo, sin cambios) y el pipeline continúa igual.
-        _nucleus_decision = (
-            getattr(_conv_record, "nucleus_decision", None)
-            if _conv_record is not None else None
-        )
+        # ── NÚCLEO: AUTORIDAD ÚNICA — FUENTE DEL TEXTO DE RESPUESTA ─────────
+        # Corrección de producción (2026-09-19, segunda pasada): se detectó en
+        # vivo que Telegram y localhost daban respuestas DISTINTAS para la
+        # misma pregunta (p.ej. identidad/gravedad). Causa raíz: inyectar solo
+        # un `NucleusDecision` en `ExternalGateway.receive_message()` no basta
+        # — `_do_receive_message()` tiene capas legacy propias (greeting
+        # intercept, intake_filter STORE, `vectrax.self_context
+        # .resolve_self_aware`, `vectrax.nucleus_resolver`, domain criterion
+        # gate) que fijan `response_text` ANTES de llegar al punto donde esa
+        # candidata importaría. `resolve_from_record()` reutiliza el
+        # `_conv_record` YA calculado (nunca vuelve a correr convergencia) y
+        # es ahora la fuente ÚNICA del texto de respuesta — igual que
+        # `NucleusAuthority.resolve()` lo es para el adaptador web. Fail-safe
+        # estricto: si esto lanza, se cae al `ExternalGateway` legacy completo
+        # (comportamiento previo a la reunificación) para no dejar al usuario
+        # sin respuesta.
+        _nucleus_response = None
         try:
             from core.nucleus.nucleus_authority import get_nucleus_authority
-            _nucleus_decision, _nucleus_trace = get_nucleus_authority().decide_from_record(
+            _nucleus_response = get_nucleus_authority().resolve_from_record(
                 msg.content, channel=msg.channel or "telegram", owner=msg.user_id,
                 source="telegram", record=_conv_record,
             )
             logger.info(
                 "NUCLEUS_AUTHORITY %s | authority=nucleus final_action=%s "
-                "candidate_source=%s memory_consulted=%s capability=%s",
-                msg.id, _nucleus_trace.final_action, _nucleus_trace.candidate_source,
-                _nucleus_trace.memory_consulted, _nucleus_trace.capability_selected,
+                "candidate_source=%s memory_consulted=%s capability=%s tool=%s "
+                "evidence_authorized=%s",
+                msg.id, _nucleus_response.final_action, _nucleus_response.candidate_source,
+                _nucleus_response.memory_consulted, _nucleus_response.capability_selected,
+                _nucleus_response.tool_executed, _nucleus_response.evidence_authorized,
             )
         except Exception as _na_exc:
-            logger.debug(
-                "NucleusAuthority.decide_from_record failed (fail-safe, "
-                "comportamiento legacy sin cambios): %s", _na_exc,
+            logger.warning(
+                "NUCLEUS_AUTHORITY_FALLBACK %s | resolve_from_record failed, "
+                "usando ExternalGateway legacy: %s", msg.id, _na_exc,
             )
         # ───────────────────────────────────────────────────────────────────────────────
 
-        # ── EXTERNAL GATEWAY (Router → Self Context → Núcleo → OpenAI Direct) ──
+        # ── EXTERNAL GATEWAY — SOLO FALLBACK si NucleusAuthority falló ──────
         # macOS uses the 'spawn' start method, where multiprocessing (a) can't
         # pickle a subprocess target and (b) would cold-import the cognitive
         # stack (torch/embeddings) per message. So on Darwin we run the
@@ -617,7 +621,12 @@ def _process_one(msg):
         # the worker main-loop watchdog + supervisor are the ultimate backstops).
         # On Linux we keep the killable multiprocessing.Process isolation (fork).
         result = None
-        with _stage_timer("external_gateway", msg.id):
+        if _nucleus_response is None:
+          _nucleus_decision = (
+            getattr(_conv_record, "nucleus_decision", None)
+            if _conv_record is not None else None
+          )
+          with _stage_timer("external_gateway", msg.id):
             if sys.platform == "darwin":
                 from concurrent.futures import (
                     ThreadPoolExecutor as _TPEg, TimeoutError as _TEg,
@@ -717,7 +726,16 @@ def _process_one(msg):
         elapsed = time.time() - t0
 
         response = ""
-        if result is not None:
+        _proc_out_source = "timeout"
+        if _nucleus_response is not None:
+            # Fuente ÚNICA del texto: NucleusAuthority ya decidió, ejecutó y
+            # autorizó la evidencia — ExternalGateway NO corrió en este caso.
+            response = (_nucleus_response.answer or "").strip()
+            _proc_out_source = (
+                f"nucleus:{_nucleus_response.final_action.lower()}"
+            )
+        elif result is not None:
+            _proc_out_source = result.source
             if result.source == "memory":
                 response = result.response
             else:
@@ -727,7 +745,7 @@ def _process_one(msg):
         # Diagnostic: log la respuesta cruda + source
         logger.info(
             "PROC_OUT msg_id=%s source=%s len=%d response=%r",
-            msg.id, result.source if result else "timeout",
+            msg.id, _proc_out_source,
             len(response), response[:200],
         )
 

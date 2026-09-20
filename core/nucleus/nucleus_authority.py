@@ -693,6 +693,41 @@ class NucleusAuthority:
         self._dispatch_executor(response, text, record)
         return response
 
+    def resolve_from_record(
+        self,
+        text: str,
+        *,
+        channel: str = "user",
+        owner: str = "",
+        source: str = "telegram",
+        record: Any,
+    ) -> NucleusResponse:
+        """Punto de entrada COMPLETO (decide + despacha ejecutor + autoriza
+        evidencia), reutilizando un `ConvergenceRecord` YA CALCULADO por el
+        caller — evita duplicar el ciclo de convergencia.
+
+        Corrección de producción (2026-09-19, segunda pasada): inyectar solo
+        un `NucleusDecision` en `ExternalGateway.receive_message()` NO
+        garantiza consistencia — `ExternalGateway._do_receive_message()`
+        tiene capas legacy PROPIAS (greeting intercept, intake_filter STORE,
+        `vectrax.self_context.resolve_self_aware`, `vectrax.nucleus_resolver`,
+        domain criterion gate) que producen `response_text` ANTES de llegar
+        al punto donde se consulta esa candidata — confirmado en producción:
+        Telegram y localhost daban respuestas DISTINTAS para la misma
+        pregunta de identidad/gravedad. Este método es la fuente ÚNICA del
+        TEXTO de respuesta para el adaptador de Telegram (igual que
+        `resolve()` lo es para el adaptador web) — bypassa por completo la
+        capa de decisión de `ExternalGateway` para el flujo conversacional.
+        """
+        override, decided, record = self._decide(
+            text, channel=channel, owner=owner, source=source, record=record,
+        )
+        if override is not None:
+            return override
+        response = NucleusResponse(**decided)
+        self._dispatch_executor(response, text, record)
+        return response
+
     def decide_from_record(
         self,
         text: str,

@@ -101,25 +101,21 @@ def _run_api_channel(prompt: str) -> dict:
 
 
 def _run_telegram_channel(prompt: str) -> dict:
-    """Canal Telegram: mismo método (decide_from_record) que usa
-    pipeline_worker.py, con un ConvergenceRecord real (no simulado) para
-    que la comparación con el canal API sea contra el mismo N\u00facleo."""
+    """Canal Telegram: `resolve_from_record()` — la MISMA función que
+    `core/transport/pipeline_worker.py` usa en producción como fuente ÚNICA
+    del texto de respuesta (corrección 2026-09-19, segunda pasada: inyectar
+    solo un `NucleusDecision` en `ExternalGateway.receive_message()` no
+    bastaba — sus capas legacy propias respondían antes de consultarlo).
+    Usa un `ConvergenceRecord` real (no simulado) para que la comparación
+    con el canal API sea contra el mismo Núcleo."""
     from core.convergence_hook import run_convergence_cycle
 
     record = run_convergence_cycle(
         prompt, source="telegram", channel="telegram", owner=_OWNER,
     )
-    _nd, trace = get_nucleus_authority().decide_from_record(
+    trace = get_nucleus_authority().resolve_from_record(
         prompt, channel=_CHANNEL, owner=_OWNER, source="telegram", record=record,
     )
-    # decide_from_record() no despacha ejecutor por defecto (en producción lo
-    # hace ExternalGateway/SmartRouter vía el NucleusDecision) — SALVO overrides
-    # COMPLETOS de autoconocimiento, que ya llegan con evidence_authorized=True
-    # y answer redactada. Para que la comparación entre canales sea justa,
-    # despachamos aquí el MISMO ejecutor que NucleusAuthority.resolve() habría
-    # usado, SOLO cuando la decisión aún no trae evidencia autorizada.
-    if not trace.evidence_authorized:
-        get_nucleus_authority()._dispatch_executor(trace, prompt, record)
     return trace.to_dict()
 
 
