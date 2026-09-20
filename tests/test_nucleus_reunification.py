@@ -394,3 +394,52 @@ def test_places_uses_remembered_location_when_available():
     )
     assert resp.evidence.get("remembered_location") is not None
     assert resp.evidence["remembered_location"]["source"] == "stars_memory"
+
+
+def test_telegram_creator_uid_resolves_to_creator_channel():
+    """Bug real de producción (2026-09-20, tercera pasada): un mensaje real
+    de Telegram del creador llega con `owner=f"tg:{VX_CREATOR_ID}"` (ver
+    `vectrax/telegram_gateway.py::_handle()`, `tg_uid = f"tg:{uid}"`),
+    NUNCA literalmente "mario" u "owner". Antes de esta corrección,
+    `identity_aliases.resolve_owner()` no tenía fila para ese valor crudo,
+    así que `NucleusAuthority` seguía derivando `channel="user"` (nunca
+    "creator") para los propios mensajes de Mario por Telegram — y si la
+    acción final era MEMORY, `vectrax.engine.ingest()` podía lanzar
+    `ChannelViolation` o, como mínimo, escribir/leer memoria bajo la
+    identidad equivocada. Verifica que el UID crudo de Telegram del creador
+    se reconoce como canal creator/identidad canónica "mario", sin
+    excepciones."""
+    import os
+    from core.convergence_hook import run_convergence_cycle
+
+    creator_uid = os.environ.get("VX_CREATOR_ID", "2030762343")
+    tg_owner = f"tg:{creator_uid}"
+    prompt = "Recuerda que hoy revisé el sistema."
+
+    record = run_convergence_cycle(
+        prompt, source="telegram", channel="telegram", owner=tg_owner,
+    )
+    resp = get_nucleus_authority().resolve_from_record(
+        prompt, channel="telegram", owner=tg_owner, source="telegram", record=record,
+    )
+    assert resp.channel == "creator", (
+        f"UID de Telegram del creador debe resolver a channel='creator', "
+        f"fue {resp.channel!r}"
+    )
+    assert resp.owner == "mario", (
+        f"UID de Telegram del creador debe resolver a owner canónico 'mario', "
+        f"fue {resp.owner!r}"
+    )
+    assert resp.owner_raw == tg_owner
+
+    # Segundo caso: un usuario Telegram CUALQUIERA (no el creador) nunca
+    # debe colarse en el canal creator.
+    other_record = run_convergence_cycle(
+        prompt, source="telegram", channel="telegram", owner="tg:999999999",
+    )
+    other_resp = get_nucleus_authority().resolve_from_record(
+        prompt, channel="telegram", owner="tg:999999999", source="telegram",
+        record=other_record,
+    )
+    assert other_resp.channel == "user"
+    assert other_resp.owner != "mario"

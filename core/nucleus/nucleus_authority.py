@@ -792,6 +792,47 @@ class NucleusAuthority:
         except Exception:
             canonical_owner = owner
 
+        # -- 1a. UID de Telegram del creador -> identidad canónica -----------
+        # Segundo bug real de producción (2026-09-20, tercera pasada): los
+        # mensajes reales de Telegram traen `owner="tg:<id>"` (ver
+        # `vectrax/telegram_gateway.py::_handle()`, `tg_uid = f"tg:{uid}"`),
+        # NUNCA literalmente "mario" u "owner" — `identity_aliases
+        # .resolve_owner()` no tiene fila para ese valor crudo, así que
+        # `canonical_owner` seguía siendo "tg:<id>" y el paso 1b de abajo
+        # clasificaba SIEMPRE los mensajes de Telegram del propio Mario como
+        # CHANNEL_USER (nunca CHANNEL_CREATOR). Se replica aquí la MISMA
+        # comprobación que ya usa `external_gateway.py::_is_creator_uid()` y
+        # `vectrax/relational_identity.py::_is_creator()` (despojar el
+        # prefijo "tg:" y comparar contra VX_CREATOR_ID, default
+        # "2030762343") — no se inventa una identidad nueva, se reconoce la
+        # MISMA identidad que el resto del sistema ya trata como creador.
+        try:
+            import os as _os
+            from vectrax.identity import CREATOR_OWNER as _CREATOR_OWNER_CHK
+            _creator_uid = _os.environ.get("VX_CREATOR_ID", "2030762343")
+            _owner_norm = (owner_raw or "").replace("tg:", "")
+            if _owner_norm and _owner_norm == _creator_uid:
+                canonical_owner = _CREATOR_OWNER_CHK
+        except Exception:
+            pass
+
+        # -- 1b. Canal INTERNO (creator/user) — NUNCA el canal externo crudo --
+        # Bug real de producción (2026-09-19): `pipeline_worker.py` pasa el
+        # canal de TRANSPORTE ("telegram") como `channel=`, pero
+        # `vectrax.engine.ingest()`/`validate_channel()` SOLO aceptan
+        # "creator"|"user" y lanzan `ChannelViolation` con cualquier otro
+        # valor — esto tumbó `core_api` (excepción no capturada). El canal
+        # interno se deriva SIEMPRE de la identidad canónica, igual que ya
+        # hace `external_gateway.py::_resolve_via_pipeline()`
+        # (`internal_channel = "creator" if _is_creator_uid(...) else "user"`).
+        # `channel` deja de usarse para lecturas/escrituras en vectrax.db a
+        # partir de aquí — se sobrescribe con el valor interno correcto.
+        try:
+            from vectrax.identity import CREATOR_OWNER, CHANNEL_CREATOR, CHANNEL_USER
+            channel = CHANNEL_CREATOR if canonical_owner == CREATOR_OWNER else CHANNEL_USER
+        except Exception:
+            channel = "user"
+
         # -- 2. CONSULTA DE MEMORIA INCONDICIONAL ---------------------------
         # Se ejecuta SIEMPRE, para TODA entrada, sin excepción de ruta —
         # antes de cualquier override, antes de convergencia/SmartRouter.
