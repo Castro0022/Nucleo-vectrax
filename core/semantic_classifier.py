@@ -434,6 +434,17 @@ def _detect_frames(text: str) -> List[Tuple[_Frame, float]]:
     for pattern, frame, weight in _FRAME_PATTERNS:
         if pattern.search(text):
             detected.append((frame, weight))
+    # Consultas relacionales personales ("¿Quién es mi novia?") son SIEMPRE
+    # memoria personal, nunca búsqueda web -- reutiliza vectrax.resolver
+    # .is_personal_relationship_query() como fuente Única de vocabulario
+    # relacional (compartida con smart_router.py y NucleusAuthority) para
+    # que las capas nunca diverjan en qué cuenta como "relación personal".
+    try:
+        from vectrax.resolver import is_personal_relationship_query
+        if is_personal_relationship_query(text):
+            detected.append((_Frame.ASK_MEMORY, 0.93))
+    except Exception:
+        pass
     return detected
 
 

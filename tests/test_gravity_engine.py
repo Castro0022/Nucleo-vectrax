@@ -16,8 +16,12 @@ import json
 import os
 import shutil
 import tempfile
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
+from unittest.mock import patch
 
 # ---------------------------------------------------------------------------
 # Ensure project root is importable
@@ -559,6 +563,265 @@ class TestTemporalReplay(_TempGravityMixin, unittest.TestCase):
         self.idx.record_event("fp_mixed", event_timestamp="2019-01-01T00:00:00")
         rec, _ = self.idx.record_event("fp_mixed")  # live event, no timestamp
         self.assertEqual(rec.hits, 2)
+
+
+# ===================================================================
+# 9. Concurrencia y durabilidad — corrección estructural 2026-09-20
+# ===================================================================
+# Producción real: gravity_index.json apareció con bytes UTF-8 inválidos
+# y claves duplicadas dentro de un mismo registro tras un backfill masivo
+# concurrente -- síntoma de un ciclo lectura-modificación-escritura sin
+# ningún lock entre procesos/hilos. Estas pruebas ejercitan exactamente
+# ese escenario (escrituras concurrentes reales, no solo unitarias) y
+# exigen: cero registros perdidos, cero corrupción de bytes, y que un
+# proceso muerto a mitad de escritura nunca deja un archivo parcial
+# visible para otro lector/escritor.
+
+class TestConcurrentWrites(_TempGravityMixin, unittest.TestCase):
+    """Escrituras concurrentes reales (multi-hilo) sobre el mismo índice."""
+
+    def test_concurrent_different_fingerprints_no_lost_records(self):
+        """N hilos, cada uno registrando su PROPIO fingerprint en paralelo:
+        los N registros deben sobrevivir completos (ninguno pisado por el
+        'lost update' que causó la corrupción real)."""
+        n = 40
+
+        def worker(i: int) -> None:
+            self.idx.record_event(f"fp_concurrent_{i:03d}", domain="test")
+
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            list(pool.map(worker, range(n)))
+
+        fresh = GravityIndex(path=self.index_path)  # relee de disco, sin cache
+        records = fresh.load_raw()
+        self.assertEqual(len(records), n)
+        for i in range(n):
+            fp = f"fp_concurrent_{i:03d}"
+            self.assertIn(fp, records)
+            self.assertEqual(records[fp].hits, 1)
+
+    def test_concurrent_same_fingerprint_no_lost_increments(self):
+        """N hilos incrementando EL MISMO fingerprint en paralelo: hits debe
+        terminar en exactamente N (el bug real perdía incrementos cuando dos
+        escrituras se basaban en el mismo estado leído)."""
+        n = 60
+
+        def worker(_i: int) -> None:
+            self.idx.record_event("fp_shared_counter")
+
+        with ThreadPoolExecutor(max_workers=n) as pool:
+            list(pool.map(worker, range(n)))
+
+        fresh = GravityIndex(path=self.index_path)
+        rec = fresh.get("fp_shared_counter")
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.hits, n)
+        self.assertLessEqual(len(rec.activation_history), n)
+
+    def test_concurrent_mixed_fingerprints_total_hits_conserved(self):
+        """Mezcla de fingerprints repetidos y únicos concurrentemente: la
+        suma total de hits debe ser exactamente el número de llamadas,
+        sin importar el entrelazado real de los hilos."""
+        fingerprints = [f"fp_mix_{i % 7}" for i in range(140)]
+
+        def worker(fp: str) -> None:
+            self.idx.record_event(fp)
+
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            list(pool.map(worker, fingerprints))
+
+        fresh = GravityIndex(path=self.index_path)
+        records = fresh.load_raw()
+        self.assertEqual(len(records), 7)
+        self.assertEqual(sum(r.hits for r in records.values()), len(fingerprints))
+
+    def test_concurrent_readers_never_see_invalid_json(self):
+        """Lectores continuos mientras escritores concurrentes corren: cada
+        lectura debe ser JSON válido y completo (nunca un archivo a medio
+        escribir) -- valida el contrato central de ``_locked()``."""
+        stop = threading.Event()
+        read_errors: list[Exception] = []
+
+        def reader() -> None:
+            while not stop.is_set():
+                try:
+                    if os.path.isfile(self.index_path):
+                        with open(self.index_path, "r", encoding="utf-8") as f:
+                            json.load(f)
+                except Exception as exc:  # pragma: no cover - failure path
+                    read_errors.append(exc)
+
+        def writer(i: int) -> None:
+            self.idx.record_event(f"fp_rw_{i:03d}", summary="x" * 150)
+
+        reader_threads = [threading.Thread(target=reader) for _ in range(4)]
+        for t in reader_threads:
+            t.start()
+        try:
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                list(pool.map(writer, range(80)))
+        finally:
+            stop.set()
+            for t in reader_threads:
+                t.join(timeout=5)
+
+        self.assertEqual(read_errors, [])
+        fresh = GravityIndex(path=self.index_path)
+        self.assertEqual(len(fresh.load_raw()), 80)
+
+
+class TestCrashRecovery(_TempGravityMixin, unittest.TestCase):
+    """Simula un proceso muerto a mitad de escritura (reinicio real)."""
+
+    def test_crash_during_write_leaves_previous_file_intact(self):
+        """Si ``os.replace()`` nunca llega a ejecutarse (proceso matado justo
+        antes), el archivo real debe seguir siendo la versión ANTERIOR
+        completa y válida -- nunca un archivo vacío/parcial/corrupto."""
+        self.idx.record_event("fp_before_crash")
+        with open(self.index_path, "r", encoding="utf-8") as f:
+            before_content = f.read()
+
+        real_replace = os.replace
+
+        def crashing_replace(*args, **kwargs):
+            raise OSError("simulated crash: process killed before os.replace()")
+
+        with patch("core.learn.gravity_engine.os.replace", side_effect=crashing_replace):
+            with self.assertRaises(OSError):
+                self.idx.record_event("fp_during_crash")
+
+        # El archivo real nunca fue tocado -- sigue siendo exactamente la
+        # versión previa, completa y parseable.
+        with open(self.index_path, "r", encoding="utf-8") as f:
+            after_content = f.read()
+        self.assertEqual(before_content, after_content)
+        data = json.loads(after_content)
+        self.assertIn("fp_before_crash", data)
+        self.assertNotIn("fp_during_crash", data)
+
+        # Ningún tmp huérfano debe quedar visible como archivo final, y una
+        # escritura normal posterior debe funcionar sin problemas.
+        rec, _ = self.idx.record_event("fp_after_crash")
+        self.assertEqual(rec.hits, 1)
+        fresh = GravityIndex(path=self.index_path)
+        records = fresh.load_raw()
+        self.assertIn("fp_before_crash", records)
+        self.assertIn("fp_after_crash", records)
+        self.assertNotIn("fp_during_crash", records)
+
+    def test_crash_releases_lock_for_next_process(self):
+        """Un proceso que muere sosteniendo el lock exclusivo (SIGKILL) NUNCA
+        debe dejarlo bloqueado para siempre -- el kernel libera flock() al
+        cerrar los file descriptors del proceso terminado. Se simula
+        forzando una excepción DENTRO de la sección crítica bloqueada y
+        confirmando que una llamada posterior en el MISMO proceso (que ya
+        liberó su lock vía el `finally` del context manager) no se cuelga.
+        """
+        with patch.object(
+            GravityIndex, "_write_to_disk",
+            side_effect=RuntimeError("simulated abort mid-write"),
+        ):
+            with self.assertRaises(RuntimeError):
+                self.idx.record_event("fp_will_not_persist")
+
+        # El lock debe haberse liberado en el `finally` de _locked() pese a
+        # la excepción -- esta segunda llamada NO debe bloquear ni fallar.
+        done = threading.Event()
+
+        def call_after_crash():
+            self.idx.record_event("fp_after_lock_release")
+            done.set()
+
+        t = threading.Thread(target=call_after_crash)
+        t.start()
+        t.join(timeout=5)
+        self.assertTrue(done.is_set(), "record_event() se bloqueó -- el lock no se liberó")
+
+    def test_real_process_killed_while_holding_lock_releases_it(self):
+        """Cross-process real: un proceso HIJO real adquiere el lock
+        exclusivo y se lo mata con SIGKILL a mitad de la sección crítica --
+        el proceso padre debe poder adquirir el lock y escribir normalmente
+        sin colgarse, confirmando que el kernel libera flock() al morir el
+        proceso (nunca queda un lock huérfano bloqueando un reinicio real).
+        """
+        import subprocess
+        import sys as _sys
+
+        lock_path = f"{self.index_path}.lock"
+        script = (
+            "import fcntl, os, time\n"
+            f"fd = os.open({lock_path!r}, os.O_CREAT | os.O_RDWR, 0o644)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "print('LOCKED', flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        proc = subprocess.Popen(
+            [_sys.executable, "-c", script],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        try:
+            line = proc.stdout.readline()
+            self.assertIn("LOCKED", line)
+            proc.kill()  # SIGKILL: no graceful cleanup possible for the child
+            proc.wait(timeout=5)
+
+            started = time.time()
+            rec, _ = self.idx.record_event("fp_after_real_kill")
+            elapsed = time.time() - started
+            self.assertEqual(rec.hits, 1)
+            self.assertLess(
+                elapsed, 5.0,
+                "record_event() se colgó -- el lock no se liberó tras SIGKILL",
+            )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+
+    def test_orphaned_tmp_file_from_dead_pid_is_cleaned_up(self):
+        """Un archivo .tmp.<pid> huérfano de un PID que ya no existe debe
+        limpiarse al abrir un nuevo GravityIndex, sin tocar el archivo real
+        ni perder ningún registro."""
+        self.idx.record_event("fp_real")
+        dead_pid = 999999  # extremadamente improbable que exista
+        orphan = f"{self.index_path}.tmp.{dead_pid}.123"
+        with open(orphan, "w", encoding="utf-8") as f:
+            f.write("{not valid json, simulating a half-written crash}")
+
+        GravityIndex(path=self.index_path)  # __init__ dispara la limpieza
+
+        self.assertFalse(os.path.exists(orphan))
+        # El archivo real (y sus datos) permanecen intactos.
+        with open(self.index_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertIn("fp_real", data)
+
+
+class TestDurableWrite(_TempGravityMixin, unittest.TestCase):
+    """El escritor debe flush+fsync antes de renombrar (durabilidad real)."""
+
+    def test_write_calls_fsync_before_replace(self):
+        calls = []
+        real_fsync = os.fsync
+
+        def spy_fsync(fd):
+            calls.append(fd)
+            return real_fsync(fd)
+
+        with patch("core.learn.gravity_engine.os.fsync", side_effect=spy_fsync):
+            self.idx.record_event("fp_fsync_check")
+
+        # Al menos una llamada a fsync del archivo de datos (puede haber una
+        # segunda del fsync del directorio, best-effort).
+        self.assertGreaterEqual(len(calls), 1)
+
+    def test_no_tmp_file_left_behind_after_successful_write(self):
+        self.idx.record_event("fp_clean")
+        leftovers = [
+            p for p in os.listdir(self.tmpdir)
+            if ".tmp." in p
+        ]
+        self.assertEqual(leftovers, [])
 
 
 if __name__ == "__main__":

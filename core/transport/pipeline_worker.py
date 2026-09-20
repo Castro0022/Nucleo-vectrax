@@ -417,6 +417,186 @@ def _get_rss_mb() -> float:
     return 0.0
 
 
+def _compute_grounding(nucleus_response) -> "tuple[bool, bool]":
+    """Deriva (grounded, verified) a partir de evidencia REAL, nunca de
+    `evidence_authorized` (que hoy es True incluso cuando la única
+    "evidencia" es la etiqueta honesta "no tengo información" -- ver
+    caso real "¿Quién es mi novia?": la fuga no fue solo de enrutamiento,
+    también fue que el panel mostraba OK=✓ sin haber verificado nada).
+
+    - grounded: hay evidencia REAL y no vacía detrás de la respuesta --
+      stars/core_memory con contenido (LOCAL/IDENTITY/PERSONAL_MEMORY/
+      MEMORY) o fuentes externas reales (ONLINE/PLACES/MARKET).
+    - verified: la evidencia pertenece EXPLÍCITAMENTE al mismo usuario --
+      solo cierto para rutas de memoria propia (LOCAL/IDENTITY/
+      PERSONAL_MEMORY/MEMORY) con evidencia real encontrada. Fuentes
+      externas (ONLINE/PLACES/MARKET) nunca cuentan como "evidencia del
+      mismo usuario", sin importar cuán reales sean sus datos.
+    """
+    action = (nucleus_response.final_action or "").upper()
+    ev = nucleus_response.evidence or {}
+    if action in ("LOCAL", "IDENTITY", "PERSONAL_MEMORY"):
+        grounded = bool(ev.get("context_stars"))
+        return grounded, grounded
+    if action == "MEMORY":
+        # Ingesta: se registró un star propio del usuario -- evidencia real
+        # y propia por definición (no es una "consulta" a verificar).
+        return bool(ev.get("star_id")), bool(ev.get("star_id"))
+    if action == "ONLINE":
+        return bool(ev.get("sources")), False
+    if action == "PLACES":
+        return bool(ev.get("found")), False
+    if action == "MARKET":
+        return bool(ev), False
+    return False, False
+
+
+def _compute_evidence_found(nucleus_response) -> bool:
+    """PARTE 6 (2026-09-20): ¿se localizó evidencia REAL, sin importar si
+    fue suficiente para fundamentar la respuesta final (`grounded`)? A
+    diferencia de `grounded`, esto cuenta CUALQUIER señal de evidencia
+    encontrada durante la consulta -- p.ej. `context_stars>0` aunque esas
+    stars resultáran irrelevantes y la respuesta final haya sido una
+    abstención honesta. `memory_evidence` (paso 2 incondicional de
+    `NucleusAuthority._decide()`) es la fuente más completa porque se
+    calcula SIEMPRE, incluso cuando el `final_action` terminó siendo
+    CLARIFICATION u otra ruta.
+    """
+    mem_ev = nucleus_response.memory_evidence or {}
+    if mem_ev.get("context_stars"):
+        return True
+    ev = nucleus_response.evidence or {}
+    action = (nucleus_response.final_action or "").upper()
+    if action in ("LOCAL", "IDENTITY", "PERSONAL_MEMORY"):
+        return bool(ev.get("context_stars"))
+    if action == "MEMORY":
+        return bool(ev.get("star_id"))
+    if action == "ONLINE":
+        return bool(ev.get("sources"))
+    if action == "PLACES":
+        return bool(ev.get("found"))
+    if action == "MARKET":
+        return bool(ev)
+    return False
+
+
+_ABSTAINABLE_ACTIONS = (
+    "LOCAL", "IDENTITY", "PERSONAL_MEMORY", "MEMORY",
+    "ONLINE", "PLACES", "MARKET",
+)
+
+
+def _compute_abstained(nucleus_response) -> bool:
+    """PARTE 6 (2026-09-20): ¿el sistema declaró explícitamente que no
+    tenía evidencia suficiente en vez de fabricar una respuesta?
+    `final_action == CLARIFICATION` siempre cuenta (es la abstención
+    genérica de `NucleusAuthority`). Para cualquier otra acción con
+    ejecutor real, `evidence_authorized=False` es la señal honesta que
+    cada ejecutor de `_dispatch_executor()` ya deja cuando no pudo
+    autorizar una respuesta con respaldo real (ver p.ej. el mensaje "No
+    pude obtener datos de mercado en este momento" de la rama MARKET).
+    """
+    action = (nucleus_response.final_action or "").upper()
+    if action == "CLARIFICATION":
+        return True
+    if action in _ABSTAINABLE_ACTIONS:
+        return not bool(nucleus_response.evidence_authorized)
+    return False
+
+
+def _commit_nucleus_op_cycle(
+    msg, nucleus_response, conv_record, proc_out_source: str,
+    response_text: str, start_time: float, delivered: bool = False,
+) -> None:
+    """Registra en op_cycles.db (Pipeline Train) el ciclo real resuelto por
+    NucleusAuthority -- el punto común de salida que faltaba.
+
+    Causa raíz corregida (2026-09-20): `CycleObserver`/`_commit_cycle()`
+    solo se invocaban dentro de `ExternalGateway._do_receive_message()`
+    (ver `core/operator/external_gateway.py`). Desde la reunificación del
+    Núcleo (2026-09-19), la ruta REAL y dominante para producción
+    (`NucleusAuthority.resolve_from_record()`, ver bloque NÚCLEO arriba)
+    NUNCA llega a invocar `ExternalGateway` -- por eso Pipeline Train dejó
+    de reflejar consultas reales resueltas por esa ruta (memory/resolve_
+    local, identity, etc.) después de la reunificación.
+
+    Este helper SOLO debe llamarse cuando `nucleus_response is not None`
+    (es decir, exactamente cuando `ExternalGateway` NO corrió y por tanto
+    su propio commit interno nunca ocurrió) -- para no escribir un
+    segundo registro, con menos detalle, sobre el MISMO correlation_id
+    (msg.id) que ExternalGateway ya habría registrado por su cuenta.
+
+    No modifica clasificación, memoria ni la respuesta: `intent` viene del
+    `ConvergenceRecord.intent` YA calculado por el ciclo de convergencia
+    real (mismo dato que alimenta el resto del sistema), y `route`/
+    `source` vienen directamente de los campos ya calculados de
+    `NucleusResponse`/`proc_out_source`. Nunca lanza -- best-effort,
+    puramente observacional.
+    """
+    try:
+        from core.operational_cycle import CycleObserver
+        user_tier = "free"
+        try:
+            user_tier = _resolve_user_tier(msg.user_id).value
+        except Exception:
+            pass
+        obs = CycleObserver(
+            channel=msg.channel or "telegram", user_tier=user_tier,
+            cycle_id=msg.id, start_time=start_time,
+        )
+        intent = getattr(conv_record, "intent", "") if conv_record is not None else ""
+        lang = ""
+        try:
+            from vectrax.resolver import _detect_lang
+            lang = _detect_lang(msg.content or "")
+        except Exception:
+            pass
+        obs.set_perceive(
+            intent=intent or "", lang=lang, words=len((msg.content or "").split()),
+        )
+        obs.set_interpret(
+            action=nucleus_response.tool_executed or "",
+            reason=(nucleus_response.reason or "")[:100],
+        )
+        obs.set_decide(
+            route=(nucleus_response.final_action or "").lower(),
+            strategy=nucleus_response.candidate_source or nucleus_response.tool_executed or "",
+            confidence=float(nucleus_response.confidence or 0.0),
+        )
+        obs.set_act(
+            latency_ms=(time.time() - start_time) * 1000.0,
+            empty=not bool(response_text),
+            fallback=False,
+        )
+        # verify_ran=False es honesto: la ruta NucleusAuthority no corre el
+        # Response Auditor legacy (exclusivo de ExternalGateway) -- no se
+        # fabrica una verificación que no ocurrió. `passed=False` (PARTE 6):
+        # con `ran=False`, `passed` no puede ser `True` -- `CycleObserver
+        # .set_verify()` ya lo fuerza, pero se pasa explícito aquí para que
+        # el llamador tampoco sugiera lo contrario.
+        obs.set_verify(ran=False, passed=False, rewritten=False)
+        obs.set_respond(
+            length=len(response_text or ""), source=proc_out_source,
+        )
+        # PARTE 6: memory_consulted viene directo de NucleusResponse --
+        # `_query_memory()` (paso 2 de `NucleusAuthority._decide()`) corre
+        # de forma INCONDICIONAL para toda entrada, así que este valor es
+        # siempre real, nunca simulado.
+        obs.set_memory(
+            consulted=bool(nucleus_response.memory_consulted),
+            evidence_found=_compute_evidence_found(nucleus_response),
+        )
+        grounded, verified = _compute_grounding(nucleus_response)
+        abstained = _compute_abstained(nucleus_response)
+        obs.set_verification(
+            delivered=delivered, grounded=grounded, verified=verified,
+            abstained=abstained,
+        )
+        obs.commit()
+    except Exception as exc:
+        logger.debug("nucleus op_cycle commit failed (non-fatal): %s", exc)
+
+
 def _stage_timer(name: str, msg_id: str):
     """Context manager that times a pipeline stage and logs it."""
     import contextlib
@@ -495,6 +675,25 @@ def _process_one(msg):
 
     t0 = time.time()
     ram_before = _get_rss_mb()
+
+    # === HISTORIAL CANONICO (Parte 1 del contrato de memoria) =============
+    # El mensaje entrante se registra INMEDIATAMENTE -- antes de scale
+    # governor, convergencia, Núcleo, LLM o cualquier otro procesamiento
+    # que pueda fallar. Si algo más abajo lanza, el turno del usuario ya
+    # quedó registrado (se marca error, nunca se pierde). Idempotente por
+    # message_id: un reintento del mismo msg.id nunca duplica el evento.
+    _ledger_user_event_id = ""
+    try:
+        from core.memory.conversation_ledger import record_user_message
+        _ledger_user_event_id = record_user_message(
+            user_id=msg.user_id, content=msg.content or "",
+            channel=msg.channel or "telegram", chat_id=msg.chat_id,
+            message_id=msg.id, correlation_id=msg.id,
+            source="pipeline_worker",
+        )
+    except Exception as _ledger_exc:
+        logger.debug("conversation_ledger user record failed (non-fatal): %s", _ledger_exc)
+
     try:
         # === SCALE GOVERNOR PREFLIGHT (opt-in) ===
         with _stage_timer("scale_governor", msg.id):
@@ -899,6 +1098,39 @@ def _process_one(msg):
 
         mark_done(msg.id, response)
 
+        # === HISTORIAL CANONICO: respuesta del asistente ================
+        # Se registra DESPUÉS de conocer el contenido final enviado (Regla
+        # 2). status='delivered' si Telegram confirmó el envío, 'error' si
+        # no -- nunca se omite el registro solo porque el envío falló.
+        try:
+            from core.memory.conversation_ledger import record_assistant_message
+            record_assistant_message(
+                user_id=msg.user_id, content=response or "",
+                channel=msg.channel or "telegram", chat_id=msg.chat_id,
+                message_id=msg.id, correlation_id=msg.id,
+                reply_to_event_id=_ledger_user_event_id,
+                status="delivered" if sent else "error",
+                error="" if sent else "telegram_send_failed",
+                source="pipeline_worker",
+            )
+        except Exception as _ledger_exc:
+            logger.debug("conversation_ledger assistant record failed (non-fatal): %s", _ledger_exc)
+
+        # === REGISTRO DEL CICLO OPERATIVO (Pipeline Train) =============
+        # Punto común de salida: exactamente UN registro por correlation_id
+        # real (msg.id). Cuando NucleusAuthority resolvió (_nucleus_response
+        # is not None), ExternalGateway NUNCA corrió -- ver el bloque NÚCLEO
+        # más arriba -- así que su CycleObserver interno tampoco corrió. Si
+        # en cambio corrió la ruta legacy (`result is not None`), ese ciclo
+        # YA quedó registrado dentro de `ExternalGateway._do_receive_message()`
+        # bajo el MISMO correlation_id -- volver a commitear aquí duplicaría
+        # (con menos detalle) el mismo registro.
+        if _nucleus_response is not None:
+            _commit_nucleus_op_cycle(
+                msg, _nucleus_response, _conv_record, _proc_out_source,
+                response, t0, delivered=sent,
+            )
+
         ram_after = _get_rss_mb()
         ram_delta = ram_after - ram_before
         logger.info(
@@ -935,6 +1167,15 @@ def _process_one(msg):
     except Exception as exc:
         elapsed = time.time() - t0
         logger.error("ERROR %s | %.1fs | %s", msg.id, elapsed, exc)
+
+        # Historial canónico: el turno del usuario SIGUE registrado (se
+        # escribió antes de que nada pudiera fallar) -- solo se marca su
+        # estado de error, nunca se borra ni se reescribe (Regla 3).
+        try:
+            from core.memory.conversation_ledger import mark_event_error
+            mark_event_error(_ledger_user_event_id, str(exc)[:300])
+        except Exception:
+            pass
 
         # Universe visibility (Pilar D): este fallo real se vuelve una estrella
         # de fallo. Aditivo, defensivo, flag VX_RUNTIME_OBSERVER.

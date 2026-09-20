@@ -285,18 +285,17 @@ class _MemoryStore:
                     "VALUES (?, ?, ?, ?)",
                     (user_id, inp, out, ts),
                 )
-                # Recortar si excede máximo
-                count = conn.execute(
-                    "SELECT COUNT(*) FROM interactions WHERE user_id = ?",
-                    (user_id,),
-                ).fetchone()[0]
-                if count > MAX_HISTORY_PER_USER:
-                    conn.execute(
-                        "DELETE FROM interactions WHERE id IN "
-                        "(SELECT id FROM interactions WHERE user_id = ? "
-                        "ORDER BY timestamp ASC LIMIT ?)",
-                        (user_id, count - MAX_HISTORY_PER_USER),
-                    )
+                # Corrección estructural 2026-09-20 (memoria conversacional
+                # canónica, Regla 6): el recorte automatico a
+                # MAX_HISTORY_PER_USER SE ELIMINA -- retención automática por
+                # conteo NUNCA debe ser la política de conservación del
+                # historial (perder interacciones antiguas hace imposible
+                # responder "¿qué hablamos el 12 de septiembre?" para
+                # cualquier usuario con más de 50 turnos). La fuente canónica
+                # real ahora es `core.memory.conversation_ledger`
+                # (append-only, sin límite); esta tabla `interactions` sigue
+                # existiendo para compatibilidad de lectura (get_context()
+                # solo LEE con LIMIT, nunca borra) pero deja de truncarse.
                 conn.commit()
                 conn.close()
             except Exception as exc:

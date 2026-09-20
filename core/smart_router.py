@@ -75,10 +75,21 @@ class Strategy(str, Enum):
     # Nucleus -> SmartRouter (ticket NucleusDecision, 2026-09-17): el Núcleo
     # ya tiene evidencia real retenida (memoria/patrones previos) suficiente
     # para responder SIN invocar ningún resolver externo. Nunca seleccionada
-    # por `select_strategy()` desde texto — solo llega vía `NucleusDecision.
+    # por `select_strategy()` desde texto -- solo llega vía `NucleusDecision.
     # candidate_strategy` cuando `SmartRouter.route()` recibe una candidata
     # ya cerrada.
     ANSWER_FROM_EVIDENCE = "answer_from_evidence"
+    # Contrato definitivo de memoria personal (corrección 2026-09-20): el
+    # Núcleo (NucleusAuthority._decide()) asigna esta estrategia
+    # DIRECTAMENTE -- sin pasar por `SmartRouter.route()`/`classify_intent()`
+    # -- en cuanto detecta genéricamente una consulta de memoria personal
+    # (vectrax.resolver.is_personal_memory_query(): historial, relaciones,
+    # decisiones o experiencia previa del propio usuario). Se despacha
+    # idéntico a RESOLVE_LOCAL (mismo resolve_local()), pero con un nombre
+    # de estrategia distinto para que la telemetría/dashboard puedan
+    # distinguir "el Núcleo decidió esto es memoria personal, sin
+    # reinterpretación" de una resolución LOCAL genérica cualquiera.
+    RESOLVE_PERSONAL_MEMORY = "resolve_personal_memory"
 
 
 class PolicyAction(str, Enum):
@@ -519,6 +530,23 @@ class SmartRouter:
         has_question_start = bool(_QUESTION_STARTS.match(text))
         has_query_intent = bool(_QUERY_INTENT.search(text))
         has_local_keywords = bool(_LOCAL_KEYWORDS.search(text))
+        # Cualquier consulta de memoria personal GENERICA (relaciones --
+        # "¿Quién es mi novia?" -- pero también historial/decisiones --
+        # "¿qué hablamos ayer?", "¿qué decidimos?") es SIEMPRE Intent.LOCAL
+        # (recuperar), NUNCA Intent.MEMORY (guardar) ni Intent.ONLINE --
+        # misma fuente única de vocabulario que semantic_classifier.py y
+        # NucleusAuthority (vectrax.resolver.is_personal_memory_query()),
+        # para que esta capa regex independiente nunca diverja. PARTE 5
+        # (2026-09-20): ampliado desde `is_personal_relationship_query`
+        # (subconjunto: solo "quién es mi X") al detector completo, para que
+        # el fallback regex separe correctamente store (MEMORY) de retrieve
+        # (LOCAL) para memoria personal sin esperar al Nucleo.
+        if not has_local_keywords:
+            try:
+                from vectrax.resolver import is_personal_memory_query
+                has_local_keywords = is_personal_memory_query(text)
+            except Exception:
+                pass
         has_cognitive = bool(_COGNITIVE_PATTERN.search(text))
         is_long = len(text) > _LONG_PROMPT_CHARS
         word_count = len(text.split())
@@ -681,12 +709,19 @@ class SmartRouter:
 
         # Conflicto o semántico ausente → regex decide solo
         #
-        # Excepción 1: semántico=MEMORY vs regex=ONLINE → semántico gana.
+        # Excepción 1: semántico=MEMORY/LOCAL vs regex=ONLINE → semántico gana.
         # Preguntas personales con ? que el regex ve como ONLINE.
         # IDEA-6B42AC11: 78 conflictos memory→online resueltos aquí.
+        # Corrección 2026-09-20: el check original solo comparaba contra
+        # "memory" (SemanticIntent.GENERAL_CHAT), pero SemanticIntent
+        # .MEMORY_LOOKUP -- la señal REAL para "¿Quién es mi novia?" y
+        # preguntas personales similares -- se mapea a Intent.LOCAL
+        # (_SEMANTIC_TO_INTENT), cuyo .value es "local", no "memory". El
+        # rescate nunca disparaba para el caso que más importa: MEMORY_LOOKUP
+        # con confianza baja vs regex=ONLINE. Se amplía a ambos valores.
         if (
             semantic_intent is not None
-            and semantic_intent.value == "memory"
+            and semantic_intent.value in ("memory", "local")
             and regex_intent == Intent.ONLINE
             and sem_conf > 0
         ):

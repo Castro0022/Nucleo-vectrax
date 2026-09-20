@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 from fastapi.responses import HTMLResponse
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -216,12 +216,22 @@ async def dashboard_constellations(
 # ---------------------------------------------------------------------------
 
 @router.get("/cycles")
-async def dashboard_cycles(limit: int = Query(100, ge=1, le=1000)) -> Dict[str, Any]:
+async def dashboard_cycles(
+    response: Response, limit: int = Query(100, ge=1, le=1000),
+) -> Dict[str, Any]:
     """Recent operational cycles (perceive->interpret->decide->act->verify->respond).
 
     Read-only exposure of the already-persisted `op_cycles` table — no new
     computation. Powers the 'Pipeline Train' cycle-history view.
+
+    `Cache-Control: no-store` (corrección 2026-09-20): el panel Pipeline
+    Train mostraba filas viejas (p.ej. `self_aware` de ciclos ya
+    superados) cuando quedaba abierto sin recargar. Este endpoint es la
+    fuente de datos en vivo del panel -- sin este header, un navegador o
+    proxy intermedio podría servir una respuesta GET cacheada en vez de
+    consultar `op_cycles` de nuevo, agravando la confusión de diagnóstico.
     """
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     out: Dict[str, Any] = {"ts": time.time(), "total": 0, "summary": {}, "cycles": []}
     try:
         conn = sqlite3.connect(str(_CYCLES_DB), timeout=3)
@@ -230,13 +240,29 @@ async def dashboard_cycles(limit: int = Query(100, ge=1, le=1000)) -> Dict[str, 
         rows = conn.execute(
             "SELECT id, timestamp, channel, user_tier, perceive_intent, perceive_lang, "
             "interpret_action, decide_route, decide_confidence, act_latency_ms, act_fallback, "
-            "verify_ran, verify_passed, respond_len, respond_source, total_latency_ms, success "
+            "verify_ran, verify_passed, respond_len, respond_source, "
+            "delivered, grounded, verified, memory_consulted, evidence_found, abstained, "
+            "total_latency_ms, success "
             "FROM op_cycles ORDER BY timestamp DESC LIMIT ?",
             (limit,),
         ).fetchall()
         conn.close()
         n = len(rows)
         succ = sum(1 for r in rows if r["success"])
+        # verified_rate/grounded_rate/delivered_rate (corrección 2026-09-20):
+        # KPIs SEPARADOS de success_rate -- "completado" (el ciclo terminó
+        # sin error) NUNCA debe leerse como "correcto"/"verificado". Ver
+        # caso real "¿Quién es mi novia?": ese ciclo tenía success=1 pero
+        # verified=0 (fuente externa, no evidencia propia del usuario).
+        verif = sum(1 for r in rows if r["verified"])
+        ground = sum(1 for r in rows if r["grounded"])
+        deliv = sum(1 for r in rows if r["delivered"])
+        # PARTE 6 (2026-09-20): 3 tasas más del contrato honesto, ninguna
+        # colapsada con las de arriba -- ver docstring de columnas en
+        # `core/operational_cycle.py::_CREATE`.
+        mem_consult = sum(1 for r in rows if r["memory_consulted"])
+        evid_found = sum(1 for r in rows if r["evidence_found"])
+        abst = sum(1 for r in rows if r["abstained"])
         by_source: Dict[str, int] = {}
         by_route: Dict[str, int] = {}
         for r in rows:
@@ -245,12 +271,36 @@ async def dashboard_cycles(limit: int = Query(100, ge=1, le=1000)) -> Dict[str, 
         out["summary"] = {
             "window": n,
             "success_rate": round(succ / max(n, 1) * 100, 1),
+            "delivered_rate": round(deliv / max(n, 1) * 100, 1),
+            "grounded_rate": round(ground / max(n, 1) * 100, 1),
+            "verified_rate": round(verif / max(n, 1) * 100, 1),
+            "memory_consulted_rate": round(mem_consult / max(n, 1) * 100, 1),
+            "evidence_found_rate": round(evid_found / max(n, 1) * 100, 1),
+            "abstained_rate": round(abst / max(n, 1) * 100, 1),
             "avg_latency_ms": round(sum((r["total_latency_ms"] or 0) for r in rows) / max(n, 1), 1),
             "fallbacks": sum(1 for r in rows if r["act_fallback"]),
             "by_source": by_source,
             "by_route": by_route,
         }
-        out["cycles"] = [{k: r[k] for k in r.keys()} for r in rows]
+        # PARTE 6 (2026-09-20): contrato honesto de telemetría -- se exponen
+        # los 9 campos requeridos con su nombre CANÓNICO explícito
+        # (delivered, memory_consulted, evidence_found, grounded,
+        # verification_ran, verification_passed, abstained, fallback_used,
+        # success), ADEMÁS de las columnas crudas de `op_cycles` (compat
+        # hacia atrás -- el HTML actual las sigue leyendo por su nombre de
+        # columna). No es un rename de esquema: es un alias explícito en la
+        # frontera de la API para que ningún consumidor tenga que adivinar
+        # que "verify_ran"/"verify_passed"/"act_fallback" son exactamente
+        # "verification_ran"/"verification_passed"/"fallback_used".
+        out["cycles"] = [
+            {
+                **{k: r[k] for k in r.keys()},
+                "verification_ran": bool(r["verify_ran"]),
+                "verification_passed": bool(r["verify_ran"]) and bool(r["verify_passed"]),
+                "fallback_used": bool(r["act_fallback"]),
+            }
+            for r in rows
+        ]
     except Exception as exc:
         out["error"] = str(exc)
     return out
@@ -258,10 +308,19 @@ async def dashboard_cycles(limit: int = Query(100, ge=1, le=1000)) -> Dict[str, 
 
 @router.get("/train/view", response_class=HTMLResponse)
 async def pipeline_train_view():
-    """Serve the Pipeline Train page (trading analytics + cycle history)."""
+    """Serve the Pipeline Train page (trading analytics + cycle history).
+
+    `Cache-Control: no-store` -- evita que un proxy/navegador sirva una
+    versión vieja de este HTML (p.ej. sin el auto-refresh) después de
+    actualizarlo. Se fija en el objeto `HTMLResponse` devuelto -- fijarlo
+    en un `Response` inyectado por parámetro NO tiene efecto aquí, porque
+    esta función retorna explícitamente un objeto `HTMLResponse` propio,
+    que reemplaza por completo esa respuesta inyectada.
+    """
+    headers = {"Cache-Control": "no-store, no-cache, must-revalidate"}
     if _TRAIN_HTML.exists():
-        return HTMLResponse(_TRAIN_HTML.read_text(encoding="utf-8"))
-    return HTMLResponse("<h1>pipeline_train.html not found</h1>", status_code=404)
+        return HTMLResponse(_TRAIN_HTML.read_text(encoding="utf-8"), headers=headers)
+    return HTMLResponse("<h1>pipeline_train.html not found</h1>", status_code=404, headers=headers)
 
 
 # ---------------------------------------------------------------------------

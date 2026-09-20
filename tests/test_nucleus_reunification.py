@@ -179,12 +179,15 @@ def test_same_final_action_both_channels(all_results, prompt):
 
 def test_identity_questions_resolve_from_memory_not_web(all_results):
     """'¿Quién eres?' / '¿Quién te creó?' / '¿Qué sabes de mí?' -> memoria/
-    identidad propia, nunca búsqueda web."""
+    identidad propia, nunca búsqueda web. Desde PARTE 4, '¿Qué sabes de mí?'
+    es una consulta de memoria personal genérica y resuelve vía
+    RESOLVE_PERSONAL_MEMORY -> PERSONAL_MEMORY (mismo ejecutor resolve_local
+    que LOCAL, nunca sale a internet)."""
     for prompt in ("¿Quién eres?", "¿Quién te creó?", "¿Qué sabes de mí?"):
         entry = next(r for r in all_results if r["prompt"] == prompt)
         for channel in ("api", "telegram"):
             r = entry[channel]
-            assert r["final_action"] in ("IDENTITY", "LOCAL", "CLARIFICATION"), (
+            assert r["final_action"] in ("IDENTITY", "LOCAL", "PERSONAL_MEMORY", "CLARIFICATION"), (
                 f"{prompt!r} ({channel}) resolvió como {r['final_action']}, "
                 f"se esperaba identidad/memoria propia"
             )

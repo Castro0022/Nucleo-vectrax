@@ -1283,10 +1283,31 @@ class TotalConvergenceEngine:
              RESOLVE_MARKET, cognitive -> ROUTE_COGNITIVE (solo si
              ReasoningEngine ya calculó riesgo LOW en este mismo ciclo).
           3. Si ninguna de las anteriores aplica (ambigüedad, capacidad no
-             disponible, o intent fuera de este mapeo — memory/local/
+             disponible, o intent fuera de este mapeo -- memory/local/
              identity/command/ai_single/ai_multi), `candidate_strategy=None`
-             — `SmartRouter.route()` se comporta exactamente igual que hoy
+             -- `SmartRouter.route()` se comporta exactamente igual que hoy
              (selección desde texto, sin cambios).
+
+        PARTE 5 (2026-09-20) -- por qué NO se promueve intent=memory/identity
+        aquí (análisis explícito, no un descuido): asignar aquí directamente
+        `Strategy.RESOLVE_MEMORY`/`RESOLVE_IDENTITY` para esos intents
+        parecería cerrar la "ambigüedad -> legacy", pero sería una
+        REGRESIÓN real -- `NucleusAuthority._decide()` (paso 5) acepta
+        cualquier `candidate_strategy` no nulo SIN volver a evaluar el paso
+        5.5 (`is_personal_memory_query()`, el contrato definitivo de
+        memoria personal). Si `intent_ssot` clasifica como "memory" (nota a
+        guardar) una consulta que en realidad es de RECUPERACIÓN ("¿qué
+        hablamos ayer?"), promoverla aquí la enviaría a `ingest()` en vez
+        de a `retrieve_personal_memory()`, revirtiendo la protección de la
+        reunificación. Dejar `candidate_strategy=None` es lo CORRECTO: deja
+        que `NucleusAuthority._decide()` paso 5.5 clasifique con el mismo
+        detector genérico usado en todo el sistema, y solo si no aplica cae
+        a `SmartRouter.route()` auxiliar (que YA tiene sus propias
+        protecciones -- `semantic_memory_rescue`, regex `is_personal_memory_
+        query()` ampliado en `_classify_regex()`). "Ambigüedad -> legacy"
+        para memory/identity, tal como existe hoy, NO es el pipeline legacy
+        pre-reunificación (`ExternalGateway` completo) -- es el paso 5.5/6
+        de `NucleusAuthority`, que ya es seguro.
 
         Fail-safe estricto: cualquier fallo (import, atributo faltante)
         devuelve una `NucleusDecision` vacía (`candidate_strategy=None`),

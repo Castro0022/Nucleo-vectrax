@@ -889,6 +889,7 @@ def creator_chat():
     from vectrax import config as cfg
     from vectrax import memory as mem
     from vectrax import intelligence_bridge as ib
+    from core.nucleus.nucleus_authority import get_nucleus_authority
 
     session_id = str(uuid.uuid4())
 
@@ -1010,37 +1011,31 @@ def creator_chat():
                 db.insert_message(session_id, "vectrax", f"[WAKE ACTIVATION] {ts}")
                 continue
 
-            # ── Convergencia Total: procesar input ────────────────
-            conv_record = None
-            try:
-                from core.nucleus.total_convergence import get_convergence_engine
-                conv_engine = get_convergence_engine()
-                if conv_engine.is_active:
-                    conv_record = conv_engine.process(
-                        text, source="creator_chat",
-                        channel=CHANNEL_CREATOR, owner=CREATOR_OWNER,
-                    )
-            except Exception:
-                pass  # convergence hook is non-fatal
+            # ── NÚCLEO: AUTORIDAD ÚNICA — misma que Telegram y Web ─────────
+            # Corrección 2026-09-20: el CLI dejó de tener su propia lógica de
+            # convergencia/ingesta/recall/respuesta (vectrax/memory.py::
+            # recall()/build_response(), llamada directa a
+            # core.nucleus.total_convergence, ingest() incondicional). Ahora
+            # es un adaptador de E/S puro: delega ÍNTEGRAMENTE en
+            # `NucleusAuthority.resolve()` — el MISMO contrato exacto que ya
+            # usan Telegram (`core/transport/pipeline_worker.py`) y Web/API
+            # (`services/core/routes/chat.py`). El Núcleo corre su propio
+            # ciclo de convergencia, consulta incondicional de memoria,
+            # overrides de autoconocimiento (identidad/gravedad/capacidades/
+            # dominios/mercado) y el contrato de memoria personal — sin
+            # duplicar nada de eso aquí. Solo crea una estrella cuando el
+            # propio Núcleo decide `MEMORY` (derivación selectiva, PARTE 2).
+            with console.status("[dim]◈ Consultando al núcleo…[/dim]"):
+                nr = get_nucleus_authority().resolve(
+                    text, channel=CHANNEL_CREATOR, owner=CREATOR_OWNER,
+                    source="creator_chat",
+                )
+            response = nr.answer or ""
+            star_id = (nr.evidence or {}).get("star_id", "")
 
-            # Ingestar como creator star
-            try:
-                with console.status("[dim]★ Grabando en el núcleo…[/dim]"):
-                    star = _ingest(text, success=True,
-                                   channel=CHANNEL_CREATOR, owner=CREATOR_OWNER)
-            except Exception as exc:
-                console.print(f"[red]Error al ingestar: {exc}[/red]")
-                continue
-
-            # Guardar mensaje de Mario en conversations
-            db.insert_message(session_id, "mario", text, star_id=star.id)
-
-            # Recall semántico
-            with console.status("[dim]◈ Buscando en memoria…[/dim]"):
-                context = mem.recall(text)
-            response = mem.build_response(text, context, session_id)
-
-            # Guardar respuesta de Vectrax
+            # Guardar transcripción de la sesión — solo E/S de presentación
+            # (bienvenida/resumen de sesión), nunca insumo de una decisión.
+            db.insert_message(session_id, "mario", text, star_id=star_id or None)
             db.insert_message(session_id, "vectrax", response)
 
             # ── Gravity Kernel — shadow (read-only, gated, never raises) ──
@@ -1050,7 +1045,7 @@ def creator_chat():
                     gravity_kernel.observe(
                         content=text,
                         user_id=CREATOR_OWNER,
-                        result_source=None,
+                        result_source=nr.final_action.lower(),
                         response_sent=bool(response),
                         response_len=len(response or ""),
                         source="creator_chat",
@@ -1058,17 +1053,21 @@ def creator_chat():
             except Exception:
                 pass
 
-            # Mostrar respuesta (con info de convergencia si disponible)
-            conv_line = ""
-            if conv_record:
-                conv_line = (
-                    f" | conv={conv_record.action_recommended}"
-                    f" | cc={conv_record.coherence_score:.2f}"
-                )
+            # Mostrar respuesta — misma traza de autoridad que Telegram/Web
+            _grounded = bool(
+                (nr.evidence or {}).get("context_stars")
+                or (nr.evidence or {}).get("sources")
+                or (nr.evidence or {}).get("kind") == "self_knowledge"
+                or (nr.evidence or {}).get("kind") == "market_data"
+            )
+            trace_line = (
+                f"ruta={nr.final_action} | tool={nr.tool_executed or '-'} | "
+                f"grounded={_grounded}"
+            )
+            if star_id:
+                trace_line += f" | star={star_id[:8]}"
             console.print(Panel(
-                f"[dim]★ [{star.id[:8]}] gravity={star.gravity_score:.4f} | "
-                f"layer={star.layer} | rep={star.repetition_count}{conv_line}[/dim]\n\n"
-                f"{response}",
+                f"[dim]{trace_line}[/dim]\n\n{response}",
                 title="[bold yellow]◈ Vectrax recuerda[/bold yellow]",
                 expand=False,
             ))

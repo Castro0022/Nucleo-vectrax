@@ -64,12 +64,54 @@ CREATE TABLE IF NOT EXISTS op_cycles (
 
     -- VERIFICAR
     verify_ran          INTEGER NOT NULL DEFAULT 0,
-    verify_passed       INTEGER NOT NULL DEFAULT 1,
+    -- PARTE 6 (2026-09-20): default corregido de 1 -> 0. "verify_passed"
+    -- NUNCA debe leerse como verdadero por defecto cuando el auditor no
+    -- corrió (verify_ran=0) -- ese era exactamente el defecto silencioso
+    -- que permitía a un consumidor ingenuo (p.ej. "WHERE verify_passed=1")
+    -- contar ciclos NO verificados como si hubieran pasado una verificación
+    -- real. `CycleObserver.set_verify()` refuerza esto en código: si
+    -- `ran=False`, `passed` se fuerza a `False` sin importar lo que el
+    -- caller haya pasado.
+    verify_passed       INTEGER NOT NULL DEFAULT 0,
     verify_rewritten    INTEGER NOT NULL DEFAULT 0,
 
     -- RESPONDER
     respond_len         INTEGER NOT NULL DEFAULT 0,
     respond_source      TEXT NOT NULL DEFAULT '',
+
+    -- VERIFICACION FINAL (corrección 2026-09-20: "OK" antes conflaba tres
+    -- conceptos distintos -- ejecución terminada, mensaje entregado, y
+    -- respuesta verificada contra evidencia. Ahora son columnas separadas:
+    --   delivered: el mensaje llegó al canal externo (p.ej. Telegram)
+    --   grounded:  la respuesta está respaldada por evidencia real
+    --              (memoria propia con contenido, o fuentes externas reales)
+    --   verified:  cada afirmación está respaldada por evidencia
+    --              perteneciente al MISMO usuario (nunca fuentes externas)
+    -- "success"/"completed" (abajo) solo significa que el ciclo terminó sin
+    -- excepción y produjo una respuesta no vacía -- NO que sea correcta.
+    delivered           INTEGER NOT NULL DEFAULT 0,
+    grounded            INTEGER NOT NULL DEFAULT 0,
+    verified            INTEGER NOT NULL DEFAULT 0,
+
+    -- PARTE 6 (2026-09-20) -- CONTRATO HONESTO, 3 columnas más, ninguna
+    -- colapsada con las de arriba:
+    --   memory_consulted: la memoria propia del usuario fue efectivamente
+    --                     consultada durante este ciclo (independiente de
+    --                     si aportó evidencia usable).
+    --   evidence_found:   se localizó evidencia REAL (propia o externa),
+    --                     independiente de si esa evidencia fue suficiente
+    --                     para fundamentar la respuesta final (`grounded`)
+    --                     -- una consulta puede encontrar evidencia parcial
+    --                     o irrelevante y aun así terminar en abstención.
+    --   abstained:        el sistema declaró explícitamente que no tenía
+    --                     evidencia suficiente en vez de fabricar una
+    --                     respuesta (CLARIFICATION, o el "no lo sé" honesto
+    --                     de un ejecutor específico). `success` puede ser 1
+    --                     con `abstained`=1 -- abstenerse con honestidad es
+    --                     un ciclo completado correctamente, no un fallo.
+    memory_consulted    INTEGER NOT NULL DEFAULT 0,
+    evidence_found      INTEGER NOT NULL DEFAULT 0,
+    abstained           INTEGER NOT NULL DEFAULT 0,
 
     -- META
     total_latency_ms    REAL NOT NULL DEFAULT 0.0,
@@ -80,6 +122,31 @@ CREATE INDEX IF NOT EXISTS idx_op_route    ON op_cycles(decide_route);
 CREATE INDEX IF NOT EXISTS idx_op_intent   ON op_cycles(perceive_intent);
 CREATE INDEX IF NOT EXISTS idx_op_success  ON op_cycles(success);
 """
+
+# Migración aditiva: bases de datos ya existentes (creadas antes de esta
+# corrección) no tienen las 3 columnas nuevas -- CREATE TABLE IF NOT EXISTS
+# no las agrega a una tabla ya existente. ALTER TABLE ... ADD COLUMN falla
+# silenciosamente (columna ya existe) en bases nuevas.
+#
+# IMPORTANTE: el ÍNDICE sobre `verified` NO puede vivir dentro de `_CREATE`
+# -- `executescript(_CREATE)` corre TODAS sus sentencias en una base ya
+# existente (creada antes de esta corrección) ANTES de que estas migraciones
+# ALTER TABLE se ejecuten, y `CREATE INDEX ... ON op_cycles(verified)`
+# fallaría con "no such column: verified" -- exactamente el bug real
+# detectado al probar en producción (2026-09-20): el commit fallaba
+# silenciosamente y Pipeline Train dejó de recibir CUALQUIER ciclo nuevo.
+# El índice se crea aquí, DESPUÉS de que las columnas ya existen.
+_MIGRATE_COLUMNS = (
+    "ALTER TABLE op_cycles ADD COLUMN delivered INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE op_cycles ADD COLUMN grounded INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE op_cycles ADD COLUMN verified INTEGER NOT NULL DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS idx_op_verified ON op_cycles(verified)",
+    # PARTE 6 (2026-09-20): mismo patrón aditivo -- bases existentes no
+    # tienen estas 3 columnas hasta que corre este ALTER TABLE.
+    "ALTER TABLE op_cycles ADD COLUMN memory_consulted INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE op_cycles ADD COLUMN evidence_found INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE op_cycles ADD COLUMN abstained INTEGER NOT NULL DEFAULT 0",
+)
 
 MAX_RECORDS = 10000  # rotación automática
 
@@ -120,12 +187,26 @@ class OperationalCycle:
 
     # VERIFICAR — qué resultó
     verify_ran: bool = False        # ¿el auditor corrió?
-    verify_passed: bool = True      # ¿la respuesta pasó la auditoría?
+    # PARTE 6 (2026-09-20): default corregido de True -> False. Un ciclo que
+    # nunca llama a `set_verify()` (o lo llama con `ran=False`) NUNCA debe
+    # reportar `verify_passed=True` -- eso sería afirmar una verificación
+    # que jamás ocurrió. Ver `set_verify()` para el enforcement en código.
+    verify_passed: bool = False     # ¿la respuesta pasó la auditoría? (solo significativo si verify_ran=True)
     verify_rewritten: bool = False  # ¿la respuesta fue reescrita?
 
     # RESPONDER — qué se envió
     respond_len: int = 0            # longitud de la respuesta enviada
     respond_source: str = ""        # fuente final (memory, llm, online, self_aware, etc.)
+
+    # VERIFICACION FINAL — 3 conceptos SEPARADOS, nunca colapsados en "OK"
+    delivered: bool = False         # ¿el mensaje llegó al canal externo (Telegram)?
+    grounded: bool = False          # ¿respaldada por evidencia real (propia o externa)?
+    verified: bool = False          # ¿cada afirmación respaldada por evidencia del MISMO usuario?
+
+    # PARTE 6 (2026-09-20) — contrato honesto, ver docstring de columnas en `_CREATE`
+    memory_consulted: bool = False  # ¿se consultó la memoria propia del usuario?
+    evidence_found: bool = False    # ¿se localizó evidencia real (propia o externa)?
+    abstained: bool = False         # ¿el sistema declaró honestamente que no sabía?
 
     # META
     _start: float = field(default_factory=time.time, repr=False)
@@ -147,6 +228,11 @@ def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(_DB_PATH, timeout=3)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_CREATE)
+    for stmt in _MIGRATE_COLUMNS:
+        try:
+            conn.execute(stmt)
+        except Exception:
+            pass  # columna ya existe (DB creada por primera vez con _CREATE)
     return conn
 
 
@@ -154,6 +240,14 @@ def _commit_cycle(cycle: OperationalCycle) -> None:
     """Persiste el ciclo completo en el ledger operativo."""
     try:
         conn = _conn()
+        # PARTE 6: enforcement final e incondicional -- sin importar qué
+        # valor tenga `cycle.verify_passed` en este punto, si el auditor no
+        # corrió (`verify_ran=False`) se persiste `verify_passed=False`.
+        # Doble refuerzo intencional junto con `CycleObserver.set_verify()`:
+        # este es el ÚLTIMO punto antes de escribir en disco, así que ninguna
+        # ruta de construcción futura de `OperationalCycle` puede saltarse
+        # esta garantía.
+        _verify_passed_honest = bool(cycle.verify_passed) and bool(cycle.verify_ran)
         conn.execute(
             """INSERT OR REPLACE INTO op_cycles (
                 id, timestamp, channel, user_tier,
@@ -163,16 +257,20 @@ def _commit_cycle(cycle: OperationalCycle) -> None:
                 act_latency_ms, act_empty, act_fallback,
                 verify_ran, verify_passed, verify_rewritten,
                 respond_len, respond_source,
+                delivered, grounded, verified,
+                memory_consulted, evidence_found, abstained,
                 total_latency_ms, success
-            ) VALUES (?,?,?,?, ?,?,?, ?,?, ?,?,?, ?,?,?, ?,?,?, ?,?, ?,?)""",
+            ) VALUES (?,?,?,?, ?,?,?, ?,?, ?,?,?, ?,?,?, ?,?,?, ?,?, ?,?,?, ?,?,?, ?,?)""",
             (
                 cycle.id, cycle.timestamp, cycle.channel, cycle.user_tier,
                 cycle.perceive_intent, cycle.perceive_lang, cycle.perceive_words,
                 cycle.interpret_action, cycle.interpret_reason,
                 cycle.decide_route, cycle.decide_strategy, round(cycle.decide_confidence, 4),
                 round(cycle.act_latency_ms, 2), int(cycle.act_empty), int(cycle.act_fallback),
-                int(cycle.verify_ran), int(cycle.verify_passed), int(cycle.verify_rewritten),
+                int(cycle.verify_ran), int(_verify_passed_honest), int(cycle.verify_rewritten),
                 cycle.respond_len, cycle.respond_source,
+                int(cycle.delivered), int(cycle.grounded), int(cycle.verified),
+                int(cycle.memory_consulted), int(cycle.evidence_found), int(cycle.abstained),
                 cycle.total_latency_ms(), int(cycle.success),
             ),
         )
@@ -221,6 +319,7 @@ class CycleObserver:
         channel: str = "telegram",
         user_tier: str = "free",
         cycle_id: str = "",
+        start_time: float = 0.0,
     ) -> None:
         # cycle_id (auditoría 2026-09-11/13): si el caller ya tiene un
         # correlation_id para esta request (external_gateway.py), lo
@@ -228,12 +327,22 @@ class CycleObserver:
         # desconectado — permite unir op_cycles.db con el resto de la
         # telemetría (ledger, router_activation.jsonl) por el mismo ID.
         # Si se omite, se genera uno nuevo (comportamiento previo).
+        #
+        # start_time (corrección 2026-09-20, Pipeline Train): permite
+        # construir el observador DESPUÉS de que el ciclo real ya terminó
+        # (p.ej. en el punto de salida común de pipeline_worker.py, cuando
+        # NucleusAuthority ya resolvió sin pasar por ExternalGateway) sin
+        # que `total_latency_ms()` colapse a ~0ms -- `_start` por defecto
+        # es `time.time()` en el momento de CONSTRUCCIÓN del objeto, que en
+        # ese caso sería muy posterior al inicio real de la request.
         if cycle_id:
             self._cycle = OperationalCycle(
                 id=cycle_id, channel=channel, user_tier=user_tier,
             )
         else:
             self._cycle = OperationalCycle(channel=channel, user_tier=user_tier)
+        if start_time > 0:
+            self._cycle._start = start_time
         self._act_start: float = 0.0
 
     # -- Pasos del ciclo ---------------------------------------------------
@@ -274,13 +383,67 @@ class CycleObserver:
         passed: bool = True,
         rewritten: bool = False,
     ) -> None:
+        """Registra si el auditor de respuesta corrió y, si corrió, si pasó.
+
+        PARTE 6 (2026-09-20): `passed` NUNCA se persiste como `True` cuando
+        `ran=False` -- sin importar qué valor pase el caller. "El auditor no
+        corrió" y "el auditor corrió y aprobó" son hechos distintos; el
+        segundo nunca puede inferirse honestamente de la ausencia del
+        primero. Callers existentes que llaman `set_verify(ran=False,
+        passed=True, ...)` (comportamiento previo, ver `pipeline_worker.py`)
+        siguen funcionando sin cambios en su firma -- el valor efectivo
+        simplemente se corrige aquí.
+        """
         self._cycle.verify_ran = ran
-        self._cycle.verify_passed = passed
+        self._cycle.verify_passed = bool(passed) if ran else False
         self._cycle.verify_rewritten = rewritten
 
     def set_respond(self, length: int = 0, source: str = "") -> None:
         self._cycle.respond_len = length
         self._cycle.respond_source = source[:60]
+
+    def set_memory(
+        self,
+        consulted: bool = False,
+        evidence_found: bool = False,
+    ) -> None:
+        """Registra si se consultó memoria propia y si se localizó evidencia
+        real -- independientes entre sí y de `grounded`/`verified` (ver
+        docstring de columnas en `_CREATE`). `evidence_found=True` con
+        `grounded=False` es un caso válido y esperado: se encontró algo,
+        pero no era suficiente/relevante para fundamentar la respuesta.
+        """
+        self._cycle.memory_consulted = consulted
+        self._cycle.evidence_found = evidence_found
+
+    def set_verification(
+        self,
+        delivered: bool = False,
+        grounded: bool = False,
+        verified: bool = False,
+        abstained: bool = False,
+    ) -> None:
+        """Registra los conceptos de verificación final SEPARADOS -- nunca
+        colapsados en un solo "OK". Ver docstring de columnas en `_CREATE`.
+
+        - `delivered`: el mensaje efectivamente llegó al canal externo.
+        - `grounded`: la respuesta está respaldada por evidencia real
+          (memoria propia con contenido real, o fuentes externas reales) --
+          nunca simplemente "el ciclo terminó sin error".
+        - `verified`: cada afirmación está respaldada por evidencia
+          perteneciente al MISMO usuario que preguntó -- más estricto que
+          `grounded` (una respuesta ONLINE puede estar grounded en fuentes
+          reales sin estar `verified` en el sentido de "evidencia propia
+          del usuario").
+        - `abstained`: el sistema declaró explícitamente que no tenía
+          evidencia suficiente (CLARIFICATION u otro "no lo sé" honesto) en
+          vez de fabricar una respuesta. Independiente de `success` --
+          abstenerse con honestidad es un ciclo completado, no un fallo.
+        """
+        self._cycle.delivered = delivered
+        self._cycle.grounded = grounded
+        self._cycle.verified = verified
+        self._cycle.abstained = abstained
 
     # -- Commit ------------------------------------------------------------
 

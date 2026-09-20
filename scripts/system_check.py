@@ -55,12 +55,17 @@ from vectrax.nucleus_resolver import NUCLEUS_RESOLVE_THRESHOLD, MIN_PATTERNS_FOR
 print(f"  Threshold: {NUCLEUS_RESOLVE_THRESHOLD} | Min patterns: {MIN_PATTERNS_FOR_SYNTHESIS}")
 
 # 8. Pipeline E2E
+# NOTA (correccion 2026-09-20): este ciclo es un chequeo DIAGNOSTICO
+# autoproducido, no un mensaje real de un usuario. channel="autonomous"
+# (no "telegram") y un user_id sintetico (no el ID real del creador) para
+# que Pipeline Train / op_cycles.db lo identifique claramente como
+# autonomo en vez de confundirlo con trafico real de Telegram.
 print("\n[8] PIPELINE E2E")
 from core.operator.external_gateway import ExternalGateway
 gw = ExternalGateway()
 for msg, label in [("hola vectrax","greet"),("precio del bitcoin","market"),("estoy cansado","emotion"),("que hora es","time")]:
     t0 = time.time()
-    r = gw.receive_message(user_id="tg:2030762343", content=msg, channel="telegram")
+    r = gw.receive_message(user_id="system_check:diagnostic", content=msg, channel="autonomous")
     ms = (time.time() - t0) * 1000
     resp = r.response[:60] if r.response else "(EMPTY!)"
     print(f"  {ms:5.0f}ms | {label:7s} | {resp}")

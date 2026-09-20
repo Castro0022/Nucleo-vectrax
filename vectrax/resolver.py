@@ -127,6 +127,109 @@ def _is_conversational(text: str) -> bool:
     return bool(_SELF_NAME.search(t) or _GREETING.match(t) or _CREATOR.search(t))
 
 
+# ---------------------------------------------------------------------------
+# PERSONAL RELATIONSHIP QUERIES — privacy guardrail (SSOT vocabulary)
+# ---------------------------------------------------------------------------
+# Corrección 2026-09-20 (caso real: "¿Quién es mi novia?" -> route=online ->
+# el sistema "descubrió" en internet una persona que no existía y la presentó
+# como respuesta verificada). Vocabulario GENÉRICO de relaciones personales
+# (sin nombres propios) -- ÚNICA fuente reutilizada por:
+#   - core/semantic_classifier.py (frame ASK_MEMORY)
+#   - core/smart_router.py (regex _LOCAL_KEYWORDS fallback)
+#   - core/nucleus/nucleus_authority.py (guardrail de privacidad final)
+# para que las 4 capas nunca diverjan en qué cuenta como "relación personal".
+_RELATIONSHIP_NOUNS_ES = (
+    r"esposa|esposo|marido|pareja|novi[ao]|prometid[ao]|hij[ao]|madre|padre|"
+    r"mam[aá]|pap[aá]|herman[ao]|amig[ao]|jefe|socia?|colega|"
+    r"suegr[ao]|cu[ñn]ad[ao]|abuel[ao]|niet[ao]|prim[ao]|t[ií][ao]"
+)
+_RELATIONSHIP_NOUNS_EN = (
+    r"wife|husband|partner|girlfriend|boyfriend|fianc[ée]e?|son|daughter|"
+    r"mother|father|mom|dad|brother|sister|friend|boss|colleague|"
+    r"grandmother|grandfather|grandson|granddaughter|cousin|aunt|uncle"
+)
+
+# Pregunta (no afirmación) sobre QUIÉN ES una persona relacionada con el
+# usuario -- "mi novia se llama Ana" es un enunciado a guardar (no coincide);
+# "¿quién es mi novia?" es una consulta que NUNCA debe resolverse saliendo a
+# internet a "descubrir" quién podría ser esa persona.
+_PERSONAL_RELATIONSHIP_QUERY_RE = re.compile(
+    r"\b(?:qui[eé]n\s+es|qui[eé]n\s+ser[aá]|c[oó]mo\s+se\s+llama|"
+    r"cu[aá]l\s+es\s+el\s+nombre\s+de)\s+mi\s+"
+    rf"(?:{_RELATIONSHIP_NOUNS_ES})\b"
+    rf"|\bwho\s+is\s+my\s+(?:{_RELATIONSHIP_NOUNS_EN})\b"
+    rf"|\bwhat'?s?\s+my\s+(?:{_RELATIONSHIP_NOUNS_EN})'?s?\s+name\b",
+    re.IGNORECASE,
+)
+
+
+def is_personal_relationship_query(text: str) -> bool:
+    """True si el texto pregunta QUIÉN ES una persona relacionada con el
+    usuario (p.ej. "¿Quién es mi novia?", "who is my boss") -- consulta de
+    memoria personal relacional, GENÉRICA (sin nombres propios ni reglas
+    específicas de ningún usuario). Esta consulta SOLO puede resolverse
+    desde la memoria propia del usuario; nunca debe salir a internet a
+    "descubrir" quién podría ser esa persona -- eso es una fuga de
+    privacidad, no una respuesta válida."""
+    return bool(_PERSONAL_RELATIONSHIP_QUERY_RE.search((text or "").strip()))
+
+
+# ---------------------------------------------------------------------------
+# PERSONAL MEMORY QUERIES (genérico) -- superconjunto de relationship queries
+# ---------------------------------------------------------------------------
+# Corrección estructural 2026-09-20 (cierre de memoria conversacional
+# multiusuario): detector GENÉRICO -- por ESTRUCTURA sintáctica (marcador
+# temporal/posesivo + verbo de recuerdo/decisión), no por una lista cerrada
+# de frases exactas -- de preguntas sobre el HISTORIAL, las DECISIONES o la
+# EXPERIENCIA PREVIA del propio usuario con Vectrax. Cubre paráfrasis como
+# "¿qué hablamos ayer?", "¿qué decidimos sobre aquel proyecto?", "¿cuándo te
+# mencioné a X?", "recuérdame lo que hablamos de Y", "¿qué fue lo último que
+# decidimos?" -- sin nombres propios, sin fechas ni proyectos hardcodeados.
+_RECALL_VERBS_ES = (
+    r"hablamos|hablaste|dijimos|dijiste|dije|platicamos|conversamos|"
+    r"coment[eé]|coment[a]mos|comentaste|decidimos|decidiste|acordamos|"
+    r"qued[a]mos|habl[eé]|mencion[eé]|mencionaste|discutimos"
+)
+_RECALL_VERBS_EN = (
+    r"talk(?:ed)?|discuss(?:ed)?|say|said|decide[d]?|agree[d]?|mention(?:ed)?|chat(?:ted)?"
+)
+
+_PERSONAL_RECALL_QUERY_RE = re.compile(
+    r"\b(?:qu[eé]|de\s+qu[eé]|sobre\s+qu[eé]|cu[aá]ndo|c[oó]mo)\s+(?:te\s+|me\s+|nos\s+|le\s+)?(?:"
+    rf"{_RECALL_VERBS_ES}"
+    r")\b"
+    r"|\bqu[eé]\s+fue\s+lo\s+(?:\u00faltimo|ultimo)\s+que\s+(?:" + _RECALL_VERBS_ES + r")\b"
+    r"|\bte\s+acuerdas\s+de\b|\brecu[eé]rdame\s+(?:lo\s+que|qu[eé])\b"
+    r"|\bcu[aá]l\s+fue\s+(?:nuestra|la)\s+\w*\s*(?:decisi[oó]n|conversaci[oó]n)\b"
+    rf"|\bwhat\s+did\s+we\s+(?:{_RECALL_VERBS_EN})\b"
+    r"|\bwhen\s+did\s+(?:i|you)\s+mention\b"
+    r"|\bdo\s+you\s+remember\s+(?:when|the|that)\b"
+    r"|\bwhat\s+was\s+(?:our|the)\s+(?:last\s+)?decision\b",
+    re.IGNORECASE,
+)
+
+
+def is_personal_memory_query(text: str) -> bool:
+    """True si el texto es una consulta GENÉRICA sobre la memoria personal
+    del usuario -- historial conversacional, relaciones, decisiones o
+    experiencia previa con Vectrax -- sin depender de una lista cerrada de
+    frases exactas. Superconjunto de `is_personal_relationship_query()` y
+    de los patrones de auto-referencia de memoria ya existentes
+    (`_LOCAL_KEYWORDS`, `_PROFILE_SUMMARY_RE`). Esta es la única fuente
+    usada por el guardrail de privacidad de NucleusAuthority: cualquier
+    consulta que matchee aquí NUNCA puede resolverse vía ONLINE/PLACES/
+    MARKET, sin importar qué proponga el enrutamiento ascendente."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(
+        is_personal_relationship_query(t)
+        or _PERSONAL_RECALL_QUERY_RE.search(t)
+        or _PROFILE_SUMMARY_RE.search(t)
+        or _LOCAL_KEYWORDS.search(t)
+    )
+
+
 def classify(text: str) -> str:
     """
     Classify a user message into one of: 'memory', 'local', 'online'.
@@ -166,10 +269,379 @@ def classify(text: str) -> str:
     # Local keywords alone are sufficient (user asking about their own data).
     if has_local_keywords:
         return "local"
+    # Personal relationship queries ("¿Quién es mi novia?") are ALWAYS local
+    # memory lookups -- never a web search to "discover" who that person is.
+    if is_personal_relationship_query(text_stripped):
+        return "local"
     # Any other question / query → ONLINE (factual default)
     if is_question:
         return "online"
     return "memory"
+
+
+# ---------------------------------------------------------------------------
+# PROFILE SUMMARY — recuperación diversa para consultas amplias de perfil
+# ---------------------------------------------------------------------------
+# Genérico y aplicable a CUALQUIER usuario: ni el detector de intención ni
+# los clasificadores de categoría a continuación contienen nombres propios,
+# frases exactas de una persona concreta, ni ninguna regla especial para
+# "Mario"/el creador — son patrones lingüísticos posesivos/genéricos
+# ("qué sabes de mí", "mi pareja", "mi proyecto"...) igual de válidos para
+# cualquier owner/channel.
+
+# Detecta la INTENCIÓN de "resume/cuéntame lo que sabes de mí" -- una
+# pregunta AMPLIA de perfil, distinta de una pregunta puntual ("¿cómo me
+# llamo?", "¿dónde vivo?") que ya funciona bien con la búsqueda por
+# similitud simple existente.
+_PROFILE_SUMMARY_RE = re.compile(
+    r"(?:"
+    r"qu[eé]\s+sabes\s+(?:de|sobre|acerca\s+de)\s+m[ií]\b"
+    r"|cu[eé]ntame\s+(?:sobre\s+m[ií]|de\s+m[ií]|qui[eé]n\s+soy|c[oó]mo\s+soy)\b"
+    r"|resume(?:me)?\s+(?:lo\s+que\s+sabes\s+de\s+m[ií]|mi\s+perfil)"
+    r"|haz(?:me)?\s+un\s+resumen\s+(?:de\s+m[ií]|sobre\s+m[ií]|de\s+mi\s+perfil)"
+    r"|^\s*qui[eé]n\s+soy(?:\s+yo)?\s*\??\s*$"
+    r"|^\s*c[oó]mo\s+soy(?:\s+yo)?\s*\??\s*$"
+    r"|descr[ií]beme\b"
+    r"|todo\s+lo\s+que\s+sabes\s+de\s+m[ií]\b"
+    r"|qu[eé]\s+(?:tienes|hay)\s+en\s+mi\s+memoria\b"
+    r"|qu[eé]\s+recuerdas\s+de\s+m[ií]\b"
+    r"|mi\s+perfil\b"
+    r"|what\s+do\s+you\s+know\s+about\s+me\b"
+    r"|tell\s+me\s+about\s+(?:myself|me)\b"
+    r"|^\s*who\s+am\s+i\s*\??\s*$"
+    r"|summarize\s+(?:what\s+you\s+know\s+about\s+me|my\s+profile)\b"
+    r"|describe\s+me\b"
+    r"|what'?s\s+my\s+profile\b"
+    r"|what\s+do\s+you\s+have\s+on\s+me\b"
+    r"|what\s+do\s+you\s+remember\s+about\s+me\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_profile_summary_query(text: str) -> bool:
+    """True para preguntas AMPLIAS que piden un resumen del usuario, en
+    cualquiera de sus paráfrasis habituales (ES/EN) -- nunca depende del
+    nombre de una persona concreta."""
+    return bool(_PROFILE_SUMMARY_RE.search((text or "").strip()))
+
+
+# Categorías de evidencia personal -- patrones GENÉRICOS (posesivos +
+# vocabulario de dominio), jamás nombres propios ni frases de una persona
+# concreta. Cualquier owner cuyo contenido use estos patrones se beneficia
+# igual; no hay trato especial para nadie.
+_CATEGORY_PATTERNS = {
+    "identity": re.compile(
+        r"\bme\s+llamo\b|\bmi\s+nombre\s+es\b|\bsoy\s+de\b|\bvivo\s+en\b|"
+        r"\bresido\s+en\b|\bnac[ií]\b|\btengo\s+\d+\s+a[nñ]os\b|\bmi\s+edad\b|"
+        r"\bmi\s+ciudad\b|\bmi\s+ubicaci[oó]n\b|\bmi\s+ocupaci[oó]n\b|"
+        r"\bmy\s+name\s+is\b|\bi\s*'?m\s+from\b|\bi\s+live\s+in\b|\bi\s+was\s+born\b|"
+        r"\bi\s+am\s+\d+\s+years?\s+old\b|\bmy\s+age\b|\bmy\s+occupation\b",
+        re.IGNORECASE,
+    ),
+    "preferences": re.compile(
+        r"\bme\s+gusta\b|\bme\s+encanta\b|\bprefiero\b|\bno\s+me\s+gusta\b|"
+        r"\bmi\s+favorit[oa]\b|\bodio\b|\bdetesto\b|"
+        r"\bi\s+like\b|\bi\s+love\b|\bi\s+prefer\b|\bi\s+hate\b|\bi\s+dislike\b|"
+        r"\bmy\s+favorite\b",
+        re.IGNORECASE,
+    ),
+    "relationships": re.compile(
+        r"\bmi\s+(?:esposa|esposo|pareja|novi[ao]|hij[ao]|madre|padre|mam[aá]|pap[aá]|"
+        r"herman[ao]|amig[ao]|jefe|colega|familia)\b|\btrabajo\s+con\b|\bvivo\s+con\b|"
+        r"\bmy\s+(?:wife|husband|partner|girlfriend|boyfriend|son|daughter|mother|"
+        r"father|mom|dad|brother|sister|friend|boss|colleague|family)\b",
+        re.IGNORECASE,
+    ),
+    "projects": re.compile(
+        r"\bestoy\s+trabajando\s+en\b|\bmi\s+proyecto\b|\bestoy\s+construyendo\b|"
+        r"\bestoy\s+desarrollando\b|\bmi\s+empresa\b|\bmi\s+startup\b|\bmi\s+negocio\b|"
+        r"\bi'?m\s+working\s+on\b|\bmy\s+project\b|\bi'?m\s+building\b|"
+        r"\bi'?m\s+developing\b|\bmy\s+(?:company|startup|business)\b",
+        re.IGNORECASE,
+    ),
+    "interests": re.compile(
+        r"\bme\s+interesa\b|\bme\s+apasiona\b|\bmi\s+hobby\b|\bmis\s+hobbies\b|"
+        r"\ben\s+mi\s+tiempo\s+libre\b|\bme\s+dedico\s+a\b|"
+        r"\bi'?m\s+interested\s+in\b|\bi'?m\s+passionate\s+about\b|\bmy\s+hobby\b|"
+        r"\bin\s+my\s+free\s+time\b",
+        re.IGNORECASE,
+    ),
+}
+_CATEGORY_ORDER = ("identity", "relationships", "projects", "preferences", "interests")
+
+
+def _classify_star_category(content: str) -> Optional[str]:
+    """Devuelve la primera categoría de evidencia personal que coincide con
+    `content`, o ``None`` si no encaja en ninguna (contenido genérico/otro
+    -- sigue siendo elegible vía la dimensión de "contexto reciente")."""
+    for name in _CATEGORY_ORDER:
+        if _CATEGORY_PATTERNS[name].search(content or ""):
+            return name
+    return None
+
+
+def _layer_weight(layer: str) -> float:
+    return {"core": 1.0, "mid": 0.6, "outer": 0.3}.get(layer, 0.3)
+
+
+def _star_scores(star, now: float) -> dict:
+    """Descompone los 4 ejes de ranking pedidos -- relevancia, confianza,
+    importancia y actualidad -- en valores 0..1, y su combinación.
+
+    - confianza: ``gravity_score`` real de la star (masa gravitacional
+      acumulada -- conexiones, coherencia, activación).
+    - importancia: capa (core/mid/outer) + repetición (evidencia
+      reforzada por recurrencia real, nunca inventada).
+    - actualidad: recencia de ``last_activated``/``timestamp`` con
+      decaimiento suave (ventana de 30 días).
+    - relevancia: fuerza de la coincidencia de categoría (más marcadores
+      encontrados → más relevante para ese eje de perfil).
+    """
+    confidence = max(0.0, min(1.0, float(getattr(star, "gravity_score", 0.0) or 0.0)))
+    importance = min(
+        1.0,
+        _layer_weight(getattr(star, "layer", "outer"))
+        + 0.05 * min(getattr(star, "repetition_count", 1) or 1, 6),
+    )
+    last_active = getattr(star, "last_activated", 0.0) or 0.0
+    ts = getattr(star, "timestamp", 0.0) or 0.0
+    reference = max(last_active, ts)
+    days_ago = max((now - reference) / 86400.0, 0.0) if reference else 3650.0
+    recency = 1.0 / (1.0 + days_ago / 30.0)
+    return {"confidence": confidence, "importance": importance, "recency": recency}
+
+
+def _composite_score(scores: dict, relevance: float) -> float:
+    return (
+        0.30 * relevance
+        + 0.25 * scores["confidence"]
+        + 0.25 * scores["importance"]
+        + 0.20 * scores["recency"]
+    )
+
+
+def _normalize_for_dedup(content: str) -> str:
+    return re.sub(r"[^\w\s]", "", (content or "").strip().lower())
+
+
+@dataclass
+class EvidenceFragment:
+    """Una pieza de evidencia entregada al sintetizador -- trazabilidad
+    explícita exigida: de dónde vino (``source``), su identificador real
+    (``id``), a quién pertenece (``owner``/``channel``), bajo qué
+    categoría se clasificó y el contenido literal (``content``).
+    """
+    id: str
+    source: str          # "star" (vectrax.db) | "core_memory" (vault/user_memory.db)
+    owner: str
+    channel: str
+    category: str
+    content: str
+    score: float
+
+
+# Categorías de vectrax.core_memory (memoria CANÓNICA -- hechos ya
+# extraídos, validados por categoría y reforzados por repetición real,
+# ver vectrax/core_memory.py) que cuentan como evidencia explícita para un
+# resumen de perfil. "fact" se excluye deliberadamente: es el cajón
+# genérico de MENOR confianza del propio esquema (peso máximo 0.5, el más
+# bajo de todas las categorías en `core_memory.CATEGORIES`) -- texto
+# conversacional sin extractor de identidad explícito detrás, nunca un
+# hecho validado. Esta exclusión es genérica (por diseño del esquema), no
+# específica de ningún owner.
+_CANONICAL_EXCLUDED_CATEGORIES = {"fact"}
+
+# vectrax.core_memory usa nombres de categoría en singular
+# ("relationship", "preference") mientras que las categorías de stars usan
+# plural ("relationships", "preferences") -- ver _CATEGORY_ORDER arriba.
+# Se mapean explícitamente para que ambas fuentes converjan en el MISMO
+# bucket (y así compitan por ranking/dedup juntas) cuando son equivalentes.
+# Categorías canónicas sin equivalente claro en stars ("work", "goal",
+# "emotion", "habit") conservan su propio nombre -- no se fuerzan a encajar
+# en una categoría que no las describe bien.
+_CANONICAL_TO_STAR_CATEGORY = {
+    "identity": "identity",
+    "relationship": "relationships",
+    "preference": "preferences",
+}
+
+
+def _fetch_canonical_memory_entries(owner: str, owner_raw: str = "") -> list:
+    """Memoria CANÓNICA existente (``vectrax.core_memory`` sobre
+    ``vault/user_memory.db``) -- ver hallazgo de la investigación real:
+    esta tabla tenía hechos validados por categoría (identity, work,
+    relationship, preference, goal...) que la recuperación por stars
+    NUNCA consultaba.
+
+    ``core_memory`` se llena históricamente con la identidad CRUDA del
+    canal externo (p.ej. ``tg:<id>``, ver ``absorb()`` invocado desde
+    ``core/operator/external_gateway.py``), no con el owner canónico
+    post-alias ("mario"). Por eso se prueban AMBAS claves -- ``owner_raw``
+    primero, luego ``owner`` -- deduplicando por id de entrada. Esto es
+    genérico: aplica igual a cualquier usuario cuyo owner_raw sea distinto
+    de su owner canónico, no solo al creador.
+
+    Nunca lanza; devuelve ``[]`` si el módulo o el usuario no tienen
+    entradas.
+    """
+    try:
+        from vectrax.core_memory import get_core_entries
+    except Exception:
+        return []
+
+    keys = []
+    for key in (owner_raw, owner):
+        if key and key not in keys:
+            keys.append(key)
+
+    entries: list = []
+    seen_entry_ids: set = set()
+    for key in keys:
+        try:
+            for e in get_core_entries(key):
+                if e["category"] in _CANONICAL_EXCLUDED_CATEGORIES:
+                    continue
+                if e["id"] in seen_entry_ids:
+                    continue
+                seen_entry_ids.add(e["id"])
+                entries.append((e, key))  # (entry, la clave real bajo la que vive)
+        except Exception as exc:
+            logger.debug("_fetch_canonical_memory_entries(%r) failed: %s", key, exc)
+    return entries
+
+
+def _select_profile_summary_stars(
+    stars: list,
+    owner: str = "",
+    channel: str = "",
+    owner_raw: str = "",
+    per_category: int = 3,
+    recent_n: int = 3,
+    max_total: int = 12,
+) -> List[EvidenceFragment]:
+    """Muestra diversa y priorizada para una consulta amplia de perfil.
+
+    Recupera SOLO donde hay evidencia real, de DOS fuentes:
+      1. Memoria CANÓNICA (``vectrax.core_memory`` / vault/user_memory.db)
+         -- hechos ya extraídos y validados por categoría
+         (identity/relationship/work/preference/goal/emotion/habit), con
+         su propio ``weight`` como confianza explícita. Prioridad máxima:
+         es la fuente más confiable disponible.
+      2. Stars (``vectrax.db``) clasificadas por patrones genéricos en:
+         identidad, preferencias, relaciones, proyectos, intereses, más
+         una dimensión de "contexto reciente" que cubre cualquier
+         contenido -- así ningún dato real se descarta solo por no
+         matchear un patrón.
+
+    Ordena cada grupo por relevancia+confianza+importancia+actualidad,
+    elimina duplicados (por id y por contenido normalizado -- incluso
+    entre las dos fuentes) y limita el total para mantener la síntesis
+    enfocada.
+
+    No cambia el almacenamiento ni el aislamiento: la memoria canónica se
+    consulta con las MISMAS identidades (``owner``/``owner_raw``) que ya
+    aislaron la lista `stars` recuperada por el caller vía
+    ``db.get_all_stars(channel, owner)`` -- nunca se amplía el alcance.
+    """
+    now = time.time()
+    buckets: dict = {name: [] for name in _CATEGORY_ORDER}
+    all_scored: List[Tuple[EvidenceFragment, float]] = []
+
+    # -- 1) Memoria CANÓNICA primero -- prioridad máxima por diseño -----
+    canonical = _fetch_canonical_memory_entries(owner, owner_raw)
+    for entry, matched_key in canonical:
+        cat = entry["category"]
+        confidence = max(0.0, min(1.0, float(entry.get("weight", 0.0) or 0.0)))
+        # Reforzada por confirmación repetida real (times_confirmed), nunca
+        # inventada -- mismo principio que "importancia" para stars.
+        importance = min(1.0, 0.5 + 0.1 * min(entry.get("times_confirmed", 1) or 1, 5))
+        recency = 1.0  # ya es la forma más reciente/consolidada conocida del hecho
+        relevance = 0.9  # categoría ya validada explícitamente, no inferida por regex
+        composite = 0.30 * relevance + 0.25 * confidence + 0.25 * importance + 0.20 * recency
+        frag = EvidenceFragment(
+            id=f"core_memory:{entry['id']}",
+            source="core_memory",
+            owner=matched_key,  # identidad REAL bajo la que vive esta entrada
+            channel=channel,
+            category=cat,
+            content=entry["content"],
+            score=composite,
+        )
+        bucket_key = _CANONICAL_TO_STAR_CATEGORY.get(cat, cat)
+        buckets.setdefault(bucket_key, []).append((frag, composite))
+        all_scored.append((frag, composite))
+
+    if not stars and not canonical:
+        return []
+
+    # -- 2) Stars, exactamente como antes --------------------------------
+    for s in stars:
+        content = getattr(s, "content", "") or ""
+        scores = _star_scores(s, now)
+        cat = _classify_star_category(content)
+        frag = EvidenceFragment(
+            id=str(getattr(s, "id", "")),
+            source="star",
+            owner=getattr(s, "owner", owner),
+            channel=getattr(s, "channel", channel),
+            category=cat or "recent_context",
+            content=content,
+            score=0.0,
+        )
+        if cat:
+            hits = len(_CATEGORY_PATTERNS[cat].findall(content))
+            relevance = min(1.0, 0.6 + 0.2 * hits)
+            composite = _composite_score(scores, relevance)
+            frag.score = composite
+            buckets[cat].append((frag, composite))
+        # Contexto reciente: considera TODA star (con o sin categoría) --
+        # relevancia moderada fija, priorizada por actualidad/confianza.
+        recent_relevance = 0.5
+        recent_composite = _composite_score(scores, recent_relevance)
+        recent_frag = frag if not cat else EvidenceFragment(
+            id=frag.id, source="star", owner=frag.owner, channel=frag.channel,
+            category="recent_context", content=frag.content, score=recent_composite,
+        )
+        all_scored.append((recent_frag, recent_composite))
+
+    selected: List[EvidenceFragment] = []
+    seen_ids: set = set()
+    seen_content: set = set()
+
+    def _add(candidates: List[Tuple[EvidenceFragment, float]], limit: int) -> None:
+        for frag, score in sorted(candidates, key=lambda t: t[1], reverse=True):
+            if len(selected) >= max_total:
+                return
+            dedup_key = (frag.source, frag.id)
+            if dedup_key in seen_ids:
+                continue
+            norm = _normalize_for_dedup(frag.content)
+            if norm and norm in seen_content:
+                continue
+            selected.append(frag)
+            seen_ids.add(dedup_key)
+            if norm:
+                seen_content.add(norm)
+            limit -= 1
+            if limit <= 0:
+                return
+
+    # 1) Dimensiones categóricas -- solo las que tienen evidencia real.
+    #    La memoria canónica ya vive en estos buckets junto a las stars,
+    #    y al ordenar por score gana naturalmente (confidence/importance
+    #    más altos por diseño arriba).
+    for name in buckets:
+        if buckets[name]:
+            _add(buckets[name], per_category)
+
+    # 2) Contexto reciente -- red de seguridad genérica: cubre usuarios
+    #    cuyo contenido no matchea ninguna categoría (memoria escasa/atípica)
+    #    y refuerza actualidad para los que sí tienen categorías.
+    if all_scored:
+        _add(all_scored, recent_n)
+
+    return selected[:max_total]
 
 
 # ---------------------------------------------------------------------------
@@ -182,59 +654,145 @@ def resolve_local(
     owner: str,
     top_k: int = 5,
     threshold: float = 0.40,
+    execution_context=None,
+    owner_raw: str = "",
 ) -> Resolution:
     """
     Search the user's existing stars for content relevant to the question.
-    Uses the same embedding + cosine similarity as the ingest pipeline.
+
+    Two retrieval strategies, selected by intent (see
+    ``_is_profile_summary_query()``):
+      - Consulta puntual (por defecto): embedding + similitud coseno
+        contra el texto literal -- igual que siempre.
+      - Consulta AMPLIA de perfil ("qué sabes de mí", "cuéntame sobre mí",
+        y paráfrasis): una similitud contra el texto literal de la
+        pregunta rinde mal ("qué sabes de mí" no se parece semánticamente
+        a hechos concretos como "vivo en X"). En su lugar,
+        ``_select_profile_summary_stars()`` arma una muestra diversa y
+        priorizada por evidencia real de DOS fuentes -- memoria CANÓNICA
+        (``vectrax.core_memory``, ver esa función) y stars -- ordenada por
+        relevancia/confianza/importancia/actualidad, con deduplicación.
+        Ninguna de las dos rutas cambia lo que sigue después (síntesis,
+        aislamiento).
+
+    Retrieval scope (unchanged, load-bearing for isolation): stars are
+    fetched via ``db.get_all_stars(channel=channel, owner=owner)`` --
+    exactly the ``channel``/``owner`` (tenant/user identity) the caller
+    passes in. Everything below only changes how the ALREADY-ISOLATED
+    fragments for THIS owner/channel are turned into a user-facing answer;
+    it never widens or changes which stars get read.
+
+    `owner_raw`: identidad CRUDA pre-alias del caller (p.ej. ``tg:<id>``
+    para Telegram), opcional. Solo se usa para localizar memoria CANÓNICA
+    (``vectrax.core_memory``, ver ``_fetch_canonical_memory_entries()``)
+    que históricamente se guarda bajo esa identidad cruda -- nunca amplía
+    ni cambia el alcance de `db.get_all_stars()` arriba. Si se omite
+    (comportamiento actual de la mayoría de los callers), la memoria
+    canónica se busca solo bajo ``owner``.
+
+    `execution_context`: propagado tal cual a la interpretación LLM
+    (frontera "llm", ver ``_interpret_with_llm()``). Opcional -- si el
+    caller no lo pasa (comportamiento actual de ``NucleusAuthority``), la
+    interpretación sigue funcionando igual que en ``resolve_online()`` sin
+    execution_context.
     """
     from vectrax import db
-    from vectrax.embeddings import decode_embedding, embed, find_similar
 
     db.init_db()
-    query_vec = embed(text)
     stars = db.get_all_stars(channel=channel, owner=owner)
-
-    star_embeddings: List[Tuple[str, object]] = [
-        (s.id, decode_embedding(s.embedding))
-        for s in stars
-        if s.embedding is not None
-    ]
-
-    matches = find_similar(query_vec, star_embeddings, threshold=threshold)
-    matches = matches[:top_k]
-
-    if not matches:
-        lang = _detect_lang(text)
-        labels = _get_labels(lang)
-        return Resolution(
-            mode="local",
-            answer="No relevant memory found.",
-            sovereign_answer=labels["no_memory"],
-            context_stars=0,
-            top_score=0.0,
-        )
-
-    top_score = matches[0][1] if matches else 0.0
-
-    # Build debug answer (with scores) and sovereign answer (clean)
     star_map = {s.id: s for s in stars}
-    debug_parts = []
-    clean_parts = []
-    for star_id, score in matches:
-        s = star_map.get(star_id)
-        if s:
-            debug_parts.append(f"• {s.content} (relevance: {score:.0%}, layer: {s.layer})")
-            clean_parts.append(s.content)
 
-    answer = "Based on your memory:\n\n" + "\n".join(debug_parts)
-    lang = _detect_lang(text)
-    sovereign = _synthesize_local(clean_parts, lang=lang)
+    is_profile_query = _is_profile_summary_query(text)
+
+    if is_profile_query:
+        fragments = _select_profile_summary_stars(
+            stars, owner=owner, channel=channel, owner_raw=owner_raw,
+        )
+        if not fragments:
+            lang = _detect_lang(text)
+            labels = _get_labels(lang)
+            return Resolution(
+                mode="local",
+                answer="No relevant memory found.",
+                sovereign_answer=labels["no_memory"],
+                context_stars=0,
+                top_score=0.0,
+            )
+        top_score = fragments[0].score if fragments else 0.0
+        # Evidencia EXPLÍCITA entregada al sintetizador: fuente (star en
+        # vectrax.db vs core_memory en vault/user_memory.db), id real,
+        # owner bajo el que vive, categoría asignada y extracto -- nunca
+        # solo el contenido crudo. Campo interno/depuración, nunca se
+        # muestra al usuario (ver `sovereign_answer` para eso).
+        debug_parts = [
+            f"• [{f.source}] id={f.id} owner={f.owner} category={f.category} "
+            f"score={f.score:.0%} :: {f.content[:160]}"
+            for f in fragments
+        ]
+        clean_parts = [f.content for f in fragments]
+        answer = "Evidence given to synthesizer:\n\n" + "\n".join(debug_parts)
+        context_stars = len(fragments)
+        lang = _detect_lang(text)
+    else:
+        from vectrax.embeddings import decode_embedding, embed, find_similar
+        query_vec = embed(text)
+        star_embeddings: List[Tuple[str, object]] = [
+            (s.id, decode_embedding(s.embedding))
+            for s in stars
+            if s.embedding is not None
+        ]
+        matches = find_similar(query_vec, star_embeddings, threshold=threshold)
+        matches = matches[:top_k]
+
+        if not matches:
+            lang = _detect_lang(text)
+            labels = _get_labels(lang)
+            return Resolution(
+                mode="local",
+                answer="No relevant memory found.",
+                sovereign_answer=labels["no_memory"],
+                context_stars=0,
+                top_score=0.0,
+            )
+
+        top_score = matches[0][1] if matches else 0.0
+
+        # Build debug answer (with scores) and sovereign answer (clean)
+        debug_parts = []
+        clean_parts = []
+        for star_id, score in matches:
+            s = star_map.get(star_id)
+            if s:
+                debug_parts.append(f"• {s.content} (relevance: {score:.0%}, layer: {s.layer})")
+                clean_parts.append(s.content)
+
+        answer = "Based on your memory:\n\n" + "\n".join(debug_parts)
+        context_stars = len(matches)
+        lang = _detect_lang(text)
+
+    # ══ COHERENT SYNTHESIS ══
+    # Antes: los fragmentos recuperados (ya aislados por owner/channel, ver
+    # docstring arriba) se mostraban como una lista cruda de viñetas
+    # ("Esto es lo que tengo en tu memoria:\n\n• frag1\n• frag2..."). El
+    # requisito real es una respuesta directa y natural, no un volcado de
+    # fragmentos sueltos. Mismo patrón ya usado en resolve_online(): LLM
+    # como intérprete principal (mode="memory", prompt dedicado -- ver
+    # _INTERPRET_MEMORY_PROMPT_*), con fallback exacto al comportamiento
+    # anterior (_synthesize_local, viñetas) si el LLM no está disponible o
+    # el gate constitucional lo bloquea -- nunca se pierde la capacidad de
+    # responder, solo mejora la forma cuando es posible.
+    sovereign = _interpret_with_llm(
+        text, clean_parts, lang=lang, execution_context=execution_context,
+        mode="memory",
+    )
+    if not sovereign:
+        sovereign = _synthesize_local(clean_parts, lang=lang)
 
     return Resolution(
         mode="local",
         answer=answer,
         sovereign_answer=sovereign,
-        context_stars=len(matches),
+        context_stars=context_stars,
         top_score=top_score,
     )
 
@@ -1083,6 +1641,48 @@ GATHERED INFORMATION:
 
 INTELLIGENT RESPONSE:"""
 
+# Prompts para síntesis de MEMORIA PROPIA (owner/channel del usuario actual,
+# nunca de otro) -- fronteras distintas de los prompts de búsqueda online de
+# arriba: aquí los fragmentos son mensajes/notas previos del propio usuario,
+# no resultados externos, así que las reglas de "no menciones fuentes/
+# internet" no aplican y en su lugar se pide explícitamente que NUNCA se
+# listen los fragmentos como viñetas sueltas.
+_INTERPRET_MEMORY_PROMPT_ES = """Eres Vectrax. A continuación tienes fragmentos reales de tu propia memoria (mensajes, notas y hechos ya confirmados de ESTE usuario) relacionados con su pregunta actual.
+
+REGLAS:
+- Responde la pregunta de forma directa, coherente y natural, como si genuinamente recordaras -- NUNCA como una lista de fragmentos sueltos ni con viñetas.
+- Cada afirmación que hagas debe estar respaldada LITERALMENTE por al menos un fragmento dado. Si no puedes señalar el fragmento exacto que sustenta una frase, no la incluyas.
+- PROHIBIDO inferir o generalizar rasgos de personalidad, carácter, valores o gustos que no estén escritos explícitamente en un fragmento (ejemplo prohibido: deducir "valoras la precisión" de un fragmento que solo describe configuración de voz/TTS de Vectrax). Nunca conviertas datos sobre el propio Vectrax (su voz, su configuración, su identidad) en afirmaciones sobre el usuario.
+- Si dos fragmentos se contradicen sobre el mismo hecho (p.ej. dos lugares de residencia distintos), NO seleccione arbitrariamente uno como verdadero: indica la incertidumbre explícitamente o simplemente omite ese dato.
+- Si los fragmentos no contienen una respuesta clara a la pregunta, dilo con naturalidad en vez de forzar una.
+- No cites los fragmentos textualmente uno por uno ni menciones "fragmentos"/"memoria" de forma mecánica.
+- Responde en 1-4 oraciones, en español.
+
+PREGUNTA DEL USUARIO: {query}
+
+FRAGMENTOS DE MEMORIA PROPIA:
+{context}
+
+RESPUESTA:"""
+
+_INTERPRET_MEMORY_PROMPT_EN = """You are Vectrax. Below are real fragments from your own memory (this user's previous messages, notes, and already-confirmed facts) related to their current question.
+
+RULES:
+- Answer the question directly, coherently and naturally, as if you genuinely remembered -- NEVER as a list of loose fragments or bullet points.
+- Every claim you make must be LITERALLY backed by at least one given fragment. If you cannot point to the exact fragment supporting a statement, do not include it.
+- FORBIDDEN to infer or generalize personality traits, character, values, or tastes that are not explicitly written in a fragment (forbidden example: inferring "you value precision" from a fragment that only describes Vectrax's own voice/TTS configuration). Never turn facts about Vectrax itself (its voice, its configuration, its identity) into claims about the user.
+- If two fragments contradict each other on the same fact (e.g. two different places of residence), do NOT arbitrarily pick one as true: state the uncertainty explicitly or simply omit that data point.
+- If the fragments don't contain a clear answer, say so naturally instead of forcing one.
+- Do not quote the fragments verbatim one by one, and do not mechanically say "fragments"/"memory".
+- Answer in 1-4 sentences, in English.
+
+USER QUESTION: {query}
+
+OWN MEMORY FRAGMENTS:
+{context}
+
+RESPONSE:"""
+
 
 def _record_provider_xp(provider: str, query: str, outcome: str, quality: float) -> None:
     """Best-effort: registra una experiencia de IA externa como estrella en el
@@ -1109,25 +1709,39 @@ def _interpret_with_llm(
     snippets: List[str],
     lang: str = "es",
     execution_context=None,
+    mode: str = "online",
 ) -> str:
     """
-    Intelligent interpretation: pass search results through LLM to produce
-    an analyzed, synthesized response instead of raw snippet assembly.
+    Intelligent interpretation: pass retrieved fragments through the LLM to
+    produce an analyzed, synthesized response instead of raw fragment
+    assembly.
 
     Falls back to empty string if LLM is unavailable.
 
-    `execution_context` (parámetro, frontera "online" del caller): esta
+    `mode`: selects the prompt framing -- ``"online"`` (default, unchanged
+    behaviour) for web search snippets, or ``"memory"`` for the user's own
+    previously retrieved stars (see ``resolve_local()``). Both share the
+    exact same gate/bridge/fallback machinery below; only the prompt text
+    differs, since a web snippet and a past user message need different
+    instructions (memory fragments are the user's OWN words, not an
+    external source to attribute/avoid-copying-from-a-URL).
+
+    `execution_context` (parámetro, frontera del caller): esta
     interpretación es una frontera DISTINTA ("llm") anidada dentro de
-    `resolve_online()`. NO hereda el veredicto de `online` — se deriva un
-    `ExecutionContext` independiente (`.derive("resolve_llm")`) que reutiliza
-    solo los campos de transporte, y se autoriza UNA vez aquí, cubriendo
-    ambos intentos (bridge + OpenAI directo) de este mismo método.
+    `resolve_online()`/`resolve_local()`. NO hereda el veredicto del
+    boundary del caller — se deriva un `ExecutionContext` independiente
+    (`.derive("resolve_llm")`) que reutiliza solo los campos de transporte,
+    y se autoriza UNA vez aquí, cubriendo ambos intentos (bridge + OpenAI
+    directo) de este mismo método.
     """
     context = "\n".join(f"- {s}" for s in snippets if s.strip())
     if not context:
         return ""
 
-    prompt_template = _INTERPRET_PROMPT_ES if lang == "es" else _INTERPRET_PROMPT_EN
+    if mode == "memory":
+        prompt_template = _INTERPRET_MEMORY_PROMPT_ES if lang == "es" else _INTERPRET_MEMORY_PROMPT_EN
+    else:
+        prompt_template = _INTERPRET_PROMPT_ES if lang == "es" else _INTERPRET_PROMPT_EN
     prompt = prompt_template.format(query=query, context=context)
 
     # === PRE-EXECUTION CONSTITUTIONAL GATE (frontera "llm", independiente) ===
@@ -1332,9 +1946,20 @@ def resolve(
 
     if mode == "local":
         result = resolve_local(text, channel, owner)
-        # Self-reference / greetings must NEVER escalate to a web search, even
-        # when local memory is empty (rule: no internet for self/identity).
-        if not _is_conversational(text) and (
+        # Self-reference / greetings, and ANY personal-memory query (not just
+        # relationship queries -- "¿Quién es mi novia?") must NEVER escalate
+        # to a web search, even when local memory is empty (rule: no internet
+        # for self/identity, and no internet to "discover" who a related
+        # person is, what was decided, or what was said previously -- that is
+        # a privacy leak, not a valid answer). resolve_local() already
+        # returns an honest "no tengo información" label when it finds
+        # nothing; that is the correct terminal answer here.
+        # PARTE 5 (2026-09-20): broadened from `is_personal_relationship_query`
+        # (narrow: only "who is my X") to `is_personal_memory_query` (superset:
+        # also covers recall/decision/history queries -- "¿qué hablamos ayer?",
+        # "¿qué decidimos?") so `_LOCAL_RELEVANCE_THRESHOLD` never governs the
+        # jump to internet when the intent is personal memory, per spec.
+        if not _is_conversational(text) and not is_personal_memory_query(text) and (
             result.context_stars == 0 or result.top_score < _LOCAL_RELEVANCE_THRESHOLD
         ):
             logger.info(

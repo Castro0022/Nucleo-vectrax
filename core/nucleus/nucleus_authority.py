@@ -258,17 +258,24 @@ class MemoryEvidence:
         }
 
 
-def _query_memory(text: str, channel: str, owner: str) -> MemoryEvidence:
+def _query_memory(text: str, channel: str, owner: str, owner_raw: str = "") -> MemoryEvidence:
     """Consulta de memoria INCONDICIONAL — se ejecuta para TODA entrada, sin
     excepciones de ruta (requisito explícito de la reunificación, segunda
     pasada 2026-09-19). El resultado puede ser suficiente, insuficiente,
-    irrelevante o desactualizado, pero la consulta SIEMPRE ocurre."""
+    irrelevante o desactualizado, pero la consulta SIEMPRE ocurre.
+
+    `owner_raw`: identidad cruda pre-alias (p.ej. "tg:<id>"), propagada tal
+    cual a `resolve_local()` para que la memoria CANÓNICA
+    (`vectrax.core_memory`, ver `vectrax/resolver.py`) pueda localizarse
+    bajo la clave real con la que fue absorbida — nunca cambia qué stars
+    se leen (eso sigue aislado por `channel`/`owner` canónico, sin excepción).
+    """
     ev = MemoryEvidence(consulted=True)
     ev.requires_freshness = _requires_freshness(text)
 
     try:
         from vectrax.resolver import resolve_local
-        result = resolve_local(text, channel, owner)
+        result = resolve_local(text, channel, owner, owner_raw=owner_raw)
         ev.context_stars = result.context_stars
         ev.coherence = result.top_score
         ev.sovereign_answer = result.sovereign_answer or ""
@@ -495,6 +502,36 @@ _LEARNED_DOMAIN_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Corrección 2026-09-20 (regresión reportada: "Háblame de mercado" / "¿Cuántos
+# dominios tienes?" / "¿Qué capacidades tienes?" dejaron de responder desde
+# el conocimiento interno de Vectrax). Causa raíz: `core/operator/
+# external_gateway.py` tiene DOS capacidades reales -- el "DOMAIN CRITERION
+# GATE" (STEP 4.2a3, `core.learn.criterion.build_criterion_result()`, el
+# "mercado aprendido por Vectrax") y el conteo de dominios/capacidades vía
+# self-context -- que NUNCA se migraron a `NucleusAuthority`. Desde que este
+# módulo se convirtió en "autoridad única" (2026-09-19) y suprime
+# incondicionalmente el pipeline legacy de `ExternalGateway` en cuanto
+# produce CUALQUIER respuesta (ver `core/transport/pipeline_worker.py`,
+# bloque "NÚCLEO: AUTORIDAD ÚNICA"), esas dos consultas nunca volvían a
+# alcanzar el gate legacy y caían al fallback genérico de SmartRouter
+# (MEMORY/ONLINE). Estos tres overrides son ADITIVOS -- reutilizan las
+# MISMAS funciones que ya usa `external_gateway.py`, sin tocar la prioridad
+# de memoria personal (paso 5.5) ni de ninguna otra ruta.
+
+_CAPABILITIES_SELF_RE = re.compile(
+    r"\bqu[eé]\s+capacidades\s+tienes\b|\bqu[eé]\s+puedes\s+hacer\b|"
+    r"\bcu[aá]les\s+son\s+tus\s+capacidades\b"
+    r"|\bwhat\s+capabilities\s+do\s+you\s+have\b|\bwhat\s+can\s+you\s+do\b",
+    re.IGNORECASE,
+)
+
+_DOMAINS_COUNT_RE = re.compile(
+    r"\bcu[aá]ntos\s+dominios\s+tienes\b|\bcu[aá]ntos\s+dominios\b|"
+    r"\bqu[eé]\s+dominios\s+(?:tienes|conoces|manejas)\b"
+    r"|\bhow\s+many\s+domains\s+do\s+you\s+have\b|\bwhat\s+domains\s+do\s+you\s+(?:know|have)\b",
+    re.IGNORECASE,
+)
+
 _GRAVITY_SELF_KNOWLEDGE_ES = (
     "Gravedad, en mi propia estructura, es la métrica que decide qué tan "
     "cerca del núcleo vive cada star: gravity = repetition_count × "
@@ -631,6 +668,179 @@ def _try_self_knowledge_override(
             channel=channel, owner=owner, source=source,
         )
 
+    # Las tres nuevas rutas de abajo (capacidades/dominios/criterio) NUNCA
+    # deben desplazar una consulta de memoria personal -- si el texto ya
+    # califica como memoria personal (mismo detector genérico del paso 5.5),
+    # se saltan por completo y se deja que el flujo normal la resuelva.
+    _is_personal = False
+    try:
+        from vectrax.resolver import is_personal_memory_query as _is_pmq
+        _is_personal = _is_pmq(text)
+    except Exception:
+        pass
+
+    if not _is_personal and _CAPABILITIES_SELF_RE.search(text):
+        # Mismo mecanismo que _UNKNOWN_FALLBACK_RE (capability_narrator) --
+        # aquí disparado por "qué capacidades tienes" en vez de "qué haces
+        # cuando no sabes". Restaura la respuesta de autoconocimiento que
+        # antes solo daba `vectrax.self_context._is_capability_query()` en
+        # el pipeline legacy de ExternalGateway.
+        try:
+            from core.self_observation.capability_context import build_capability_context
+            from core.self_observation.capability_narrator import narrate
+
+            class _CapShim:
+                domain = None
+                task_type = None
+                capability_query = True
+
+            ctx = build_capability_context(_CapShim())
+            answer = narrate(ctx, lang=lang if lang in ("es", "en") else "es")
+        except Exception as exc:
+            logger.debug("capabilities self-knowledge override failed: %s", exc)
+            answer = ""
+        if answer:
+            return NucleusResponse(
+                final_action="IDENTITY",
+                candidate_source="",
+                confidence=1.0,
+                reason="self-knowledge override: '¿qué capacidades tienes?'",
+                memory_consulted=True,
+                memory_source="capability_context (autoconocimiento) + consulta de memoria",
+                memory_evidence=mem.to_dict(),
+                capability_selected="",
+                tool_executed="capability_narrator",
+                evidence={"kind": "self_knowledge"},
+                evidence_authorized=True,
+                answer=answer,
+                channel=channel, owner=owner, source=source,
+            )
+
+    if not _is_personal and _DOMAINS_COUNT_RE.search(text):
+        # Conteo real de dominios de conocimiento (gravity + domain_knowledge
+        # + verification_ledger) -- misma fuente que `core.learn.criterion
+        # .known_domains()` usa internamente para el gate de criterio.
+        try:
+            from core.learn.criterion import known_domains
+            doms = known_domains()
+        except Exception as exc:
+            logger.debug("known_domains failed: %s", exc)
+            doms = []
+        if lang == "en":
+            answer = (
+                f"I have {len(doms)} active knowledge domains: {', '.join(doms)}."
+                if doms else
+                "I don't have any knowledge domains with accumulated evidence yet."
+            )
+        else:
+            answer = (
+                f"Tengo {len(doms)} dominios de conocimiento activos: {', '.join(doms)}."
+                if doms else
+                "Todavía no tengo dominios de conocimiento con evidencia acumulada."
+            )
+        return NucleusResponse(
+            final_action="IDENTITY",
+            candidate_source="",
+            confidence=1.0,
+            reason="self-knowledge override: '¿cuántos dominios tienes?'",
+            memory_consulted=True,
+            memory_source="core.learn.criterion.known_domains() (gravity + domain_knowledge + verification_ledger)",
+            memory_evidence=mem.to_dict(),
+            capability_selected="",
+            tool_executed="domain_census",
+            evidence={"kind": "self_knowledge", "domains": doms},
+            evidence_authorized=True,
+            answer=answer,
+            channel=channel, owner=owner, source=source,
+        )
+
+    # MARKET DATA RESOLVE -- consultas de datos de mercado EN VIVO (precio,
+    # snapshot, tendencia) reconocidas por `intents.market_intents
+    # .detect_market_intent()`. Reutiliza el MISMO ejecutor REAL que ya
+    # usaba `ExternalGateway._try_market_resolve()` (market_vigilance +
+    # market_intents) en vez del stub "no wired" que tenía `_dispatch_executor`
+    # -- esto es lo que responde con "el mercado aprendido por Vectrax" para
+    # "Háblame de mercado"/"cómo está el mercado"/"precio de btc", etc.
+    if not _is_personal:
+        try:
+            from intents.market_intents import detect_market_intent
+            if detect_market_intent(text) is not None:
+                from core.operator.external_gateway import ExternalGateway
+                _market_answer = ExternalGateway._try_market_resolve(text, user_id=owner)
+                if _market_answer and not _market_answer.lower().startswith(("error", "error:")):
+                    return NucleusResponse(
+                        final_action="MARKET",
+                        candidate_source="",
+                        confidence=0.9,
+                        reason="self-knowledge override: consulta de datos de mercado (market_intents)",
+                        memory_consulted=True,
+                        memory_source="intents.market_intents / services.market_vigilance",
+                        memory_evidence=mem.to_dict(),
+                        capability_selected="market_observer",
+                        tool_executed="market_resolve",
+                        evidence={"kind": "market_data"},
+                        evidence_authorized=True,
+                        answer=_market_answer,
+                        channel=channel, owner=owner, source=source,
+                    )
+        except Exception as exc:
+            logger.debug("market resolve override failed: %s", exc)
+
+    # DOMAIN CRITERION GATE (mirrors core/operator/external_gateway.py STEP
+    # 4.2a3, `core.learn.criterion.build_criterion_result()`) -- restaurado
+    # aquí porque `NucleusAuthority` suprime incondicionalmente el pipeline
+    # legacy de `ExternalGateway` en cuanto produce cualquier respuesta (ver
+    # nota más arriba), y ese pipeline nunca vuelve a correr para dejarlo
+    # actuar. Precedencia: solo si NO es una consulta de precio/dato puntual
+    # (esas se resuelven vía MARKET/ONLINE, no vía criterio aprendido) --
+    # mismo guard `_price_only` que usa el gate legacy. Guard adicional
+    # (no presente en el gate legacy, necesario aquí porque este override
+    # corre ANTES de la clasificación memory/local/online): solo aplica a
+    # preguntas/pedidos de opinión, nunca a un enunciado declarativo (p.ej.
+    # "vivo en Miami" NO debe convertirse en "mi opinión sobre real estate").
+    _looks_like_question = (
+        "?" in text or "¿" in text
+        or bool(re.search(
+            r"^\s*(qu[ei]|qu[eé]|c[oó]mo|cu[aá]l|cu[aá]ndo|d[oó]nde|h[aá]blame|"
+            r"cu[eé]ntame|what|who|how|tell\s+me)\b",
+            text, re.IGNORECASE,
+        ))
+    )
+    try:
+        from core.learn.criterion import (
+            detect_criterion_request, detect_domain as _detect_domain_kw,
+            build_criterion_result,
+        )
+        _crit_req = detect_criterion_request(text)
+        _dom = _detect_domain_kw(text) if (_is_personal is False and _looks_like_question) else None
+        _price_only = False
+        if _dom == "market" and not _crit_req:
+            try:
+                from intents.market_intents import detect_market_intent
+                _price_only = detect_market_intent(text) is not None
+            except Exception:
+                _price_only = False
+        if _dom and not _price_only and not _is_personal:
+            _crit = build_criterion_result(_dom, text)
+            if _crit and _crit.text:
+                return NucleusResponse(
+                    final_action="LOCAL",
+                    candidate_source="",
+                    confidence=0.85,
+                    reason=f"self-knowledge override: criterio aprendido sobre dominio '{_dom}'",
+                    memory_consulted=True,
+                    memory_source=f"core.learn.criterion ({_dom}: gravity + domain_knowledge)",
+                    memory_evidence=mem.to_dict(),
+                    capability_selected="",
+                    tool_executed="domain_criterion",
+                    evidence={"kind": "self_knowledge", "domain": _dom, "origin": _crit.origin},
+                    evidence_authorized=True,
+                    answer=_crit.text,
+                    channel=channel, owner=owner, source=source,
+                )
+    except Exception as exc:
+        logger.debug("domain criterion override failed: %s", exc)
+
     return None
 
 
@@ -648,6 +858,7 @@ def _strategy_to_action(strategy) -> str:
         Strategy.RESOLVE_IDENTITY: "IDENTITY",
         Strategy.RESOLVE_MARKET: "MARKET",
         Strategy.ANSWER_FROM_EVIDENCE: "LOCAL",
+        Strategy.RESOLVE_PERSONAL_MEMORY: "PERSONAL_MEMORY",
     }
     return mapping.get(strategy, "CLARIFICATION")
 
@@ -765,6 +976,7 @@ class NucleusAuthority:
                 "MEMORY": Strategy.RESOLVE_MEMORY, "LOCAL": Strategy.RESOLVE_LOCAL,
                 "ONLINE": Strategy.RESOLVE_ONLINE, "PLACES": Strategy.RESOLVE_PLACES,
                 "IDENTITY": Strategy.RESOLVE_IDENTITY, "MARKET": Strategy.RESOLVE_MARKET,
+                "PERSONAL_MEMORY": Strategy.RESOLVE_PERSONAL_MEMORY,
             }.get(trace.final_action)
         nd = NucleusDecision(
             candidate_strategy=candidate_strategy,
@@ -839,7 +1051,7 @@ class NucleusAuthority:
         # El resultado puede ser suficiente, insuficiente, irrelevante o
         # desactualizado, pero la consulta ocurre siempre (requisito
         # explícito, reunificación 2026-09-19).
-        mem = _query_memory(text, channel, canonical_owner)
+        mem = _query_memory(text, channel, canonical_owner, owner_raw=owner_raw)
 
         # -- 3. Overrides de autoconocimiento explícito ---------------------
         override = _try_self_knowledge_override(text, channel, canonical_owner, source, mem)
@@ -914,6 +1126,33 @@ class NucleusAuthority:
                 reason = f"evidencia propia rechazada: {mem.reason}"
 
         if candidate_strategy is None:
+            # -- 5.5 CONTRATO DEFINITIVO DE MEMORIA PERSONAL -----------------
+            # El Núcleo decide RESOLVE_PERSONAL_MEMORY ÚNICA VEZ y de forma
+            # DIRECTA -- sin invocar `SmartRouter.route()`/`classify_intent()`
+            # -- en cuanto detecta genéricamente (vectrax.resolver
+            # .is_personal_memory_query(): historial, relaciones, decisiones
+            # o experiencia previa del propio usuario -- sin lista cerrada de
+            # frases) que esta es una consulta de memoria personal. Esto
+            # elimina la raíz del incidente real ("¿Quién es mi novia?" ->
+            # route=online): SmartRouter NUNCA vuelve a clasificar esta
+            # consulta, así que nunca puede proponer ONLINE/PLACES/MARKET
+            # para ella en primer lugar (el guardrail de la sección 7b sigue
+            # como última puerta de respaldo para cualquier otro camino).
+            try:
+                from vectrax.resolver import is_personal_memory_query
+                if is_personal_memory_query(text):
+                    candidate_strategy = Strategy.RESOLVE_PERSONAL_MEMORY
+                    candidate_source = "nucleus"
+                    confidence = 0.9
+                    reason = (
+                        (reason + " | " if reason else "")
+                        + "detección genérica de memoria personal -> "
+                        "RESOLVE_PERSONAL_MEMORY (sin reinterpretación de SmartRouter)"
+                    )
+            except Exception as exc:
+                logger.debug("is_personal_memory_query check failed: %s", exc)
+
+        if candidate_strategy is None:
             # -- 6. Sin candidata propia (o rechazada) -> SmartRouter AUXILIAR
             try:
                 from core.smart_router import SmartRouter
@@ -932,7 +1171,10 @@ class NucleusAuthority:
         # -- 7. Forzar vigencia: dato cambiante sin evidencia fresca -> ONLINE
         # Regla GENERAL por categoría (ver _requires_freshness), nunca una
         # excepción para una entidad/frase concreta.
-        if mem.requires_freshness and mem.temporal_validity != "fresh" and final_action != "ONLINE":
+        if (
+            mem.requires_freshness and mem.temporal_validity != "fresh"
+            and final_action not in ("ONLINE", "PERSONAL_MEMORY")
+        ):
             cap_available = (capability_snapshot.get("capability_available") or {}).get("online_search")
             if cap_available is not False:
                 final_action = "ONLINE"
@@ -941,6 +1183,37 @@ class NucleusAuthority:
                     f"{reason} | forzado a ONLINE: pregunta de dato cambiante sin "
                     f"evidencia reciente en memoria (vigencia)"
                 )
+
+        # -- 7b. GUARDRAIL DE PRIVACIDAD: consultas relacionales personales
+        # NUNCA resuelven vía ONLINE/PLACES/MARKET -- ver caso real "¿Quién
+        # es mi novia?" (2026-09-20): el enrutamiento (semántico o regex)
+        # eligió ONLINE, el sistema buscó en internet y "descubrió" una
+        # persona que no existía, presentándola como respuesta verificada.
+        # Esta es la ÚLTIMA puerta antes de despachar: sin importar qué
+        # propuso convergencia o SmartRouter, una pregunta "quién es mi X"
+        # (ver vectrax.resolver.is_personal_relationship_query -- vocabulario
+        # genérico, sin nombres propios, compartido con el clasificador
+        # semántico y el router) se fuerza de vuelta a LOCAL. La única
+        # fuente lícita para esa pregunta es la memoria propia del usuario;
+        # si no hay evidencia, resolve_local() ya declara honestamente que
+        # no la tiene (nunca inventa ni sale a buscarla afuera).
+        if final_action in ("ONLINE", "PLACES", "MARKET"):
+            try:
+                from vectrax.resolver import is_personal_memory_query
+                if is_personal_memory_query(text):
+                    logger.info(
+                        "NucleusAuthority: privacy guard blocked %s -> PERSONAL_MEMORY "
+                        "(consulta de memoria personal nunca sale a internet)",
+                        final_action,
+                    )
+                    reason = (
+                        f"{reason} | bloqueado por privacidad: consulta de memoria "
+                        f"personal nunca resuelve vía {final_action}"
+                    )
+                    final_action = "PERSONAL_MEMORY"
+                    candidate_source = candidate_source or "privacy_guard"
+            except Exception:
+                pass
 
         # -- 8. Validar capacidad requerida antes de aceptar la candidata ---
         cap_name = _CAPABILITY_BY_ACTION.get(final_action)
@@ -1002,7 +1275,10 @@ class NucleusAuthority:
                 sovereign_answer = mem_dict.get("sovereign_answer") or ""
                 if not sovereign_answer:
                     from vectrax.resolver import resolve_local
-                    result = resolve_local(text, response.channel, response.owner)
+                    result = resolve_local(
+                        text, response.channel, response.owner,
+                        owner_raw=response.owner_raw,
+                    )
                     sovereign_answer = result.sovereign_answer
                     response.evidence = {
                         "context_stars": result.context_stars,
@@ -1018,10 +1294,46 @@ class NucleusAuthority:
                 response.evidence_authorized = bool(sovereign_answer.strip())
                 return
 
+            if action == "PERSONAL_MEMORY":
+                # PARTE 3 (2026-09-20): recuperación universal -- combina
+                # fecha + tema/proyecto/persona + keyword + similitud
+                # semántica + decisiones + orden temporal en UNA sola
+                # capacidad (core/memory/personal_memory_retrieval.py), en
+                # vez de reutilizar el mero resultado genérico de
+                # resolve_local() (que solo hace similitud por embeddings).
+                # NUNCA reemplaza LOCAL/IDENTITY arriba -- accion distinta,
+                # dispatch distinto, sin tocar su comportamiento.
+                response.tool_executed = "retrieve_personal_memory"
+                response.memory_source = (
+                    "conversation_ledger (evidencia primaria) + star_provenance "
+                    "(índice por categoría) + resolve_local (semántico)"
+                )
+                from core.memory.personal_memory_retrieval import retrieve_personal_memory
+                pm_result = retrieve_personal_memory(
+                    text, channel=response.channel, owner=response.owner,
+                    owner_raw=response.owner_raw,
+                )
+                response.answer = pm_result.sovereign_answer
+                response.evidence = {
+                    "context_stars": len(pm_result.fragments),
+                    "trace": pm_result.trace.to_dict(),
+                }
+                response.evidence_authorized = pm_result.sufficient
+                return
+
             if action == "MEMORY":
+                # PARTE 2 (2026-09-20): pasa por el mismo derivador selectivo
+                # que la ingesta pasiva de fondo, con explicit_user_intent=True
+                # -- el usuario pidio explicitamente guardar esto (p.ej.
+                # "guardar"/"recuerdame"), asi que nunca se descarta por
+                # insignificante, pero SI gana categoria/entidad/procedencia
+                # consistentes con el resto del sistema.
                 response.tool_executed = "ingest"
-                from vectrax.engine import ingest
-                star = ingest(text=text, channel=response.channel, owner=response.owner)
+                from core.memory.star_deriver import derive_and_store_star
+                star = derive_and_store_star(
+                    text=text, channel=response.channel, owner=response.owner,
+                    explicit_user_intent=True,
+                )
                 response.evidence = {"star_id": star.id, "repetition_count": star.repetition_count}
                 response.answer = (
                     "Registrado." if star.repetition_count == 1 else "Actualizado."
@@ -1088,15 +1400,30 @@ class NucleusAuthority:
                 return
 
             if action == "MARKET":
-                response.tool_executed = "market_observer"
+                # Corrección 2026-09-20: reemplaza el stub "not wired" por el
+                # ejecutor REAL ya existente en ExternalGateway (market_vigilance
+                # + intents.market_intents) -- cubre el caso en que SmartRouter
+                # (no el override de arriba) propuso MARKET directamente
+                # (p.ej. "precio de btc").
+                response.tool_executed = "market_resolve"
                 response.capability_selected = response.capability_selected or "market_observer"
-                response.answer = (
-                    "La consulta de mercado quedó registrada; el motor de mercado "
-                    "responde por su propio canal especializado (fuera del alcance "
-                    "de esta prueba de reunificación)."
-                )
-                response.evidence = {"gap": "market executor not wired in this branch yet"}
-                response.evidence_authorized = False
+                try:
+                    from core.operator.external_gateway import ExternalGateway
+                    _market_answer = ExternalGateway._try_market_resolve(text, user_id=response.owner)
+                except Exception as exc:
+                    logger.debug("market executor failed: %s", exc)
+                    _market_answer = ""
+                if _market_answer and not _market_answer.lower().startswith(("error", "error:")):
+                    response.answer = _market_answer
+                    response.evidence = {"kind": "market_data"}
+                    response.evidence_authorized = True
+                else:
+                    response.answer = (
+                        "No pude obtener datos de mercado en este momento; "
+                        "lo digo explícitamente en vez de inventar una cifra."
+                    )
+                    response.evidence = {"gap": _market_answer or "market executor returned nothing"}
+                    response.evidence_authorized = False
                 return
 
             response.final_action = "CLARIFICATION"

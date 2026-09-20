@@ -12,15 +12,22 @@ Persistence: ``vault/gravity_index.json``
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import glob
 import json
+import logging
 import os
 import statistics
+import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from core.learn import VAULT_DIR, RUNTIME_DIR
 from core.learn.schemas import GravityRecord, Tier, TIER_ORDER, decimate_history
+
+logger = logging.getLogger("vectrax.gravity")
 
 # Persistent path: ~/.vectrax/ (Docker volume, survives deploys)
 # Old path: vault/ (bind-mounted code dir, overwritten by rsync)
@@ -101,9 +108,44 @@ class GravityIndex:
 
     def __init__(self, path: str = GRAVITY_INDEX_PATH):
         self.path = path
+        self._lock_path = f"{path}.lock"
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         # Auto-migrate from old vault/ path if new path is empty
         self._migrate_from_old_path()
+        # Best-effort cleanup of orphaned .tmp.<pid>.<tid> files left behind
+        # by a process that was killed/crashed between opening the temp
+        # file and the final os.replace() (e.g. OMP abort, OOM kill, macOS
+        # sleep/restart). These never touch the real path (see
+        # _write_to_disk()) so leaving them is safe but wastes disk
+        # indefinitely; removing stray ones from PIDs no longer running is
+        # part of "recuperación sin pérdida de registros" hygiene. Never
+        # raises, never removes the real path or the lock file.
+        self._cleanup_stale_tmp_files()
+
+    def _cleanup_stale_tmp_files(self) -> None:
+        try:
+            for tmp_path in glob.glob(f"{self.path}.tmp.*"):
+                try:
+                    parts = os.path.basename(tmp_path).split(".")
+                    pid = int(parts[parts.index("tmp") + 1])
+                except (ValueError, IndexError):
+                    continue
+                if pid == os.getpid():
+                    continue  # never touch our own in-flight tmp file
+                try:
+                    os.kill(pid, 0)
+                    continue  # process still alive -- might be writing now
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    continue  # alive, owned by someone else -- leave it
+                try:
+                    os.remove(tmp_path)
+                    logger.info("Removed orphaned gravity tmp file from dead PID %d: %s", pid, tmp_path)
+                except OSError:
+                    pass
+        except Exception:
+            pass
 
     def _migrate_from_old_path(self) -> None:
         """One-time migration: if new path is empty but old path has data, copy it."""
@@ -115,8 +157,7 @@ class GravityIndex:
             if old_size > new_size and old_size > 500:  # old has more data
                 import shutil
                 shutil.copy2(_OLD_GRAVITY_PATH, self.path)
-                import logging
-                logging.getLogger("vectrax.gravity").info(
+                logger.info(
                     "MIGRATED gravity_index from vault/ to ~/.vectrax/ (%d bytes)",
                     old_size,
                 )
@@ -125,22 +166,137 @@ class GravityIndex:
 
     # -- persistence --------------------------------------------------------
 
+    @contextlib.contextmanager
+    def _locked(self, exclusive: bool = True) -> Iterator[None]:
+        """Inter-process (and inter-thread) advisory lock guarding every
+        read and write of ``self.path``.
+
+        Corrige la causa estructural del defecto de producción 2026-09-20:
+        varios procesos/threads podían intercalar su propio ciclo
+        lectura-modificación-escritura sobre ``gravity_index.json`` sin
+        ninguna coordinación -- cada `record_event()` leía el archivo
+        completo, mutaba SU copia en memoria y volvía a escribir el diccionario
+        COMPLETO. Dos llamadas casi simultáneas (dos requests, o un backfill
+        masivo con múltiples hilos) podían basarse en el mismo estado leído y
+        la segunda escritura pisaba los cambios de la primera ("lost update"),
+        además del riesgo de que un lector viera un archivo a medio escribir
+        si `os.replace()` llegaba a solaparse con otra escritura en curso.
+
+        `fcntl.flock()` asocia el lock a la DESCRIPCIÓN DE ARCHIVO ABIERTA
+        (no al proceso), así que abrir un file descriptor NUEVO en cada
+        llamada -- como se hace aquí -- serializa correctamente tanto entre
+        PROCESOS distintos como entre HILOS del mismo proceso. Exclusivo
+        (`exclusive=True`) para cualquier secuencia que vaya a escribir
+        (incluida la lectura previa dentro de esa misma secuencia, ver
+        `record_event()`); compartido (`exclusive=False`) para lecturas
+        aisladas, que así pueden proceder en paralelo entre sí pero quedan
+        bloqueadas mientras un escritor tiene el lock exclusivo.
+
+        Si el proceso que sostiene el lock muere (SIGKILL, OOM, crash) el
+        kernel libera el flock automáticamente al cerrar sus file
+        descriptors -- nunca queda un lock "huérfano" bloqueando para
+        siempre tras un reinicio.
+        """
+        os.makedirs(os.path.dirname(self._lock_path) or ".", exist_ok=True)
+        lock_fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
+
     def _load(self) -> Dict[str, GravityRecord]:
+        """Locked, standalone read (not part of a read-modify-write
+        sequence). Internal read-modify-write call sites (``record_event``)
+        must NOT call this -- they already hold the exclusive lock for their
+        whole critical section and must call ``_read_from_disk()`` directly,
+        or the second (shared) lock acquisition attempted here would
+        deadlock against the outer exclusive lock held by the same thread.
+        """
+        with self._locked(exclusive=False):
+            return self._read_from_disk()
+
+    def _read_from_disk(self) -> Dict[str, GravityRecord]:
+        """Raw disk read -- caller must already hold ``_locked()``."""
         if not os.path.isfile(self.path):
             return {}
         try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return {k: GravityRecord.from_dict(v) for k, v in data.items()}
-        except (json.JSONDecodeError, OSError):
+            with open(self.path, "rb") as f:
+                raw = f.read()
+        except OSError:
             return {}
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            # Producción 2026-09-20: una corrupción localizada (bytes UTF-8
+            # inválidos en un puñado de registros, de una escritura
+            # concurrente sin lock en _save()) dejaba TODO el índice
+            # ilegible -- json.load() nunca llegaba a ejecutarse, así que
+            # el except de abajo (que solo captura JSONDecodeError/OSError)
+            # nunca actuaba, y `domain_stats()`/dashboard quedaban en blanco
+            # sin ningún registro del motivo. errors="replace" permite
+            # seguir leyendo TODOS los registros no afectados (Ley 4: nunca
+            # borrar) en vez de perder el índice completo por un puñado de
+            # bytes dañados; los pocos registros con el byte reemplazado
+            # pueden fallar su propio parseo más abajo y se registran igual
+            # vía el log, nunca se ocultan en silencio.
+            logger.error(
+                "gravity_index.json tiene bytes UTF-8 inválidos (%s) -- "
+                "leyendo con reemplazo de caracteres para no perder el "
+                "índice completo. Revisar/backup: %s", exc, self.path,
+            )
+            text = raw.decode("utf-8", errors="replace")
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            logger.error(
+                "gravity_index.json no parsea como JSON (%s) -- devolviendo "
+                "índice vacío para esta lectura, el archivo en disco NO se "
+                "modifica. Revisar/backup: %s", exc, self.path,
+            )
+            return {}
+        records: Dict[str, GravityRecord] = {}
+        for k, v in data.items():
+            try:
+                records[k] = GravityRecord.from_dict(v)
+            except Exception as exc:
+                # Un registro individual corrupto no debe tumbar los otros
+                # miles -- se omite ESE registro (se loguea, nunca se
+                # inventa) y se preservan todos los demás.
+                logger.warning(
+                    "gravity_index.json: registro '%s' inválido, omitido "
+                    "(%s)", k, exc,
+                )
+        return records
 
     def _save(self, records: Dict[str, GravityRecord]) -> None:
-        # Escritura ATÓMICA (tmp + os.replace): el gravity index se reescribe en
-        # cada record_event y es leído concurrentemente por census / observer /
-        # provider_affinity. Sin esto, un lector podía ver el archivo truncado a
-        # medio escribir → JSONDecodeError y "amnesia" transitoria del universo.
-        tmp = f"{self.path}.tmp.{os.getpid()}"
+        """Locked, standalone write (not part of a read-modify-write
+        sequence already holding the lock -- e.g. ``update_records()``).
+        """
+        with self._locked(exclusive=True):
+            self._write_to_disk(records)
+
+    def _write_to_disk(self, records: Dict[str, GravityRecord]) -> None:
+        """Atomic, durable write -- caller must already hold ``_locked()``.
+
+        Escritura ATÓMICA (tmp + flush + fsync + os.replace): el gravity
+        index se reescribe en cada record_event y es leído concurrentemente
+        por census / observer / provider_affinity. tmp+os.replace por sí
+        solo ya garantizaba que ningún lector viera un archivo truncado a
+        medio escribir; flush()+os.fsync() antes del replace además
+        garantizan que el contenido del tmp está físicamente en disco (no
+        solo en el buffer del SO) antes de renombrarlo, y el fsync() del
+        directorio después del replace garantiza que la propia actualización
+        del nombre de archivo sobrevive un crash/corte de energía
+        inmediatamente posterior -- sin esto, un reinicio muy cercano al
+        replace podía (en teoría, según el filesystem) dejar el directorio
+        apuntando todavía al inodo viejo pese a que el rename ya había
+        "vuelto" a nivel de aplicación.
+        """
+        tmp = f"{self.path}.tmp.{os.getpid()}.{threading.get_ident()}"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(
@@ -148,7 +304,17 @@ class GravityIndex:
                     f, indent=2, ensure_ascii=False,
                 )
                 f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, self.path)
+            try:
+                dir_fd = os.open(os.path.dirname(self.path) or ".", os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                pass  # best-effort durability extra; the rename already succeeded
         except Exception:
             try:
                 if os.path.exists(tmp):
@@ -185,8 +351,38 @@ class GravityIndex:
         and ignored so callers that tag events for provenance — such as
         ``seed_tenant_priors`` — do not raise. ``GravityRecord`` has no slot
         for them; the provenance lives in the fingerprint/summary.
+
+        Concurrencia (corrección 2026-09-20): todo el ciclo lectura-
+        modificación-escritura corre bajo un único lock exclusivo (ver
+        ``_locked()``) -- dos llamadas concurrentes a ``record_event()``
+        (mismo o distinto fingerprint, mismo o distinto proceso) quedan
+        totalmente serializadas: la segunda siempre parte del estado que
+        dejó la primera, nunca de una copia obsoleta. Usa los helpers SIN
+        lock (`_read_from_disk`/`_write_to_disk`) en vez de `_load`/`_save`
+        para no intentar adquirir el lock una segunda vez dentro del mismo
+        hilo (deadlock).
         """
-        records = self._load()
+        with self._locked(exclusive=True):
+            return self._record_event_locked(
+                fingerprint, cc_score, impact, domain, intent, outcome,
+                summary, event_timestamp, **meta,
+            )
+
+    def _record_event_locked(
+        self,
+        fingerprint: str,
+        cc_score: float = 0.0,
+        impact: str = "low",
+        domain: str = "unknown",
+        intent: str = "",
+        outcome: str = "observed",
+        summary: str = "",
+        event_timestamp: Optional[str] = None,
+        **meta: Any,
+    ) -> Tuple[GravityRecord, Optional[str]]:
+        """Body of ``record_event()`` -- caller must already hold the
+        exclusive lock for the whole read-modify-write sequence."""
+        records = self._read_from_disk()
         now = _now_iso()
         effective = self._resolve_effective_timestamp(event_timestamp, now)
         # Parsed once, reused as the single "effective clock" for this call
@@ -250,7 +446,7 @@ class GravityIndex:
         rec.activation_history = decimate_history(rec.activation_history, MAX_ACTIVATION_HISTORY)
 
         records[fingerprint] = rec
-        self._save(records)
+        self._write_to_disk(records)
         return rec, promotion
 
     @staticmethod
@@ -372,7 +568,7 @@ class GravityIndex:
         return list(self._load().values())
 
     def update_records(self, records: Dict[str, GravityRecord]) -> None:
-        """Bulk update (used by decay engine)."""
+        """Bulk update (used by decay engine). Locked write -- see ``_save()``."""
         self._save(records)
 
     def load_raw(self) -> Dict[str, GravityRecord]:

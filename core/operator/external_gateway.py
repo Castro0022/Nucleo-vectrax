@@ -48,7 +48,13 @@ logger = logging.getLogger("vectrax.operator.external_gateway")
 # Canales externos permitidos
 # ---------------------------------------------------------------------------
 
-ALLOWED_CHANNELS = frozenset({"web", "telegram", "api", "webhook", "custom"})
+# "autonomous": identidad de canal EXPLÍCITA para scripts de diagnóstico,
+# health-checks y ciclos autoproducidos (p.ej. scripts/system_check.py) que
+# ejercitan el pipeline SIN un usuario externo real detrás. Antes de esto,
+# esos scripts declaraban channel="telegram" -- indistinguible en
+# op_cycles.db/Pipeline Train de tráfico real de Telegram, y confundía el
+# diagnóstico de la actividad real del sistema.
+ALLOWED_CHANNELS = frozenset({"web", "telegram", "api", "webhook", "custom", "autonomous"})
 DEFAULT_CHANNEL = "web"
 
 # Mapeo de canal externo → canal interno de Vectrax (creator/user).
@@ -59,6 +65,7 @@ _INTERNAL_CHANNEL_MAP = {
     "api": "user",
     "webhook": "user",
     "custom": "user",
+    "autonomous": "user",
 }
 
 # ID del creador — Mario Bravo Castro. Hardcoded + env override.
@@ -434,6 +441,28 @@ class ExternalGateway:
         except Exception as _cf_exc:
             logger.debug("Constitutional gate failed (passthrough): %s", _cf_exc)
 
+        # === HISTORIAL CANONICO: respuesta del asistente ===================
+        # Punto único (choke point) para TODOS los caminos de retorno internos
+        # de `_do_receive_message()` (saludo, intake ignorado/store, dominio,
+        # self-aware, pipeline completo) -- mismo patrón ya usado arriba para
+        # `_total_responded` y `_constitutional_gate()`. Se registra el texto
+        # REALMENTE final (después del gate constitucional, que puede
+        # sustituirlo en modo enforce), nunca el intermedio pre-auditor
+        # (Regla 2: la respuesta se registra tras conocer el contenido final).
+        if getattr(result, "processed", False) and result.response:
+            try:
+                from core.memory.conversation_ledger import record_assistant_message
+                record_assistant_message(
+                    user_id=user_id, content=result.response, channel=channel,
+                    correlation_id=result.event_id, source="external_gateway",
+                    status="delivered",
+                )
+            except Exception as _ledger_exc:
+                logger.debug(
+                    "conversation_ledger assistant record failed (non-fatal): %s",
+                    _ledger_exc,
+                )
+
         return result
 
     def _constitutional_gate(
@@ -808,6 +837,23 @@ class ExternalGateway:
 
         self._total_received += 1
 
+        # === HISTORIAL CANONICO (Parte 1 del contrato de memoria) ==========
+        # Registro INMEDIATO -- antes de cualquier clasificación/LLM/búsqueda
+        # que pueda fallar, incluyendo saludos, comandos y retornos
+        # anticipados (todos pasan por este punto común). Idempotente por
+        # correlation_id -- este canal no siempre trae un message_id nativo
+        # del transporte, así que se usa correlation_id como identificador
+        # estable de deduplicación.
+        _ledger_user_event_id = ""
+        try:
+            from core.memory.conversation_ledger import record_user_message
+            _ledger_user_event_id = record_user_message(
+                user_id=user_id, content=content, channel=channel,
+                correlation_id=correlation_id, source="external_gateway",
+            )
+        except Exception as _ledger_exc:
+            logger.debug("conversation_ledger user record failed (non-fatal): %s", _ledger_exc)
+
         # === ROUTER ACTIVATION LOG — abrir snapshot por mensaje ===
         # No cambia la lógica del router. Solo observa.
         _act_log = None
@@ -986,7 +1032,34 @@ class ExternalGateway:
             # Si el usuario pidió EXPLICITAMENTE guardar → confirmar natural.
             # Si fue clasificado implícitamente → guardar en silencio y caer
             # al pipeline conversacional (el LLM responde, la memoria ya fue guardada).
-            if intake.action == Action.STORE and not intake.context_hint == "identity":
+            #
+            # PARTE 5 (2026-09-20): precheck regex duplicado -- si el Nucleo
+            # (`nucleus_decision`, ver `receive_message()`) YA decidió que esto
+            # es una RECUPERACION de memoria (RESOLVE_PERSONAL_MEMORY/
+            # RESOLVE_LOCAL/RESOLVE_IDENTITY/ANSWER_FROM_EVIDENCE), esta
+            # reclasificacion regex independiente NUNCA debe convertirla en un
+            # STORE (guardar) -- eso invertiria la decision ya tomada. Se deja
+            # caer al pipeline conversacional, que SÍ consulta `nucleus_decision`
+            # (ver `_resolve_via_pipeline_v2()` mas abajo).
+            _nd_is_retrieval = False
+            if nucleus_decision is not None:
+                try:
+                    from core.smart_router import Strategy as _NdStrategy
+                    _nd_is_retrieval = getattr(
+                        nucleus_decision, "candidate_strategy", None,
+                    ) in (
+                        _NdStrategy.RESOLVE_PERSONAL_MEMORY,
+                        _NdStrategy.RESOLVE_LOCAL,
+                        _NdStrategy.RESOLVE_IDENTITY,
+                        _NdStrategy.ANSWER_FROM_EVIDENCE,
+                    )
+                except Exception:
+                    pass
+            if (
+                intake.action == Action.STORE
+                and not intake.context_hint == "identity"
+                and not _nd_is_retrieval
+            ):
                 # 1) Política de ingesta ARGOS — decide si entra
                 _ingest_result = None
                 try:
@@ -1682,9 +1755,16 @@ class ExternalGateway:
         except Exception as exc:
             logger.debug("Language policy failed: %s", exc)
 
-        # ══════════════════════════════════════════════════════════════
+        # ═══════════════════════════════════════════════════════════
         # STEP 5: RESOLVE FROM MEMORY — prioridad absoluta
-        # ══════════════════════════════════════════════════════════════
+        # ═══════════════════════════════════════════════════════════
+        # PARTE 6 (2026-09-20): capturado ANTES del gate `if not response_text`
+        # de abajo -- este es el punto real donde `resolve_with_memory()` se
+        # intenta o se salta porque una ruta ANTERIOR (read_tool_bridge,
+        # domain criterion, self_aware, nucleus_resolver) ya respondió. Usado
+        # por el contrato honesto de telemetría (`memory_consulted`) al final
+        # de esta función.
+        _memory_attempted = not bool(response_text)
         memory_resolved = False
         _mem_t0 = time.perf_counter()
         if not response_text:
@@ -2060,10 +2140,19 @@ class ExternalGateway:
 
         # 10.1 Feed the user's star (gravitational v2) + knowledge graph — BACKGROUND
         #   Runs in a thread so it doesn't block response delivery.
-        #   ingest_v2: user star grows with patterns
-        #   ingest (v1): creates knowledge stars + graph edges + convergences
+        #   ingest_v2: user star grows with patterns (unconditional -- this
+        #     is the per-user UserStar/Pattern model, a different concept
+        #     from knowledge stars; every interaction legitimately feeds it).
+        #   star_deriver (PARTE 2, 2026-09-20): reemplaza el antiguo
+        #     `ingest_v1(...)` incondicional -- creaba una estrella de
+        #     CONOCIMIENTO por CADA mensaje (saludos, "ok", preguntas
+        #     incluidos), diluyendo el grafo sin ninguna traza de por qué
+        #     esa estrella existía. Ahora solo se deriva una estrella
+        #     personal cuando el texto contiene información significativa
+        #     (identidad/relación/preferencia/proyecto/decisión/compromiso/
+        #     objetivo/hecho/cambio de estado), con procedencia completa.
         import threading
-        def _bg_ingest(_content, _user_id, _channel):
+        def _bg_ingest(_content, _user_id, _channel, _ledger_event_id):
             _topic = "general"
             try:
                 from core.smart_router import get_smart_router
@@ -2077,14 +2166,18 @@ class ExternalGateway:
                 ingest_v2(text=_content, user_id=_user_id, topic=_topic)
             except Exception as _e:
                 logger.warning("bg ingest_v2 failed: %s", _e)
-            # v1: knowledge star + graph edges + convergences
+            # Derivación selectiva de estrella personal (PARTE 2)
             try:
-                from vectrax.engine import ingest as ingest_v1
-                ingest_v1(text=_content, channel="user", owner=_user_id)
+                from core.memory.star_deriver import derive_and_store_star
+                derive_and_store_star(
+                    text=_content, channel="user", owner=_user_id,
+                    source_event_id=_ledger_event_id,
+                )
             except Exception as _e:
-                logger.warning("bg ingest_v1 failed: %s", _e)
+                logger.warning("bg star derivation failed: %s", _e)
         threading.Thread(
-            target=_bg_ingest, args=(content, user_id, channel),
+            target=_bg_ingest,
+            args=(content, user_id, channel, _ledger_user_event_id),
             daemon=True,
         ).start()
 
@@ -2269,6 +2362,33 @@ class ExternalGateway:
             _cycle_obs.set_respond(
                 length=len(response_text) if response_text else 0,
                 source=_final_source_path,
+            )
+            # PARTE 6 (2026-09-20) -- contrato honesto para esta ruta LEGACY
+            # (solo se ejecuta cuando NucleusAuthority.resolve_from_record()
+            # lanzó una excepción -- ver bloque NÚCLEO en pipeline_worker.py).
+            # Aproximación deliberadamente conservadora a partir de las
+            # señales YA calculadas por este pipeline extenso -- NO se
+            # intenta inferir abstención del TEXTO final (fuera de alcance,
+            # riesgo de falsos positivos/negativos); esa señal precisa la
+            # produce `NucleusAuthority` (ver `_compute_abstained()` en
+            # `pipeline_worker.py`), que es la ruta dominante en producción.
+            _memory_consulted = bool(_memory_attempted or memory_resolved)
+            _legacy_evidence_found = bool(
+                memory_resolved or _domain_resolved or _capability_grounded
+                or (
+                    locals().get("source_path", "") in ("online", "places", "market")
+                    and bool(response_text)
+                )
+            )
+            _cycle_obs.set_memory(
+                consulted=_memory_consulted,
+                evidence_found=_legacy_evidence_found,
+            )
+            _cycle_obs.set_verification(
+                delivered=False,  # esta función no envía al canal externo -- lo hace el caller
+                grounded=bool(response_text) and _legacy_evidence_found,
+                verified=bool(memory_resolved or _domain_resolved),
+                abstained=False,
             )
             try:
                 _cycle_obs.commit()

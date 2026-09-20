@@ -23,6 +23,7 @@ from vectrax.models import (
     Constellation, MIN_MASS, Pattern, PATTERN_STORED, Proposal, Star,
     ROLE_CREATOR, ROLE_USER, USER_INITIAL_MASS, UserStar,
     STAR_TYPE_CONVERGENCE, STAR_TYPE_PRIMARY,
+    StarProvenance, STAR_PROVENANCE_ACTIVE, STAR_PROVENANCE_STATUSES,
 )
 
 DB_DIR = Path.home() / ".vectrax"
@@ -215,6 +216,35 @@ def init_db() -> None:
                 owner           TEXT NOT NULL DEFAULT '',
                 query_id        INTEGER DEFAULT NULL
             );
+
+            -- =============================================================
+            -- Star Provenance (PARTE 2: derivacion selectiva con procedencia)
+            -- =============================================================
+
+            CREATE TABLE IF NOT EXISTS star_provenance (
+                id                   TEXT PRIMARY KEY,
+                star_id              TEXT NOT NULL,
+                tenant_id            TEXT NOT NULL DEFAULT 'default',
+                channel              TEXT NOT NULL DEFAULT 'user',
+                owner                TEXT NOT NULL DEFAULT '',
+                category             TEXT NOT NULL,
+                entity               TEXT NOT NULL DEFAULT '',
+                normalized_assertion TEXT NOT NULL DEFAULT '',
+                source_event_ids     TEXT NOT NULL DEFAULT '[]',
+                literal_fragments    TEXT NOT NULL DEFAULT '[]',
+                confidence           REAL NOT NULL DEFAULT 0.0,
+                status               TEXT NOT NULL DEFAULT 'active',
+                extractor_version    INTEGER NOT NULL DEFAULT 1,
+                previous_star_id     TEXT NOT NULL DEFAULT '',
+                first_seen           REAL NOT NULL,
+                last_seen            REAL NOT NULL,
+                created_at           REAL NOT NULL,
+                updated_at           REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_star_prov_lookup
+                ON star_provenance(tenant_id, owner, channel, category, entity, status);
+            CREATE INDEX IF NOT EXISTS idx_star_prov_star
+                ON star_provenance(star_id);
         """)
     _migrate_db()
 
@@ -1071,3 +1101,149 @@ def get_universe_status() -> Dict[str, Any]:
         "layers": layers,
         "active_stars": [dict(r) for r in active],
     }
+
+
+# ---------------------------------------------------------------------------
+# Star Provenance (PARTE 2: derivacion selectiva de estrellas personales)
+# ---------------------------------------------------------------------------
+
+def _row_to_star_provenance(row: sqlite3.Row) -> Dict[str, Any]:
+    d = dict(row)
+    d["source_event_ids"] = json.loads(d.get("source_event_ids") or "[]")
+    d["literal_fragments"] = json.loads(d.get("literal_fragments") or "[]")
+    return d
+
+
+def insert_star_provenance(prov: StarProvenance) -> None:
+    """Inserta un nuevo registro de procedencia. Nunca sobrescribe uno
+    existente -- las correcciones se manejan marcando el anterior como
+    'superseded'/'contradicted' (ver mark_star_provenance_status) e
+    insertando uno nuevo, jamas borrando ni reescribiendo el previo."""
+    with _get_conn() as conn:
+        conn.execute(
+            """INSERT INTO star_provenance
+               (id, star_id, tenant_id, channel, owner, category, entity,
+                normalized_assertion, source_event_ids, literal_fragments,
+                confidence, status, extractor_version, previous_star_id,
+                first_seen, last_seen, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                prov.id, prov.star_id, prov.tenant_id, prov.channel, prov.owner,
+                prov.category, prov.entity, prov.normalized_assertion,
+                json.dumps(prov.source_event_ids), json.dumps(prov.literal_fragments),
+                prov.confidence, prov.status, prov.extractor_version,
+                prov.previous_star_id, prov.first_seen, prov.last_seen,
+                prov.created_at, prov.updated_at,
+            ),
+        )
+
+
+def find_active_star_provenance(
+    *, tenant_id: str, channel: str, owner: str, entity: str,
+) -> Optional[Dict[str, Any]]:
+    """Devuelve el registro de procedencia ACTIVO mas reciente para la
+    misma (tenant_id, owner, channel, entidad), o None.
+
+    Deliberadamente NO filtra por categoria: `entity` es el slot estable
+    de la afirmacion (p.ej. 'residence', 'novia', 'name') y una correccion
+    puede cambiar de categoria superficial (p.ej. FACT 'vivo en X' ->
+    STATE_CHANGE 'ya no vivo en X, ahora vivo en Y') sin dejar de ser la
+    MISMA afirmacion de fondo -- filtrar por categoria rompería la
+    deteccion de esa correccion."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            """SELECT * FROM star_provenance
+               WHERE tenant_id=? AND owner=? AND channel=?
+                     AND entity=? AND status=?
+               ORDER BY last_seen DESC LIMIT 1""",
+            (tenant_id, owner, channel, entity, STAR_PROVENANCE_ACTIVE),
+        ).fetchone()
+    return _row_to_star_provenance(row) if row else None
+
+
+def touch_star_provenance(
+    prov_id: str, *, last_seen: float,
+    add_source_event_id: str = "", add_literal_fragment: str = "",
+    confidence: Optional[float] = None,
+) -> None:
+    """Refuerza un registro existente (misma afirmacion repetida): extiende
+    source_event_ids/literal_fragments y actualiza last_seen -- nunca crea
+    un duplicado ni borra el fragmento anterior."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT source_event_ids, literal_fragments FROM star_provenance WHERE id=?",
+            (prov_id,),
+        ).fetchone()
+        if row is None:
+            return
+        event_ids = json.loads(row["source_event_ids"] or "[]")
+        fragments = json.loads(row["literal_fragments"] or "[]")
+        if add_source_event_id and add_source_event_id not in event_ids:
+            event_ids.append(add_source_event_id)
+        if add_literal_fragment:
+            fragments.append(add_literal_fragment)
+        if confidence is not None:
+            conn.execute(
+                """UPDATE star_provenance SET source_event_ids=?, literal_fragments=?,
+                   last_seen=?, confidence=?, updated_at=? WHERE id=?""",
+                (json.dumps(event_ids), json.dumps(fragments), last_seen,
+                 confidence, last_seen, prov_id),
+            )
+        else:
+            conn.execute(
+                """UPDATE star_provenance SET source_event_ids=?, literal_fragments=?,
+                   last_seen=?, updated_at=? WHERE id=?""",
+                (json.dumps(event_ids), json.dumps(fragments), last_seen,
+                 last_seen, prov_id),
+            )
+
+
+def mark_star_provenance_status(prov_id: str, status: str) -> None:
+    """Cambia el estado de un registro existente (p.ej. a 'superseded' o
+    'contradicted'). NUNCA borra la fila -- la procedencia se preserva
+    completa para auditoria."""
+    if status not in STAR_PROVENANCE_STATUSES:
+        return
+    import time as _time
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE star_provenance SET status=?, updated_at=? WHERE id=?",
+            (status, _time.time(), prov_id),
+        )
+
+
+def get_star_provenance_by_star(star_id: str) -> List[Dict[str, Any]]:
+    """Todos los registros de procedencia asociados a una estrella (puede
+    haber mas de uno si la estrella fue reutilizada por near-duplicado)."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM star_provenance WHERE star_id=? ORDER BY first_seen ASC",
+            (star_id,),
+        ).fetchall()
+    return [_row_to_star_provenance(r) for r in rows]
+
+
+def list_star_provenance(
+    *, tenant_id: str, channel: str, owner: str,
+    category: Optional[str] = None, status: Optional[str] = None,
+    limit: int = 200,
+) -> List[Dict[str, Any]]:
+    """Lista registros de procedencia para un usuario, opcionalmente
+    filtrados por categoria/estado -- usado por la recuperacion universal
+    (PARTE 3) como indice sobre las estrellas personales."""
+    clauses = ["tenant_id=?", "owner=?", "channel=?"]
+    params: List[Any] = [tenant_id, owner, channel]
+    if category:
+        clauses.append("category=?")
+        params.append(category)
+    if status:
+        clauses.append("status=?")
+        params.append(status)
+    params.append(limit)
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM star_provenance WHERE " + " AND ".join(clauses)
+            + " ORDER BY last_seen DESC LIMIT ?",
+            params,
+        ).fetchall()
+    return [_row_to_star_provenance(r) for r in rows]
