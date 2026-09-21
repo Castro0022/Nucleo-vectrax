@@ -963,6 +963,14 @@ def _process_one(msg):
         # y rotación estructural si la respuesta es muy similar a las
         # últimas 10 enviadas al user. Si el filter devuelve None la
         # respuesta era 100% cliché — silencio antes que ruido.
+        # Corrección 2026-09-20 (incidente real, correlation_id 8c667c0b9f4a):
+        # cuando ESTE filtro (no una falla upstream real) es la causa de que
+        # `response` quede vacía, se marca `_emptied_by_internal_filter` para
+        # que el bloque de GRACEFUL DEGRADATION de abajo nunca lo disfrace de
+        # "capacidad de procesamiento limitada" -- ese mensaje implica una
+        # falla de capacidad que no ocurrió; aquí hubo una respuesta real que
+        # un filtro interno descartó.
+        _emptied_by_internal_filter = False
         if response:
             with _stage_timer("anti_repetition", msg.id):
                 try:
@@ -976,6 +984,7 @@ def _process_one(msg):
                             msg.user_id,
                         )
                         response = ""
+                        _emptied_by_internal_filter = True
                 except Exception as _ae:
                     logger.debug("anti_repetition skipped: %s", _ae)
 
@@ -1020,6 +1029,23 @@ def _process_one(msg):
                     response = f"Hey{f' {_gn}' if _gn else ''}. What do you need?"
                 else:
                     response = f"Hola{f' {_gn}' if _gn else ''}. ¿En qué trabajamos?"
+            elif _emptied_by_internal_filter:
+                # No mentir sobre "capacidad" — el sistema SÍ generó una
+                # respuesta; fue un filtro interno (anti-repetición /
+                # clichés) el que la descartó por completo. Mensaje honesto,
+                # nunca "capacidad de procesamiento limitada".
+                if _dl == "en":
+                    response = (
+                        "I wasn't able to produce a valid reply to that message "
+                        "(it was filtered out on this end). Your message was "
+                        "recorded — try rephrasing or ask again."
+                    )
+                else:
+                    response = (
+                        "No logré generar una respuesta válida para ese mensaje "
+                        "(un filtro interno la descartó). Tu mensaje quedó "
+                        "registrado; intenta reformular o pregunta de nuevo."
+                    )
             else:
                 if _dl == "en":
                     response = (

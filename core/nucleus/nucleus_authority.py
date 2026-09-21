@@ -487,6 +487,45 @@ _IDENTITY_SELF_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Corrección 2026-09-20 (incidente real, correlation_id 25653679824e): una
+# pregunta sobre la identidad del PROPIO usuario ("¿Quién soy yo?") -- NUNCA
+# confundir con `_IDENTITY_SELF_RE` de arriba, que es sobre la identidad de
+# VECTRAX -- caía sin override en `is_personal_memory_query()` ->
+# `Strategy.RESOLVE_PERSONAL_MEMORY` -> `retrieve_personal_memory()`, una
+# recuperación DIFUSA (fragmentos + síntesis) que agrega cualquier hecho
+# RECIENTE del owner vía un "contexto reciente" genérico
+# (`resolve_local()::_select_profile_summary_stars()`), sin filtrar por
+# relevancia real a "quién soy". En producción esto mezcló un dato no
+# relacionado ("Mi socio se llama Beltrán") como si fuera la identidad del
+# propio usuario que preguntaba. Esta pregunta debe resolverse SIEMPRE de
+# forma determinística -- canal -> identity_aliases -> owner canónico (ya
+# resuelto en el paso 1/1a de `_decide()`, recibido aquí como `owner`) --
+# nunca vía fragmentos mezclados. Tolerante a un "¿" inicial opcional (el
+# anclaje `^...$` de `vectrax.resolver._PROFILE_SUMMARY_RE` NO lo es, gap
+# preexistente ajeno a este incidente, no corregido aquí).
+_USER_IDENTITY_SELF_RE = re.compile(
+    r"^[\s¿]*qui[eé]n\s+soy(?:\s+yo)?\s*\??\s*$"
+    r"|^[\s¿]*who\s+am\s+i\s*\??\s*$"
+    r"|\bc[oó]mo\s+me\s+llamo\b|\bcu[aá]l\s+es\s+mi\s+nombre\b"
+    r"|\bwhat'?s\s+my\s+name\b|\bwhat\s+is\s+my\s+name\b",
+    re.IGNORECASE,
+)
+
+# Corrección 2026-09-20 (incidente real, correlation_id 8c667c0b9f4a-b): el
+# creador CORRIGIENDO una identidad equivocada en la misma frase ("No, yo
+# soy Mario, tú eres Vectrax") caía en clasificación de INGESTA (STORE) --
+# el pipeline lo trataba como un hecho nuevo a guardar y respondía
+# "Registrado." en vez de reconocer la corrección de identidad. Esta es una
+# afirmación de identidad (símil a `_USER_IDENTITY_SELF_RE`), no una nota
+# para memoria -- debe resolverse como IDENTITY, nunca como STORE.
+# Acotado al creador (única identidad que este override puede afirmar sin
+# ambigüedad); cualquier otro texto sigue su camino normal.
+_IDENTITY_CORRECTION_RE = re.compile(
+    r"\byo\s+soy\s+mario\b[^.!?\n]*\bvectrax\b"
+    r"|\bi'?m\s+mario\b[^.!?\n]*\bvectrax\b",
+    re.IGNORECASE,
+)
+
 _GRAVITY_SELF_RE = re.compile(
     r"\bgravedad\b.*\b(para\s+ti|tuya|tu\s+propia|significa\s+para\s+ti)\b"
     r"|\bwhat\s+does\s+gravity\s+mean\s+to\s+you\b",
@@ -564,8 +603,107 @@ def _detect_lang(text: str) -> str:
         return "es"
 
 
+_NAME_STATEMENT_RE = re.compile(
+    r"(?:me\s+llamo|mi\s+nombre\s+es|my\s+name\s+is|call\s+me)\s+"
+    r"([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]{1,40}?)(?:[.,;\n]|$)",
+    re.IGNORECASE,
+)
+
+
+def _creator_owner_const() -> str:
+    from vectrax.identity import CREATOR_OWNER
+    return CREATOR_OWNER
+
+
+def _resolve_creator_canonical_name(user_id: str) -> str:
+    """Identidad canónica del creador -- SIEMPRE "Mario Bravo Castro",
+    NUNCA reemplazable por un nombre encontrado en memoria/perfil ni por un
+    valor YA CACHEADO (posiblemente contaminado, p.ej. "Beltrán") de antes
+    de esta corrección. Usa `identity_anchor.refresh_anchor()` (invalida el
+    caché de sesión y recarga) en vez de `get_anchored_identity()` --
+    `get_anchored_identity()` devuelve directamente cualquier `IdentityAnchor`
+    YA cacheado sin volver a verificarlo, así que un anchor contaminado
+    cacheado ANTES de este fix sobreviviría indefinidamente si se usara esa
+    función aquí. `refresh_anchor()` fuerza una recarga real cada vez,
+    garantizando que la protección aplicada en
+    `identity_anchor.get_anchored_identity()` (el nombre semilla del creador
+    SIEMPRE gana sobre `user_memory`) se re-evalúe en cada pregunta de
+    identidad, nunca confiando en un estado en memoria potencialmente viejo.
+    """
+    try:
+        from vectrax.identity_anchor import refresh_anchor
+        anchor = refresh_anchor(user_id)
+        if anchor and anchor.is_creator and anchor.name:
+            return anchor.name
+    except Exception as exc:
+        logger.debug("_resolve_creator_canonical_name: identity_anchor lookup failed: %s", exc)
+    return "Mario Bravo Castro"
+
+
+def _resolve_user_own_identity(
+    owner: str, channel: str, lang: str, owner_raw: str = "",
+) -> str:
+    """Resuelve DETERMINÍSTICAMENTE quién es el usuario que pregunta --
+    nunca vía fragmentos difusos ni síntesis LLM. Fuente única: la
+    identidad canónica ya resuelta (`owner`, ver `_decide()` paso 1/1a) más,
+    si el usuario NO es el creador, el nombre que él mismo declaró
+    explícitamente (categoría 'identity', entidad 'name' en
+    `star_provenance` -- la MISMA derivación que `star_deriver.py` usa para
+    'me llamo X'/'mi nombre es X', ver `core/memory/star_deriver.py`).
+    Nunca inventa un nombre ni agrega memoria no relacionada.
+
+    Para el creador, la fuente de verdad es `vectrax.identity_anchor
+    .get_anchored_identity()` -- el mismo módulo cuyo contrato es "una vez
+    conocida la identidad, jamás se pierde ni se contradice" (corrección
+    2026-09-20: ese módulo ahora garantiza que el nombre del creador es
+    canónico y no puede quedar contaminado por caché/memoria; ver
+    `identity_anchor.get_anchored_identity()`)."""
+    from vectrax.identity import CREATOR_OWNER
+
+    if owner == CREATOR_OWNER:
+        canonical_name = _resolve_creator_canonical_name(owner_raw or owner)
+        return (
+            f"Eres {canonical_name}, mi creador." if lang != "en"
+            else f"You are {canonical_name}, my creator."
+        )
+
+    try:
+        from vectrax import db
+        from vectrax.models import STAR_CATEGORY_IDENTITY
+
+        rows = db.list_star_provenance(
+            tenant_id="default", channel=channel, owner=owner,
+            category=STAR_CATEGORY_IDENTITY, status=None, limit=20,
+        )
+        name = ""
+        for row in rows:
+            if row.get("status") == "superseded" or row.get("entity") != "name":
+                continue
+            literal_fragments = row.get("literal_fragments") or []
+            candidate_text = literal_fragments[-1] if literal_fragments else (
+                row.get("normalized_assertion", "")
+            )
+            m = _NAME_STATEMENT_RE.search(candidate_text or "")
+            if m:
+                name = m.group(1).strip()
+                break
+        if name:
+            return (
+                f"Te llamas {name}." if lang != "en" else f"Your name is {name}."
+            )
+    except Exception as exc:
+        logger.debug("_resolve_user_own_identity: lookup failed: %s", exc)
+
+    return (
+        "Todavía no tengo tu nombre registrado. Si quieres, dime cómo te llamas."
+        if lang != "en" else
+        "I don't have your name registered yet. If you'd like, tell me your name."
+    )
+
+
 def _try_self_knowledge_override(
     text: str, channel: str, owner: str, source: str, mem: MemoryEvidence,
+    owner_raw: str = "",
 ) -> Optional[NucleusResponse]:
     """Resuelve preguntas meta sobre el propio Vectrax. Recibe `mem` (YA
     calculado por la consulta incondicional) para que TODOS los overrides
@@ -587,6 +725,57 @@ def _try_self_knowledge_override(
             evidence={},
             evidence_authorized=False,  # pendiente: _dispatch_executor decide
             answer="",
+            channel=channel, owner=owner, source=source,
+        )
+
+    if _IDENTITY_CORRECTION_RE.search(text) and owner == _creator_owner_const():
+        canonical_name = _resolve_creator_canonical_name(owner_raw or owner)
+        answer = (
+            f"Correcto: tú eres {canonical_name} y yo soy Vectrax Core."
+            if lang != "en" else
+            f"Correct: you are {canonical_name} and I am Vectrax Core."
+        )
+        return NucleusResponse(
+            final_action="IDENTITY",
+            candidate_source="",
+            confidence=1.0,
+            reason=(
+                "deterministic override: corrección de identidad del "
+                "creador en la misma frase -- IDENTITY, nunca STORE"
+            ),
+            memory_consulted=True,
+            memory_source="identity_anchor (creador canónico)",
+            memory_evidence=mem.to_dict(),
+            capability_selected="",
+            tool_executed="user_identity_resolver",
+            evidence={"kind": "identity_correction", "canonical_owner": owner},
+            evidence_authorized=True,
+            answer=answer,
+            channel=channel, owner=owner, source=source,
+        )
+
+    if _USER_IDENTITY_SELF_RE.search(text):
+        answer = _resolve_user_own_identity(owner, channel, lang, owner_raw=owner_raw)
+        return NucleusResponse(
+            final_action="IDENTITY",
+            candidate_source="",
+            confidence=1.0,
+            reason=(
+                "deterministic override: pregunta sobre la identidad del "
+                "PROPIO usuario (channel -> identity_aliases -> owner "
+                "canónico) -- nunca vía retrieve_personal_memory"
+            ),
+            memory_consulted=True,
+            memory_source=(
+                "identity_aliases (owner canónico) + star_provenance "
+                "(categoría identity, entidad name)"
+            ),
+            memory_evidence=mem.to_dict(),
+            capability_selected="",
+            tool_executed="user_identity_resolver",
+            evidence={"kind": "user_identity", "canonical_owner": owner},
+            evidence_authorized=True,
+            answer=answer,
             channel=channel, owner=owner, source=source,
         )
 
@@ -1054,7 +1243,9 @@ class NucleusAuthority:
         mem = _query_memory(text, channel, canonical_owner, owner_raw=owner_raw)
 
         # -- 3. Overrides de autoconocimiento explícito ---------------------
-        override = _try_self_knowledge_override(text, channel, canonical_owner, source, mem)
+        override = _try_self_knowledge_override(
+            text, channel, canonical_owner, source, mem, owner_raw=owner_raw,
+        )
         if override is not None:
             override.owner_raw = owner_raw
             if override.evidence_authorized:

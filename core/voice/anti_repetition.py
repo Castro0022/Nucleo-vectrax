@@ -409,11 +409,17 @@ def filter_response(
 
       1. strip_cliches (creator_mode auto-detected via core.identity)
       2. is_too_similar → perturb_structure si aplica
-      3. Si tras todo sigue muy similar Y es muy corto → devolver None
-         (caller debe regenerar). Si es razonable, devolver lo que haya.
+      3. Si la perturbación no bastó, se deja pasar el original de
+         todas formas -- "mejor algo a nada", sin excepción de longitud
+         (ver corrección 2026-09-20 más abajo).
 
-    Devuelve el texto limpio listo para enviar, o None si la respuesta
-    no pasa el gate y debe regenerarse.
+    Devuelve el texto limpio listo para enviar, o `None` ÚNICAMENTE cuando
+    NO hay contenido legítimo alguno que enviar (candidato vacío, o
+    enteramente cléché tras `strip_cliches`). Nunca devuelve `None` para
+    contenido real solo por parecerse a una respuesta reciente -- hacerlo
+    le hace creer al caller que el pipeline falló cuando en realidad
+    procesó el mensaje con éxito (ver incidente real 2026-09-20,
+    correlation_id 8c667c0b9f4a, más abajo).
     """
     if not candidate or not candidate.strip():
         return None
@@ -437,11 +443,19 @@ def filter_response(
         perturbed = perturb_structure(cleaned, user_id, lang=lang)
         if perturbed and not is_too_similar(user_id, perturbed):
             return perturbed.strip()
-        # 3. Si la perturbación no bastó y el texto es muy corto,
-        #    pedimos regeneración. Si es razonablemente largo, dejamos
-        #    pasar el original (mejor algo a nada).
-        if len(cleaned) < 60:
-            return None
+        # 3. Si la perturbación no bastó, dejamos pasar el original --
+        #    "mejor algo a nada" (ver docstring del módulo), SIN excepción
+        #    de longitud. Corrección 2026-09-20 (incidente real,
+        #    correlation_id 8c667c0b9f4a): antes, una respuesta CORTA
+        #    (p.ej. la confirmación de ingesta "Registrado.", que es
+        #    idéntica para cualquier hecho nuevo por diseño) se descartaba
+        #    aquí devolviendo `None` -- el caller (`pipeline_worker.py`)
+        #    interpretaba eso como fallo del pipeline y sustituía una
+        #    respuesta REAL y exitosa por el mensaje genérico engañoso
+        #    "Capacidad de procesamiento limitada en este momento". Este
+        #    filtro NUNCA debe convertir contenido legítimo en una falsa
+        #    señal de fallo -- silencio solo está justificado cuando NO hay
+        #    contenido legítimo alguno (ver el `if not cleaned` de arriba).
         return cleaned.strip()
 
     return cleaned.strip()

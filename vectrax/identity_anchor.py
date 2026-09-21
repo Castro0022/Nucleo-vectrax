@@ -238,12 +238,21 @@ def get_anchored_identity(user_id: str) -> IdentityAnchor:
         logger.debug("Could not load profile for %s: %s", user_id[:20], exc)
 
     # 2b. Marca de creador: si user_id == VX_CREATOR_ID, izar el flag.
+    #
+    # Corrección 2026-09-20 (incidente real, correlation_id 25653679824e):
+    # la identidad del CREADOR es canónica y fija -- NUNCA puede ser
+    # reemplazada por lo que haya quedado cacheado/contaminado en
+    # `user_memory` (p.ej. "Beltrán", extraído por error de una mención de
+    # un tercero en otra conversación). Antes, el nombre de `profile` (paso
+    # 2, arriba) se aplicaba primero y el seed del creador solo se usaba
+    # como fallback `if not anchor.name` -- así que un nombre contaminado
+    # nunca era corregido. Ahora, para el creador, el nombre canónico del
+    # seed SIEMPRE gana; el resto de identidad (idioma, preferencias) sigue
+    # viniendo de `profile` sin cambios.
     if _is_creator_user(user_id):
         anchor.is_creator = True
-        # Si no se cargo nombre desde user_memory, usar el del seed.
-        if not anchor.name:
-            seed = _load_creator_seed()
-            anchor.name = seed.get("creator_name", "") or "Mario Bravo Castro"
+        seed = _load_creator_seed()
+        anchor.name = seed.get("creator_name", "") or "Mario Bravo Castro"
 
     # 3. Aplicar language lock si existe
     locked_lang = _session.get_locked_language(user_id)
