@@ -186,3 +186,87 @@ def test_every_decision_carries_its_reason():
     """Toda decisión de sujeto es auditable, se active o no."""
     for phrase in ("Dame ideas para mi negocio", "¿qué propuestas tienes pendientes?"):
         assert classify(phrase).subject_reason, f"{phrase!r} sin motivo registrado"
+
+
+# ---------------------------------------------------------------------------
+# Segunda pasada de auditoría (2026-09-22): `pendientes` y el demostrativo
+# ---------------------------------------------------------------------------
+
+# `pendiente` sola NO es señal de gobernanza: casi todo en la vida del
+# usuario puede estar pendiente. Los tres primeros son los casos exactos
+# reportados; el resto son variaciones nuevas.
+_PENDING_NOT_GOVERNANCE = [
+    "Tengo problemas pendientes con el carro",
+    "Hay ideas pendientes para la boda",
+    "Servicios pendientes de pago",
+    "tareas pendientes de la semana",
+    "asuntos pendientes con el banco",
+    "quedan pagos pendientes",
+    "hay propuestas pendientes para el cliente",
+    "tengo una auditoría pendiente con el contador",
+    "facturas pendientes de revisar del proveedor",
+]
+
+
+@pytest.mark.parametrize("phrase", _PENDING_NOT_GOVERNANCE)
+def test_pending_alone_is_not_a_governance_signal(phrase):
+    intent = classify(phrase)
+    assert not intent.detected, (
+        f"{phrase!r} secuestrada como {intent.family!r} "
+        f"(motivo: {intent.subject_reason})"
+    )
+
+
+def test_governance_requires_own_object_plus_state():
+    """La gobernanza exige objeto propio (propuesta/idea/sugerencia) MÁS
+    estado, no solo la palabra `pendiente`."""
+    # Estado sin objeto propio -> no activa.
+    assert not classify("hay cosas pendientes de revisar").detected
+    # Objeto propio sin estado de gobernanza -> no activa por esta vía.
+    assert not classify("estas propuestas del proveedor").detected
+    # Objeto propio + estado fuerte -> sí.
+    assert classify("listado de ideas sin aprobar").detected
+    # Objeto propio + estado débil, en consulta y sin finalidad externa -> sí.
+    assert classify("quedan sugerencias pendientes?").detected
+
+
+def test_external_purpose_blocks_the_weak_governance_path():
+    """'para <algo>' nombra un destinatario externo; la cola de Vectrax no
+    tiene uno."""
+    assert not classify("hay ideas pendientes para la boda").detected
+    assert not classify("propuestas pendientes para el cliente").detected
+
+
+# El demostrativo `estas` no es segunda persona. Los dos primeros son los
+# casos exactos reportados.
+_DEMONSTRATIVE_NOT_SECOND_PERSON = [
+    "Estas propuestas son para el proveedor",
+    "Estas ideas funcionan para marketing",
+    "estas sugerencias son del consultor",
+    "estas convergencias salieron del informe",
+    "estas estrellas se ven mejor en invierno",
+    "estas auditorías las hizo el contador",
+]
+
+
+@pytest.mark.parametrize("phrase", _DEMONSTRATIVE_NOT_SECOND_PERSON)
+def test_demonstrative_estas_is_not_second_person(phrase):
+    intent = classify(phrase)
+    assert not intent.detected, (
+        f"{phrase!r} tomada como segunda persona -> {intent.family!r}"
+    )
+
+
+@pytest.mark.parametrize("phrase,family", [
+    # Con tilde: inequívoco.
+    ("¿Qué estás observando en tu universo?", "universe"),
+    ("¿estás ejecutando algún motor?",        "engines"),
+    # Sin tilde, pero con construcción verbal explícita.
+    ("que estas observando en el universo?",  "universe"),
+    ("estas ejecutando algun motor?",         "engines"),
+    ("que estas registrando en la auditoria?", "audit"),
+])
+def test_second_person_with_and_without_accent(phrase, family):
+    intent = classify(phrase)
+    assert intent.detected, f"{phrase!r} no activó ({intent.subject_reason})"
+    assert intent.family == family

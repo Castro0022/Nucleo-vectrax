@@ -60,9 +60,17 @@ _IDEA_ID_RE = re.compile(r"\bIDEA[-_ ]?([A-Za-z0-9]{4,12})\b", re.IGNORECASE)
 # falta además una señal explícita de que el sujeto es el propio sistema.
 
 # (a) Segunda persona dirigida a Vectrax: "¿qué DETECTASTE?", "¿TIENES...?".
+#
+# OJO con `estas` sin tilde: es DEMOSTRATIVO mucho más a menudo que segunda
+# persona. Incluirlo como alternativa suelta secuestraba frases como "Estas
+# propuestas son para el proveedor" o "Estas ideas funcionan para marketing"
+# (auditoría 2026-09-22, segunda pasada). `estás` con tilde sí es inequívoco;
+# la forma sin tilde solo cuenta acompañada de una construcción verbal
+# explícita — un gerundio: "estas observando", "estas ejecutando".
 _SECOND_PERSON_RE = re.compile(
     r"\b(?:tu|tus|tuyo|tuyos|tuya|tuyas|contigo|ti|"
-    r"has|hiciste|haces|tienes|tenés|tenes|estás|estas|estuviste|"
+    r"has|hiciste|haces|tienes|tenés|tenes|estás|estuviste|"
+    r"estas\s+\w+(?:ando|endo)|"           # "estas observando" != "estas ideas"
     r"detectaste|detectas|observas|observaste|observando|"
     r"propusiste|propones|confirmaste|confirmas|"
     r"ejecutaste|ejecutas|usaste|utilizaste|usas|utilizas|"
@@ -77,16 +85,40 @@ _SYSTEM_MENTION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# (c) Vocabulario de GOBERNANZA: describe la cola de revisión del propio
-# Vectrax y no tiene lectura en el mundo del usuario ("propuestas sin
-# revisar" es la bandeja del owner, no una tarea personal).
-_GOVERNANCE_RE = re.compile(
+# (c) Vocabulario de GOBERNANZA. `pendiente` NO basta por sí solo: casi todo
+# en la vida del usuario puede estar pendiente ("problemas pendientes con el
+# carro", "servicios pendientes de pago"). Hace falta la COMBINACIÓN de un
+# objeto propio de la cola de Vectrax con un estado de gobernanza.
+_GOVERNANCE_OBJECT_RE = re.compile(
+    r"\b(?:propuestas?|ideas?|sugerencias?|proposals?|suggestions?)\b",
+    re.IGNORECASE,
+)
+
+# Estados FUERTES: solo se dicen de una cola de revisión. Bastan con el
+# objeto.
+_GOVERNANCE_STATE_STRONG_RE = re.compile(
     r"\b(?:sin\s+(?:revisar|aprobar|resolver)|"
     r"por\s+(?:revisar|aprobar)|"
     r"pendientes?\s+de\s+(?:revisi[óo]n|aprobaci[óo]n)|"
-    r"pendientes?)\b",
+    r"unreviewed|unapproved)\b",
     re.IGNORECASE,
 )
+
+# Estado DÉBIL: `pendiente(s)` a secas. Con el objeto propio sigue siendo
+# ambiguo ("hay ideas pendientes para la boda"), así que además exige
+# contexto de consulta y ningún complemento de finalidad externa.
+_GOVERNANCE_STATE_WEAK_RE = re.compile(r"\bpendientes?\b", re.IGNORECASE)
+
+# Contexto de consulta: pregunta o petición de listado al propio Vectrax.
+_QUERY_CONTEXT_RE = re.compile(
+    r"(?:[¿?]|\b(?:qu[ée]|cu[áa]nt[oa]s?|cu[áa]les?|quedan|hay\s+alguna|"
+    r"mu[ée]strame|ens[ée][ñn]ame|dame|lista|listado|ver|revisa)\b)",
+    re.IGNORECASE,
+)
+
+# Complemento de finalidad externa: "ideas pendientes PARA LA BODA". La cola
+# de gobernanza de Vectrax no tiene destinatario externo.
+_EXTERNAL_PURPOSE_RE = re.compile(r"\bpara\s+\w", re.IGNORECASE)
 
 # (d) Vocabulario de PROCESO sobre el circuito de aprobación. Cuando aparece
 # junto a las anclas de aprobación, la pregunta es sobre el MECANISMO
@@ -219,8 +251,17 @@ def _subject_is_vectrax(raw: str, tokens: set) -> Tuple[bool, str]:
 
     if _SECOND_PERSON_RE.search(raw):
         return True, "segunda persona dirigida a Vectrax"
-    if _GOVERNANCE_RE.search(raw):
-        return True, "vocabulario de gobernanza (cola de revisión propia)"
+
+    # Gobernanza: objeto propio + estado. El estado débil (`pendiente` a
+    # secas) exige además contexto de consulta y ausencia de finalidad
+    # externa; sin eso, "hay ideas pendientes para la boda" entraba.
+    if _GOVERNANCE_OBJECT_RE.search(raw):
+        if _GOVERNANCE_STATE_STRONG_RE.search(raw):
+            return True, "objeto propio + estado de gobernanza inequívoco"
+        if (_GOVERNANCE_STATE_WEAK_RE.search(raw)
+                and _QUERY_CONTEXT_RE.search(raw)
+                and not _EXTERNAL_PURPOSE_RE.search(raw)):
+            return True, "objeto propio + pendiente, en contexto de consulta"
     if tokens & _registered_domain_tokens():
         return True, "nombre de un dominio registrado en Vectrax"
 
