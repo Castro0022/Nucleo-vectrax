@@ -36,7 +36,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("vectrax.idea_store")
 
@@ -338,16 +338,64 @@ def _get_convergence_level() -> float:
 # ---------------------------------------------------------------------------
 
 class ConstitutionalBlock(RuntimeError):
-    """El filtro constitucional impidió la acción.
+    """El filtro constitucional DECIDIÓ impedir la acción.
 
-    Lleva la `GateDecision` para que el llamador pueda explicar la causa sin
-    reconstruirla ni volver a evaluar.
+    Es un veredicto, no una avería: hay reglas que lo justifican y un
+    `correlation_id` con el que auditarlo. Lleva la `GateDecision` para que el
+    llamador pueda explicar la causa sin reconstruirla ni volver a evaluar.
     """
 
     def __init__(self, reason: str, gate=None):
         super().__init__(reason)
         self.reason = reason
         self.gate = gate
+
+    @property
+    def correlation_id(self) -> str:
+        return getattr(self.gate, "correlation_id", "") if self.gate else ""
+
+    @property
+    def rules(self) -> tuple:
+        return tuple(getattr(self.gate, "rules", ()) or ()) if self.gate else ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "correlation_id": self.correlation_id,
+            "rules": list(self.rules),
+            "reason": self.reason,
+        }
+
+
+class ConstitutionalGuardUnavailable(ConstitutionalBlock):
+    """El control no pudo PRONUNCIARSE. Es una avería técnica, no un veredicto.
+
+    Se distingue de `ConstitutionalBlock` a propósito: ambos impiden la acción
+    —el control falla cerrado— pero significan cosas opuestas. Uno dice "esto
+    no debe hacerse, y estas reglas lo explican"; el otro dice "no sé si debe
+    hacerse". Contarlos juntos convertiría una avería en un bloqueo legítimo
+    en las estadísticas, y un bloqueo legítimo en ruido de infraestructura.
+    """
+
+
+@dataclass
+class ConstitutionalBlockRecord:
+    """Un bloqueo, como dato. No como una omisión silenciosa."""
+    correlation_id: str
+    reason: str
+    rules: Tuple[str, ...]
+    source: str
+    title: str
+    timestamp: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "correlation_id": self.correlation_id,
+            "reason": self.reason,
+            "rules": list(self.rules),
+            "source": self.source,
+            "title": self.title,
+            "timestamp": self.timestamp,
+        }
 
 
 class IdeaStore:
@@ -495,12 +543,6 @@ class IdeaStore:
             created_at=_now_iso(),
             source_id=source_id,
         )
-        self._append(idea)
-        logger.info(
-            "IdeaStore: nueva idea %s [%s] score=%.2f | %s",
-            idea.idea_id, idea.priority.value, idea.priority_score, title[:50]
-        )
-
         # === FILTRO CONSTITUCIONAL (punto de aplicación) ======================
         # Choke point 4: generación de ideas. Antes este bloque llamaba a
         # `shadow_check()` y DESCARTABA el veredicto sin asignarlo: el control
@@ -536,7 +578,7 @@ class IdeaStore:
                 "[CONSTITUTIONAL] guard caído al crear idea %s: %s",
                 idea.idea_id, exc,
             )
-            raise ConstitutionalBlock(
+            raise ConstitutionalGuardUnavailable(
                 f"El control constitucional no pudo evaluar la creación de la "
                 f"idea ({exc}). Se detiene por seguridad.",
             )
@@ -548,6 +590,16 @@ class IdeaStore:
                 "[CONSTITUTIONAL] idea %s bloqueada: %s", idea.idea_id, gate.reason,
             )
             raise ConstitutionalBlock(gate.reason, gate)
+
+
+        # Solo ahora se persiste. El control corre ANTES de escribir: si
+        # corriera después, una idea bloqueada quedaría ya en el JSONL y el
+        # bloqueo sería una protesta a posteriori, no un impedimento.
+        self._append(idea)
+        logger.info(
+            "IdeaStore: nueva idea %s [%s] score=%.2f | %s",
+            idea.idea_id, idea.priority.value, idea.priority_score, title[:50]
+        )
 
         return idea
 
@@ -599,6 +651,50 @@ class IdeaStore:
         return True
 
     # ── Ingesta desde RouterLearningEngine ────────────────────────────────
+
+    # ── Bloqueos constitucionales: dato, no omisión ───────────────────────
+
+    #: Tope del historial en memoria. Un bloqueo repetido no puede crecer sin
+    #: límite; el registro completo y permanente vive en el ledger que escribe
+    #: `enforce_check()`.
+    MAX_CONSTITUTIONAL_BLOCKS = 100
+
+    def _record_constitutional_block(self, exc, *, source: str, title: str) -> None:
+        """Deja constancia de un bloqueo con todo lo necesario para auditarlo.
+
+        Un bloqueo constitucional no es "no salió nada de esta fuente": es una
+        decisión con reglas y un `correlation_id`. Si se absorbiera en el
+        `except Exception` genérico junto a un timeout de red, sería
+        indistinguible de una omisión normal — que es exactamente lo que no
+        puede pasar.
+        """
+        record = ConstitutionalBlockRecord(
+            correlation_id=exc.correlation_id,
+            reason=exc.reason,
+            rules=exc.rules,
+            source=source,
+            title=title[:120],
+            timestamp=time.time(),
+        )
+        blocks = getattr(self, "_constitutional_blocks", None)
+        if blocks is None:
+            blocks = self._constitutional_blocks = []
+        blocks.append(record)
+        del blocks[:-self.MAX_CONSTITUTIONAL_BLOCKS]
+        logger.warning(
+            "[CONSTITUTIONAL] idea BLOQUEADA en %s | correlation_id=%s | "
+            "reglas=%s | motivo=%s | titulo=%r",
+            source, record.correlation_id or "(sin id)",
+            list(record.rules) or "(ninguna)", record.reason, record.title,
+        )
+
+    def constitutional_blocks(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Bloqueos registrados, del más reciente al más antiguo."""
+        blocks = getattr(self, "_constitutional_blocks", None) or []
+        return [r.to_dict() for r in reversed(blocks[-limit:])]
+
+    def constitutional_block_count(self) -> int:
+        return len(getattr(self, "_constitutional_blocks", None) or [])
 
     def ingest_from_router_learning(self) -> int:
         """
@@ -652,24 +748,42 @@ class IdeaStore:
                     description = p.get("suggested_action", "Ver evidencia adjunta")
                     affected = p.get("affected_component", "smart_router")
 
-                    idea = self.add(
-                        title=title,
-                        description=description,
-                        source=IdeaSource.ROUTER_LEARNING,
-                        priority=priority,
-                        impact_score=impact_score,
-                        affected_component=affected,
-                        evidence=p.get("evidence", {}),
-                        source_id=source_id,
-                        dedup_key=_semantic_dedup_key(p),
-                    )
-                    if idea:
-                        added += 1
+                    try:
+                        idea = self.add(
+                            title=title,
+                            description=description,
+                            source=IdeaSource.ROUTER_LEARNING,
+                            priority=priority,
+                            impact_score=impact_score,
+                            affected_component=affected,
+                            evidence=p.get("evidence", {}),
+                            source_id=source_id,
+                            dedup_key=_semantic_dedup_key(p),
+                        )
+                        if idea:
+                            added += 1
+                    except ConstitutionalGuardUnavailable:
+                        # Avería del control: se relanza para el tratamiento técnico
+                        # de siempre. No es un veredicto y no se cuenta como tal.
+                        raise
+                    except ConstitutionalBlock as _cb:
+                        # Veredicto sobre ESTA idea. Se registra con su título real y
+                        # el lote continúa: un bloqueo no debe silenciar a los demás.
+                        self._record_constitutional_block(
+                            _cb, source='router_learning', title=title,
+                        )
+                        continue
 
             if added:
                 logger.info("IdeaStore: %d ideas ingresadas desde RouterLearning", added)
             return added
 
+        except ConstitutionalGuardUnavailable as exc:
+            # Avería del control: tratamiento técnico de siempre.
+            logger.warning(
+                "IdeaStore.ingest_from_router_learning: control no disponible: %s", exc,
+            )
+            return 0
         except Exception as exc:
             logger.warning("IdeaStore.ingest_from_router_learning failed: %s", exc)
             return 0
@@ -692,31 +806,43 @@ class IdeaStore:
                 if rec.status != "pending":
                     continue
 
-                idea = self.add(
-                    title=(
-                        f"Ajuste umbral {rec.threshold_name} "
-                        f"{'↑' if rec.direction == 'up' else '↓'} "
-                        f"{rec.current_value:.2f}→{rec.recommended_value:.2f}"
-                    ),
-                    description=rec.reasoning[:500],
-                    source=IdeaSource.CONVERGENCE_LEARNER,
-                    priority=IdeaPriority.HIGH if rec.confidence >= 0.7 else IdeaPriority.MEDIUM,
-                    impact_score=min(0.95, rec.confidence),
-                    affected_component=f"presencia_observer.{rec.threshold_name}",
-                    evidence={
-                        "rec_id":         rec.rec_id,
-                        "motor":          rec.motor_name or "GLOBAL",
-                        "threshold":      rec.threshold_name,
-                        "current":        rec.current_value,
-                        "recommended":    rec.recommended_value,
-                        "direction":      rec.direction,
-                        "sample_size":    rec.sample_size,
-                        "confidence":     round(rec.confidence, 4),
-                    },
-                    source_id=f"conv_{rec.rec_id}",
-                )
-                if idea:
-                    added += 1
+                try:
+                    idea = self.add(
+                        title=(
+                            f"Ajuste umbral {rec.threshold_name} "
+                            f"{'↑' if rec.direction == 'up' else '↓'} "
+                            f"{rec.current_value:.2f}→{rec.recommended_value:.2f}"
+                        ),
+                        description=rec.reasoning[:500],
+                        source=IdeaSource.CONVERGENCE_LEARNER,
+                        priority=IdeaPriority.HIGH if rec.confidence >= 0.7 else IdeaPriority.MEDIUM,
+                        impact_score=min(0.95, rec.confidence),
+                        affected_component=f"presencia_observer.{rec.threshold_name}",
+                        evidence={
+                            "rec_id":         rec.rec_id,
+                            "motor":          rec.motor_name or "GLOBAL",
+                            "threshold":      rec.threshold_name,
+                            "current":        rec.current_value,
+                            "recommended":    rec.recommended_value,
+                            "direction":      rec.direction,
+                            "sample_size":    rec.sample_size,
+                            "confidence":     round(rec.confidence, 4),
+                        },
+                        source_id=f"conv_{rec.rec_id}",
+                    )
+                    if idea:
+                        added += 1
+                except ConstitutionalGuardUnavailable:
+                    # Avería del control: se relanza para el tratamiento técnico
+                    # de siempre. No es un veredicto y no se cuenta como tal.
+                    raise
+                except ConstitutionalBlock as _cb:
+                    # Veredicto sobre ESTA idea. Se registra con su título real y
+                    # el lote continúa: un bloqueo no debe silenciar a los demás.
+                    self._record_constitutional_block(
+                        _cb, source='convergence_learner', title=title,
+                    )
+                    continue
 
             if added:
                 logger.info(
@@ -724,6 +850,12 @@ class IdeaStore:
                 )
             return added
 
+        except ConstitutionalGuardUnavailable as exc:
+            logger.warning(
+                "IdeaStore.ingest_from_convergence_learner: control no disponible: %s",
+                exc,
+            )
+            return 0
         except Exception as exc:
             logger.debug("IdeaStore.ingest_from_convergence_learner: %s", exc)
             return 0
@@ -763,27 +895,44 @@ class IdeaStore:
                 )
 
                 source_id = f"router_err_{category}_{count}"
-                idea = self.add(
-                    title=f"Error recurrente: {category} ({count} casos)",
-                    description=suggestion,
-                    source=IdeaSource.ROUTER_LEARNING,
-                    priority=priority,
-                    impact_score=impact_score,
-                    affected_component="smart_router.classification",
-                    evidence={
-                        "category":         category,
-                        "count":            count,
-                        "impact_score_raw": round(impact_raw, 3),
-                        "top_intent":       err.get("top_intent", ""),
-                        "avg_confidence":   err.get("avg_confidence", 0),
-                    },
-                    source_id=source_id,
-                )
-                if idea:
-                    added += 1
+                try:
+                    idea = self.add(
+                        title=f"Error recurrente: {category} ({count} casos)",
+                        description=suggestion,
+                        source=IdeaSource.ROUTER_LEARNING,
+                        priority=priority,
+                        impact_score=impact_score,
+                        affected_component="smart_router.classification",
+                        evidence={
+                            "category":         category,
+                            "count":            count,
+                            "impact_score_raw": round(impact_raw, 3),
+                            "top_intent":       err.get("top_intent", ""),
+                            "avg_confidence":   err.get("avg_confidence", 0),
+                        },
+                        source_id=source_id,
+                    )
+                    if idea:
+                        added += 1
+                except ConstitutionalGuardUnavailable:
+                    # Avería del control: se relanza para el tratamiento técnico
+                    # de siempre. No es un veredicto y no se cuenta como tal.
+                    raise
+                except ConstitutionalBlock as _cb:
+                    # Veredicto sobre ESTA idea. Se registra con su título real y
+                    # el lote continúa: un bloqueo no debe silenciar a los demás.
+                    self._record_constitutional_block(
+                        _cb, source='router_analysis', title=title,
+                    )
+                    continue
 
             return added
 
+        except ConstitutionalGuardUnavailable as exc:
+            logger.warning(
+                "IdeaStore.ingest_from_router_analysis: control no disponible: %s", exc,
+            )
+            return 0
         except Exception as exc:
             logger.debug("IdeaStore.ingest_from_router_analysis: %s", exc)
             return 0
