@@ -55,6 +55,26 @@ def _isolated_state(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolated_vault(tmp_path, monkeypatch):
+    """Redirige el vault al tmp_path para no tocar el almacén REAL.
+
+    `TestConvergenciaConPresenciaPura` ejecuta `run_convergence_cycle()` de
+    verdad. Su fase [7] llama a `LearnedRulesStore.record_application()`
+    (core/nucleus/total_convergence.py), que sin este aislamiento escribía en el
+    archivo RASTREADO `vault/learned_rules.jsonl` e incrementaba el contador
+    `applications` de una regla real en cada ejecución de la suite.
+
+    El singleton se resetea a ambos lados para que ni se herede una instancia
+    apuntando al vault real ni se filtre una que apunte al tmp_path.
+    """
+    monkeypatch.setenv("VECTRAX_VAULT_DIR", str(tmp_path / "vault"))
+    from core.learn import learned_rules as _lr
+    _lr.reset_rules_store()
+    yield
+    _lr.reset_rules_store()
+
+
+@pytest.fixture(autouse=True)
 def _reset_convergence():
     """Resetea el singleton del motor de convergencia entre tests."""
     yield
