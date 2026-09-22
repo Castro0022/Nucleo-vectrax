@@ -337,6 +337,19 @@ def _get_convergence_level() -> float:
 # IdeaStore — store JSONL persistente
 # ---------------------------------------------------------------------------
 
+class ConstitutionalBlock(RuntimeError):
+    """El filtro constitucional impidió la acción.
+
+    Lleva la `GateDecision` para que el llamador pueda explicar la causa sin
+    reconstruirla ni volver a evaluar.
+    """
+
+    def __init__(self, reason: str, gate=None):
+        super().__init__(reason)
+        self.reason = reason
+        self.gate = gate
+
+
 class IdeaStore:
     """
     Almacén persistente de ideas operacionales.
@@ -488,31 +501,53 @@ class IdeaStore:
             idea.idea_id, idea.priority.value, idea.priority_score, title[:50]
         )
 
-        # === FILTRO CONSTITUCIONAL (Fase 1 — SHADOW MODE) =====================
-        # Choke point 4: generación de ideas. Solo observa y registra — crear
-        # una idea sigue siendo un cambio reversible y de bajo riesgo (queda
-        # PENDING hasta que el creador la apruebe), así que no se modela como
-        # "is_learning_context" (eso aplica recién cuando se APLICA una idea,
-        # Fase 4). `action_logged=False` refleja con honestidad que hoy la
-        # creación de ideas no pasa por el audit ledger, solo por el logger de
-        # Python — hallazgo real que quedará documentado en la matriz de
-        # cobertura de la Fase 1.
+        # === FILTRO CONSTITUCIONAL (punto de aplicación) ======================
+        # Choke point 4: generación de ideas. Antes este bloque llamaba a
+        # `shadow_check()` y DESCARTABA el veredicto sin asignarlo: el control
+        # aparentaba existir aquí y no gobernaba nada, ni siquiera con la
+        # bandera global en enforce. Ahora se obedece.
+        #
+        # `action_logged=False` sigue reflejando con honestidad que la creación
+        # de ideas no pasa por el audit ledger, solo por el logger de Python.
+        from core.operator.constitutional_guard import enforce_check
+        from core.operator.constitutional_filter import ActionProposal
         try:
-            from core.operator.constitutional_guard import shadow_check
-            from core.operator.constitutional_filter import ActionProposal
-            shadow_check(ActionProposal(
-                action="create_idea",
-                correlation_id=idea.idea_id,
-                classification=source.value,
-                is_irreversible=False,
-                interaction_recorded=True,
-                domain=affected_component,
-                action_logged=False,
-                is_hypothesis_context=True,
-                has_counter_evidence=False,
-            ))
-        except Exception as _cf_exc:
-            logger.debug("Constitutional shadow check failed (passthrough): %s", _cf_exc)
+            gate = enforce_check(
+                ActionProposal(
+                    action="create_idea",
+                    correlation_id=idea.idea_id,
+                    classification=source.value,
+                    is_irreversible=False,
+                    interaction_recorded=True,
+                    domain=affected_component,
+                    action_logged=False,
+                    is_hypothesis_context=True,
+                    has_counter_evidence=False,
+                ),
+                application_point="core.idea_store.IdeaStore.create",
+                actor=str(source.value),
+            )
+        except Exception as exc:
+            # FALLA CERRADO. Antes este bloque dejaba pasar la idea cuando el
+            # guard fallaba ("passthrough"), que es exactamente el fallback
+            # silencioso que no debe existir: un control que se cae y deja
+            # pasar no es un control.
+            logger.error(
+                "[CONSTITUTIONAL] guard caído al crear idea %s: %s",
+                idea.idea_id, exc,
+            )
+            raise ConstitutionalBlock(
+                f"El control constitucional no pudo evaluar la creación de la "
+                f"idea ({exc}). Se detiene por seguridad.",
+            )
+
+        if not gate.allowed:
+            # La idea NO se persiste. Se explica la causa en lugar de crearla
+            # y dejar que alguien descubra después que no debió existir.
+            logger.warning(
+                "[CONSTITUTIONAL] idea %s bloqueada: %s", idea.idea_id, gate.reason,
+            )
+            raise ConstitutionalBlock(gate.reason, gate)
 
         return idea
 

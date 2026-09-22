@@ -295,7 +295,7 @@ class TestCapabilityResponseGroundingFlagOn:
              ), \
              patch("core.language_gate.get_user_language", return_value="es"), \
              patch(
-                 "core.operator.constitutional_guard.shadow_check",
+                 "core.operator.constitutional_guard.enforce_check",
              ) as mock_gate:
             result = _send(gw, user_id="tg:cap_build_fail")
         assert result.response == _LEGACY_PARTIAL
@@ -366,27 +366,28 @@ class TestCapabilityResponseGroundingFlagOn:
         for name in _PROD_GAPS:
             assert name in text_en
 
-    def test_shadow_mode_traverses_gate_without_enforcing(self, monkeypatch):
-        """En shadow la respuesta grounded SÍ atraviesa el gate único: el gate
-        observa y registra (shadow_check), pero no ejecuta (sin gate_check, sin
-        sustitución)."""
+    def test_the_grounded_response_traverses_the_single_gate(self, monkeypatch):
+        """La respuesta grounded atraviesa el gate ÚNICO, que ahora aplica.
+
+        Sustituye a la antigua "en shadow atraviesa sin ejecutar", que
+        describía un modo de observación que ya no existe. Lo que sigue
+        importando es que haya UN solo gate y que la respuesta pase por él.
+        """
         _both_flags_on(monkeypatch)
         gw = ExternalGateway()
         stack = _grounding_env()
-        stack.extend([
-            patch("core.operator.constitutional_mode.is_enforce", return_value=False),
-            patch("core.operator.constitutional_guard.shadow_check"),
-            patch("core.operator.constitutional_guard.gate_check"),
-        ])
+        stack.append(patch("core.operator.constitutional_guard.enforce_check"))
         started = [cm.start() for cm in stack]
-        mock_shadow, mock_gate = started[-2], started[-1]
+        mock_gate = started[-1]
         try:
-            result = _send(gw, user_id="tg:cap_shadow_mode")
+            result = _send(gw, user_id="tg:cap_single_gate")
         finally:
             for cm in reversed(stack):
                 cm.stop()
-        mock_shadow.assert_called_once()
-        mock_gate.assert_not_called()
+        mock_gate.assert_called_once()
+        assert mock_gate.call_args.kwargs["application_point"].endswith(
+            "_constitutional_gate"
+        )
         for name in _PROD_GAPS:
             assert name in result.response
 
@@ -426,18 +427,18 @@ class TestCapabilityConstitutionalChain:
 
     def _run(self, monkeypatch, *, user_id, extra_patches=(),
              legacy=_LEGACY_PARTIAL, ctx=None):
-        """Corre el camino grounded en enforce con el filtro REAL, espiando
-        `gate_check` sin sustituir su comportamiento."""
+        """Corre el camino grounded con el filtro REAL, espiando
+        `enforce_check` sin sustituir su comportamiento.
+
+        Ya no hace falta forzar el modo: el control se aplica siempre.
+        """
         import core.operator.constitutional_guard as guard
 
         _both_flags_on(monkeypatch)
         gw = ExternalGateway()
         stack = _grounding_env(legacy=legacy, ctx=ctx)
         stack.append(
-            patch("core.operator.constitutional_mode.is_enforce", return_value=True)
-        )
-        stack.append(
-            patch.object(guard, "gate_check", wraps=guard.gate_check)
+            patch.object(guard, "enforce_check", wraps=guard.enforce_check)
         )
         stack.extend(extra_patches)
         started = [cm.start() for cm in stack]

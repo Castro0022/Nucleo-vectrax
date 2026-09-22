@@ -28,7 +28,7 @@ Este módulo ENVUELVE (no reemplaza) `core.operator.law_enforcement`:
     PresenciaObserver), aquí "no hay evidencia → CAUTION" (para no
     autorizar sin saber).
 
-Modo de operación (shadow/enforce): ver `core.operator.constitutional_mode`.
+Modo de operación (active/paused): ver `core.operator.constitutional_mode`.
 En Fase 1, este módulo se invoca EXCLUSIVAMENTE en modo shadow — evalúa y
 registra en el ledger, pero nunca altera el comportamiento del pipeline.
 
@@ -132,7 +132,7 @@ class ConstitutionalVerdict:
     action: str
     results: Tuple[PrincipleResult, ...]   # exactamente 7, ordenados por número de ley
     overall: PrincipleVerdict
-    mode: str                              # "shadow" | "enforce"
+    mode: str                              # "active" | "paused"
     timestamp: float = field(default_factory=time.time)
     filter_error: str = ""                 # no vacío si el filtro falló técnicamente
 
@@ -376,7 +376,7 @@ def _caution_all(action: str, proposal_id: str, mode: str, error: str) -> Consti
     )
 
 
-def evaluate(proposal: ActionProposal, *, mode: str = "shadow") -> ConstitutionalVerdict:
+def evaluate(proposal: ActionProposal, *, mode: str = "active") -> ConstitutionalVerdict:
     """
     Evalúa una propuesta de acción contra los 7 Principios Fundamentales.
 

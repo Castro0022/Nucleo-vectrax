@@ -469,12 +469,10 @@ class ExternalGateway:
         self, user_id: str, content: str, result: "GatewayResult",
     ) -> None:
         """Construye la ActionProposal desde el GatewayResult ya producido y
-        la pasa por el filtro constitucional. En modo 'shadow' (default) solo
-        observa (idéntico a la Fase 1). En modo 'enforce', actúa sobre el
-        veredicto: BLOCK o CAUTION-no-autorizado sustituyen `result.response`
-        por un mensaje honesto y no técnico; PASS o CAUTION-autorizado dejan
-        `result` intacto. Nunca lanza."""
-        from core.operator import constitutional_mode
+        la pasa por el filtro constitucional, que SIEMPRE se aplica: BLOCK,
+        CAUTION-no-autorizado, pausa de emergencia o fallo del evaluador
+        sustituyen `result.response` por un mensaje honesto y no técnico; PASS
+        o CAUTION-autorizado dejan `result` intacto. Nunca lanza."""
         from core.operator.constitutional_filter import ActionProposal, PrincipleVerdict
 
         if not getattr(result, "processed", False):
@@ -491,39 +489,32 @@ class ExternalGateway:
             action_logged=True,  # external.message_received/response ya registrados
         )
 
-        if not constitutional_mode.is_enforce():
-            # Shadow (default): comportamiento idéntico a la Fase 1. Una
-            # respuesta grounded SÍ atraviesa este gate — el gate observa y
-            # registra, pero en shadow no ejecuta: no sustituye ni corrige.
-            from core.operator.constitutional_guard import shadow_check
-            shadow_verdict = shadow_check(proposal)
+        # El control se aplica SIEMPRE. Antes había una rama de observación que
+        # evaluaba y no hacía nada con el resultado; se retiró con
+        # `shadow_check()`.
+        from core.operator.constitutional_guard import enforce_check
+        gate = enforce_check(
+            proposal,
+            application_point="core.operator.external_gateway._constitutional_gate",
+            actor=str(user_id or ""),
+        )
+        verdict = gate.verdict
+        decision = gate.decision
+
+        if gate.allowed:
             self._log_capability_trace(
-                result, verdict_chain=[shadow_verdict],
+                result, verdict_chain=[verdict] if verdict else [],
                 final_source=result.source, user_id=user_id,
             )
             return
 
-        # === ENFORCE: el veredicto puede sustituir la respuesta real ========
-        from core.operator.constitutional_guard import gate_check
-        verdict, decision = gate_check(proposal)
-
-        gate_source = ""
-        if verdict.overall == PrincipleVerdict.BLOCK:
+        if verdict is None:
+            # Pausa de emergencia o fallo del evaluador: se detiene y se dice.
+            gate_source = "constitutional_unavailable"
+        elif verdict.overall == PrincipleVerdict.BLOCK:
             gate_source = "constitutional_block"
-        elif (
-            verdict.overall == PrincipleVerdict.CAUTION
-            and decision is not None
-            and not decision.auto_approved
-        ):
+        else:
             gate_source = "constitutional_caution_denied"
-
-        if not gate_source:
-            # PASS, o CAUTION ya autorizado por DecisionAuthority — sin cambios.
-            self._log_capability_trace(
-                result, verdict_chain=[verdict],
-                final_source=result.source, user_id=user_id,
-            )
-            return
 
         # NOTA (Fase 4): aquí NO hay corrección + re-evaluación. Se evaluó y se
         # descartó: `ActionProposal` no transporta el texto de la respuesta ni
@@ -535,10 +526,7 @@ class ExternalGateway:
         # Una corrección constitucional legítima exigiría que la propuesta
         # transportara hechos que el veredicto pueda releer — cambio de contrato
         # fuera del alcance de este PR.
-        flagged = [
-            f"L{r.number}={r.verdict.value}" for r in verdict.results
-            if r.verdict != PrincipleVerdict.PASS
-        ]
+        flagged = list(gate.rules)
         try:
             from core.language_gate import get_user_language
             lang = get_user_language(user_id, content)
@@ -552,18 +540,23 @@ class ExternalGateway:
         result.resolve_mode = gate_source
         try:
             result.evidence = dict(result.evidence or {})
-            result.evidence["constitutional_overall"] = verdict.overall.value
+            # `gate.overall` vale "unavailable" cuando no hubo veredicto
+            # (pausa de emergencia o fallo del evaluador): ahí no hay
+            # `verdict` que desreferenciar, y decir "unavailable" es más
+            # honesto que inventar un veredicto.
+            result.evidence["constitutional_overall"] = gate.overall
             result.evidence["constitutional_flagged"] = flagged
+            result.evidence["constitutional_correlation_id"] = gate.correlation_id
         except Exception:
             pass
 
         logger.warning(
             "Pipeline: CONSTITUTIONAL-GATE %s | overall=%s | flagged=%s | user=%s",
-            gate_source, verdict.overall.value, flagged, user_id[:20],
+            gate_source, gate.overall, flagged, user_id[:20],
         )
         self._log_capability_trace(
-            result, verdict_chain=[verdict], final_source=gate_source,
-            user_id=user_id,
+            result, verdict_chain=[verdict] if verdict else [],
+            final_source=gate_source, user_id=user_id,
         )
 
     def _log_capability_trace(
