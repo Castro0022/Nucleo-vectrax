@@ -82,7 +82,6 @@ SEMI_SAFE_PATHS: List[str] = [
     "core/proposal_engine.py",
     "core/autopatch.py",
     "core/meta_loop.py",
-    "core/shadow_mode.py",
     "core/action_sandbox.py",
     "core/action_executor.py",
     "core/ingest.py",
