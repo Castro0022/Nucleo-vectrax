@@ -48,6 +48,54 @@ from core.nucleus.nucleus_authority import get_nucleus_authority  # noqa: E402
 # terminar la sesión.
 # ---------------------------------------------------------------------------
 
+# Siembra sintetica determinista para entornos limpios (CI). Se aplica SOLO
+# si la copia aislada viene sin stars: en la maquina del autor se usa su
+# memoria real sin tocarla. Las frases estan elegidas para que varias
+# palabras de contenido aparezcan en estrellas DISTINTAS -- que es lo que
+# `_summarize_learned_patterns()` cuenta como patron recurrente
+# (`_content_words()` devuelve un set por estrella, asi que repetir una
+# palabra dentro de una sola frase no suma). Sin digitos: la prueba exige
+# que la respuesta al usuario no contenga cifras.
+_SEED_STAR_CONTENTS = (
+    "La gravedad organiza la memoria en capas",
+    "La memoria retiene patrones de gravedad",
+    "Los patrones emergen de la convergencia observada",
+    "La convergencia agrupa evidencia repetida",
+    "La evidencia sostiene los patrones aprendidos",
+    "La gravedad concentra evidencia en el nucleo",
+)
+
+
+def _seed_synthetic_stars() -> int:
+    """Inserta las stars sinteticas en la base YA aislada. Devuelve cuantas.
+
+    El canal NO es `_CHANNEL`: el Nucleo lo DERIVA del owner canonico
+    (core/nucleus/nucleus_authority.py:1233 -- CHANNEL_CREATOR si el owner
+    canonico es CREATOR_OWNER, CHANNEL_USER en caso contrario), asi que con
+    `_OWNER = "owner"` sobre una base limpia las consultas caen en el canal
+    "user" aunque la llamada entre con channel="creator". Se replica aqui la
+    MISMA derivacion en vez de fijar el valor, para que la siembra siga al
+    producto si esa regla cambia.
+    """
+    import vectrax.db as _db_mod
+    from vectrax.identity import CREATOR_OWNER, CHANNEL_CREATOR, CHANNEL_USER
+    from vectrax.identity_aliases import resolve_owner
+    from vectrax.models import Star
+
+    _db_mod.init_db()
+    canonical_owner = resolve_owner(_OWNER)
+    channel = CHANNEL_CREATOR if canonical_owner == CREATOR_OWNER else CHANNEL_USER
+    for i, content in enumerate(_SEED_STAR_CONTENTS):
+        _db_mod.insert_star(Star(
+            id=f"seed-nucleus-reunification-{i}",
+            content=content,
+            timestamp=1_700_000_000.0 + i,
+            channel=channel,
+            owner=canonical_owner,
+        ))
+    return len(_SEED_STAR_CONTENTS)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def isolated_vectrax_db():
     real_db = Path.home() / ".vectrax" / "vectrax.db"
@@ -72,7 +120,18 @@ def isolated_vectrax_db():
     mp.setattr(_alias_mod, "DB_PATH", tmp_db, raising=True)
     mp.setattr(_argos_mod, "_DB_PATH", tmp_db, raising=True)
 
-    print(f"\n[isolated_vectrax_db] Copia temporal aislada en: {tmp_db}")
+    # Garantiza el esquema antes de contar: una copia (o una base ausente)
+    # puede no tener aun la tabla `stars`, y get_counts() fallaria. init_db()
+    # es idempotente y no altera datos existentes.
+    _db_mod.init_db()
+
+    # Base vacia -> sembrar, para que las pruebas que necesitan memoria propia
+    # se EJECUTEN en CI en vez de saltarse.
+    if int(_db_mod.get_counts().get("stars", 0)) == 0:
+        n = _seed_synthetic_stars()
+        print(f"\n[isolated_vectrax_db] base vacia: sembradas {n} stars sinteticas")
+
+    print(f"[isolated_vectrax_db] Copia temporal aislada en: {tmp_db}")
     yield tmp_db
 
     mp.undo()
@@ -347,23 +406,17 @@ def test_australia_president_resolves_online_not_local_memory(all_results):
         assert mem["consulted"] is True
 
 
-def test_learned_answers_from_memory_not_clarification(all_results, stars_baseline):
+def test_learned_answers_from_memory_not_clarification(all_results):
     """'¿Qué has aprendido?' debe consultar la memoria y resumir ENTRE 3 Y 5
     patrones generales propios en lenguaje natural, SIN cifras/IDs/conteos en
     la respuesta (esos quedan solo en `evidence`, para trazabilidad interna)
     — YA NO responde con una aclaración automática.
 
-    Requiere una base sembrada: sin stars reales NO hay nada que resumir, y
-    responder con CLARIFICATION es entonces el comportamiento CORRECTO
-    (abstención honesta). Afirmar lo contrario sobre una base vacía seria
-    exigirle al sistema que invente un resumen sin evidencia.
+    Requiere memoria propia con patrones recurrentes. En un entorno limpio la
+    aporta la siembra sintética determinista del fixture
+    `isolated_vectrax_db` (ver `_SEED_STAR_CONTENTS`), así que esta prueba se
+    ejecuta igual en CI que en una máquina con memoria real.
     """
-    if stars_baseline == 0:
-        pytest.skip(
-            "requiere ~/.vectrax/vectrax.db sembrada: con 0 stars, "
-            "CLARIFICATION es la respuesta correcta y no hay resumen que "
-            "verificar"
-        )
     entry = next(r for r in all_results if "has aprendido" in r["prompt"].lower())
     for channel in ("api", "telegram"):
         r = entry[channel]
