@@ -33,8 +33,12 @@ from core.autonomy_policy import (
 )
 from core.governor import get_current_policy
 from core.providers import OllamaProvider
-from core.risk_engine import OperationContext, RiskEngine, RiskLevel
-from core.shadow_mode import compute_confidence
+from core.risk_engine import (
+    OperationContext,
+    RiskEngine,
+    RiskLevel,
+    compute_confidence,
+)
 
 
 @dataclass

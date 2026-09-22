@@ -84,7 +84,6 @@ class TestSemiSafe:
         "core/proposal_engine.py",
         "core/autopatch.py",
         "core/meta_loop.py",
-        "core/shadow_mode.py",
         "core/ingest.py",
         "core/memory_sqlite.py",
         "core/providers/ollama_provider.py",

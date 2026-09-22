@@ -296,6 +296,9 @@ def record_convergence_snapshot(
         "created": 0, "confirmed": 0, "dissolved": 0,
         "reappeared": 0, "ambiguous": ambiguities,
     }
+    # Convergencias tocadas por ESTE ciclo, para el puente causal. Se recogen
+    # durante el recorrido normal: no se consulta la tabla histórica.
+    touched: List[Dict[str, Any]] = []
     conn = connect(db_path)
     try:
         existing = {
@@ -358,6 +361,25 @@ def record_convergence_snapshot(
                 )
                 lifecycle = "reappeared"
                 result["reappeared"] += 1
+            touched.append({
+                "convergence_id": convergence_id,
+                # `canonical_id` ES el fingerprint vivo del gravity index
+                # cuando la resolución fue exacta o reconstruida con
+                # evidencia; es la clave que `fetch_pattern_stats` acepta.
+                "source_pattern_ids": [
+                    entity_a.canonical_id, entity_b.canonical_id,
+                ],
+                "domains": [entity_a.domain, entity_b.domain],
+                "combined_cc": data["combined_cc"],
+                "combined_hits": data["combined_hits"],
+                "status": "active",
+                "lifecycle_event": lifecycle,
+                "first_seen": float(prior["first_seen"]) if prior else now,
+                "claim": (
+                    f"{entity_a.canonical_id} converge con "
+                    f"{entity_b.canonical_id} ({data['relationship_type']})"
+                ),
+            })
             if _lifecycle_state_changed(
                 conn, convergence_id, lifecycle,
                 data["combined_cc"], data["combined_hits"],
@@ -379,6 +401,19 @@ def record_convergence_snapshot(
                 WHERE convergence_id=?""",
                 (now, convergence_id),
             )
+            gone = existing.get(convergence_id) or {}
+            touched.append({
+                "convergence_id": convergence_id,
+                "source_pattern_ids": [
+                    gone.get("entity_a_id", ""), gone.get("entity_b_id", ""),
+                ],
+                "domains": [gone.get("domain_a", ""), gone.get("domain_b", "")],
+                "combined_cc": gone.get("combined_cc") or 0.0,
+                "combined_hits": gone.get("combined_hits") or 0,
+                "status": "dissolved",
+                "lifecycle_event": "dissolved",
+                "first_seen": float(gone.get("first_seen") or now),
+            })
             if _lifecycle_state_changed(conn, convergence_id, "dissolved", None, None):
                 conn.execute(
                     """INSERT INTO convergence_lifecycle_events
@@ -389,6 +424,19 @@ def record_convergence_snapshot(
         conn.commit()
     finally:
         conn.close()
+
+    # --- Puente causal -----------------------------------------------------
+    # El registro de convergencias es la SSOT de QUÉ convergió; el puente
+    # causal decide si eso es aprendizaje. Va DESPUÉS del commit y aislado:
+    # el almacén causal nunca puede tumbar al observador ni revertir lo que el
+    # registro ya escribió. No se captura en silencio — se registra y se
+    # devuelve en `result["causal"]` para que sea observable.
+    try:
+        from core.learn.causal_learning import evaluate_live_convergences
+        result["causal"] = evaluate_live_convergences(touched, db_path=None)
+    except Exception as exc:
+        logger.warning("puente causal no disponible en este ciclo: %s", exc)
+        result["causal"] = {"errors": [str(exc)]}
     return result
 
 
