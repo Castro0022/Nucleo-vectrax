@@ -57,15 +57,48 @@ def registry_db(tmp_path) -> str:
     return str(tmp_path / "registry" / "convergence.db")
 
 
+def _record(fingerprint: str, wins: int, losses: int):
+    """Una estrella real del gravity index con su historia de outcomes.
+
+    Se construye un `GravityRecord` de verdad en lugar de doblar
+    `fetch_pattern_stats`, para que el ciclo ejercite el camino completo:
+    `cycle_stats_fetcher()` -> una lectura del índice -> `derive_pattern_stats`.
+    """
+    from core.learn.schemas import GravityRecord
+    return GravityRecord(
+        fingerprint=fingerprint,
+        domain=fingerprint.split(":")[0],
+        outcome_history=["win"] * wins + ["loss"] * losses,
+    )
+
+
+def _patch_index(monkeypatch, records):
+    """Sustituye SOLO la lectura del índice, no la derivación."""
+    import core.learn.gravity_engine as ge
+
+    class _Index:
+        def load_raw(self):
+            return dict(records)
+
+        def get(self, fp):
+            return records.get(fp)
+
+    monkeypatch.setattr(ge, "get_gravity_index", lambda: _Index(), raising=False)
+
+
 @pytest.fixture
 def strong_patterns(monkeypatch):
-    """Ambos patrones fuente con métricas reales suficientes."""
-    import core.gravity_kernel.signals as signals
-    stats = {"market:AAPL": STRONG, "freight_logistics:LANE-7": STRONG}
-    monkeypatch.setattr(
-        signals, "fetch_pattern_stats", lambda fp: stats.get(fp), raising=False,
-    )
-    return stats
+    """Ambos patrones fuente con métricas reales suficientes.
+
+    16 aciertos y 4 fallos -> 20 outcomes graduados, win_rate 80 %,
+    expectancy 0.6, confianza 1.0. Exactamente lo que exige la política.
+    """
+    records = {
+        "market:AAPL": _record("market:AAPL", 16, 4),
+        "freight_logistics:LANE-7": _record("freight_logistics:LANE-7", 16, 4),
+    }
+    _patch_index(monkeypatch, records)
+    return records
 
 
 # ===========================================================================
@@ -117,11 +150,11 @@ class TestTheFirstLiveCycleCanLearn:
             assert learning["source_convergence_id"] in ids
 
     def test_an_unqualified_pattern_stays_a_candidate(self, registry_db, monkeypatch):
-        import core.gravity_kernel.signals as signals
-        stats = {"market:AAPL": STRONG, "freight_logistics:LANE-7": THIN}
-        monkeypatch.setattr(
-            signals, "fetch_pattern_stats", lambda fp: stats.get(fp), raising=False,
-        )
+        # LANE-7 con solo 5 outcomes graduados: por debajo de MIN_SAMPLE=15.
+        _patch_index(monkeypatch, {
+            "market:AAPL": _record("market:AAPL", 16, 4),
+            "freight_logistics:LANE-7": _record("freight_logistics:LANE-7", 5, 0),
+        })
         result = reg.record_convergence_snapshot(
             [CANDIDATE], live_fingerprints=LIVE, db_path=registry_db,
         )

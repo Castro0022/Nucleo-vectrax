@@ -147,20 +147,22 @@ def build_cause_effect_ctx(
     )
 
 
-def fetch_pattern_stats(fingerprint: str) -> Optional[Dict[str, float]]:
-    """
-    Best-effort: deriva win_rate/expectancy desde el outcome_history del gravity
-    engine para un fingerprint dado. Devuelve None si no hay registro o historia.
-    Defensivo: nunca lanza.
+def derive_pattern_stats(rec) -> Optional[Dict[str, float]]:
+    """La DERIVACIÓN pura, sin ninguna E/S.
+
+    Separada de `fetch_pattern_stats` para que un consumidor que ya tenga un
+    snapshot del gravity index en memoria pueda reutilizarlo en lugar de
+    releer el índice entero del disco por cada fingerprint. `GravityIndex.get()`
+    llama a `_load()`, que toma el lock y lee el archivo COMPLETO en cada
+    llamada: evaluar 50 convergencias de 2 patrones costaría 100 lecturas
+    íntegras del índice por ciclo.
+
+    Ambas rutas comparten este cuerpo, así que no pueden divergir.
     """
     try:
-        from core.learn.gravity_engine import GravityIndex
-        rec = GravityIndex().get(fingerprint)
         if rec is None:
             return None
         history = list(getattr(rec, "outcome_history", []) or [])
-        if not history:
-            return None
         wins = sum(1 for o in history if str(o).lower() in ("win", "success", "ok"))
         losses = sum(1 for o in history if str(o).lower() in ("loss", "fail", "error"))
         graded = wins + losses
@@ -176,5 +178,19 @@ def fetch_pattern_stats(fingerprint: str) -> Optional[Dict[str, float]]:
             # contrastar contra core.domain_knowledge.MIN_SAMPLE sin suponerlo.
             "sample_size": float(graded),
         }
+    except Exception:
+        return None
+
+
+def fetch_pattern_stats(fingerprint: str) -> Optional[Dict[str, float]]:
+    """
+    Best-effort: deriva win_rate/expectancy desde el outcome_history del gravity
+    engine para un fingerprint dado. Devuelve None si no hay registro o historia.
+    Defensivo: nunca lanza. Lee el índice: para muchas consultas seguidas, usar
+    `derive_pattern_stats` sobre un snapshot único.
+    """
+    try:
+        from core.learn.gravity_engine import GravityIndex
+        return derive_pattern_stats(GravityIndex().get(fingerprint))
     except Exception:
         return None

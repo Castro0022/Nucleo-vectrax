@@ -143,6 +143,12 @@ cualificado produce aprendizaje **en el primer ciclo**, sin espera.
 
 ## 6. Que el aprendizaje no concede ejecución
 
+> **Corrección respecto a la versión anterior de este informe**: en la entrega
+> previa se describió el recorrido causal como si estuviera conectado de
+> extremo a extremo. No lo estaba: `record_application()` y `record_outcome()`
+> no tenían ningún llamador en producción. Queda corregido en la sección 14.3,
+> con los llamadores reales verificados por AST.
+
 `tests/test_causal_no_execution_authority.py` (10 pruebas):
 
 - Las diez condiciones numeradas de `validate_entry` siguen presentes (0..9).
@@ -330,6 +336,119 @@ reporta el estado efectivo.
   virtual roto, ni los temporales huérfanos de Freight.**
 - **No se activan ejecutores nuevos.** Los existentes conservan sus controles.
 - **No se toca el subsistema "shadow" preexistente** (ver anexo).
+
+---
+
+## 14. Correcciones bloqueantes aplicadas tras la revisión
+
+### 14.1 El presupuesto de 50 postergaba la convergencia 51 para siempre
+
+**Reproducido**: `evaluate_live_convergences` descontaba presupuesto ANTES de
+evaluar. Con 51 convergencias y tope 50, las 50 primeras lo consumían entero
+aunque ya estuvieran evaluadas y su evidencia no hubiera cambiado. La 51 no
+entraba nunca, y como el orden era siempre el mismo, tampoco en ciclos
+posteriores.
+
+Cinco cambios:
+
+1. **El presupuesto cuenta evaluaciones NUEVAS, no visitas.** Solo descuenta la
+   evaluación que crea una revisión nueva. Revisitar una revisión ya registrada
+   es una consulta indexada y no gasta nada: en estado estacionario el ciclo
+   procesa las 51.
+2. **Progreso durable.** Las entradas vivas se ordenan por "hace más tiempo que
+   no se evalúa", leído de `promotion_decisions`. No hay cursor en memoria que
+   un reinicio pueda perder — probado recargando el módulo entre ciclos.
+3. **Sin postergación permanente.** La que se quedó fuera encabeza el ciclo
+   siguiente. Con 120 convergencias y tope 50, las 120 quedan evaluadas en
+   cuatro ciclos.
+4. **Ninguna disolución se pierde.** El registro emite una disolución UNA vez,
+   en la transición activa→disuelta, y no vuelve a emitirla: si el ciclo no la
+   procesaba, se perdía para siempre y el criterio seguía apoyándose en
+   evidencia inexistente. Las que no caben se ENCOLAN en `pending_work` y el
+   ciclo siguiente las drena antes que nada. Las convergencias vivas no se
+   encolan, porque el escaneo las vuelve a emitir.
+5. **Prioridad.** Disoluciones y retiradas van primero, incluso con presupuesto 1.
+
+**Además, un defecto de rendimiento que encontré al rehacer esto**:
+`fetch_pattern_stats` construía un `GravityIndex()` nuevo y llamaba a `get()`,
+que hace `_load()` — toma el lock y lee el índice ENTERO del disco. Una lectura
+por fingerprint: 50 convergencias de 2 patrones costaban **100 lecturas
+íntegras por ciclo**, justo el bloqueo de `meta_loop` que el presupuesto existe
+para evitar. Ahora `cycle_stats_fetcher()` lee el índice una sola vez y sirve
+todas las consultas de ese snapshot, reutilizando `derive_pattern_stats`, que
+es el mismo cuerpo que usa la ruta de una sola consulta. Probado: una lectura
+por ciclo.
+
+Pruebas: `tests/test_causal_cycle_budget.py` (13), con 51 convergencias,
+múltiples ciclos, reinicio intermedio y 60 disoluciones con tope 50.
+
+### 14.2 Un resultado negativo no tenía efecto hasta la siguiente revisión
+
+**Reproducido**: `record_outcome(loss)` solo marcaba la aplicación. El
+aprendizaje seguía en `LEARNED` —y seguía alimentando el criterio— hasta que
+cambiara la evidencia. Si la revisión no cambiaba, la ruta idempotente devolvía
+el `LEARNED` archivado: para siempre.
+
+Ahora, atómicamente y en la misma transacción:
+
+* el primer resultado negativo verificado pasa `LEARNED → WEAKENED`;
+* desde ese instante deja de aparecer en `consumable_learnings()`;
+* reevaluar la MISMA revisión sigue diciendo `WEAKENED` — la ruta idempotente
+  reporta el estado de la traza viva, no el que la decisión congeló;
+* una nueva revisión también sigue `WEAKENED`, porque la condición se deriva
+  del dato en cada evaluación y no de una marca pegajosa.
+
+**Una pérdida NO contradice.** Diez pérdidas seguidas siguen dando `WEAKENED`
+(probado). `CONTRADICTED` queda como transición explícita y auditada
+(`mark_contradicted`) hasta que exista una política de contradicción: decidir
+cuántas pérdidas la constituyen es semántica que no me corresponde inventar.
+
+Los nombres de outcome se **normalizan y validan**: `closed_loss` y `loss` son
+el mismo hecho; un nombre desconocido se **rechaza** en lugar de degradarse a
+neutral en silencio. La idempotencia por `outcome_id` se conserva: registrar
+dos veces el mismo resultado no vuelve a debilitar.
+
+### 14.3 La traza no estaba conectada al recorrido real
+
+**Era cierto**: `record_application()` y `record_outcome()` solo se llamaban
+desde pruebas. El informe anterior no debió dar el ciclo por conectado.
+
+Llamadores reales, verificados por AST sobre el árbol:
+
+| Punto | Archivo | Qué registra |
+|---|---|---|
+| Validación bloqueada | `connectors/etoro/learning_engine.py` | abstención + motivo |
+| Operación ejecutada | `connectors/etoro/learning_engine.py` | aplicación única |
+| Cierre de la operación | `connectors/etoro/position_manager.py` | resultado |
+
+La cadena queda cerrada sin inventar ningún vínculo: el `decision_id` es el
+`proposal_id`, que es **el mismo identificador** que conoce
+`_close_paper_trade` al cerrar. PAPER y LIVE se distinguen en
+`execution_scope`.
+
+`convergence_id → learning_id → criterion_version → decision_id →
+application_id → outcome_id`, reconstruible en ambos sentidos.
+
+**Dominios sin ejecutor**: `operational_consumer(domain)` devuelve
+`NO_OPERATIONAL_CONSUMER` para `freight_logistics`, `florida_real_estate` y
+`cybersecurity`. No se fabrican aplicaciones para ellos. Observan, convergen y
+aprenden; simplemente ningún ejecutor consume su criterio todavía.
+
+**El límite se mantiene**: la traza se escribe DESPUÉS de que `validate_entry`
+y `execute_proposal` hayan decidido (comprobado por posición en el AST), no
+toca autorización, governor, capital, límites, PAPER/LIVE ni el booleano de
+entrada, y nunca propaga un fallo — una traza rota no puede impedir ni
+provocar una operación.
+
+Pruebas: `tests/test_causal_real_callers.py` (19).
+
+### 14.4 Una lección sobre las propias pruebas
+
+Tres comprobaciones que escribí buscando subcadenas en el texto fuente dieron
+falsos positivos: saltaban contra la **prosa de los docstrings** que explica
+que algo NO se hace, o contra el nombre del consumidor declarado. Las tres se
+reescribieron para comprobar **identificadores, imports y llamadas por AST**.
+Una prueba que se dispara contra su propia documentación no protege nada.
 
 ---
 

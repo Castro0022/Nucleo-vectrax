@@ -192,6 +192,16 @@ def _check_convergence(symbol: str) -> bool:
     return _convergence_evidence(symbol)["matched"]
 
 
+def convergence_evidence(symbol: str) -> Dict[str, Any]:
+    """Evidencia causal de `symbol`, para quien deba TRAZAR la decisión.
+
+    Pública porque `learning_engine._auto_execute_proposals` la necesita para
+    registrar a qué aprendizajes atribuir una aplicación o una abstención. No
+    participa en ninguna decisión: la autoriza `validate_entry`, no esto.
+    """
+    return _convergence_evidence(symbol)
+
+
 def _check_pattern(symbol: str, direction: str) -> Tuple[bool, str]:
     """Check if a usable pattern exists for symbol+direction."""
     try:

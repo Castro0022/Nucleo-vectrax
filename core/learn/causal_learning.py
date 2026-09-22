@@ -108,6 +108,40 @@ CREATED_FROM_EXPLICIT = "explicit_evaluation"
 CREATED_FROM_TEST = "test"
 CREATED_FROM = (CREATED_FROM_LIVE, CREATED_FROM_EXPLICIT, CREATED_FROM_TEST)
 
+#: Resultados reconocidos, ya normalizados.
+OUTCOME_WIN = "win"
+OUTCOME_LOSS = "loss"
+OUTCOME_NEUTRAL = "neutral"
+VALID_OUTCOMES = (OUTCOME_WIN, OUTCOME_LOSS, OUTCOME_NEUTRAL)
+
+#: Alias que producen los distintos productores del sistema. Se normalizan a
+#: una sola forma para que "closed_loss" y "loss" no sean dos cosas distintas
+#: al decidir si un aprendizaje se debilita.
+_OUTCOME_ALIASES = {
+    "win": OUTCOME_WIN, "success": OUTCOME_WIN, "ok": OUTCOME_WIN,
+    "closed_win": OUTCOME_WIN, "profit": OUTCOME_WIN,
+    "loss": OUTCOME_LOSS, "fail": OUTCOME_LOSS, "error": OUTCOME_LOSS,
+    "closed_loss": OUTCOME_LOSS,
+    "neutral": OUTCOME_NEUTRAL, "closed_neutral": OUTCOME_NEUTRAL,
+    "expired": OUTCOME_NEUTRAL,
+}
+
+
+def normalize_outcome(raw: Any) -> str:
+    """Normaliza el nombre de un resultado. Lanza si no se reconoce.
+
+    Un nombre desconocido NO se degrada a neutral en silencio: un resultado que
+    el puente no sabe interpretar no puede contarse como "no pasó nada".
+    """
+    key = str(raw or "").strip().lower()
+    if key not in _OUTCOME_ALIASES:
+        raise ValueError(
+            f"outcome desconocido: {raw!r}. Reconocidos: "
+            f"{sorted(_OUTCOME_ALIASES)}"
+        )
+    return _OUTCOME_ALIASES[key]
+
+
 #: Tope de convergencias evaluadas por ciclo del observador. `meta_loop` no
 #: puede quedarse bloqueado evaluando un escaneo global grande: lo que no entra
 #: en este ciclo se evalúa en el siguiente, sin perderse (la identidad por
@@ -218,6 +252,9 @@ CREATE TABLE IF NOT EXISTS learning_applications (
     criterion_version TEXT NOT NULL DEFAULT '',
     decision_id       TEXT NOT NULL DEFAULT '',
     action_type       TEXT NOT NULL DEFAULT '',
+    -- PAPER o LIVE. No es un modo de sombra: es el alcance real con el que se
+    -- ejecutó la operación, y tiene que quedar distinguible en la traza.
+    execution_scope   TEXT NOT NULL DEFAULT '',
     applied           INTEGER NOT NULL DEFAULT 1,
     abstained_reason  TEXT NOT NULL DEFAULT '',
     applied_at        REAL NOT NULL,
@@ -228,6 +265,22 @@ CREATE TABLE IF NOT EXISTS learning_applications (
 );
 CREATE INDEX IF NOT EXISTS idx_application_learning
     ON learning_applications(learning_id);
+CREATE INDEX IF NOT EXISTS idx_application_decision
+    ON learning_applications(decision_id);
+
+-- Trabajo que un ciclo no alcanzó a procesar. Solo se encola lo que NO puede
+-- perderse: una disolución la emite el registro UNA vez (en la transición
+-- activa->disuelta) y nunca vuelve a emitirla, así que si el presupuesto del
+-- ciclo se agota antes de procesarla, se perdería para siempre. Las
+-- convergencias vivas no se encolan: el escaneo las vuelve a emitir cada ciclo.
+CREATE TABLE IF NOT EXISTS pending_work (
+    convergence_id TEXT NOT NULL,
+    domain         TEXT NOT NULL,
+    kind           TEXT NOT NULL,
+    payload        TEXT NOT NULL,
+    enqueued_at    REAL NOT NULL,
+    PRIMARY KEY (convergence_id, domain, kind)
+);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_application_outcome
     ON learning_applications(outcome_id)
     WHERE outcome_id IS NOT NULL;
@@ -900,10 +953,22 @@ def _decide(snapshot, policy, metrics, conn, pattern_stats=None):
         )
         return STATE_WEAKENED, False, reasons, thresholds
 
-    # (7) Ausencia de contradicción vigente.
-    if _has_contradicting_outcomes(conn, snapshot.convergence_id):
-        reasons.append("existen outcomes verificados contrarios al aprendizaje")
-        return STATE_CONTRADICTED, False, reasons, thresholds
+    # (7) Ausencia de evidencia contraria vigente.
+    #
+    # Un resultado negativo DEBILITA. No contradice: `CONTRADICTED` se reserva
+    # para una retirada explícita y auditada (`mark_contradicted`), porque
+    # decidir cuántas pérdidas constituyen una contradicción es una política
+    # que todavía no está definida, y asumir una sería inventarla.
+    #
+    # Que esto se derive del dato en cada evaluación —y no de una marca
+    # pegajosa— es lo que hace que una revisión posterior siga dando WEAKENED
+    # mientras la pérdida exista, sin necesidad de un flag aparte.
+    if _has_negative_outcomes(conn, snapshot.convergence_id):
+        reasons.append(
+            "existe al menos un resultado negativo verificado sobre este "
+            "aprendizaje: queda debilitado mientras siga registrado"
+        )
+        return STATE_WEAKENED, False, reasons, thresholds
 
     # (8) Política de aprendizaje del dominio. Sin política no hay gate que
     #     superar, y sin gate no puede haber aprendizaje.
@@ -964,13 +1029,14 @@ def _decide(snapshot, policy, metrics, conn, pattern_stats=None):
     return STATE_LEARNED, True, reasons, thresholds
 
 
-def _has_contradicting_outcomes(conn, convergence_id: str) -> bool:
+def _has_negative_outcomes(conn, convergence_id: str) -> bool:
+    """¿Algún resultado verificado en contra? Los nombres ya están normalizados."""
     row = conn.execute(
         """SELECT COUNT(*) AS c FROM learning_applications a
            JOIN learning_traces t ON t.learning_id = a.learning_id
            WHERE t.source_convergence_id = ?
-             AND a.outcome_status = 'loss'""",
-        (convergence_id,),
+             AND a.outcome_status = ?""",
+        (convergence_id, OUTCOME_LOSS),
     ).fetchone()
     return int(row["c"] or 0) > 0
 
@@ -1105,13 +1171,26 @@ def _record_state_event(conn, learning_id, from_state, to_state, reason,
 
 
 def _decision_from_row(row, learning_row, reused: bool) -> PromotionDecision:
+    # El estado EFECTIVO es el de la traza viva, no el que la decisión congeló
+    # cuando se registró. Si un resultado negativo debilitó el aprendizaje
+    # después, reevaluar la MISMA revisión tiene que seguir diciendo WEAKENED;
+    # devolver el LEARNED archivado resucitaría en la respuesta algo que ya no
+    # es cierto.
+    state = learning_row["state"] if learning_row is not None else row["state"]
+    eligible = bool(row["eligible"]) and state == STATE_LEARNED
+    reasons = json.loads(row["reasons"])
+    if learning_row is not None and state != row["state"]:
+        reasons = list(reasons) + [
+            f"estado actual del aprendizaje: {state} "
+            f"(la decisión de esta revisión se registró como {row['state']})"
+        ]
     return PromotionDecision(
         evaluation_id=row["evaluation_id"],
         convergence_id=row["convergence_id"],
         domain=row["domain"],
-        state=row["state"],
-        eligible=bool(row["eligible"]),
-        reasons=json.loads(row["reasons"]),
+        state=state,
+        eligible=eligible,
+        reasons=reasons,
         metrics_observed=json.loads(row["metrics_observed"]),
         thresholds_applied=json.loads(row["thresholds_applied"]),
         evidence_revision_hash=row["evidence_revision_hash"],
@@ -1129,6 +1208,92 @@ def _decision_from_row(row, learning_row, reused: bool) -> PromotionDecision:
 # Entrada viva — el ciclo normal del observador
 # ---------------------------------------------------------------------------
 
+def cycle_stats_fetcher():
+    """Proveedor de métricas de patrón con UNA sola lectura del gravity index.
+
+    `fetch_pattern_stats` construye un `GravityIndex()` nuevo y llama a
+    `get()`, que a su vez hace `_load()`: toma el lock y lee el índice ENTERO
+    del disco. Una por fingerprint. Evaluar 50 convergencias de 2 patrones
+    costaba 100 lecturas íntegras por ciclo — justo el bloqueo de `meta_loop`
+    que el presupuesto existe para evitar.
+
+    Aquí el índice se lee una vez y todas las consultas se sirven de ese
+    snapshot, reutilizando `derive_pattern_stats`, que es el mismo cuerpo que
+    usa la ruta de una sola consulta.
+
+    Si el índice no se puede leer devuelve un proveedor que responde `None` a
+    todo: ningún patrón cualifica y nada se promueve, que es el fallo seguro.
+    """
+    try:
+        from core.gravity_kernel.signals import derive_pattern_stats
+        from core.learn.gravity_engine import get_gravity_index
+        records = get_gravity_index().load_raw()
+    except Exception as exc:
+        logger.warning("gravity index no disponible para este ciclo: %s", exc)
+        return lambda fingerprint: None
+
+    def _fetch(fingerprint: str):
+        return derive_pattern_stats(records.get(fingerprint))
+    return _fetch
+
+
+def _last_evaluated_map(conn) -> Dict[Tuple[str, str], float]:
+    """Última evaluación por (convergencia, dominio). Una sola consulta."""
+    return {
+        (r["convergence_id"], r["domain"]): float(r["last_at"] or 0.0)
+        for r in conn.execute(
+            "SELECT convergence_id, domain, MAX(evaluated_at) AS last_at "
+            "FROM promotion_decisions GROUP BY convergence_id, domain"
+        )
+    }
+
+
+def _enqueue_pending(conn, convergence_id, domain, kind, payload, ts) -> None:
+    conn.execute(
+        """INSERT INTO pending_work
+           (convergence_id, domain, kind, payload, enqueued_at)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(convergence_id, domain, kind) DO UPDATE SET
+             payload=excluded.payload""",
+        (convergence_id, domain, kind, json.dumps(payload, default=str), ts),
+    )
+
+
+def _drain_pending(db_path: Optional[str]) -> List[Dict[str, Any]]:
+    """Trabajo encolado por ciclos anteriores, lo más antiguo primero."""
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT * FROM pending_work ORDER BY enqueued_at ASC"
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for row in rows:
+        try:
+            entry = json.loads(row["payload"])
+        except Exception:
+            continue
+        entry["_pending_kind"] = row["kind"]
+        entry["_pending_domain"] = row["domain"]
+        out.append(entry)
+    return out
+
+
+def _clear_pending(conn, convergence_id, domain, kind) -> None:
+    conn.execute(
+        "DELETE FROM pending_work WHERE convergence_id=? AND domain=? AND kind=?",
+        (convergence_id, domain, kind),
+    )
+
+
+#: Estados de entrada que NO pueden perderse: el registro los emite una sola
+#: vez, en la transición, y nunca vuelve a emitirlos.
+_MUST_NOT_LOSE = ("dissolved", "retired")
+
+
 def evaluate_live_convergences(
     entries: Sequence[Mapping[str, Any]],
     *,
@@ -1143,19 +1308,32 @@ def evaluate_live_convergences(
     escaneo normal acaba de tocar. No se recorre la tabla histórica, ni las
     121.206 convergencias del incidente, ni `convergence_history.db`.
 
-    UN APRENDIZAJE POR DOMINIO PARTICIPANTE
-    ---------------------------------------
-    Una convergencia cruzada entre `market` y `freight_logistics` es evidencia
-    para el criterio de AMBOS dominios, y `criterion.rank_domain_evidence()` se
-    consulta por dominio. Por eso se evalúa una vez por cada dominio
-    participante que tenga política; la identidad
-    `(source_convergence_id, policy_id)` mantiene cada uno idempotente.
+    EL PRESUPUESTO CUENTA EVALUACIONES NUEVAS, NO VISITAS
+    ----------------------------------------------------
+    Antes se descontaba presupuesto ANTES de evaluar, así que con 51
+    convergencias las 50 primeras lo consumían entero aunque ya estuvieran
+    evaluadas y su evidencia no hubiese cambiado: la 51 no entraba nunca. Ahora
+    solo descuenta la evaluación que crea una REVISIÓN nueva. Revisitar una
+    revisión ya registrada es una consulta indexada y no gasta presupuesto, de
+    modo que un estado estacionario (nada cambió) procesa el ciclo completo.
 
-    LÍMITE POR CICLO
-    ----------------
-    `limit` acota el trabajo para que `meta_loop` no se bloquee en un escaneo
-    global grande. Lo que no entra en este ciclo se evalúa en el siguiente sin
-    perderse: reencontrar la misma convergencia es idempotente.
+    PROGRESO DURABLE, SIN POSTERGACIÓN PERMANENTE
+    ---------------------------------------------
+    Las entradas vivas se ordenan por "hace más tiempo que no se evalúa"
+    —leído de `promotion_decisions`, así que sobrevive a un reinicio— y las
+    nunca evaluadas van primero. Una convergencia que se quedó fuera por
+    presupuesto encabeza el ciclo siguiente. No hay cursor que perder ni
+    estado en memoria que un reinicio borre.
+
+    NADA QUE NO PUEDA PERDERSE SE PIERDE
+    ------------------------------------
+    Una disolución la emite el registro UNA vez, en la transición
+    activa->disuelta, y no vuelve a emitirla: si el presupuesto se agotara
+    antes de procesarla se perdería para siempre y el criterio seguiría
+    apoyándose en evidencia que ya no existe. Por eso las disoluciones y
+    retiradas van primero y, si no caben, se ENCOLAN en `pending_work` y el
+    ciclo siguiente las drena antes que nada. Las convergencias vivas no se
+    encolan: el escaneo las vuelve a emitir.
 
     FALLO PARCIAL
     -------------
@@ -1167,8 +1345,13 @@ def evaluate_live_convergences(
         "evaluated": 0, "learned": 0, "candidates": 0,
         "awaiting_policy": 0, "weakened": 0, "contradicted": 0,
         "reused": 0, "errors": [], "truncated": False,
+        "budget_spent": 0, "deferred": 0, "enqueued": 0, "drained": 0,
     }
-    if not entries:
+
+    pending = _drain_pending(db_path)
+    result["drained"] = len(pending)
+    work = list(pending) + list(entries)
+    if not work:
         return result
 
     try:
@@ -1179,67 +1362,134 @@ def evaluate_live_convergences(
         logger.warning("no se pudieron asegurar las políticas de producción: %s", exc)
         result["errors"].append(f"ensure_production_policies: {exc}")
 
-    budget = max(0, int(limit))
-    # Las disoluciones van PRIMERO. Si el presupuesto se agotara con las
-    # convergencias vivas, una disolución podría no evaluarse nunca y el
-    # criterio seguiría apoyándose en evidencia que ya no existe. Dejar de
-    # afirmar algo falso es más urgente que afirmar algo nuevo.
-    ordered = sorted(
-        entries, key=lambda e: 0 if str(e.get("status")) == "dissolved" else 1,
-    )
-    for entry in ordered:
-        domains = [d for d in (entry.get("domains") or []) if d]
-        for domain in dict.fromkeys(domains):        # sin duplicados, en orden
-            if budget <= 0:
-                result["truncated"] = True
-                return result
-            try:
-                if get_policy(domain, db_path=db_path) is None:
-                    result["awaiting_policy"] += 1
-                    continue
-                snapshot = CausalSnapshot(
-                    convergence_id=str(entry.get("convergence_id") or ""),
-                    domain=domain,
-                    source_pattern_ids=list(entry.get("source_pattern_ids") or []),
-                    evidence_ids=list(entry.get("evidence_ids") or []),
-                    metrics={
-                        "combined_cc": float(entry.get("combined_cc") or 0.0),
-                        "combined_hits": int(entry.get("combined_hits") or 0),
-                    },
-                    status=str(entry.get("status") or "active"),
-                    lifecycle_event=str(entry.get("lifecycle_event") or ""),
-                    first_seen=float(entry.get("first_seen") or 0.0),
-                    claim=str(entry.get("claim") or ""),
-                    data_scope=f"{domain}/live",
-                )
-                budget -= 1
-                decision = evaluate_convergence(
-                    snapshot, created_from=created_from,
-                    stats_fetcher=stats_fetcher, db_path=db_path,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "evaluación causal fallida para %s/%s: %s",
-                    entry.get("convergence_id"), domain, exc,
-                )
-                result["errors"].append(
-                    f"{entry.get('convergence_id')}/{domain}: {exc}"
-                )
-                continue
+    if stats_fetcher is None:
+        stats_fetcher = cycle_stats_fetcher()
 
-            result["evaluated"] += 1
-            if decision.reused_existing_revision:
-                result["reused"] += 1
-            if decision.state == STATE_LEARNED:
-                result["learned"] += 1
-            elif decision.state == STATE_CONVERGED_CANDIDATE:
-                result["candidates"] += 1
-            elif decision.state == STATE_AWAITING_POLICY:
+    conn = _open_for_read(db_path)
+    if conn is None:
+        last_seen: Dict[Tuple[str, str], float] = {}
+    else:
+        try:
+            last_seen = _last_evaluated_map(conn)
+        finally:
+            conn.close()
+
+    # Aplanar a (entrada, dominio) para poder ordenar y presupuestar por unidad
+    # real de evaluación.
+    units: List[Tuple[Mapping[str, Any], str]] = []
+    for entry in work:
+        domains = [d for d in (entry.get("domains") or []) if d]
+        if entry.get("_pending_domain"):
+            domains = [entry["_pending_domain"]]
+        for domain in dict.fromkeys(domains):
+            units.append((entry, domain))
+
+    def _priority(unit):
+        entry, domain = unit
+        urgent = 0 if str(entry.get("status")) in _MUST_NOT_LOSE else 1
+        # Nunca evaluada -> 0.0 -> primero dentro de su grupo.
+        return (urgent, last_seen.get((entry.get("convergence_id"), domain), 0.0))
+
+    units.sort(key=_priority)
+
+    budget = max(0, int(limit))
+    ts = time.time()
+    for entry, domain in units:
+        convergence_id = str(entry.get("convergence_id") or "")
+        must_not_lose = str(entry.get("status")) in _MUST_NOT_LOSE
+        kind = entry.get("_pending_kind") or str(entry.get("status") or "")
+
+        if budget <= 0:
+            result["truncated"] = True
+            result["deferred"] += 1
+            if must_not_lose:
+                # No se puede perder: se encola para el ciclo siguiente.
+                try:
+                    wconn = connect(db_path)
+                    try:
+                        payload = {k: v for k, v in entry.items()
+                                   if not k.startswith("_pending_")}
+                        _enqueue_pending(
+                            wconn, convergence_id, domain, kind, payload, ts,
+                        )
+                        wconn.commit()
+                        result["enqueued"] += 1
+                    finally:
+                        wconn.close()
+                except Exception as exc:
+                    logger.warning(
+                        "no se pudo encolar %s/%s: %s", convergence_id, domain, exc,
+                    )
+                    result["errors"].append(f"enqueue {convergence_id}/{domain}: {exc}")
+            continue
+
+        try:
+            if get_policy(domain, db_path=db_path) is None:
                 result["awaiting_policy"] += 1
-            elif decision.state == STATE_WEAKENED:
-                result["weakened"] += 1
-            elif decision.state == STATE_CONTRADICTED:
-                result["contradicted"] += 1
+                if entry.get("_pending_kind"):
+                    wconn = connect(db_path)
+                    try:
+                        _clear_pending(wconn, convergence_id, domain, kind)
+                        wconn.commit()
+                    finally:
+                        wconn.close()
+                continue
+            snapshot = CausalSnapshot(
+                convergence_id=convergence_id,
+                domain=domain,
+                source_pattern_ids=list(entry.get("source_pattern_ids") or []),
+                evidence_ids=list(entry.get("evidence_ids") or []),
+                metrics={
+                    "combined_cc": float(entry.get("combined_cc") or 0.0),
+                    "combined_hits": int(entry.get("combined_hits") or 0),
+                },
+                status=str(entry.get("status") or "active"),
+                lifecycle_event=str(entry.get("lifecycle_event") or ""),
+                first_seen=float(entry.get("first_seen") or 0.0),
+                claim=str(entry.get("claim") or ""),
+                data_scope=f"{domain}/live",
+            )
+            decision = evaluate_convergence(
+                snapshot, created_from=created_from,
+                stats_fetcher=stats_fetcher, db_path=db_path,
+            )
+        except Exception as exc:
+            logger.warning(
+                "evaluación causal fallida para %s/%s: %s",
+                convergence_id, domain, exc,
+            )
+            result["errors"].append(f"{convergence_id}/{domain}: {exc}")
+            continue
+
+        # SOLO una revisión nueva consume presupuesto.
+        if decision.reused_existing_revision:
+            result["reused"] += 1
+        else:
+            budget -= 1
+            result["budget_spent"] += 1
+
+        if entry.get("_pending_kind"):
+            try:
+                wconn = connect(db_path)
+                try:
+                    _clear_pending(wconn, convergence_id, domain, kind)
+                    wconn.commit()
+                finally:
+                    wconn.close()
+            except Exception as exc:
+                logger.warning("no se pudo desencolar %s: %s", convergence_id, exc)
+
+        result["evaluated"] += 1
+        if decision.state == STATE_LEARNED:
+            result["learned"] += 1
+        elif decision.state == STATE_CONVERGED_CANDIDATE:
+            result["candidates"] += 1
+        elif decision.state == STATE_AWAITING_POLICY:
+            result["awaiting_policy"] += 1
+        elif decision.state == STATE_WEAKENED:
+            result["weakened"] += 1
+        elif decision.state == STATE_CONTRADICTED:
+            result["contradicted"] += 1
     return result
 
 
@@ -1296,6 +1546,7 @@ def record_application(
     criterion_version: str = "",
     decision_id: str = "",
     action_type: str = "",
+    execution_scope: str = "",
     applied: bool = True,
     abstained_reason: str = "",
     applied_at: Optional[float] = None,
@@ -1314,23 +1565,146 @@ def record_application(
         conn.execute(
             """INSERT INTO learning_applications
                (application_id, learning_id, convergence_id, criterion_version,
-                decision_id, action_type, applied, abstained_reason, applied_at)
-               VALUES (?,?,?,?,?,?,?,?,?)
+                decision_id, action_type, execution_scope, applied,
+                abstained_reason, applied_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(application_id) DO UPDATE SET
                  learning_id=excluded.learning_id,
                  convergence_id=excluded.convergence_id,
                  criterion_version=excluded.criterion_version,
                  decision_id=excluded.decision_id,
                  action_type=excluded.action_type,
+                 execution_scope=excluded.execution_scope,
                  applied=excluded.applied,
                  abstained_reason=excluded.abstained_reason""",
             (app_id, learning_id, convergence_id, criterion_version,
-             decision_id, action_type, 1 if applied else 0, abstained_reason, ts),
+             decision_id, action_type, execution_scope, 1 if applied else 0,
+             abstained_reason, ts),
         )
         conn.commit()
         return app_id
     finally:
         conn.close()
+
+
+#: Marca para un dominio que NO tiene ejecutor: no se inventan aplicaciones.
+NO_OPERATIONAL_CONSUMER = "NO_OPERATIONAL_CONSUMER"
+
+#: Dominios con un consumidor operativo real capaz de aplicar o abstenerse.
+#: `market` lo tiene (`connectors/etoro`). Los demás observan y aprenden, pero
+#: ningún ejecutor consume su criterio todavía, así que una "aplicación" suya
+#: sería inventada.
+_DOMAINS_WITH_EXECUTOR = frozenset({"market"})
+
+
+def operational_consumer(domain: str) -> str:
+    """Quién puede APLICAR el criterio de este dominio.
+
+    Devuelve `NO_OPERATIONAL_CONSUMER` cuando no hay ninguno. Decirlo es la
+    respuesta correcta: fabricar aplicaciones para un dominio sin ejecutor
+    llenaría la traza causal de acontecimientos que nunca ocurrieron.
+    """
+    if domain in _DOMAINS_WITH_EXECUTOR:
+        return "connectors.etoro.learning_engine._auto_execute_proposals"
+    return NO_OPERATIONAL_CONSUMER
+
+
+def _application_id(decision_id: str, learning_id: str) -> str:
+    """Identidad determinista: la misma decisión y el mismo aprendizaje dan el
+    mismo id, así que reintentar el ciclo no duplica la aplicación."""
+    material = f"{decision_id}|{learning_id}"
+    return "APP-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16].upper()
+
+
+def record_decision(
+    learning_ids: Sequence[str],
+    *,
+    decision_id: str,
+    applied: bool,
+    action_type: str = "",
+    execution_scope: str = "",
+    convergence_id: str = "",
+    abstained_reason: str = "",
+    applied_at: Optional[float] = None,
+    db_path: Optional[str] = None,
+) -> List[str]:
+    """Registra que una decisión real estuvo influida por estos aprendizajes.
+
+    Una aplicación por aprendizaje: cada uno tiene su propia influencia y su
+    propio resultado, y mezclarlos impediría saber cuál se reforzó y cuál se
+    desmintió. La identidad es determinista en `(decision_id, learning_id)`,
+    así que reintentar el ciclo no duplica nada.
+
+    `applied=False` registra una ABSTENCIÓN con su motivo: que el criterio se
+    abstuviera aquí es tan parte de la traza como que actuara.
+
+    Con `learning_ids` vacío no escribe nada y devuelve `[]`. Es lo correcto:
+    si ningún aprendizaje influyó en la decisión, inventar una aplicación sería
+    afirmar una causa que no existió.
+    """
+    if not learning_ids:
+        return []
+    ts = applied_at if applied_at is not None else time.time()
+    created: List[str] = []
+    for learning_id in learning_ids:
+        if not learning_id:
+            continue
+        learning = get_learning(learning_id, db_path=db_path)
+        created.append(record_application(
+            learning_id,
+            application_id=_application_id(decision_id, learning_id),
+            convergence_id=convergence_id or (
+                learning.get("source_convergence_id", "") if learning else ""
+            ),
+            criterion_version=(
+                learning.get("criterion_version", "") if learning else ""
+            ),
+            decision_id=decision_id,
+            action_type=action_type,
+            execution_scope=execution_scope,
+            applied=applied,
+            abstained_reason=abstained_reason,
+            applied_at=ts,
+            db_path=db_path,
+        ))
+    return created
+
+
+def resolve_decision_outcome(
+    decision_id: str,
+    *,
+    outcome_status: str,
+    outcome_value: Optional[float] = None,
+    resolved_at: Optional[float] = None,
+    db_path: Optional[str] = None,
+) -> List[str]:
+    """Cierra el resultado de TODAS las aplicaciones de una decisión.
+
+    El ciclo que resuelve la operación conoce el `decision_id` (el
+    `proposal_id` de la propuesta ejecutada), no los `application_id`. Esta
+    función es el puente, y mantiene la idempotencia: una aplicación que ya
+    tiene resultado no se reescribe.
+    """
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute(
+            "SELECT application_id FROM learning_applications "
+            "WHERE decision_id=? AND applied=1 AND outcome_id IS NULL",
+            (decision_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    resolved = []
+    for row in rows:
+        out = record_outcome(
+            row["application_id"], outcome_status=outcome_status,
+            outcome_value=outcome_value, resolved_at=resolved_at, db_path=db_path,
+        )
+        if out:
+            resolved.append(out)
+    return resolved
 
 
 def record_outcome(
@@ -1347,21 +1721,60 @@ def record_outcome(
     Devuelve el `outcome_id`, o `None` si la aplicación no existe — nunca
     inventa una aplicación para colgarle un resultado.
     """
+    status = normalize_outcome(outcome_status)
     out_id = outcome_id or f"OUT-{uuid.uuid4().hex[:12].upper()}"
     ts = resolved_at if resolved_at is not None else time.time()
     conn = connect(db_path)
     try:
-        cur = conn.execute(
-            """UPDATE learning_applications
-               SET outcome_id=?, outcome_status=?, outcome_value=?, resolved_at=?
-               WHERE application_id=?""",
-            (out_id, outcome_status, outcome_value, ts, application_id),
-        )
-        if cur.rowcount == 0:
+        row = conn.execute(
+            "SELECT learning_id, outcome_id FROM learning_applications "
+            "WHERE application_id=?",
+            (application_id,),
+        ).fetchone()
+        if row is None:
             logger.warning(
                 "record_outcome: application_id inexistente %s", application_id,
             )
             return None
+        if row["outcome_id"]:
+            # Idempotencia: un resultado ya registrado no se reescribe ni
+            # vuelve a debilitar. Devolver el existente hace que reintentar el
+            # ciclo de resolución sea inocuo.
+            return row["outcome_id"]
+
+        conn.execute(
+            """UPDATE learning_applications
+               SET outcome_id=?, outcome_status=?, outcome_value=?, resolved_at=?
+               WHERE application_id=?""",
+            (out_id, status, outcome_value, ts, application_id),
+        )
+
+        # EFECTO INMEDIATO. El primer resultado negativo verificado debilita el
+        # aprendizaje AQUÍ, en la misma transacción — no en la próxima
+        # evaluación. Esperar a la siguiente revisión causal significaba que un
+        # aprendizaje ya desmentido seguía alimentando el criterio hasta que
+        # cambiara la evidencia, y si la revisión no cambiaba, para siempre.
+        #
+        # Una pérdida debilita; NO contradice. `CONTRADICTED` sigue siendo una
+        # transición explícita y auditada (`mark_contradicted`) hasta que exista
+        # una política de contradicción: inventar aquí un umbral ("N pérdidas
+        # seguidas") sería exactamente la clase de semántica que no nos
+        # corresponde inventar.
+        if status == OUTCOME_LOSS and row["learning_id"]:
+            learning = conn.execute(
+                "SELECT state FROM learning_traces WHERE learning_id=?",
+                (row["learning_id"],),
+            ).fetchone()
+            if learning is not None and learning["state"] == STATE_LEARNED:
+                conn.execute(
+                    "UPDATE learning_traces SET state=?, updated_at=? "
+                    "WHERE learning_id=?",
+                    (STATE_WEAKENED, ts, row["learning_id"]),
+                )
+                _record_state_event(
+                    conn, row["learning_id"], STATE_LEARNED, STATE_WEAKENED,
+                    f"resultado negativo verificado ({out_id})", "", ts,
+                )
         conn.commit()
         return out_id
     finally:

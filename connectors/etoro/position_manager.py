@@ -195,6 +195,19 @@ def _close_paper_trade(trade, reason: str) -> Dict[str, Any] | None:
             with open(_PAPER_LOG_FILE, "w") as f:
                 f.write("\n".join(lines) + "\n")
 
+        # Cierra el tramo final del recorrido causal:
+        # application_id -> outcome_id. `trade.proposal_id` es el MISMO
+        # `decision_id` con el que se registró la aplicación al ejecutar, así
+        # que la resolución actualiza esa misma aplicación sin heurísticas.
+        # Nunca propaga un fallo: cerrar la operación no depende de la traza.
+        try:
+            from core.learn.causal_learning import resolve_decision_outcome
+            resolve_decision_outcome(
+                trade.proposal_id, outcome_status=status, outcome_value=pnl_usd,
+            )
+        except Exception as exc:
+            logger.debug("causal outcome trace error: %s", exc)
+
         logger.info(
             "[PAPER_CLOSE] %s | %s %s | PnL=$%.2f (%.2f%%) | reason=%s",
             trade.trade_id, trade.direction.upper(), trade.symbol,

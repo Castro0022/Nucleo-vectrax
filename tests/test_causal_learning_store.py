@@ -403,17 +403,102 @@ class TestLifecycle:
         states = [e["to_state"] for e in cl.get_state_events(d.learning_id, db_path=db)]
         assert cl.STATE_WEAKENED in states and cl.STATE_LEARNED in states
 
-    def test_a_contradicting_outcome_contradicts_the_learning(self, db):
+    def test_a_negative_outcome_weakens_immediately(self, db):
+        """El efecto es INMEDIATO, no en la próxima revisión causal.
+
+        Antes, `record_outcome(loss)` solo marcaba la aplicación: el
+        aprendizaje seguía en LEARNED —y seguía alimentando el criterio—
+        hasta que cambiara la evidencia. Si la revisión no cambiaba, para
+        siempre.
+        """
         d = _learn(db)
+        assert cl.consumable_learnings("market", db_path=db)
+
         app = cl.record_application(
             d.learning_id, convergence_id="CONV-001", db_path=db,
         )
         cl.record_outcome(app, outcome_status="loss", db_path=db)
+
+        assert cl.get_learning(d.learning_id, db_path=db)["state"] == cl.STATE_WEAKENED
+        assert cl.consumable_learnings("market", db_path=db) == [], (
+            "un aprendizaje desmentido siguió siendo consumible por el criterio"
+        )
+
+    def test_the_same_revision_afterwards_stays_weakened(self, db):
+        """Reevaluar la MISMA revisión no puede resucitar el LEARNED archivado."""
+        d = _learn(db)
+        app = cl.record_application(d.learning_id, db_path=db)
+        cl.record_outcome(app, outcome_status="loss", db_path=db)
+
+        again = cl.evaluate_convergence(
+            _snapshot(), stats_fetcher=BOTH_STRONG, db_path=db,
+        )
+        assert again.reused_existing_revision is True
+        assert again.state == cl.STATE_WEAKENED
+        assert again.eligible is False
+
+    def test_a_new_revision_afterwards_also_stays_weakened(self, db):
+        d = _learn(db)
+        app = cl.record_application(d.learning_id, db_path=db)
+        cl.record_outcome(app, outcome_status="loss", db_path=db)
+
         again = cl.evaluate_convergence(
             _snapshot(evidence_ids=["EV-1", "EV-2", "EV-9"]),
             stats_fetcher=BOTH_STRONG, db_path=db,
         )
-        assert again.state == cl.STATE_CONTRADICTED
+        assert again.state == cl.STATE_WEAKENED
+
+    def test_a_loss_never_becomes_contradicted_by_itself(self, db):
+        """`CONTRADICTED` es una transición explícita, no un umbral inventado."""
+        d = _learn(db)
+        for i in range(10):
+            app = cl.record_application(
+                d.learning_id, application_id=f"APP-{i}", db_path=db,
+            )
+            cl.record_outcome(app, outcome_status="loss", db_path=db)
+        assert cl.get_learning(d.learning_id, db_path=db)["state"] == cl.STATE_WEAKENED, (
+            "diez pérdidas produjeron CONTRADICTED: eso es un umbral inventado"
+        )
+        # Solo la retirada explícita lo contradice.
+        assert cl.mark_contradicted(d.learning_id, "decisión de Mario", db_path=db)
+        assert cl.get_learning(d.learning_id, db_path=db)["state"] == cl.STATE_CONTRADICTED
+
+    def test_outcome_names_are_normalised(self, db):
+        d = _learn(db)
+        app = cl.record_application(d.learning_id, db_path=db)
+        cl.record_outcome(app, outcome_status="closed_loss", db_path=db)
+        stored = cl.get_applications(learning_id=d.learning_id, db_path=db)[0]
+        assert stored["outcome_status"] == cl.OUTCOME_LOSS
+        assert cl.get_learning(d.learning_id, db_path=db)["state"] == cl.STATE_WEAKENED
+
+    def test_an_unknown_outcome_name_is_refused(self, db):
+        d = _learn(db)
+        app = cl.record_application(d.learning_id, db_path=db)
+        with pytest.raises(ValueError, match="outcome desconocido"):
+            cl.record_outcome(app, outcome_status="quizas", db_path=db)
+        # Y no deja rastro a medias.
+        assert cl.get_applications(learning_id=d.learning_id, db_path=db)[0][
+            "outcome_id"] is None
+        assert cl.get_learning(d.learning_id, db_path=db)["state"] == cl.STATE_LEARNED
+
+    def test_recording_the_same_outcome_twice_is_idempotent(self, db):
+        d = _learn(db)
+        app = cl.record_application(d.learning_id, db_path=db)
+        first = cl.record_outcome(app, outcome_status="loss", db_path=db)
+        second = cl.record_outcome(app, outcome_status="loss", db_path=db)
+        assert first == second
+        events = [
+            e for e in cl.get_state_events(d.learning_id, db_path=db)
+            if e["to_state"] == cl.STATE_WEAKENED
+        ]
+        assert len(events) == 1, "el segundo registro volvió a debilitar"
+
+    def test_a_favourable_outcome_does_not_weaken(self, db):
+        d = _learn(db)
+        app = cl.record_application(d.learning_id, db_path=db)
+        cl.record_outcome(app, outcome_status="win", db_path=db)
+        assert cl.get_learning(d.learning_id, db_path=db)["state"] == cl.STATE_LEARNED
+        assert cl.consumable_learnings("market", db_path=db)
 
     def test_a_favourable_outcome_reinforces(self, db):
         d = _learn(db)

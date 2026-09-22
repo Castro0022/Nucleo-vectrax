@@ -214,14 +214,49 @@ class TestWithoutLearningNothingChanges:
 class TestLearningGrantsNoExecution:
 
     def test_the_causal_module_creates_no_executor(self):
+        """Comprobado sobre IMPORTS y LLAMADAS, no sobre el texto fuente.
+
+        Una búsqueda por subcadena daba un falso positivo en cuanto el módulo
+        empezó a DECLARAR quién es el consumidor operativo de un dominio
+        (`operational_consumer("market")` devuelve el nombre del módulo de
+        eToro). Nombrar a quien puede ejecutar no es ejecutar; lo que importa
+        es que el puente no lo importe ni lo invoque.
+        """
+        import ast
         import inspect
-        source = inspect.getsource(cl)
+        tree = ast.parse(inspect.getsource(cl))
+
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module)
+            elif isinstance(node, ast.Import):
+                imported.update(a.name for a in node.names)
+        for module in imported:
+            low = module.lower()
+            assert not any(
+                bad in low for bad in
+                ("etoro", "broker", "executor", "subprocess", "requests")
+            ), f"el puente causal importa un ejecutor: {module}"
+
+        called = {
+            n.func.attr if isinstance(n.func, ast.Attribute)
+            else getattr(n.func, "id", "")
+            for n in ast.walk(tree) if isinstance(n, ast.Call)
+        }
         for forbidden in ("place_order", "submit_order", "execute_trade",
-                          "broker", "etoro", "subprocess", "requests.post"):
-            assert forbidden not in source, (
-                f"el puente causal no puede contener {forbidden!r}: "
+                          "execute_proposal", "run", "Popen", "post"):
+            assert forbidden not in called, (
+                f"el puente causal invoca {forbidden!r}: "
                 "aprender no concede permiso para ejecutar"
             )
+
+    def test_the_declared_consumer_is_a_name_not_a_call(self):
+        """`operational_consumer` devuelve una cadena; no importa ni ejecuta."""
+        consumer = cl.operational_consumer("market")
+        assert isinstance(consumer, str)
+        assert consumer.startswith("connectors.etoro.")
+        assert cl.operational_consumer("cybersecurity") == cl.NO_OPERATIONAL_CONSUMER
 
     def test_the_criterion_entry_is_evidence_not_authorization(self, learned):
         ent = next(
