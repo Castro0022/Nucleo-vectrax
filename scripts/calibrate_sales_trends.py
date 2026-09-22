@@ -97,12 +97,29 @@ class _BulkGravityIndex(GravityIndex):
     ``record_event()`` logic (effective-clock replay, first_seen/last_seen
     bracketing, Déjà Vu promotion, activation_history decimation)
     completely unchanged — it overrides only the storage backend.
+
+    Ese backend son DOS pares de metodos, no uno. La correccion de
+    concurrencia de 2026-09-20 hizo que ``record_event()`` tomara el lock
+    exclusivo una sola vez y llamara a los helpers SIN lock
+    (``_read_from_disk``/``_write_to_disk``) en lugar de ``_load``/``_save``,
+    para no re-adquirir el lock dentro del mismo hilo. Sobrescribir solo
+    ``_load``/``_save`` dejaba de interceptar nada: cada ``record_event()``
+    volvia a escribir el JSON completo en disco, que es exactamente lo que
+    esta clase existe para evitar. Se sobrescriben los cuatro.
     """
 
     def __init__(self, path: str):
         super().__init__(path=path)
         self._cache: Dict[str, GravityRecord] = {}
 
+    # -- Backend sin lock: el que usa record_event() --------------------
+    def _read_from_disk(self) -> Dict[str, GravityRecord]:
+        return self._cache
+
+    def _write_to_disk(self, records: Dict[str, GravityRecord]) -> None:
+        self._cache = records
+
+    # -- Backend con lock: el resto de caminos (update_records(), etc.) --
     def _load(self) -> Dict[str, GravityRecord]:
         return self._cache
 
@@ -110,8 +127,14 @@ class _BulkGravityIndex(GravityIndex):
         self._cache = records
 
     def flush(self) -> None:
-        """Persist the in-memory cache to disk exactly once."""
-        GravityIndex._save(self, self._cache)
+        """Persist the in-memory cache to disk exactly once.
+
+        Llama al ``_write_to_disk`` REAL de la clase base (no el override de
+        arriba, que solo reescribiria la cache) bajo el lock exclusivo, que
+        es el contrato que ese helper documenta.
+        """
+        with self._locked(exclusive=True):
+            GravityIndex._write_to_disk(self, self._cache)
 
 
 def load_sample(xlsx_path: str):
