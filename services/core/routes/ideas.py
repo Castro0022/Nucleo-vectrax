@@ -1,10 +1,17 @@
 """
 Vectrax Core — Ideas Routes
 ==============================
-  GET  /v1/ideas              — lista ideas (filtrable por status)
-  POST /v1/ideas/{id}/approve — aprueba una idea (solo creator/operator)
-  POST /v1/ideas/{id}/reject  — rechaza una idea (solo creator/operator)
-  POST /v1/ideas/refresh      — ingesta nuevas ideas de todos los módulos
+  GET  /v1/ideas              — lista ideas (filtrable por status)   [core.read]
+  POST /v1/ideas/{id}/approve — aprueba una idea                     [apply_proposal]
+  POST /v1/ideas/{id}/reject  — rechaza una idea                     [apply_proposal]
+  POST /v1/ideas/refresh      — ingesta nuevas ideas de los módulos  [core.admin]
+
+Los permisos citados son miembros reales de `core.roles.Permission`. Antes de
+esta corrección estos tres endpoints exigían `"core.write"`, que NO existe en
+el enum: `has_permission()` captura el `ValueError` y devuelve `False`, por lo
+que devolvían 403 a TODOS los roles, incluido `owner`. La verificación de que
+cada literal existe en el enum vive en
+`tests/test_permission_literals_contract.py`.
 """
 
 from __future__ import annotations
@@ -75,7 +82,7 @@ async def list_ideas(
 
 @router.post("/refresh")
 async def refresh_ideas(
-    ctx: AuthContext = Depends(require_permission("core.write")),
+    ctx: AuthContext = Depends(require_permission("core.admin")),
 ):
     """Fuerza ingesta de ideas desde todos los módulos de aprendizaje."""
     try:
@@ -97,9 +104,9 @@ async def refresh_ideas(
 async def approve_idea(
     idea_id: str,
     body:    ReviewBody  = ReviewBody(),
-    ctx:     AuthContext = Depends(require_permission("core.write")),
+    ctx:     AuthContext = Depends(require_permission("apply_proposal")),
 ):
-    """Aprueba una idea pendiente. Solo creator/operator."""
+    """Aprueba una idea pendiente. Requiere el permiso `apply_proposal`."""
     try:
         from core.idea_store import get_idea_store
         store = get_idea_store()
@@ -123,9 +130,9 @@ async def approve_idea(
 async def reject_idea(
     idea_id: str,
     body:    ReviewBody  = ReviewBody(),
-    ctx:     AuthContext = Depends(require_permission("core.write")),
+    ctx:     AuthContext = Depends(require_permission("apply_proposal")),
 ):
-    """Rechaza una idea pendiente. Solo creator/operator."""
+    """Rechaza una idea pendiente. Requiere el permiso `apply_proposal`."""
     try:
         from core.idea_store import get_idea_store
         store = get_idea_store()
