@@ -48,16 +48,67 @@ from core.nucleus.nucleus_authority import get_nucleus_authority  # noqa: E402
 # terminar la sesión.
 # ---------------------------------------------------------------------------
 
+# Siembra sintetica determinista para entornos limpios (CI). Se aplica SOLO
+# si la copia aislada viene sin stars: en la maquina del autor se usa su
+# memoria real sin tocarla. Las frases estan elegidas para que varias
+# palabras de contenido aparezcan en estrellas DISTINTAS -- que es lo que
+# `_summarize_learned_patterns()` cuenta como patron recurrente
+# (`_content_words()` devuelve un set por estrella, asi que repetir una
+# palabra dentro de una sola frase no suma). Sin digitos: la prueba exige
+# que la respuesta al usuario no contenga cifras.
+_SEED_STAR_CONTENTS = (
+    "La gravedad organiza la memoria en capas",
+    "La memoria retiene patrones de gravedad",
+    "Los patrones emergen de la convergencia observada",
+    "La convergencia agrupa evidencia repetida",
+    "La evidencia sostiene los patrones aprendidos",
+    "La gravedad concentra evidencia en el nucleo",
+)
+
+
+def _seed_synthetic_stars() -> int:
+    """Inserta las stars sinteticas en la base YA aislada. Devuelve cuantas.
+
+    El canal NO es `_CHANNEL`: el Nucleo lo DERIVA del owner canonico
+    (core/nucleus/nucleus_authority.py:1233 -- CHANNEL_CREATOR si el owner
+    canonico es CREATOR_OWNER, CHANNEL_USER en caso contrario), asi que con
+    `_OWNER = "owner"` sobre una base limpia las consultas caen en el canal
+    "user" aunque la llamada entre con channel="creator". Se replica aqui la
+    MISMA derivacion en vez de fijar el valor, para que la siembra siga al
+    producto si esa regla cambia.
+    """
+    import vectrax.db as _db_mod
+    from vectrax.identity import CREATOR_OWNER, CHANNEL_CREATOR, CHANNEL_USER
+    from vectrax.identity_aliases import resolve_owner
+    from vectrax.models import Star
+
+    _db_mod.init_db()
+    canonical_owner = resolve_owner(_OWNER)
+    channel = CHANNEL_CREATOR if canonical_owner == CREATOR_OWNER else CHANNEL_USER
+    for i, content in enumerate(_SEED_STAR_CONTENTS):
+        _db_mod.insert_star(Star(
+            id=f"seed-nucleus-reunification-{i}",
+            content=content,
+            timestamp=1_700_000_000.0 + i,
+            channel=channel,
+            owner=canonical_owner,
+        ))
+    return len(_SEED_STAR_CONTENTS)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def isolated_vectrax_db():
     real_db = Path.home() / ".vectrax" / "vectrax.db"
     tmp_dir = Path(tempfile.mkdtemp(prefix="vectrax_test_isolated_"))
     tmp_db = tmp_dir / "vectrax.db"
-    shutil.copy2(real_db, tmp_db)
-    for ext in ("-wal", "-shm"):
-        src = Path(str(real_db) + ext)
-        if src.exists():
-            shutil.copy2(src, Path(str(tmp_db) + ext))
+    # En un entorno limpio (CI, checkout nuevo) la base real puede no existir
+    # todavia: eso no es un error de la suite, solo significa baseline vacio.
+    if real_db.exists():
+        shutil.copy2(real_db, tmp_db)
+        for ext in ("-wal", "-shm"):
+            src = Path(str(real_db) + ext)
+            if src.exists():
+                shutil.copy2(src, Path(str(tmp_db) + ext))
 
     mp = pytest.MonkeyPatch()
     import vectrax.db as _db_mod
@@ -69,11 +120,33 @@ def isolated_vectrax_db():
     mp.setattr(_alias_mod, "DB_PATH", tmp_db, raising=True)
     mp.setattr(_argos_mod, "_DB_PATH", tmp_db, raising=True)
 
-    print(f"\n[isolated_vectrax_db] Copia temporal aislada en: {tmp_db}")
+    # Garantiza el esquema antes de contar: una copia (o una base ausente)
+    # puede no tener aun la tabla `stars`, y get_counts() fallaria. init_db()
+    # es idempotente y no altera datos existentes.
+    _db_mod.init_db()
+
+    # Base vacia -> sembrar, para que las pruebas que necesitan memoria propia
+    # se EJECUTEN en CI en vez de saltarse.
+    if int(_db_mod.get_counts().get("stars", 0)) == 0:
+        n = _seed_synthetic_stars()
+        print(f"\n[isolated_vectrax_db] base vacia: sembradas {n} stars sinteticas")
+
+    print(f"[isolated_vectrax_db] Copia temporal aislada en: {tmp_db}")
     yield tmp_db
 
     mp.undo()
     shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def stars_baseline(isolated_vectrax_db):
+    """Conteo de stars de la copia aislada ANTES de que la suite escriba nada.
+
+    Sustituye al numero fijo 1691, que era una foto de la base de produccion
+    de una maquina concreta y no podia cumplirse en ningun entorno limpio.
+    """
+    from vectrax.db import get_counts
+    return int(get_counts().get("stars", 0))
 
 PROMPTS = [
     "¿Quién eres?",
@@ -271,14 +344,23 @@ def test_place_search_triggers_places_executor(all_results):
         assert r["final_action"] in ("PLACES", "CLARIFICATION", "MEMORY", "LOCAL")
 
 
-def test_no_data_lost_star_counts_only_grow(all_results):
+def test_no_data_lost_star_counts_only_grow(all_results, stars_baseline):
     """Verificación de integridad: el total de stars en vectrax.db nunca
-    puede ser menor que el baseline capturado en FASE 1 (1691) — solo
-    inserciones aditivas, ninguna fila existente eliminada."""
+    puede decrecer — solo inserciones aditivas, ninguna fila existente
+    eliminada.
+
+    El baseline se mide de la propia copia aislada al inicio de la sesión
+    (fixture `stars_baseline`) en vez de fijarse en 1691, que era el conteo
+    de la base de producción de una máquina concreta en un momento concreto
+    y hacía imposible que esta prueba pasara en cualquier entorno limpio.
+    Medirlo es además MÁS estricto: detecta un borrado sobre cualquier
+    cantidad de datos, no solo por debajo de un umbral.
+    """
     from vectrax.db import get_counts
     counts = get_counts()
-    assert counts.get("stars", 0) >= 1691, (
-        f"Se esperaban >= 1691 stars (baseline FASE 1), hay {counts.get('stars', 0)}"
+    assert counts.get("stars", 0) >= stars_baseline, (
+        f"Se esperaban >= {stars_baseline} stars (baseline de la sesión), "
+        f"hay {counts.get('stars', 0)}"
     )
 
 
@@ -328,7 +410,13 @@ def test_learned_answers_from_memory_not_clarification(all_results):
     """'¿Qué has aprendido?' debe consultar la memoria y resumir ENTRE 3 Y 5
     patrones generales propios en lenguaje natural, SIN cifras/IDs/conteos en
     la respuesta (esos quedan solo en `evidence`, para trazabilidad interna)
-    — YA NO responde con una aclaración automática."""
+    — YA NO responde con una aclaración automática.
+
+    Requiere memoria propia con patrones recurrentes. En un entorno limpio la
+    aporta la siembra sintética determinista del fixture
+    `isolated_vectrax_db` (ver `_SEED_STAR_CONTENTS`), así que esta prueba se
+    ejecuta igual en CI que en una máquina con memoria real.
+    """
     entry = next(r for r in all_results if "has aprendido" in r["prompt"].lower())
     for channel in ("api", "telegram"):
         r = entry[channel]

@@ -238,12 +238,29 @@ class TestLanguageDetection:
 # ---------------------------------------------------------------------------
 
 class TestHistoryLimit:
-    """El historial no debe exceder MAX_HISTORY_PER_USER."""
+    """El historial YA NO se recorta por conteo.
 
-    def test_max_entries(self):
-        for i in range(MAX_HISTORY_PER_USER + 20):
+    La correccion estructural de memoria conversacional (commit 38ef64d,
+    2026-09-20) elimino deliberadamente el recorte automatico a
+    MAX_HISTORY_PER_USER; el motivo esta documentado en
+    vectrax/user_memory.py:288-298: la retencion por conteo nunca debe ser la
+    politica de conservacion, porque perder interacciones antiguas hace
+    imposible responder "que hablamos el 12 de septiembre" a cualquier usuario
+    con mas de 50 turnos. La fuente canonica pasa a ser
+    core.memory.conversation_ledger (append-only, sin limite) y la tabla
+    `interactions` deja de truncarse.
+
+    Este test afirmaba el comportamiento ANTERIOR (== MAX_HISTORY_PER_USER) y
+    por eso fallaba: la constante ya no tiene ningun uso en produccion, solo
+    su definicion y el comentario que explica su retirada.
+    """
+
+    def test_no_entries_are_discarded(self):
+        """Nada se borra: se conservan todas las interacciones almacenadas."""
+        total = MAX_HISTORY_PER_USER + 20
+        for i in range(total):
             store_memory("u1", f"Mensaje {i}", f"Respuesta {i}")
-        assert get_history_count("u1") == MAX_HISTORY_PER_USER
+        assert get_history_count("u1") == total
 
     def test_oldest_removed(self):
         """Las interacciones más antiguas se eliminan."""
