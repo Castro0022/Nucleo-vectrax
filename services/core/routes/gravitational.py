@@ -134,7 +134,7 @@ class KnowledgeRequest(BaseModel):
 @router.post("/nodes", response_model=CreateNodeResponse)
 async def api_create_node(
     req: CreateNodeRequest,
-    ctx: AuthContext = Depends(require_permission("core.write")),
+    ctx: AuthContext = Depends(require_permission("core.admin")),
 ):
     """Create a new star node with minimum mass."""
     from vectrax.cognitive_gravity import create_node
@@ -167,7 +167,7 @@ async def api_create_node(
 @router.post("/connections", response_model=ConnectNodesResponse)
 async def api_connect_nodes(
     req: ConnectNodesRequest,
-    ctx: AuthContext = Depends(require_permission("core.write")),
+    ctx: AuthContext = Depends(require_permission("core.admin")),
 ):
     """Create or update a gravitational link between two stars."""
     from vectrax.cognitive_gravity import connect_nodes
@@ -194,7 +194,7 @@ async def api_connect_nodes(
 @router.put("/nodes/{star_id}/mass")
 async def api_update_mass(
     star_id: str,
-    ctx: AuthContext = Depends(require_permission("core.write")),
+    ctx: AuthContext = Depends(require_permission("core.admin")),
 ):
     """Recalculate a star's gravitational mass."""
     from vectrax.cognitive_gravity import update_mass
@@ -240,7 +240,7 @@ async def api_distance_to_core(
 @router.post("/convergence", response_model=ConvergenceResponse)
 async def api_detect_convergence(
     req: ConvergenceRequest,
-    ctx: AuthContext = Depends(require_permission("core.write")),
+    ctx: AuthContext = Depends(require_permission("core.admin")),
 ):
     """Detect if multiple information trajectories converge."""
     from vectrax.cognitive_gravity import detect_convergence
@@ -267,7 +267,7 @@ async def api_detect_convergence(
 @router.post("/clusters", response_model=List[ClusterItem])
 async def api_cluster_nodes(
     req: ClusterRequest,
-    ctx: AuthContext = Depends(require_permission("core.write")),
+    ctx: AuthContext = Depends(require_permission("core.admin")),
 ):
     """Detect dense communities and form constellations."""
     from vectrax.cognitive_gravity import cluster_nodes
@@ -305,7 +305,7 @@ async def api_nucleus_status(
 
 @router.post("/recompute")
 async def api_recompute_all(
-    ctx: AuthContext = Depends(require_permission("core.write")),
+    ctx: AuthContext = Depends(require_permission("core.admin")),
 ):
     """Recompute mass and distance for all stars in the channel."""
     from vectrax.cognitive_gravity import recompute_all_masses

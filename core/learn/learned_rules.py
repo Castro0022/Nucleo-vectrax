@@ -28,7 +28,35 @@ from core.learn import VAULT_DIR
 
 logger = logging.getLogger("vectrax.learn.learned_rules")
 
+# Ruta de producción, calculada al importar. Se conserva como constante pública
+# porque forma parte de la superficie del módulo; NO se usa ya como valor por
+# defecto del store (ver `default_rules_path()`).
 RULES_PATH = os.path.join(VAULT_DIR, "learned_rules.jsonl")
+
+
+def _vault_dir() -> str:
+    """Directorio del vault, resuelto EN CADA LLAMADA.
+
+    `VECTRAX_VAULT_DIR` es el mismo convenio que ya aplican
+    `core/audit_ledger.py`, `observability/audit_engine.py` y
+    `core/learn/verification_ledger.py`. Sin esa variable se devuelve
+    `VAULT_DIR` (= `<raíz del proyecto>/vault`), que es EXACTAMENTE la ruta que
+    usa producción hoy: esta función no cambia dónde escribe el sistema vivo.
+
+    Se resuelve en cada llamada a propósito. Antes, la ruta quedaba congelada
+    en el argumento por defecto `path: str = RULES_PATH`, evaluado en el import
+    del módulo: para cuando un fixture hacía `monkeypatch.setenv(...)` la ruta
+    ya estaba fijada, así que la suite terminaba escribiendo en el archivo
+    RASTREADO `vault/learned_rules.jsonl` (comprobado: ejecutar
+    `tests/integration/test_presencia_pura.py` incrementaba el contador
+    `applications` de una regla real).
+    """
+    return os.environ.get("VECTRAX_VAULT_DIR") or VAULT_DIR
+
+
+def default_rules_path() -> str:
+    """Ruta efectiva del almacén cuando no se inyecta una explícita."""
+    return os.path.join(_vault_dir(), "learned_rules.jsonl")
 
 # ---------------------------------------------------------------------------
 # Rule states
@@ -81,9 +109,27 @@ class LearnedRulesStore:
       4. Can be deactivated if they prove harmful
     """
 
-    def __init__(self, path: str = RULES_PATH) -> None:
-        self.path = path
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+    def __init__(self, path: Optional[str] = None) -> None:
+        # `None` = sin override: la ruta se resuelve en cada acceso, para que un
+        # fixture pueda redirigir el almacén incluso sobre una instancia ya
+        # construida (el singleton de `get_rules_store()` se crea en el primer
+        # uso, que puede ocurrir antes que el fixture).
+        self._path_override = path
+
+    @property
+    def path(self) -> str:
+        return self._path_override or default_rules_path()
+
+    def _ensure_dir(self) -> None:
+        """Crea el directorio solo cuando se va a ESCRIBIR.
+
+        Antes se creaba en `__init__`, lo que daba dos problemas: construir un
+        store tenía efectos en disco, y el directorio creado podía no ser el
+        final si la ruta cambiaba después.
+        """
+        directory = os.path.dirname(self.path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
 
     # -- Persistence --------------------------------------------------------
 
@@ -102,6 +148,7 @@ class LearnedRulesStore:
         return records
 
     def _save_all(self, records: List[Dict[str, Any]]) -> None:
+        self._ensure_dir()
         with open(self.path, "w", encoding="utf-8") as f:
             for rec in records:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -111,6 +158,7 @@ class LearnedRulesStore:
     def add_rule(self, rule: LearnedRule) -> str:
         """Add a new learned rule (starts as 'pending'). Returns rule id."""
         rule.state = "pending"
+        self._ensure_dir()
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(rule.to_dict(), ensure_ascii=False) + "\n")
         logger.info(
@@ -211,3 +259,10 @@ def get_rules_store() -> LearnedRulesStore:
     if _store is None:
         _store = LearnedRulesStore()
     return _store
+
+
+def reset_rules_store() -> None:
+    """Descarta el singleton. Para pruebas — mismo patrón que
+    `reset_convergence_engine()` / `reset_orchestrator()` ya existentes."""
+    global _store
+    _store = None

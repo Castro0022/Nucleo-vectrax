@@ -41,11 +41,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("core.nucleus.internal_evidence")
 
@@ -101,6 +102,132 @@ _OWNER_ONLY = frozenset({
     "diagnostic", "diagnostic_history", "proposal", "audit",
     "engines", "operational", "approval_pipeline",
 })
+
+# Clave contractual del resumen de dominio. La produce
+# `core/domain_knowledge.py::get_domain_summary()` en sus DOS ramas (con y sin
+# patrones). Se nombra aquí una sola vez para que el consumidor no vuelva a
+# inventarse un nombre de clave: leer `total_patterns` —que la fuente nunca
+# produjo— hacía que el Núcleo reportara 0 patrones siempre.
+_DOMAIN_PATTERN_COUNT_KEY = "patterns"
+
+
+# ---------------------------------------------------------------------------
+# Auditoría: exposición SEGURA de `metadata.details`
+# ---------------------------------------------------------------------------
+# `core/audit_ledger.py` guarda un `metadata` JSON libre y
+# `core/operator/ledger_bridge.py::record_event()` mete ahí el `details` que le
+# pase cada llamador. `recent_audit()` lo descartaba entero, así que el resumen
+# real de los ciclos de dominio (cuántos eventos, cuántos verificados, con qué
+# proveedor) no llegaba nunca al Núcleo.
+#
+# No se expone el objeto completo: solo las acciones de forma CONOCIDA, y de
+# ellas solo las claves de esta lista permitida. Todo lo demás se descarta.
+
+_AUDIT_CYCLE_FIELDS = frozenset({
+    "success", "provider", "events_requested", "events_ingested", "errors",
+    "stars_before", "stars_after", "mature_stars", "patterns_elevated",
+    "elapsed_s", "verified_decisive", "verified_wins", "verified_losses",
+    "verified_win_rate", "verified_accuracy",
+})
+
+_AUDIT_DETAIL_ALLOWLIST: Dict[str, frozenset] = {
+    "freight_learning_cycle": _AUDIT_CYCLE_FIELDS,
+    "real_estate_learning_cycle": _AUDIT_CYCLE_FIELDS,
+    "cyber_learning_cycle": frozenset({
+        "success", "provider", "events", "verified_decisive",
+        "wins", "losses", "elapsed_s",
+    }),
+    "gravity_sync": frozenset({
+        "patterns_promoted", "stars_mass_updated", "errors", "elapsed_s",
+    }),
+    "trading_convergence_learner": frozenset({
+        "proposals_generated", "drift_kinds", "observed_wr_pct",
+    }),
+}
+
+# Dominio de cada ciclo, derivado del MÓDULO que emite la acción
+# (`connectors/*/learning_cycle.py::_record_ledger`), no del contenido del
+# registro: el contenido es dato, el emisor es código.
+_AUDIT_ACTION_DOMAIN: Dict[str, str] = {
+    "freight_learning_cycle": "freight_logistics",
+    "real_estate_learning_cycle": "florida_real_estate",
+    "cyber_learning_cycle": "cybersecurity",
+    "trading_convergence_learner": "market",
+}
+
+# Alcance por nombre de proveedor. `simulator` es el nombre que devuelven los
+# tres `simulator_adapter.py`; `nvd`/`rentcast`/`attom` son los proveedores
+# reales. Un proveedor desconocido NO se clasifica: se omite el alcance en vez
+# de adivinarlo.
+_AUDIT_SCOPE_BY_PROVIDER: Dict[str, str] = {
+    "simulator": "simulated",
+    "nvd": "real",
+    "rentcast": "real",
+    "attom": "real",
+    "real": "real",
+}
+
+_AUDIT_DETAIL_MAX_KEYS = 20      # profundidad 1, ancho acotado
+_AUDIT_DETAIL_MAX_LIST = 8
+_AUDIT_DETAIL_MAX_STR = 40
+
+# Un valor de cadena solo pasa si parece un identificador/enumerado corto.
+# Rechaza por construcción texto libre, rutas, mensajes de excepción y
+# cualquier cosa con espacios — que es donde aparecen rutas y credenciales.
+_AUDIT_SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.:+-]{1,%d}$" % _AUDIT_DETAIL_MAX_STR)
+
+
+def _audit_safe_scalar(value: Any) -> Any:
+    """Escalar seguro, o `None` si hay que descartarlo."""
+    if isinstance(value, bool):          # antes que int: bool es subclase de int
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return round(value, 6)
+    if isinstance(value, str):
+        return value if _AUDIT_SAFE_TOKEN_RE.match(value) else None
+    return None
+
+
+def _audit_safe_details(action: str, raw: Any) -> Dict[str, Any]:
+    """Proyección segura de `metadata.details` para una acción conocida.
+
+    Profundidad 1: un dict o una lista de dicts anidados se descarta entera.
+    """
+    allowed = _AUDIT_DETAIL_ALLOWLIST.get(action)
+    if not allowed or not isinstance(raw, dict):
+        return {}
+    safe: Dict[str, Any] = {}
+    for key in sorted(raw):
+        if len(safe) >= _AUDIT_DETAIL_MAX_KEYS:
+            break
+        if key not in allowed:
+            continue
+        value = raw[key]
+        if isinstance(value, (list, tuple)):
+            items = [_audit_safe_scalar(v) for v in list(value)[:_AUDIT_DETAIL_MAX_LIST]]
+            items = [v for v in items if v is not None]
+            if items:
+                safe[key] = items
+            continue
+        scalar = _audit_safe_scalar(value)
+        if scalar is not None:
+            safe[key] = scalar
+    return safe
+
+
+def _audit_metadata(raw: Any) -> Dict[str, Any]:
+    """`metadata` viene como TEXTO JSON desde la columna de SQLite."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +407,24 @@ def _unavailable(kind: str, source: str, exc: Any) -> EvidenceResult:
     )
 
 
+def _with_unreadable(result: EvidenceResult, unreadable: List[str]) -> EvidenceResult:
+    """Declara los reportes ilegibles en `detail`.
+
+    Un archivo corrupto no debe derribar la consulta, pero tampoco desaparecer
+    en silencio: si se omite sin decirlo, "sin problemas detectados" podría
+    estar basado en menos reportes de los que hay. Se nombran para que sean
+    verificables en disco.
+    """
+    if not unreadable:
+        return result
+    nota = (
+        f"{len(unreadable)} reporte(s) ilegible(s), omitido(s): "
+        + ", ".join(sorted(unreadable)[:5])
+    )
+    result.detail = f"{result.detail} · {nota}" if result.detail else nota
+    return result
+
+
 # ---------------------------------------------------------------------------
 # La fachada
 # ---------------------------------------------------------------------------
@@ -336,10 +481,10 @@ class InternalEvidence:
             return blocked
         src = "observability.audit_engine (vault/audit_reports/audit_*.json)"
         try:
-            items = self._read_reports(limit=1, kind="diagnostic")
+            items, unreadable = self._read_reports(limit=1, kind="diagnostic")
         except Exception as exc:
             return _unavailable("diagnostic", src, exc)
-        return _finalize("diagnostic", src, items)
+        return _with_unreadable(_finalize("diagnostic", src, items), unreadable)
 
     def diagnostic_history(self, limit: int = 5) -> EvidenceResult:
         blocked = self._guard("diagnostic_history")
@@ -347,35 +492,84 @@ class InternalEvidence:
             return blocked
         src = "observability.audit_engine (vault/audit_reports/audit_*.json)"
         try:
-            items = self._read_reports(limit=max(1, limit), kind="diagnostic_history")
+            items, unreadable = self._read_reports(
+                limit=max(1, limit), kind="diagnostic_history",
+            )
         except Exception as exc:
             return _unavailable("diagnostic_history", src, exc)
-        return _finalize("diagnostic_history", src, items)
+        return _with_unreadable(
+            _finalize("diagnostic_history", src, items), unreadable,
+        )
 
-    def _read_reports(self, limit: int, kind: str) -> List[EvidenceItem]:
-        """Lee los N reportes más recientes. Solo lectura sobre el directorio
-        que `audit_engine` ya mantiene (él rota a 60; aquí no se toca nada)."""
+    def _read_reports(self, limit: int, kind: str) -> Tuple[List[EvidenceItem], List[str]]:
+        """Los N reportes MÁS RECIENTES, ordenados por su fecha real.
+
+        Solo lectura sobre el directorio que `audit_engine` ya mantiene (él rota
+        a 60; aquí no se toca nada).
+
+        ORDEN (el defecto que esto corrige)
+        -----------------------------------
+        Antes se ordenaba por NOMBRE de archivo y luego se recortaba a `limit`.
+        Los nombres son `audit_{mode}_{ts}.json` con `mode` ∈ {daily, weekly}
+        (`observability/audit_engine.py::_save_report`), así que en orden
+        alfabético descendente CUALQUIER `audit_weekly_*` gana a CUALQUIER
+        `audit_daily_*`, por vieja que sea la semanal: "el último diagnóstico"
+        podía ser un reporte de hace días. El modo NO es una señal de frescura.
+
+        Ahora se leen todos los reportes, se fecha cada uno y se ordena por esa
+        fecha. El modo viaja como DATO (`scope` y `data["mode"]`), nunca como
+        criterio de orden.
+
+        FECHA EFECTIVA
+        --------------
+          1. `timestamp` o `generated_at` del contenido, si es parseable.
+          2. si no, `mtime` del archivo — fallback EXPLÍCITO, anotado en
+             `data["observed_at_source"]` para que sea auditable.
+          3. si tampoco, 0.0 (la fachada lo reporta como "sin fecha").
+
+        DESEMPATE
+        ---------
+        Determinista: a igual fecha, por nombre de archivo descendente. No
+        decide frescura, solo estabiliza el orden.
+
+        REPORTE CORRUPTO
+        ----------------
+        No derriba la consulta: se omite de los items y su nombre se devuelve
+        aparte para que el llamador lo declare en `detail`.
+        """
         directory = self._reports_path()
         if not directory.is_dir():
-            return []
-        files = sorted(directory.glob("audit_*.json"), key=lambda p: p.name, reverse=True)
-        items: List[EvidenceItem] = []
-        for path in files[:limit]:
+            return [], []
+
+        entries: List[Tuple[float, str, EvidenceItem]] = []
+        unreadable: List[str] = []
+        for path in sorted(directory.glob("audit_*.json")):
             try:
                 with open(path, "r", encoding="utf-8") as fh:
                     report = json.load(fh)
             except (OSError, json.JSONDecodeError) as exc:
                 logger.debug("report unreadable %s: %s", path.name, exc)
+                unreadable.append(path.name)
                 continue
+            if not isinstance(report, dict):
+                logger.debug("report not a JSON object: %s", path.name)
+                unreadable.append(path.name)
+                continue
+
             problems = report.get("problems") or []
             severity = report.get("severity") or report.get("status") or "unknown"
+
             observed = _parse_iso(report.get("timestamp") or report.get("generated_at"))
+            observed_source = "report.timestamp"
             if not observed:
+                observed_source = "file.mtime"
                 try:
                     observed = path.stat().st_mtime
                 except OSError:
                     observed = 0.0
-            items.append(EvidenceItem(
+                    observed_source = "unknown"
+
+            entries.append((observed, path.name, EvidenceItem(
                 kind="diagnostic",
                 source=f"observability.audit_engine :: {path.name}",
                 observed_at=observed,
@@ -389,12 +583,15 @@ class InternalEvidence:
                 visibility="owner",
                 data={
                     "problem_count": len(problems),
-                    "problems": problems[:10],
+                    "problems": problems[:10] if isinstance(problems, list) else [],
                     "mode": report.get("mode"),
                     "severity": severity,
+                    "observed_at_source": observed_source,
                 },
-            ))
-        return items
+            )))
+
+        entries.sort(key=lambda e: (e[0], e[1]), reverse=True)
+        return [item for _, _, item in entries[:limit]], unreadable
 
     # -- propuestas ------------------------------------------------------
 
@@ -464,32 +661,76 @@ class InternalEvidence:
 
     # -- auditoría -------------------------------------------------------
 
-    def recent_audit(self, limit: int = 10) -> EvidenceResult:
-        """Entradas recientes del `audit_ledger` (append-only, solo lectura)."""
+    def recent_audit(
+        self, limit: int = 10, action: Optional[str] = None,
+    ) -> EvidenceResult:
+        """Entradas recientes del `audit_ledger` (append-only, solo lectura).
+
+        `action` filtra por acción exacta reutilizando el `action_filter` que
+        `core/audit_ledger.py::query()` YA soporta y que esta fachada ignoraba.
+        Sin `action`, el comportamiento es el de siempre.
+
+        De `metadata` NO se expone el objeto completo: solo se proyecta
+        `metadata.details` para las acciones de forma conocida
+        (`_AUDIT_DETAIL_ALLOWLIST`) y solo las claves permitidas, con límites de
+        ancho, longitud y profundidad. El texto libre se descarta por
+        construcción — ahí es donde aparecerían rutas o credenciales.
+
+        La autorización no cambia: sigue siendo `_guard("audit")`, owner-only.
+        Un usuario no autorizado no recibe items, ni conteos, ni detalles.
+        """
         blocked = self._guard("audit")
         if blocked:
             return blocked
+        wanted = (action or "").strip()
         src = "core.audit_ledger.query() (audit_ledger.db)"
+        if wanted:
+            src = f"{src} action={wanted!r}"
         try:
             from core import audit_ledger
-            rows = audit_ledger.query(limit=max(1, limit))
+            rows = audit_ledger.query(
+                limit=max(1, limit), action_filter=wanted or None,
+            )
         except Exception as exc:
             return _unavailable("audit", src, exc)
-        items = [
-            EvidenceItem(
+
+        items: List[EvidenceItem] = []
+        for row in rows:
+            row_action = str(row.get("action") or "")
+            metadata = _audit_metadata(row.get("metadata"))
+            details = _audit_safe_details(row_action, metadata.get("details"))
+
+            data: Dict[str, Any] = {
+                "role": row.get("role"),
+                "reason": row.get("reason"),
+            }
+            domain = _AUDIT_ACTION_DOMAIN.get(row_action)
+            if domain:
+                data["domain"] = domain
+            provider = details.get("provider")
+            if isinstance(provider, str):
+                scope = _AUDIT_SCOPE_BY_PROVIDER.get(provider.lower())
+                if scope:
+                    data["data_scope"] = scope
+            if details:
+                data["details"] = details
+
+            items.append(EvidenceItem(
                 kind="audit",
                 source=src,
                 observed_at=_parse_iso(row.get("timestamp")),
                 scope=str(row.get("actor") or ""),
                 status=str(row.get("decision") or ""),
-                summary=str(row.get("action") or ""),
+                summary=row_action,
                 reference=f"audit:{row.get('id')}",
                 visibility="owner",
-                data={"role": row.get("role"), "reason": row.get("reason")},
-            )
-            for row in rows
-        ]
-        return _finalize("audit", src, items)
+                data=data,
+            ))
+
+        result = _finalize("audit", src, items)
+        if not items and wanted:
+            result.detail = f"sin entradas de auditoría para la acción {wanted!r}"
+        return result
 
     # -- motores y servicios ---------------------------------------------
 
@@ -689,6 +930,24 @@ class InternalEvidence:
         return _finalize("operational", src, items)
 
     def _domain_activity(self, domain: str) -> EvidenceResult:
+        """Patrones abstractos acumulados de un dominio genérico.
+
+        Ruta ÚNICA para todo dominio que no sea `trading` — freight,
+        cybersecurity, real estate y cualquier dominio futuro pasan por aquí.
+
+        Contrato de la fuente (`core/domain_knowledge.py::get_domain_summary`):
+        devuelve SIEMPRE un dict con la clave `patterns` (int). Sin patrones
+        devuelve `{"domain": d, "patterns": 0}`; con patrones añade
+        `strong_patterns`, `avg_win_rate`, `avg_expectancy`,
+        `total_observations` y `max_contributing_tenants`.
+
+        Esta función leía `total_patterns`, una clave que la fuente NUNCA
+        produce: `summary.get("total_patterns", 0)` devolvía 0 siempre y, como
+        el dict nunca viene vacío, tampoco se emitía `EMPTY` — el Núcleo
+        afirmaba "0 patrón(es)" aunque la librería tuviera decenas. Ahora se lee
+        la clave real y su ausencia es `UNAVAILABLE` con el motivo verificable,
+        nunca un cero inventado.
+        """
         src = f"core.domain_knowledge.get_domain_summary({domain!r})"
         if not domain:
             return EvidenceResult(
@@ -697,15 +956,50 @@ class InternalEvidence:
             )
         try:
             from core.domain_knowledge import get_domain_summary
-            summary = get_domain_summary(domain) or {}
+            summary = get_domain_summary(domain)
         except Exception as exc:
             return _unavailable("operational", src, exc)
-        total = int(summary.get("total_patterns", 0) or 0)
-        if not total and not summary:
+
+        if not isinstance(summary, dict) or not summary:
+            return EvidenceResult(
+                kind="operational", status=EvidenceStatus.EMPTY, source=src,
+                detail=f"la fuente no devolvió datos para {domain}",
+            )
+
+        # La clave contractual DEBE venir. Si no viene, la fuente cambió de
+        # forma y decirlo es más honesto que reportar cero: un cero silencioso
+        # es exactamente el defecto que se corrige aquí.
+        if _DOMAIN_PATTERN_COUNT_KEY not in summary:
+            return EvidenceResult(
+                kind="operational", status=EvidenceStatus.UNAVAILABLE, source=src,
+                detail=(
+                    f"la fuente no devolvió la clave contractual "
+                    f"{_DOMAIN_PATTERN_COUNT_KEY!r}; claves recibidas: "
+                    f"{sorted(summary)}"
+                ),
+            )
+        try:
+            total = int(summary[_DOMAIN_PATTERN_COUNT_KEY])
+        except (TypeError, ValueError):
+            return EvidenceResult(
+                kind="operational", status=EvidenceStatus.UNAVAILABLE, source=src,
+                detail=(
+                    f"la clave {_DOMAIN_PATTERN_COUNT_KEY!r} no es un entero: "
+                    f"{summary[_DOMAIN_PATTERN_COUNT_KEY]!r}"
+                ),
+            )
+
+        if total <= 0:
             return EvidenceResult(
                 kind="operational", status=EvidenceStatus.EMPTY, source=src,
                 detail=f"sin patrones registrados para {domain}",
             )
+
+        # La fuente no fecha el resumen (el contrato de arriba no incluye
+        # ninguna marca de tiempo), así que `observed_at` queda en 0.0 y
+        # `age_seconds` en None -> "sin fecha registrada en la fuente". Se
+        # sigue leyendo `updated_at` por si una versión futura la añade;
+        # nunca se sustituye por `now()`.
         observed = _parse_iso(summary.get("updated_at")) or 0.0
         items = [EvidenceItem(
             kind="operational", source=src, observed_at=observed, scope=domain,
@@ -726,7 +1020,7 @@ class InternalEvidence:
         anterior los encadenaba como si fueran cuatro pasos de una misma
         secuencia):
 
-          - `ideas`     -> POST /v1/ideas/{id}/approve  (permiso core.write)
+          - `ideas`     -> POST /v1/ideas/{id}/approve  (permiso apply_proposal)
                            IdeaStore.approve() -> data/ideas.jsonl
           - `proposals` -> POST /v1/proposals/{id}/approve (permiso apply_proposal)
                            db.update_proposal_status() -> vectrax.db
@@ -830,8 +1124,15 @@ class InternalEvidence:
                   "services/core/routes/ideas.py + proposals.py"),
 
             # -- Circuito 1: ideas (las IDEA-... del Dashboard) -------------
+            # El permiso citado es el que exige HOY la ruta. Es un literal, no
+            # se deriva del archivo: si `services/core/routes/ideas.py` cambia
+            # de permiso, hay que cambiarlo aquí. Esa sincronía la exige
+            # `tests/test_approval_pipeline_permissions.py`, que compara este
+            # texto contra el literal real de la ruta leído por AST — la traza
+            # se quedó afirmando `core.write` justo después de que la ruta
+            # pasara a `apply_proposal`.
             _item("ideas/1.endpoint", "present",
-                  "POST /v1/ideas/{id}/approve (permiso core.write)",
+                  "POST /v1/ideas/{id}/approve (permiso apply_proposal)",
                   "services/core/routes/ideas.py"),
             _item("ideas/2.persistencia", "present",
                   "IdeaStore.approve() -> status=approved en data/ideas.jsonl",
