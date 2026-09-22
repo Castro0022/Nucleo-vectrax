@@ -201,16 +201,28 @@ class TestTheShadowIsGone:
         assert "shadow" not in text.lower()
 
     def test_this_pr_retires_only_the_old_module(self):
-        """Alcance explícito: los mecanismos constitucionales siguen intactos.
+        """Alcance explícito: los mecanismos constitucionales siguen existiendo.
 
         Retirar `core/shadow_mode.py` NO es retirar el control constitucional.
-        `constitutional_mode` es un interruptor gobernado —shadow/enforce, con
-        kill switch y fail-safe— y sigue exactamente donde estaba.
+
+        Se comprueba que el control SIGUE AHÍ y sigue teniendo un modo y un
+        mecanismo de parada — no los nombres concretos que tenían el día que se
+        escribió esta prueba. La versión anterior exigía `revert_to_shadow`,
+        `SHADOW` y `ENFORCE` literalmente, y eso ataba este PR a que nadie
+        renombrara nunca esa API: cuando el PR que la renombra a `pause()`
+        llegó, los dos quedaban verdes por separado y rojos juntos.
+
+        Un guard de alcance debe afirmar que algo no se retiró, no congelar su
+        vocabulario.
         """
         assert (_ROOT / "core" / "operator" / "constitutional_mode.py").is_file()
         assert (_ROOT / "core" / "operator" / "constitutional_guard.py").is_file()
         from core.operator import constitutional_mode
         assert hasattr(constitutional_mode, "get_mode")
-        assert hasattr(constitutional_mode, "revert_to_shadow")
-        assert constitutional_mode.SHADOW == "shadow"
-        assert constitutional_mode.ENFORCE == "enforce"
+        assert hasattr(constitutional_mode, "set_mode")
+        assert len(constitutional_mode._VALID_MODES) >= 2
+        # Existe un mecanismo de parada, se llame como se llame hoy.
+        assert any(
+            hasattr(constitutional_mode, name)
+            for name in ("pause", "revert_to_shadow")
+        ), "el control constitucional se quedó sin mecanismo de parada"
