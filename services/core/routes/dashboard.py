@@ -784,10 +784,18 @@ async def dashboard_observatory() -> Dict[str, Any]:
         "teams": census.teams,
     }
 
-    # === CONVERGENCES (total from census) ===
-    convergences = {"cross_domain": 0, "details": []}
+    # === CONVERGENCES ===
+    # Dos magnitudes SEPARADAS, nunca intercambiables:
+    #   total        → convergencias canonicas registradas (SSOT, #107)
+    #   cross_domain → subconjunto que cruza dos dominios distintos
+    # El contador superior consume `total`; la tarjeta "Cross-Domain
+    # Convergences" consume `cross_domain`. Antes ambas leian el total, de modo
+    # que la tarjeta afirmaba "cross-domain" sobre una cifra que no lo era.
+    convergences = {"total": 0, "cross_domain": 0, "details": []}
     try:
-        convergences["cross_domain"] = census.convergences
+        convergences["total"] = census.convergences
+        convergences["active"] = census.convergences_active
+        convergences["cross_domain"] = census.convergences_cross_domain
         convergences["details"] = gravity.get("convergences", [])[:10]
         # Alert history
         from core.learn.gravity_engine import get_alert_history

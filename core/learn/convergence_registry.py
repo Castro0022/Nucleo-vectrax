@@ -408,6 +408,43 @@ def count_canonical_convergences(
         conn.close()
 
 
+def count_cross_domain_convergences(
+    status: Optional[str] = None, db_path: Optional[str] = None
+) -> int:
+    """Convergencias canonicas que cruzan DOS dominios distintos.
+
+    Es una magnitud distinta de `count_canonical_convergences()`: aquella es
+    el total de convergencias registradas (cualquier par), esta cuenta solo
+    las que unen dominios diferentes (`domain_a != domain_b`).
+
+    Existe porque el Dashboard y el reporte global mostraban el total bajo la
+    etiqueta "cross-domain", afirmando algo que la cifra no sostenia. El
+    detector `gravity_engine.cross_domain_convergences()` NO sirve para esto:
+    la unificacion #107 lo degrado a generador de candidatos sin canonicalizar
+    ni deduplicar. La verdad vive en este registro.
+
+    Los dominios desconocidos (`unknown_legacy`, cadena vacia) se excluyen de
+    ambos lados: un par con dominio sin resolver no es evidencia verificable
+    de que crucen dominios.
+    """
+    conn = connect(db_path)
+    try:
+        sql = (
+            "SELECT COUNT(*) FROM convergences "
+            "WHERE domain_a != domain_b "
+            "AND domain_a NOT IN ('', 'unknown_legacy') "
+            "AND domain_b NOT IN ('', 'unknown_legacy')"
+        )
+        params: tuple = ()
+        if status:
+            sql += " AND status=?"
+            params = (status,)
+        row = conn.execute(sql, params).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
 def get_confirmation_total(db_path: Optional[str] = None) -> int:
     conn = connect(db_path)
     try:

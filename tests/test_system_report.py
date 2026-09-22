@@ -29,7 +29,12 @@ def _fake_census(**over):
     ns = types.SimpleNamespace(
         total=100, gravitational=60, knowledge=30, users=10,
         domains={"market": 40, "freight_logistics": 20},
-        convergences=7, patterns=5, constellations=3,
+        # Dos magnitudes distintas a proposito (ver
+        # tests/test_convergence_counters.py): `convergences` es el total
+        # canonico y `convergences_cross_domain` el subconjunto que cruza
+        # dominios. Valores separados para que confundirlos rompa el test.
+        convergences=5604, convergences_cross_domain=7,
+        patterns=5, constellations=3,
         mass_total=12.3456, word_gravity_count=15,
         users_total=8, interactions=200, user_facts=12, teams=1,
     )
@@ -104,6 +109,9 @@ def test_get_global_state_composes_all_sources():
     assert state["stars"] == {
         "total": 100, "gravitational": 60, "knowledge": 30, "users": 10,
     }
+    # Los dos contadores viajan separados: el total no puede sustituir a
+    # cross_domain ni al reves.
+    assert state["convergences"]["total"] == 5604
     assert state["convergences"]["cross_domain"] == 7
     assert state["convergences"]["history"] == {
         "births": 50, "dissolutions": 6, "active": 4,

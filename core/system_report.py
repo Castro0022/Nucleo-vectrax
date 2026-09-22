@@ -75,6 +75,7 @@ def get_global_state() -> Dict[str, Any]:
     stars = {"total": 0, "gravitational": 0, "knowledge": 0, "users": 0}
     domains_gravity: Dict[str, int] = {}
     convergences: Dict[str, Any] = {
+        "total": 0,
         "cross_domain": 0,
         "history": {"births": 0, "dissolutions": 0, "active": 0},
     }
@@ -92,7 +93,10 @@ def get_global_state() -> Dict[str, Any]:
             "users": c.users,
         }
         domains_gravity = dict(c.domains or {})
-        convergences["cross_domain"] = c.convergences
+        # `total` es el registro canonico completo; `cross_domain` solo el
+        # subconjunto que cruza dominios. No son intercambiables.
+        convergences["total"] = c.convergences
+        convergences["cross_domain"] = c.convergences_cross_domain
         extra = {
             "patterns": c.patterns,
             "constellations": c.constellations,
@@ -258,7 +262,8 @@ def build_global_report(
                 f"usuarios {stars.get('users', 0)})"
             ),
             (
-                f"🌀 <b>Convergencias:</b> {conv.get('cross_domain', 0)} cross-domain · "
+                f"🌀 <b>Convergencias:</b> {conv.get('total', 0)} · "
+                f"{conv.get('cross_domain', 0)} cross-domain · "
                 f"activas {hist.get('active', 0)} "
                 f"(nac. {hist.get('births', 0)} / disol. {hist.get('dissolutions', 0)})"
             ),
@@ -309,7 +314,8 @@ def build_global_report(
             f"users {stars.get('users', 0)})"
         ),
         (
-            f"🌀 <b>Convergences:</b> {conv.get('cross_domain', 0)} cross-domain · "
+            f"🌀 <b>Convergences:</b> {conv.get('total', 0)} · "
+            f"{conv.get('cross_domain', 0)} cross-domain · "
             f"active {hist.get('active', 0)} "
             f"(births {hist.get('births', 0)} / dissol. {hist.get('dissolutions', 0)})"
         ),

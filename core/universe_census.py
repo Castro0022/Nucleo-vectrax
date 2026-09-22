@@ -59,6 +59,11 @@ class UniverseCensus:
     convergences: int = 0
     convergences_active: int = 0
     convergence_confirmations_total: int = 0
+    # Convergencias que cruzan DOS dominios distintos (domain_a != domain_b en
+    # el registro canonico). Es un SUBCONJUNTO de `convergences`, nunca su
+    # sinonimo: el Dashboard y el reporte global mostraban el total bajo la
+    # etiqueta "cross-domain", afirmando algo que la cifra no sostenia.
+    convergences_cross_domain: int = 0
     # Convergencias CONVERSACIONALES (Corte 1) -- vectrax.db.stars con
     # star_type='convergence' AND owner != 'vectrax_system'. Mismo concepto
     # de convergencia que `convergences` de arriba, origen distinto (usuario/
@@ -112,6 +117,7 @@ class UniverseCensus:
             "convergences": self.convergences,
             "convergences_active": self.convergences_active,
             "convergence_confirmations_total": self.convergence_confirmations_total,
+            "convergences_cross_domain": self.convergences_cross_domain,
             "convergences_conversational": self.convergences_conversational,
             "convergences_conversational_collective": self.convergences_conversational_collective,
             "patterns": self.patterns,
@@ -247,10 +253,12 @@ def _build_census() -> UniverseCensus:
     try:
         from core.learn.convergence_registry import (
             count_canonical_convergences, get_confirmation_total,
+            count_cross_domain_convergences,
         )
         c.convergences = count_canonical_convergences()
         c.convergences_active = count_canonical_convergences(status="active")
         c.convergence_confirmations_total = get_confirmation_total()
+        c.convergences_cross_domain = count_cross_domain_convergences()
     except Exception as exc:
         logger.debug("census convergence registry failed: %s", exc)
 

@@ -296,7 +296,9 @@ async function loadDashboard() {
       metric('📊 Market', mkt.total_signals ?? 0),
       metric('👥 Users', users.total ?? 0),
       metric('💬 Interactions', users.interactions ?? 0),
-      metric('🔗 Convergences', (obs.convergences || {}).cross_domain ?? 0),
+      // Total canonico — NO cross_domain, que es el subconjunto y vive en su
+      // propia tarjeta ("Cross-Domain Convergences").
+      metric('🔗 Convergences', (obs.convergences || {}).total ?? 0),
       metric(`${stIcon} System`, op.status || '—'),
       metric('⏱ Uptime', health ? fmtUptime(health.uptime_seconds) : '—'),
     ].join('');
@@ -371,7 +373,7 @@ async function loadOverview() {
       <div class="kv"><span class="dim">Señales</span><span>${mkt.total_signals ?? 0}</span></div>
       <div class="kv"><span class="dim">Patrones</span><span>${mkt.total_patterns ?? 0}</span></div>
       <div class="kv"><span class="dim">Win rate global</span><span>${mkt.global_win_rate ?? 0}%</span></div>
-      <div class="kv"><span class="dim">Convergencias</span><span>${conv.cross_domain ?? 0}</span></div>
+      <div class="kv"><span class="dim">Convergencias (total)</span><span>${conv.total ?? 0}</span></div>
     </div>`;
     // Operator card
     html += `<div class="card">
@@ -705,7 +707,8 @@ async function loadConvergencias() {
     const alerts = conv.alert_history || [];
 
     let html = `<div class="card"><div class="card-head">🔗 Cross-Domain Convergences</div>
-      <div class="kv"><span class="dim">Convergencias detectadas</span><span><strong>${conv.cross_domain ?? 0}</strong></span></div>
+      <div class="kv"><span class="dim">Cruzan dos dominios</span><span><strong>${conv.cross_domain ?? 0}</strong></span></div>
+      <div class="kv"><span class="dim">Total canónico</span><span>${conv.total ?? 0}</span></div>
     </div>`;
 
     if (details.length > 0) {
