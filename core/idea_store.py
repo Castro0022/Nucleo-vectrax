@@ -28,6 +28,7 @@ Creador: Mario Bravo Castro
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -207,6 +208,40 @@ class Idea:
 # _get_convergence_level — lee Observer singleton
 # ---------------------------------------------------------------------------
 
+def _semantic_dedup_key(proposal: Dict[str, Any]) -> str:
+    """Identidad POR PATRÓN de una propuesta del router.
+
+    El `source_id` de `ingest_from_router_learning()` es
+    `router_{cycle_id}_{proposal_type}_{created_at}`: identifica la
+    OCURRENCIA, no el patrón. Cada ciclo de aprendizaje produce un valor
+    nuevo, así que dos propuestas que dicen exactamente lo mismo nunca se
+    reconocen como equivalentes. Causa demostrada de la acumulación de
+    `fallback_resolved` casi idénticos, todos `pending`.
+
+    Esta clave usa SOLO los campos que describen QUÉ patrón se observó, y
+    excluye deliberadamente los que cambian en cada ciclo sin cambiar el
+    significado (`cycle_id`, `created_at`, conteos, tasas y el texto
+    generado, que interpola esos conteos: "92 casos…" vs "160 casos…").
+
+    Devuelve "" si la propuesta no trae ningún discriminante estable — en
+    ese caso no se deduplica por patrón (fail-open: es preferible una
+    propuesta repetida a perder una distinta).
+    """
+    stable_fields = (
+        "proposal_type", "type", "category", "intent",
+        "affected_component", "route", "from_route", "to_route",
+    )
+    parts = []
+    for field_name in stable_fields:
+        value = proposal.get(field_name)
+        if value in (None, "", [], {}):
+            continue
+        parts.append(f"{field_name}={str(value).strip().lower()}")
+    if not parts:
+        return ""
+    return hashlib.sha256("|".join(sorted(parts)).encode("utf-8")).hexdigest()[:16]
+
+
 def _get_convergence_level() -> float:
     """
     Lee el nivel de convergencia actual desde PresenciaObserver.
@@ -309,18 +344,56 @@ class IdeaStore:
         affected_component: str,
         evidence: Optional[Dict[str, Any]] = None,
         source_id: str = "",
+        dedup_key: str = "",
     ) -> Optional[Idea]:
         """
         Añade una nueva idea al store.
-        Deduplica por (source, source_id) — no inserta si ya existe con ese source_id.
+
+        Deduplica en DOS ejes independientes:
+
+        * `source_id` — identidad por OCURRENCIA. Evita reprocesar dos veces
+          la misma línea de la fuente. Es el eje que ya existía.
+        * `dedup_key` — identidad por PATRÓN (ver `_semantic_dedup_key()`).
+          Evita acumular propuestas distintas que dicen LO MISMO. Solo
+          suprime cuando la propuesta equivalente sigue `PENDING`: si la
+          anterior ya fue revisada (aprobada/rechazada/aplicada), una nueva
+          aparición del patrón es información nueva y debe verse.
+
+        Por qué hacían falta los dos: el `source_id` de
+        `ingest_from_router_learning()` incorpora `cycle_id` y `created_at`,
+        así que cambia en CADA ciclo de aprendizaje aunque el patrón sea
+        idéntico. Esa es la causa demostrada de la acumulación de propuestas
+        casi iguales sobre `fallback_resolved` (92 → 160 casos entre el 4 y
+        el 21 de septiembre de 2026, todas `pending`). El eje por ocurrencia
+        funcionaba correctamente; lo que faltaba era el eje por patrón.
+
+        Nada de esto reescribe ni borra propuestas existentes: las anteriores
+        no llevan `dedup_key` y conservan intacto su significado histórico.
         """
-        # Deduplication por source_id
-        if source_id:
+        # Eje 1 — deduplicación por ocurrencia (source_id)
+        existing: Optional[Dict[str, Idea]] = None
+        if source_id or dedup_key:
             existing = self._read_all_latest()
+
+        if source_id and existing is not None:
             for idea in existing.values():
                 if idea.source == source and idea.source_id == source_id:
                     logger.debug("IdeaStore.add: skip duplicate source_id=%s", source_id)
                     return None
+
+        # Eje 2 — deduplicación por patrón semántico (dedup_key)
+        if dedup_key and existing is not None:
+            for idea in existing.values():
+                if (idea.source == source
+                        and idea.status == IdeaStatus.PENDING
+                        and (idea.evidence or {}).get("_dedup_key") == dedup_key):
+                    logger.debug(
+                        "IdeaStore.add: skip semantic duplicate dedup_key=%s "
+                        "(ya pendiente como %s)", dedup_key, idea.idea_id,
+                    )
+                    return None
+            evidence = dict(evidence or {})
+            evidence["_dedup_key"] = dedup_key
 
         idea_id = f"IDEA-{uuid.uuid4().hex[:8].upper()}"
         convergence_level = _get_convergence_level()
@@ -482,6 +555,7 @@ class IdeaStore:
                         affected_component=affected,
                         evidence=p.get("evidence", {}),
                         source_id=source_id,
+                        dedup_key=_semantic_dedup_key(p),
                     )
                     if idea:
                         added += 1
