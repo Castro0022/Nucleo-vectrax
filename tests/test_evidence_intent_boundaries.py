@@ -237,6 +237,48 @@ def test_external_purpose_blocks_the_weak_governance_path():
     assert not classify("propuestas pendientes para el cliente").detected
 
 
+# El complemento externo debe bloquear el estado FUERTE igual que el débil:
+# aplicarlo solo al débil dejaba pasar los dos primeros casos.
+_EXTERNAL_COMPLEMENT_BLOCKED = [
+    "propuestas sin aprobar para el cliente",
+    "lista de ideas sin revisar para la boda",
+    "ideas pendientes de la reunión",
+    "propuestas pendientes del proveedor",
+    # Variaciones nuevas
+    "sugerencias sin revisar del comité",
+    "ideas sin aprobar para el lanzamiento",
+    "propuestas por aprobar de la junta",
+    "ideas pendientes para el evento",
+    "sugerencias pendientes de la asamblea",
+]
+
+
+@pytest.mark.parametrize("phrase", _EXTERNAL_COMPLEMENT_BLOCKED)
+def test_external_complement_blocks_strong_states_too(phrase):
+    intent = classify(phrase)
+    assert not intent.detected, (
+        f"{phrase!r} entró como {intent.family!r} pese al complemento externo "
+        f"(motivo: {intent.subject_reason})"
+    )
+
+
+@pytest.mark.parametrize("phrase", [
+    # Sin complemento alguno.
+    "listado de ideas sin aprobar",
+    "quedan sugerencias pendientes?",
+    "enséñame las propuestas que siguen sin revisar",
+    "lista de propuestas sin revisar",
+    "¿cuántas propuestas pendientes hay?",
+    # Complementos INTERNOS: estado de la propia cola, no un tercero.
+    "¿hay propuestas pendientes de revisión?",
+    "¿ideas pendientes de aprobación?",
+])
+def test_internal_complements_do_not_block(phrase):
+    """'de revisión' y 'de aprobación' son estado de la cola, no un tercero;
+    y 'de ideas' en 'listado de ideas' es el propio objeto de gobernanza."""
+    assert classify(phrase).detected, f"{phrase!r} bloqueada por error"
+
+
 # El demostrativo `estas` no es segunda persona. Los dos primeros son los
 # casos exactos reportados.
 _DEMONSTRATIVE_NOT_SECOND_PERSON = [

@@ -116,9 +116,40 @@ _QUERY_CONTEXT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Complemento de finalidad externa: "ideas pendientes PARA LA BODA". La cola
-# de gobernanza de Vectrax no tiene destinatario externo.
-_EXTERNAL_PURPOSE_RE = re.compile(r"\bpara\s+\w", re.IGNORECASE)
+# Complemento de finalidad o pertenencia EXTERNA: "ideas pendientes PARA LA
+# BODA", "propuestas pendientes DEL PROVEEDOR", "ideas pendientes DE LA
+# REUNIÓN". La cola de gobernanza de Vectrax no tiene destinatario externo ni
+# pertenece a un tercero.
+_COMPLEMENT_RE = re.compile(
+    r"\b(?:para|del|de\s+la|de\s+los|de\s+las|de)\s+"
+    r"(?:(?:el|la|los|las|un|una|unos|unas)\s+)?"
+    r"(\w+)",
+    re.IGNORECASE,
+)
+
+# Núcleos de complemento que NO son externos: el estado interno de la propia
+# cola ("pendiente DE REVISIÓN", "DE APROBACIÓN") y el propio objeto de
+# gobernanza ("listado DE IDEAS sin aprobar").
+_INTERNAL_COMPLEMENT_HEADS = frozenset({
+    "revision", "revisiones", "aprobacion", "aprobaciones",
+    "propuesta", "propuestas", "idea", "ideas", "sugerencia", "sugerencias",
+    "proposal", "proposals", "suggestion", "suggestions", "approval", "review",
+})
+
+
+def _has_external_complement(raw: str) -> bool:
+    """¿La frase ata el objeto de gobernanza a algo ajeno a Vectrax?
+
+    Se aplica a los estados de gobernanza DÉBIL y FUERTE por igual: sin esto,
+    "propuestas sin aprobar para el cliente" y "lista de ideas sin revisar
+    para la boda" entraban por la vía fuerte (auditoría 2026-09-22, tercera
+    pasada).
+    """
+    for match in _COMPLEMENT_RE.finditer(raw):
+        head = _normalize(match.group(1))
+        if head and head not in _INTERNAL_COMPLEMENT_HEADS:
+            return True
+    return False
 
 # (d) Vocabulario de PROCESO sobre el circuito de aprobación. Cuando aparece
 # junto a las anclas de aprobación, la pregunta es sobre el MECANISMO
@@ -255,12 +286,11 @@ def _subject_is_vectrax(raw: str, tokens: set) -> Tuple[bool, str]:
     # Gobernanza: objeto propio + estado. El estado débil (`pendiente` a
     # secas) exige además contexto de consulta y ausencia de finalidad
     # externa; sin eso, "hay ideas pendientes para la boda" entraba.
-    if _GOVERNANCE_OBJECT_RE.search(raw):
+    if _GOVERNANCE_OBJECT_RE.search(raw) and not _has_external_complement(raw):
         if _GOVERNANCE_STATE_STRONG_RE.search(raw):
             return True, "objeto propio + estado de gobernanza inequívoco"
         if (_GOVERNANCE_STATE_WEAK_RE.search(raw)
-                and _QUERY_CONTEXT_RE.search(raw)
-                and not _EXTERNAL_PURPOSE_RE.search(raw)):
+                and _QUERY_CONTEXT_RE.search(raw)):
             return True, "objeto propio + pendiente, en contexto de consulta"
     if tokens & _registered_domain_tokens():
         return True, "nombre de un dominio registrado en Vectrax"
@@ -401,6 +431,19 @@ _KIND_LABEL = {
 }
 
 
+# Cuántos ítems se muestran. El recorte tiene sentido en listas HOMOGÉNEAS y
+# potencialmente largas (propuestas, entradas de auditoría), donde ver las
+# primeras basta. No lo tiene en una traza ESTRUCTURAL acotada, donde cada
+# ítem es una conclusión distinta: ahí recortar equivale a ocultar un hecho.
+# `approval_pipeline` produce 9 ítems fijos y el recorte a 8 escondía
+# justamente la conclusión de que los circuitos son independientes
+# (auditoría 2026-09-22, tercera pasada).
+_DISPLAY_LIMIT_DEFAULT = 8
+_DISPLAY_LIMIT: Dict[str, int] = {
+    "approval_pipeline": 32,   # traza acotada: se muestra entera
+}
+
+
 def _humanize_age(seconds: Optional[float]) -> str:
     if seconds is None:
         return "sin fecha registrada en la fuente"
@@ -452,15 +495,16 @@ def build_answer(result: EvidenceResult) -> str:
             "La reporto igualmente, marcada como vieja:"
         )
 
-    for item in result.items[:8]:
+    limit = _DISPLAY_LIMIT.get(result.kind, _DISPLAY_LIMIT_DEFAULT)
+    for item in result.items[:limit]:
         age = _humanize_age(item.age_seconds)
         prefix = f"[{item.scope}] " if item.scope else ""
         ref = f" · ref: {item.reference}" if item.reference else ""
         estado = f" · estado: {item.status}" if item.status else ""
         lines.append(f"- {prefix}{item.summary}{estado} · observado {age}{ref}")
 
-    if len(result.items) > 8:
-        lines.append(f"- (+{len(result.items) - 8} más)")
+    if len(result.items) > limit:
+        lines.append(f"- (+{len(result.items) - limit} más)")
 
     lines.append(f"Fuente: {result.source}.")
     return "\n".join(lines)
