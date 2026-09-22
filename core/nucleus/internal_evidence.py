@@ -87,6 +87,12 @@ _STALE_AFTER: Dict[str, float] = {
     "convergences": 3600.0,
     "operational": 24 * 3600.0,
     "approval_pipeline": float("inf"),  # traza estructural del código, no caduca
+    # El puente causal se reevalúa en cada ciclo del observador; un aprendizaje
+    # sin revalidar en un día es una señal, no un dato fresco.
+    "causal_learning": 24 * 3600.0,
+    "causal_candidate": 24 * 3600.0,
+    "criterion_change": 24 * 3600.0,
+    "causal_application": 7 * 24 * 3600.0,
 }
 
 # Directorios que nunca contienen un ejecutor de producción y que harían
@@ -101,6 +107,9 @@ _SCAN_EXCLUDED_DIRS = frozenset({
 _OWNER_ONLY = frozenset({
     "diagnostic", "diagnostic_history", "proposal", "audit",
     "engines", "operational", "approval_pipeline",
+    # La traza causal expone convergencias, umbrales y decisiones internas.
+    "causal_learning", "causal_candidate", "criterion_change",
+    "causal_application",
 })
 
 # Clave contractual del resumen de dominio. La produce
@@ -1008,6 +1017,251 @@ class InternalEvidence:
             data=dict(summary),
         )]
         return _finalize("operational", src, items)
+
+    # -- puente causal: observación -> convergencia -> aprendizaje -------
+
+    #
+    # REGLA DE LENGUAJE (no negociable)
+    # ---------------------------------
+    # "Aprendí" SOLO puede decirse cuando existe un `LearningTrace` en estado
+    # LEARNED. Un candidato dice "todavía no supera el umbral" y enumera qué le
+    # falta. Ninguna otra formulación —"casi", "sería", "prácticamente"— es
+    # admisible: todas convierten una observación repetida en un aprendizaje
+    # que no ocurrió.
+    #
+
+    def causal_learnings(self, domain: str = "", limit: int = 10) -> EvidenceResult:
+        """Aprendizajes EFECTIVOS: "aprendí X porque la convergencia Y superó Z".
+
+        Solo estado LEARNED (`causal_learning.CONSUMABLE_STATES`). Cada ítem
+        nombra la convergencia de origen, los patrones fuente y los umbrales
+        que se cruzaron, así que la afirmación es reconstruible desde ids.
+        """
+        guard = self._guard("causal_learning")
+        if guard:
+            return guard
+        src = "core.learn.causal_learning.consumable_learnings"
+        try:
+            from core.learn.causal_learning import STATE_LEARNED, list_learnings
+            rows = list_learnings(
+                domain=domain or None, state=STATE_LEARNED, limit=limit,
+            )
+        except Exception as exc:
+            return _unavailable("causal_learning", src, exc)
+
+        if not rows:
+            return EvidenceResult(
+                kind="causal_learning", status=EvidenceStatus.EMPTY, source=src,
+                # El verbo "aprendí" no aparece ni siquiera negado: el guard de
+                # `tests/test_causal_evidence_answers.py` es una prohibición
+                # absoluta del literal, y debe poder seguir siéndolo.
+                detail=(
+                    "no hay ningún aprendizaje causal en estado LEARNED"
+                    + (f" para {domain}" if domain else "")
+                    + ": todavía no hay nada que afirmar aquí"
+                ),
+            )
+
+        items = []
+        for row in rows:
+            metrics = row.get("metrics_at_promotion") or {}
+            thresholds = row.get("thresholds_at_promotion") or {}
+            crossed = (
+                f"win_rate={metrics.get('min_pattern_win_rate')}% "
+                f"(umbral {thresholds.get('min_win_rate')}%), "
+                f"muestra={metrics.get('min_pattern_sample_size')} "
+                f"(umbral {thresholds.get('min_sample_size')}), "
+                f"combined_cc={metrics.get('combined_cc')} "
+                f"(umbral {thresholds.get('combined_cc')})"
+            )
+            items.append(EvidenceItem(
+                kind="causal_learning", source=src,
+                observed_at=float(row.get("learned_at") or 0.0),
+                scope=row.get("domain", ""), status=STATE_LEARNED,
+                summary=(
+                    f"Aprendí: {row.get('claim') or row['source_convergence_id']}"
+                    f" — porque la convergencia {row['source_convergence_id']} "
+                    f"superó {crossed}"
+                ),
+                reference=row["learning_id"],
+                confidence=float(row.get("confidence") or 0.0) or None,
+                visibility="owner",
+                data={
+                    "learning_id": row["learning_id"],
+                    "convergence_id": row["source_convergence_id"],
+                    "source_pattern_ids": row.get("source_pattern_ids", []),
+                    "policy_id": row.get("policy_id"),
+                    "policy_version": row.get("policy_version"),
+                    "criterion_version": row.get("criterion_version", ""),
+                    "metrics_at_promotion": metrics,
+                    "thresholds_at_promotion": thresholds,
+                },
+            ))
+        return _finalize("causal_learning", src, items)
+
+    def causal_candidates(self, domain: str = "", limit: int = 10) -> EvidenceResult:
+        """Convergencias que AÚN NO superan el umbral, y qué les falta.
+
+        Nunca se redactan como aprendizaje. El motivo exacto sale de la última
+        decisión persistida, no de una interpretación.
+        """
+        guard = self._guard("causal_candidate")
+        if guard:
+            return guard
+        src = "core.learn.causal_learning.list_learnings(CONVERGED_CANDIDATE)"
+        try:
+            from core.learn.causal_learning import (
+                STATE_CONVERGED_CANDIDATE, get_decisions, list_learnings,
+            )
+            rows = list_learnings(
+                domain=domain or None, state=STATE_CONVERGED_CANDIDATE, limit=limit,
+            )
+        except Exception as exc:
+            return _unavailable("causal_candidate", src, exc)
+
+        if not rows:
+            return EvidenceResult(
+                kind="causal_candidate", status=EvidenceStatus.EMPTY, source=src,
+                detail="no hay convergencias pendientes de umbral",
+            )
+
+        items = []
+        for row in rows:
+            try:
+                decisions = get_decisions(
+                    convergence_id=row["source_convergence_id"], limit=1,
+                )
+            except Exception:
+                decisions = []
+            missing = decisions[0]["reasons"] if decisions else []
+            items.append(EvidenceItem(
+                kind="causal_candidate", source=src,
+                observed_at=float(row.get("last_validated_at") or 0.0),
+                scope=row.get("domain", ""), status=STATE_CONVERGED_CANDIDATE,
+                summary=(
+                    f"La convergencia {row['source_convergence_id']} todavía no "
+                    f"supera el umbral: {'; '.join(missing) or 'sin motivo registrado'}"
+                ),
+                reference=row["learning_id"], visibility="owner",
+                data={
+                    "learning_id": row["learning_id"],
+                    "convergence_id": row["source_convergence_id"],
+                    "missing": missing,
+                },
+            ))
+        return _finalize("causal_candidate", src, items)
+
+    def criterion_change(self, domain: str) -> EvidenceResult:
+        """"Este aprendizaje cambió este criterio" — con el antes y el después."""
+        guard = self._guard("criterion_change")
+        if guard:
+            return guard
+        src = f"core.learn.criterion.effective_criterion({domain!r})"
+        if not domain:
+            return EvidenceResult(
+                kind="criterion_change", status=EvidenceStatus.EMPTY, source=src,
+                detail="no se indicó dominio",
+            )
+        try:
+            from core.learn.criterion import effective_criterion
+            result = effective_criterion(domain)
+        except Exception as exc:
+            return _unavailable("criterion_change", src, exc)
+
+        if not result.get("criterion_changed"):
+            return EvidenceResult(
+                kind="criterion_change", status=EvidenceStatus.EMPTY, source=src,
+                detail=(
+                    f"ningún aprendizaje causal ha cambiado el criterio de "
+                    f"{domain}: sin aprendizaje no puedo afirmar un cambio"
+                ),
+            )
+
+        entries = [
+            e for e in result["effective_criterion"]
+            if "causal_learning" in e.get("sources", [])
+        ]
+        items = [EvidenceItem(
+            kind="criterion_change", source=src, observed_at=time.time(),
+            scope=domain, status="changed",
+            summary=(
+                f"El aprendizaje {e.get('learning_id')} (convergencia "
+                f"{e.get('convergence_id')}) cambió el criterio de {domain}: "
+                f"añadió '{e['name']}' con win_rate={e['win_rate']}% y "
+                f"muestra={e['sample_size']}"
+            ),
+            reference=e.get("criterion_version", ""),
+            visibility="owner",
+            data={
+                "learning_id": e.get("learning_id"),
+                "convergence_id": e.get("convergence_id"),
+                "criterion_version": e.get("criterion_version"),
+                "previous_criterion": [x["name"] for x in result["previous_criterion"]],
+                "effective_criterion": [x["name"] for x in result["effective_criterion"]],
+            },
+        ) for e in entries]
+        if not items:
+            return EvidenceResult(
+                kind="criterion_change", status=EvidenceStatus.EMPTY, source=src,
+                detail=f"el criterio de {domain} cambió, pero no por el puente causal",
+            )
+        return _finalize("criterion_change", src, items)
+
+    def causal_applications(
+        self, learning_id: str = "", limit: int = 10,
+    ) -> EvidenceResult:
+        """"Este criterio influyó aquí; se aplicó o me abstuve; el resultado fue"."""
+        guard = self._guard("causal_application")
+        if guard:
+            return guard
+        src = "core.learn.causal_learning.get_applications"
+        try:
+            from core.learn.causal_learning import get_applications
+            rows = get_applications(learning_id=learning_id or None, limit=limit)
+        except Exception as exc:
+            return _unavailable("causal_application", src, exc)
+
+        if not rows:
+            return EvidenceResult(
+                kind="causal_application", status=EvidenceStatus.EMPTY, source=src,
+                detail="ningún aprendizaje ha influido todavía en una decisión",
+            )
+
+        items = []
+        for row in rows:
+            if row.get("applied"):
+                what = f"se aplicó en la decisión {row.get('decision_id') or '(sin id)'}"
+            else:
+                what = (
+                    f"me abstuve en la decisión {row.get('decision_id') or '(sin id)'}"
+                    f": {row.get('abstained_reason') or 'sin motivo registrado'}"
+                )
+            if row.get("outcome_id"):
+                status = (row.get("outcome_status") or "").lower()
+                effect = {
+                    "win": "lo reforzó", "success": "lo reforzó", "ok": "lo reforzó",
+                    "loss": "lo contradijo", "fail": "lo contradijo",
+                    "error": "lo contradijo",
+                }.get(status, "no es concluyente")
+                tail = (
+                    f"; el resultado fue {row.get('outcome_status')} "
+                    f"({row.get('outcome_value')}) y {effect}"
+                )
+            else:
+                tail = "; todavía sin resultado registrado"
+            items.append(EvidenceItem(
+                kind="causal_application", source=src,
+                observed_at=float(row.get("applied_at") or 0.0),
+                scope=row.get("convergence_id", ""),
+                status="applied" if row.get("applied") else "abstained",
+                summary=(
+                    f"El aprendizaje {row['learning_id']} (criterio "
+                    f"{row.get('criterion_version') or 'sin versión'}) {what}{tail}"
+                ),
+                reference=row["application_id"], visibility="owner",
+                data=dict(row),
+            ))
+        return _finalize("causal_application", src, items)
 
     # -- traza de solo lectura del botón Aprobar -------------------------
 
