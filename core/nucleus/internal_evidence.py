@@ -817,6 +817,18 @@ class InternalEvidence:
             )
 
         items = [
+            # -- Conclusión PRIMERO -----------------------------------------
+            # Que sean dos circuitos independientes es lo principal que hay
+            # que entender de esta traza. Iba al final y el recorte de la
+            # respuesta lo escondía tras un "(+1 más)": la separación se
+            # deducía de los prefijos, pero la conclusión no llegaba al
+            # usuario (auditoría 2026-09-22, tercera pasada).
+            _item("relacion", "linked" if linked else "independent",
+                  ("los dos circuitos se invocan entre sí" if linked else
+                   "circuitos INDEPENDIENTES: no se llaman entre sí ni comparten almacén; "
+                   "aprobar una idea no dispara el endpoint de proposals"),
+                  "services/core/routes/ideas.py + proposals.py"),
+
             # -- Circuito 1: ideas (las IDEA-... del Dashboard) -------------
             _item("ideas/1.endpoint", "present",
                   "POST /v1/ideas/{id}/approve (permiso core.write)",
@@ -864,13 +876,6 @@ class InternalEvidence:
                 reference="vectrax.db proposals", visibility="owner",
                 data={"candidatos_no_verificados": sorted(proposal_candidates)[:8]},
             ),
-
-            # -- Relación entre ambos --------------------------------------
-            _item("relacion", "linked" if linked else "independent",
-                  ("los dos circuitos se invocan entre sí" if linked else
-                   "circuitos INDEPENDIENTES: no se llaman entre sí ni comparten almacén; "
-                   "aprobar una idea no dispara el endpoint de proposals"),
-                  "services/core/routes/ideas.py + proposals.py"),
         ]
 
         result = _finalize(kind, src, items)

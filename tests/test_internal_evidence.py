@@ -309,6 +309,34 @@ def test_proposals_executor_is_not_claimed_from_the_ideas_scan():
         assert "mark_applied" not in item.reference
 
 
+def test_approval_answer_shows_the_whole_trace_and_leads_with_the_conclusion():
+    """Cada ítem de esta traza es una conclusión distinta, no una fila más de
+    una lista larga: recortarla equivale a ocultar un hecho.
+
+    El recorte a 8 escondía el noveno ítem —justo el que dice que los dos
+    circuitos son independientes— tras un "(+1 más)" (auditoría 2026-09-22).
+    """
+    from core.nucleus.evidence_intent import build_answer
+
+    result = InternalEvidence(OWNER).approval_pipeline()
+    if result.status is EvidenceStatus.UNAVAILABLE:
+        pytest.skip("traza estructural no computable en este entorno")
+
+    answer = build_answer(result)
+    assert "más)" not in answer, "la traza estructural se mostró recortada"
+
+    # Todos los ítems llegan al usuario.
+    for item in result.items:
+        assert item.scope in answer, f"el ítem {item.scope!r} no llegó a la respuesta"
+
+    # Y la conclusión principal encabeza la respuesta.
+    body = [ln for ln in answer.splitlines() if ln.startswith("- ")]
+    assert body and body[0].startswith("- [relacion]"), (
+        f"la conclusión no encabeza la respuesta: {body[0] if body else '(vacío)'}"
+    )
+    assert result.items[0].scope == "relacion"
+
+
 def test_approval_pipeline_does_not_count_itself_as_executor():
     """Regresión: buscar el nombre `mark_applied` en vez de la LLAMADA hacía
     que este propio módulo se contara como ejecutor, produciendo un
