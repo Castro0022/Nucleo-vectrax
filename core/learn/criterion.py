@@ -274,9 +274,17 @@ def _wilson_lb(k: int, n: int, z: float = 1.96) -> float:
     return round(max(0.0, c - m) * 100, 1)
 
 
-def rank_domain_evidence(domain: str, limit: int = 8) -> List[Dict[str, Any]]:
+def rank_domain_evidence(
+    domain: str, limit: int = 8, include_causal: bool = True,
+) -> List[Dict[str, Any]]:
     """Rankea los patrones aprendidos del dominio por un score derivado de sus
     métricas reales. Read-only. Devuelve entidades con métricas + score + fuentes.
+
+    `include_causal=False` devuelve el criterio SIN el puente causal. No es un
+    modo ni un interruptor de producción: es lo que permite a
+    `effective_criterion()` contrastar el criterio anterior con el nuevo y
+    responder "qué cambió y qué aprendizaje lo cambió". El criterio que se
+    sirve es siempre el que incluye los aprendizajes.
     """
     entities: Dict[str, Dict[str, Any]] = {}
 
@@ -354,6 +362,56 @@ def rank_domain_evidence(domain: str, limit: int = 8) -> List[Dict[str, Any]]:
     except Exception as exc:
         logger.debug("rank verification error: %s", exc)
 
+    # 4) causal_learning — el puente convergencia -> aprendizaje -> criterio.
+    #    SOLO entran aprendizajes en estado LEARNED (`CONSUMABLE_STATES`): un
+    #    candidato que todavía no superó el gate no puede mover el criterio, y
+    #    sin un LearningTrace en LEARNED Vectrax no puede decir "aprendí".
+    if include_causal:
+        try:
+            from core.domain_knowledge import _compute_confidence
+            from core.learn.causal_learning import consumable_learnings
+            for lrn in consumable_learnings(domain, limit=max(limit * 4, 20)):
+                name = (lrn.get("claim") or "").strip() or lrn.get(
+                    "source_convergence_id", ""
+                )
+                key = (name or "").lower()
+                if not key:
+                    continue
+                metrics = lrn.get("metrics_at_promotion") or {}
+                # Métricas del patrón MÁS DÉBIL de la convergencia: son las que
+                # cruzaron el umbral, en la escala de porcentaje que ya usa el
+                # resto de este ranking.
+                wr = float(metrics.get("min_pattern_win_rate", 0.0) or 0.0)
+                e = float(metrics.get("min_pattern_expectancy", 0.0) or 0.0)
+                n = int(metrics.get("min_pattern_sample_size", 0) or 0)
+                ent = entities.get(key)
+                if ent is None:
+                    ent = entities.setdefault(key, {
+                        "name": name, "domain": domain, "sources": [],
+                        "win_rate": round(wr, 1), "expectancy": round(e, 3),
+                        "sample_size": n,
+                        # Misma escala de confianza que domain_library: se
+                        # reutiliza el contrato existente, no se inventa peso.
+                        "confidence": _compute_confidence(n, wr),
+                        "wilson_lb": _wilson_lb(round(wr / 100.0 * n), n),
+                        "hits": int(metrics.get("combined_hits", 0) or 0),
+                        "tier": "",
+                    })
+                # Procedencia: sin estos ids no se puede responder qué
+                # aprendizaje cambió el criterio ni de qué convergencia salió.
+                ent["learning_id"] = lrn.get("learning_id", "")
+                ent["convergence_id"] = lrn.get("source_convergence_id", "")
+                ent["policy_id"] = lrn.get("policy_id") or ""
+                ent["criterion_version"] = lrn.get("criterion_version", "")
+                ent["causal_confidence"] = float(lrn.get("confidence", 0.0) or 0.0)
+                if "causal_learning" not in ent["sources"]:
+                    ent["sources"].append("causal_learning")
+        except Exception as exc:
+            # No se silencia en debug como las otras fuentes: si el puente
+            # causal no se puede leer, el criterio efectivo pierde
+            # aprendizajes y eso tiene que verse.
+            logger.warning("rank causal_learning error: %s", exc)
+
     ranked = list(entities.values())
     for ent in ranked:
         conf_w = _CONF_W.get(ent.get("confidence", ""), 0.5)
@@ -362,6 +420,42 @@ def rank_domain_evidence(domain: str, limit: int = 8) -> List[Dict[str, Any]]:
         ent["score"] = round(ent.get("expectancy", 0.0) * lb_frac * conf_w * mass_w, 4)
     ranked.sort(key=lambda x: x["score"], reverse=True)
     return ranked[:limit]
+
+
+def effective_criterion(domain: str, limit: int = 8) -> Dict[str, Any]:
+    """El criterio EFECTIVO del dominio y qué aprendizaje causal lo cambió.
+
+    Responde, con ids persistidos y sin suponer nada:
+      * qué cambió                → `added` / `reordered`
+      * qué aprendizaje lo cambió → `causal_learning_ids`
+      * qué convergencia lo produjo → `convergence_ids`
+      * qué evidencia cruzó el umbral → métricas de cada entrada causal
+      * cuál era el criterio anterior → `previous_criterion`
+      * cuál es el nuevo            → `effective_criterion`
+
+    No existe un criterio paralelo: `effective_criterion` ES el criterio que se
+    sirve. `previous_criterion` se calcula solo para poder explicar el cambio.
+    """
+    previous = rank_domain_evidence(domain, limit=limit, include_causal=False)
+    effective = rank_domain_evidence(domain, limit=limit)
+
+    causal = [e for e in effective if "causal_learning" in e.get("sources", [])]
+    before_names = [e["name"] for e in previous]
+    after_names = [e["name"] for e in effective]
+    added = [n for n in after_names if n not in before_names]
+
+    versions = [e["criterion_version"] for e in causal if e.get("criterion_version")]
+    return {
+        "domain": domain,
+        "effective_criterion": effective,
+        "previous_criterion": previous,
+        "causal_learning_ids": [e["learning_id"] for e in causal if e.get("learning_id")],
+        "convergence_ids": [e["convergence_id"] for e in causal if e.get("convergence_id")],
+        "criterion_changed": before_names != after_names,
+        "criterion_version": versions[0] if versions else "",
+        "added": added,
+        "reordered": before_names != after_names and not added,
+    }
 
 
 # ── Opinión: determinista (grounded) + LLM restringido (verificado) ───

@@ -72,7 +72,7 @@ import os
 import sqlite3
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from core.learn import VAULT_DIR
@@ -487,6 +487,39 @@ def qualify_pattern(
     )
 
 
+def pattern_evidence(
+    source_pattern_ids: Sequence[str], policy: "LearningPolicy",
+    stats_fetcher=None,
+) -> Tuple[List[PatternStats], Dict[str, Any]]:
+    """Cualifica todos los patrones fuente y resume su evidencia.
+
+    El resumen entra en `metrics` ANTES de calcular el hash de revisión, y eso
+    es deliberado: la maduración de un patrón (outcomes nuevos que suben su
+    win_rate o su sample_size) ES evidencia sustantiva nueva. Si no entrara en
+    el hash, un `CONVERGED_CANDIDATE` rechazado por muestra insuficiente se
+    quedaría congelado para siempre — el escaneo repetido produciría la misma
+    revisión y nunca se volvería a evaluar, ni siquiera cuando el patrón ya
+    cumpliera el umbral.
+    """
+    stats = [
+        qualify_pattern(str(fp), policy, stats_fetcher=stats_fetcher)
+        for fp in source_pattern_ids if str(fp).strip()
+    ]
+    summary: Dict[str, Any] = {
+        "qualified_patterns": [s.fingerprint for s in stats if s.qualified],
+    }
+    if stats and all(s.qualified for s in stats):
+        # Confianza desde la evidencia real del patrón MÁS DÉBIL (contrato de
+        # `fetch_pattern_stats`: graded/20). No se promedia, para que un patrón
+        # fuerte no tape a uno débil.
+        summary["pattern_confidence"] = round(min(s.confidence for s in stats), 4)
+    if stats:
+        summary["min_pattern_sample_size"] = min(s.sample_size for s in stats)
+        summary["min_pattern_win_rate"] = min(s.win_rate for s in stats)
+        summary["min_pattern_expectancy"] = min(s.expectancy for s in stats)
+    return stats, summary
+
+
 # ---------------------------------------------------------------------------
 # Políticas de producción
 # ---------------------------------------------------------------------------
@@ -665,12 +698,27 @@ def list_policies(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
 # Evaluación — EL GATE
 # ---------------------------------------------------------------------------
 
-def _distinct_revisions(conn, convergence_id: str) -> int:
-    row = conn.execute(
-        "SELECT COUNT(DISTINCT evidence_revision_hash) AS c "
-        "FROM promotion_decisions WHERE convergence_id=?",
-        (convergence_id,),
-    ).fetchone()
+def _distinct_revisions(conn, convergence_id: str, domain: Optional[str] = None) -> int:
+    """Revisiones de evidencia distintas de una convergencia.
+
+    Se acota por dominio: una convergencia cruzada se evalúa una vez por cada
+    dominio participante (ver `evaluate_live_convergences`), y la evaluación de
+    `market` no es una revisión adicional de la evidencia de
+    `freight_logistics`. Sin este acotado, el primer dominio inflaría el
+    contador del segundo.
+    """
+    if domain is None:
+        row = conn.execute(
+            "SELECT COUNT(DISTINCT evidence_revision_hash) AS c "
+            "FROM promotion_decisions WHERE convergence_id=?",
+            (convergence_id,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT COUNT(DISTINCT evidence_revision_hash) AS c "
+            "FROM promotion_decisions WHERE convergence_id=? AND domain=?",
+            (convergence_id, domain),
+        ).fetchone()
     return int(row["c"] or 0)
 
 
@@ -707,8 +755,20 @@ def evaluate_convergence(
     if created_from not in CREATED_FROM:
         raise ValueError(f"created_from inválido: {created_from!r}")
 
-    revision = compute_evidence_revision_hash(snapshot)
     now = time.time()
+    policy = get_policy(snapshot.domain, db_path=db_path)
+
+    # La evidencia de los patrones fuente forma parte de la REVISIÓN (ver
+    # `pattern_evidence`), así que se cualifica antes de hashear y se reutiliza
+    # en el gate: una sola lectura del proveedor por evaluación.
+    stats: List[PatternStats] = []
+    if policy is not None:
+        stats, summary = pattern_evidence(
+            snapshot.source_pattern_ids, policy, stats_fetcher,
+        )
+        snapshot = replace(snapshot, metrics={**dict(snapshot.metrics), **summary})
+
+    revision = compute_evidence_revision_hash(snapshot)
     conn = connect(db_path)
     try:
         prior = _existing_decision(conn, snapshot.convergence_id, revision)
@@ -719,16 +779,15 @@ def evaluate_convergence(
             )
             return _decision_from_row(prior, learning, reused=True)
 
-        policy = get_policy(snapshot.domain, db_path=db_path)
         metrics = dict(snapshot.metrics)
         metrics["distinct_revisions"] = _distinct_revisions(
-            conn, snapshot.convergence_id
+            conn, snapshot.convergence_id, snapshot.domain,
         ) + 1
         if snapshot.first_seen:
             metrics["evidence_age_s"] = max(0.0, now - float(snapshot.first_seen))
 
         state, eligible, reasons, thresholds = _decide(
-            snapshot, policy, metrics, conn, stats_fetcher,
+            snapshot, policy, metrics, conn, stats,
         )
 
         # Un aprendizaje CONTRADICHO u OBSOLETO no revive porque la
@@ -793,7 +852,7 @@ def evaluate_convergence(
         conn.close()
 
 
-def _decide(snapshot, policy, metrics, conn, stats_fetcher=None):
+def _decide(snapshot, policy, metrics, conn, pattern_stats=None):
     """EL GATE. Diez condiciones. Nunca inventa un umbral que no exista.
 
     Devuelve `(state, eligible, reasons, thresholds)`. `reasons` explica SIEMPRE
@@ -843,24 +902,11 @@ def _decide(snapshot, policy, metrics, conn, stats_fetcher=None):
         )
 
     # (5) Métricas REALES de AMBOS patrones + (9) confianza desde evidencia real.
-    pattern_stats: List[PatternStats] = []
-    for fingerprint in patterns:
-        stats = qualify_pattern(fingerprint, policy, stats_fetcher=stats_fetcher)
-        pattern_stats.append(stats)
+    # Ya vienen cualificadas desde `evaluate_convergence` (entraron en el hash
+    # de revisión); aquí solo se leen sus motivos de rechazo.
+    for stats in (pattern_stats or []):
         if not stats.qualified:
             reasons.append(stats.reason)
-
-    if pattern_stats and all(s.qualified for s in pattern_stats):
-        # Confianza calculada desde la evidencia real de los patrones: la del
-        # patrón MÁS DÉBIL (contrato de `fetch_pattern_stats`: graded/20). No se
-        # promedia para no dejar que un patrón fuerte tape a uno débil.
-        metrics["pattern_confidence"] = round(
-            min(s.confidence for s in pattern_stats), 4,
-        )
-        metrics["min_pattern_sample_size"] = min(s.sample_size for s in pattern_stats)
-        metrics["min_pattern_win_rate"] = min(s.win_rate for s in pattern_stats)
-        metrics["min_pattern_expectancy"] = min(s.expectancy for s in pattern_stats)
-    metrics["qualified_patterns"] = [s.fingerprint for s in pattern_stats if s.qualified]
 
     # Fuerza de la convergencia: métricas exigidas por la política.
     for metric in policy.required_metrics:
@@ -1053,6 +1099,117 @@ def _decision_from_row(row, learning_row, reused: bool) -> PromotionDecision:
         learning_id=learning_row["learning_id"] if learning_row else None,
         reused_existing_revision=reused,
     )
+
+
+# ---------------------------------------------------------------------------
+# Entrada viva — el ciclo normal del observador
+# ---------------------------------------------------------------------------
+
+def evaluate_live_convergences(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    limit: int = MAX_EVALUATIONS_PER_CYCLE,
+    created_from: str = CREATED_FROM_LIVE,
+    stats_fetcher=None,
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Evalúa las convergencias que ha visto ESTE ciclo. Nunca hace backfill.
+
+    `entries` son convergencias canónicas del snapshot actual — las que el
+    escaneo normal acaba de tocar. No se recorre la tabla histórica, ni las
+    121.206 convergencias del incidente, ni `convergence_history.db`.
+
+    UN APRENDIZAJE POR DOMINIO PARTICIPANTE
+    ---------------------------------------
+    Una convergencia cruzada entre `market` y `freight_logistics` es evidencia
+    para el criterio de AMBOS dominios, y `criterion.rank_domain_evidence()` se
+    consulta por dominio. Por eso se evalúa una vez por cada dominio
+    participante que tenga política; la identidad
+    `(source_convergence_id, policy_id)` mantiene cada uno idempotente.
+
+    LÍMITE POR CICLO
+    ----------------
+    `limit` acota el trabajo para que `meta_loop` no se bloquee en un escaneo
+    global grande. Lo que no entra en este ciclo se evalúa en el siguiente sin
+    perderse: reencontrar la misma convergencia es idempotente.
+
+    FALLO PARCIAL
+    -------------
+    Cada convergencia se evalúa aislada. Si una falla (base bloqueada, fila
+    corrupta, proveedor de métricas caído) se registra en `errors` y el ciclo
+    CONTINÚA con las demás: el almacén causal nunca puede tumbar al observador.
+    """
+    result: Dict[str, Any] = {
+        "evaluated": 0, "learned": 0, "candidates": 0,
+        "awaiting_policy": 0, "weakened": 0, "contradicted": 0,
+        "reused": 0, "errors": [], "truncated": False,
+    }
+    if not entries:
+        return result
+
+    try:
+        ensure_production_policies(db_path=db_path)
+    except Exception as exc:
+        # Sin políticas todo queda en AWAITING_POLICY, que es honesto; no se
+        # aborta el ciclo por ello.
+        logger.warning("no se pudieron asegurar las políticas de producción: %s", exc)
+        result["errors"].append(f"ensure_production_policies: {exc}")
+
+    budget = max(0, int(limit))
+    for entry in entries:
+        domains = [d for d in (entry.get("domains") or []) if d]
+        for domain in dict.fromkeys(domains):        # sin duplicados, en orden
+            if budget <= 0:
+                result["truncated"] = True
+                return result
+            try:
+                if get_policy(domain, db_path=db_path) is None:
+                    result["awaiting_policy"] += 1
+                    continue
+                snapshot = CausalSnapshot(
+                    convergence_id=str(entry.get("convergence_id") or ""),
+                    domain=domain,
+                    source_pattern_ids=list(entry.get("source_pattern_ids") or []),
+                    evidence_ids=list(entry.get("evidence_ids") or []),
+                    metrics={
+                        "combined_cc": float(entry.get("combined_cc") or 0.0),
+                        "combined_hits": int(entry.get("combined_hits") or 0),
+                    },
+                    status=str(entry.get("status") or "active"),
+                    lifecycle_event=str(entry.get("lifecycle_event") or ""),
+                    first_seen=float(entry.get("first_seen") or 0.0),
+                    claim=str(entry.get("claim") or ""),
+                    data_scope=f"{domain}/live",
+                )
+                budget -= 1
+                decision = evaluate_convergence(
+                    snapshot, created_from=created_from,
+                    stats_fetcher=stats_fetcher, db_path=db_path,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "evaluación causal fallida para %s/%s: %s",
+                    entry.get("convergence_id"), domain, exc,
+                )
+                result["errors"].append(
+                    f"{entry.get('convergence_id')}/{domain}: {exc}"
+                )
+                continue
+
+            result["evaluated"] += 1
+            if decision.reused_existing_revision:
+                result["reused"] += 1
+            if decision.state == STATE_LEARNED:
+                result["learned"] += 1
+            elif decision.state == STATE_CONVERGED_CANDIDATE:
+                result["candidates"] += 1
+            elif decision.state == STATE_AWAITING_POLICY:
+                result["awaiting_policy"] += 1
+            elif decision.state == STATE_WEAKENED:
+                result["weakened"] += 1
+            elif decision.state == STATE_CONTRADICTED:
+                result["contradicted"] += 1
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1328,14 +1485,19 @@ def get_state_events(
         conn.close()
 
 
-def count_revisions(convergence_id: str, db_path: Optional[str] = None) -> int:
+def count_revisions(
+    convergence_id: str, domain: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> int:
     """Revisiones causales DISTINTAS de una convergencia.
 
-    No es `confirmation_count`: cuenta estados de evidencia distintos.
+    No es `confirmation_count`: cuenta estados de evidencia distintos. Sin
+    `domain` agrega todos los dominios participantes; con él responde por el
+    criterio de ese dominio, que es la unidad que usa el gate.
     """
     conn = connect(db_path)
     try:
-        return _distinct_revisions(conn, convergence_id)
+        return _distinct_revisions(conn, convergence_id, domain)
     finally:
         conn.close()
 

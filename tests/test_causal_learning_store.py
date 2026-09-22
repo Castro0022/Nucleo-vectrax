@@ -305,6 +305,34 @@ class TestFalseRepetition:
         assert cl.count_revisions("CONV-001", db_path=db) == 1
         assert cl.list_learnings(state=cl.STATE_LEARNED, db_path=db) == []
 
+    def test_a_maturing_pattern_creates_a_revision_and_can_promote(self, db):
+        """El hueco que cerraba esto: un candidato rechazado por muestra
+        insuficiente debe poder promover cuando el patrón madura.
+
+        Si las métricas del patrón no entraran en el hash, el escaneo repetido
+        produciría SIEMPRE la misma revisión y la convergencia no se volvería a
+        evaluar jamás, ni siquiera con el patrón ya cualificado.
+        """
+        cl.register_policy(_policy(), db_path=db)
+        snap = _snapshot()
+
+        # Ciclo 1: PAT-B solo tiene 5 outcomes -> candidata.
+        first = cl.evaluate_convergence(
+            snap, stats_fetcher=_fetcher(**{"PAT-A": STRONG, "PAT-B": THIN}),
+            db_path=db,
+        )
+        assert first.state == cl.STATE_CONVERGED_CANDIDATE
+
+        # Ciclo N: el MISMO snapshot, pero PAT-B ya acumuló outcomes reales.
+        second = cl.evaluate_convergence(
+            snap, stats_fetcher=BOTH_STRONG, db_path=db,
+        )
+        assert second.state == cl.STATE_LEARNED, (
+            "la maduración del patrón no produjo una revisión nueva"
+        )
+        assert cl.count_revisions("CONV-001", db_path=db) == 2
+        assert second.learning_id == first.learning_id, "debe ser EL MISMO aprendizaje"
+
     def test_substantive_evidence_change_does_create_a_revision(self, db):
         cl.register_policy(_policy(), db_path=db)
         cl.evaluate_convergence(_snapshot(), stats_fetcher=BOTH_STRONG, db_path=db)
@@ -449,9 +477,20 @@ class TestCausalIdentity:
 
     def test_the_decision_names_its_evidence_revision(self, db):
         d = _learn(db)
-        assert d.evidence_revision_hash == cl.compute_evidence_revision_hash(_snapshot())
         stored = cl.get_decisions(convergence_id="CONV-001", db_path=db)[0]
         assert stored["evidence_revision_hash"] == d.evidence_revision_hash
+        assert len(d.evidence_revision_hash) == 32
+
+    def test_the_revision_covers_the_pattern_evidence(self, db):
+        """La evidencia del patrón forma parte de la identidad de la revisión."""
+        _, summary = cl.pattern_evidence(["PAT-A", "PAT-B"], _policy(), BOTH_STRONG)
+        expected = cl.compute_evidence_revision_hash(
+            cl.CausalSnapshot(
+                **{**_snapshot().__dict__,
+                   "metrics": {**_snapshot().metrics, **summary}},
+            )
+        )
+        assert _learn(db).evidence_revision_hash == expected
 
     def test_the_chain_is_reconstructible_end_to_end(self, db):
         """convergencia → aprendizaje → criterio → decisión → aplicación → outcome."""
