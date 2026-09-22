@@ -156,7 +156,7 @@ class TestIdeaRefreshTrigger:
         ml._last_idea_refresh = time.time() - 1200
 
         mock_store = MagicMock()
-        mock_store.refresh.return_value = {"router_proposals": 0, "router_analysis": 0, "convergence": 0}
+        mock_store.refresh.return_value = {"added": {"router_proposals": 0, "router_analysis": 0, "convergence": 0}, "added_total": 0, "constitutional_blocked": 0}
         mock_store.pending.return_value = []
 
         with patch("core.idea_store.get_idea_store", return_value=mock_store):
@@ -169,7 +169,7 @@ class TestIdeaRefreshTrigger:
         ml._last_idea_refresh = 0.0  # force trigger
 
         mock_store = MagicMock()
-        mock_store.refresh.return_value = {}
+        mock_store.refresh.return_value = {"added": {"router_proposals": 0, "router_analysis": 0, "convergence": 0}, "added_total": 0, "constitutional_blocked": 0}
         mock_store.pending.return_value = []
 
         with patch("core.idea_store.get_idea_store", return_value=mock_store):
@@ -184,7 +184,7 @@ class TestIdeaRefreshTrigger:
         ml._last_idea_refresh = 0.0
 
         mock_store = MagicMock()
-        mock_store.refresh.return_value = {}
+        mock_store.refresh.return_value = {"added": {"router_proposals": 0, "router_analysis": 0, "convergence": 0}, "added_total": 0, "constitutional_blocked": 0}
         mock_store.pending.return_value = []
 
         with patch("core.idea_store.get_idea_store", return_value=mock_store):
@@ -208,7 +208,7 @@ class TestIdeaRefreshTrigger:
 class TestCreatorAlerts:
     def _setup_store_with_ideas(self, ideas):
         mock_store = MagicMock()
-        mock_store.refresh.return_value = {}
+        mock_store.refresh.return_value = {"added": {"router_proposals": 0, "router_analysis": 0, "convergence": 0}, "added_total": 0, "constitutional_blocked": 0}
         mock_store.pending.return_value = ideas
         return mock_store
 
@@ -279,7 +279,7 @@ class TestCreatorAlerts:
         )
 
         mock_store = MagicMock()
-        mock_store.refresh.return_value = {}
+        mock_store.refresh.return_value = {"added": {"router_proposals": 0, "router_analysis": 0, "convergence": 0}, "added_total": 0, "constitutional_blocked": 0}
         mock_store.pending.return_value = [idea]
 
         with patch("core.idea_store.get_idea_store", return_value=mock_store):
@@ -320,7 +320,7 @@ class TestCreatorAlerts:
             ideas.append(idea)
 
         mock_store = MagicMock()
-        mock_store.refresh.return_value = {}
+        mock_store.refresh.return_value = {"added": {"router_proposals": 0, "router_analysis": 0, "convergence": 0}, "added_total": 0, "constitutional_blocked": 0}
         mock_store.pending.return_value = ideas
 
         with patch("core.idea_store.get_idea_store", return_value=mock_store):
@@ -355,7 +355,7 @@ class TestCreatorAlerts:
         )
 
         mock_store = MagicMock()
-        mock_store.refresh.return_value = {}
+        mock_store.refresh.return_value = {"added": {"router_proposals": 0, "router_analysis": 0, "convergence": 0}, "added_total": 0, "constitutional_blocked": 0}
         mock_store.pending.return_value = [idea]
 
         with patch("core.idea_store.get_idea_store", return_value=mock_store):

@@ -688,6 +688,40 @@ class IdeaStore:
             list(record.rules) or "(ninguna)", record.reason, record.title,
         )
 
+        # ASIENTO PERSISTENTE. El WARNING de arriba es observabilidad: se
+        # rota, se pierde y nadie lo consulta después. La auditoría vive en
+        # `<vault>/audit_ledger.db` (tabla `audit_ledger`, categoría
+        # CONSTITUTIONAL), que sobrevive al proceso y se consulta con
+        # `core.audit_ledger.query()`.
+        #
+        # `enforce_check()` ya asienta su propia decisión, pero desde la
+        # `ActionProposal` no viaja el TÍTULO de la idea: sin él, el asiento
+        # dice qué regla bloqueó y no qué se bloqueó. Este asiento lo añade.
+        try:
+            from core.operator import ledger_bridge as _ledger
+            _ledger.record_event(
+                action=f"constitutional_block:create_idea:{source}",
+                category=_ledger.EventCategory.CONSTITUTIONAL,
+                risk_zone=_ledger.RiskZone.RED,
+                actor=source,
+                reason=record.reason,
+                details={
+                    "correlation_id": record.correlation_id,
+                    "title": record.title,
+                    "rules": list(record.rules),
+                    "reason": record.reason,
+                    "source": source,
+                    "blocked_action": "create_idea",
+                },
+            )
+        except Exception as exc:
+            # No poder asentar es grave y se dice, pero no puede convertir un
+            # bloqueo ya decidido en una excepción para la ingesta.
+            logger.error(
+                "[CONSTITUTIONAL] no se pudo asentar el bloqueo %s: %s",
+                record.correlation_id or "(sin id)", exc,
+            )
+
     def constitutional_blocks(self, limit: int = 20) -> List[Dict[str, Any]]:
         """Bloqueos registrados, del más reciente al más antiguo."""
         blocks = getattr(self, "_constitutional_blocks", None) or []
@@ -939,20 +973,50 @@ class IdeaStore:
 
     # ── Ciclo completo de ingesta ──────────────────────────────────────────
 
-    def refresh(self) -> Dict[str, int]:
+    def refresh(self) -> Dict[str, Any]:
         """
-        Ejecuta todas las ingestas y retorna cuántas ideas nuevas añadió
-        cada fuente. Idempotente — la deduplicación evita duplicados.
+        Ejecuta todas las ingestas. Idempotente — la deduplicación evita
+        duplicados.
+
+        RESULTADO ESTRUCTURADO
+        ----------------------
+        Devuelve::
+
+            {"added": {<fuente>: <int>, ...},
+             "added_total": <int>,
+             "constitutional_blocked": <int>}
+
+        Las cuentas por fuente viven ANIDADAS en `added`, y nunca al lado del
+        contador de bloqueos. Antes esto devolvía un `Dict[str, int]` plano y
+        los tres consumidores hacían `sum(added.values())`; meter ahí el
+        contador de bloqueos habría hecho que cada idea BLOQUEADA se contara
+        como idea NUEVA — exactamente al revés de lo que significa.
+
+        Con la forma anidada ese error no es posible: un `sum()` sobre el
+        resultado falla de inmediato con TypeError en lugar de devolver un
+        número equivocado en silencio. `added_total` ya viene calculado para
+        que ningún consumidor tenga que sumar nada.
         """
-        r = {
+        blocked_before = self.constitutional_block_count()
+        added = {
             "router_proposals": self.ingest_from_router_learning(),
             "router_analysis":  self.ingest_from_router_analysis(),
             "convergence":      self.ingest_from_convergence_learner(),
         }
-        total = sum(r.values())
+        total = sum(added.values())
+        blocked = self.constitutional_block_count() - blocked_before
         if total:
-            logger.info("IdeaStore.refresh: +%d ideas totales — %s", total, r)
-        return r
+            logger.info("IdeaStore.refresh: +%d ideas totales — %s", total, added)
+        if blocked:
+            logger.warning(
+                "IdeaStore.refresh: %d idea(s) BLOQUEADA(S) por el filtro "
+                "constitucional — no se cuentan como añadidas", blocked,
+            )
+        return {
+            "added": added,
+            "added_total": total,
+            "constitutional_blocked": blocked,
+        }
 
     # ── Panel texto para Telegram ──────────────────────────────────────────
 

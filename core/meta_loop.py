@@ -132,13 +132,22 @@ def _run_idea_refresh() -> int:
         from core.idea_store import get_idea_store, IdeaPriority, IdeaStatus
 
         store = get_idea_store()
-        added = store.refresh()
-        new_total = sum(added.values())
+        result = store.refresh()
+        added = result["added"]
+        new_total = result["added_total"]
+        blocked = result["constitutional_blocked"]
 
         if new_total:
             logger.info(
                 "meta_loop: IdeaStore refreshed — +%d ideas (%s)",
                 new_total, added,
+            )
+        if blocked:
+            # Una idea bloqueada no es una idea que no apareció: es una que el
+            # control impidió. Se dice aparte para que no se lea como silencio.
+            logger.warning(
+                "meta_loop: %d idea(s) bloqueada(s) por el filtro constitucional",
+                blocked,
             )
 
         # Identificar ideas HIGH/CRITICAL pendientes no alertadas

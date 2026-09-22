@@ -1957,11 +1957,18 @@ class TelegramGateway:
                     from core.idea_store import get_idea_store, IdeaStatus
                     store = get_idea_store()
                     # Refrescar ideas desde todos los módulos
-                    added = store.refresh()
+                    result = store.refresh()
                     show_all = arg.lower() in ("all", "todas", "todo")
                     panel = store.build_panel(n=5, show_all_statuses=show_all)
-                    if sum(added.values()):
-                        panel += f"\n\n+{sum(added.values())} ideas nuevas importadas."
+                    if result["added_total"]:
+                        panel += (
+                            f"\n\n+{result['added_total']} ideas nuevas importadas."
+                        )
+                    if result["constitutional_blocked"]:
+                        panel += (
+                            f"\n{result['constitutional_blocked']} idea(s) "
+                            f"bloqueada(s) por el filtro constitucional."
+                        )
                     self._send(cid, panel)
                 except Exception as e:
                     self._send(cid, f"Error al cargar ideas: {e}")
