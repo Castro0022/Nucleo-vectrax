@@ -43,14 +43,67 @@ from core.nucleus.internal_evidence import (
 # Identificador de propuesta: IDEA-XXXXXXXX (formato de `core.idea_store`).
 _IDEA_ID_RE = re.compile(r"\bIDEA[-_ ]?([A-Za-z0-9]{4,12})\b", re.IGNORECASE)
 
-# Señal de que la pregunta apunta al PROPIO sistema y no al mundo exterior.
-# "¿qué hiciste hoy en el mercado?" (interno) vs "¿cómo está el mercado?"
-# (dato externo, ruta MARKET del router — que NO debe secuestrarse).
-_SELF_DIRECTED_RE = re.compile(
-    r"\b(?:tu|tus|tuyo|tuyas?|has|hiciste|hicist|haces|tienes|tenés|estás|estas|"
-    r"detectaste|detectast|observas|observaste|propusiste|confirmaste|"
-    r"ejecutaste|usaste|utilizaste|sabes|conoces|llevas|registraste|"
-    r"your|you|did|have|are|do)\b",
+# ---------------------------------------------------------------------------
+# Señal de sujeto: ¿se habla de VECTRAX o del mundo del usuario?
+# ---------------------------------------------------------------------------
+# Un ancla léxica sola NO basta. Auditoría 2026-09-22: exigir solo el ancla
+# secuestraba conversaciones legítimas, porque las mismas palabras describen
+# el mundo del usuario:
+#
+#   "Tengo un problema con mi carro"        -> ancla `problema`  -> diagnóstico
+#   "Dame ideas para mi negocio"            -> ancla `ideas`     -> propuestas
+#   "Cuál es el dominio de esta función"    -> ancla `dominio`   -> dominios
+#   "Quiero hacer una auditoria de mi empresa" -> ancla `auditoria` -> auditoría
+#
+# Las cuatro son conversación normal y ninguna pregunta por el estado interno
+# de Vectrax. Por eso el ancla es condición NECESARIA pero no SUFICIENTE: hace
+# falta además una señal explícita de que el sujeto es el propio sistema.
+
+# (a) Segunda persona dirigida a Vectrax: "¿qué DETECTASTE?", "¿TIENES...?".
+_SECOND_PERSON_RE = re.compile(
+    r"\b(?:tu|tus|tuyo|tuyos|tuya|tuyas|contigo|ti|"
+    r"has|hiciste|haces|tienes|tenés|tenes|estás|estas|estuviste|"
+    r"detectaste|detectas|observas|observaste|observando|"
+    r"propusiste|propones|confirmaste|confirmas|"
+    r"ejecutaste|ejecutas|usaste|utilizaste|usas|utilizas|"
+    r"sabes|conoces|llevas|registraste|registras|aprendiste|aprendes|"
+    r"your|yours|you|did\s+you|have\s+you|are\s+you|do\s+you)\b",
+    re.IGNORECASE,
+)
+
+# (b) Mención explícita del sistema.
+_SYSTEM_MENTION_RE = re.compile(
+    r"\b(?:vectrax|n[úu]cleo|nucleus|el\s+sistema|the\s+system)\b",
+    re.IGNORECASE,
+)
+
+# (c) Vocabulario de GOBERNANZA: describe la cola de revisión del propio
+# Vectrax y no tiene lectura en el mundo del usuario ("propuestas sin
+# revisar" es la bandeja del owner, no una tarea personal).
+_GOVERNANCE_RE = re.compile(
+    r"\b(?:sin\s+(?:revisar|aprobar|resolver)|"
+    r"por\s+(?:revisar|aprobar)|"
+    r"pendientes?\s+de\s+(?:revisi[óo]n|aprobaci[óo]n)|"
+    r"pendientes?)\b",
+    re.IGNORECASE,
+)
+
+# (d) Vocabulario de PROCESO sobre el circuito de aprobación. Cuando aparece
+# junto a las anclas de aprobación, la pregunta es sobre el MECANISMO
+# ("¿qué sucede después de aprobar una propuesta?"), no sobre la cola.
+_PROCESS_RE = re.compile(
+    r"\b(?:qu[ée]\s+(?:sucede|pasa|ocurre|hace)|c[óo]mo\s+funciona|"
+    r"despu[ée]s\s+de|tras\s+(?:aprobar|la\s+aprobaci[óo]n)|bot[óo]n|"
+    r"what\s+happens|how\s+does)\b",
+    re.IGNORECASE,
+)
+
+# (e) Sujeto AJENO: posesivo de primera persona. "mi negocio", "mis ventas",
+# "mi empresa" delimitan el mundo del usuario. Bloquea salvo que el texto
+# nombre explícitamente a Vectrax ("los dominios de mi Vectrax").
+_FOREIGN_SUBJECT_RE = re.compile(
+    r"\b(?:mi|mis|m[íi]o|m[íi]a|m[íi]os|m[íi]as|nuestro|nuestra|nuestros|"
+    r"nuestras|my|our|ours)\b",
     re.IGNORECASE,
 )
 
@@ -93,9 +146,25 @@ _ANCHORS: Dict[str, Tuple[str, ...]] = {
     "fallback": ("fallback", "respaldo"),
 }
 
-# Familias que además exigen señal auto-referencial para no secuestrar una
-# consulta legítima de datos externos.
-_REQUIRES_SELF_DIRECTED = frozenset({"trading", "engines"})
+# (f) Nombres de dominio REGISTRADOS en Vectrax. Preguntar "¿qué está
+# ocurriendo en Freight Logistics?" nombra un dominio operativo propio, así
+# que la mención vale por sí misma como señal de sujeto. Se leen del
+# catálogo real (`config/domain_templates/`), no de una lista inventada aquí.
+def _registered_domain_tokens() -> frozenset:
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    templates = os.path.join(root, "config", "domain_templates")
+    names = set()
+    try:
+        for entry in os.listdir(templates):
+            if not entry.endswith(".json"):
+                continue
+            for part in os.path.splitext(entry)[0].split("_"):
+                if len(part) > 3:
+                    names.add(_normalize(part))
+    except OSError:
+        pass
+    return frozenset(names)
 
 _STOP = frozenset({
     "que", "qué", "cual", "cuál", "cuales", "cuáles", "como", "cómo",
@@ -126,21 +195,64 @@ class EvidenceIntent:
     score: int = 0
     idea_id: str = ""
     matched: List[str] = field(default_factory=list)
+    subject_reason: str = ""   # por qué se decidió que el sujeto es (o no) Vectrax
 
     @property
     def detected(self) -> bool:
         return bool(self.family)
 
 
+def _subject_is_vectrax(raw: str, tokens: set) -> Tuple[bool, str]:
+    """¿El sujeto de la frase es el propio Vectrax? Devuelve (sí/no, motivo).
+
+    Regla de dos partes:
+      1. Debe haber al menos una señal positiva de que se habla del sistema.
+      2. Un posesivo de primera persona ("mi empresa") delimita el mundo del
+         usuario y bloquea, salvo que el texto nombre a Vectrax de forma
+         explícita.
+    """
+    if _SYSTEM_MENTION_RE.search(raw):
+        return True, "mención explícita del sistema"
+
+    if _FOREIGN_SUBJECT_RE.search(raw):
+        return False, "posesivo de primera persona: el sujeto es el usuario"
+
+    if _SECOND_PERSON_RE.search(raw):
+        return True, "segunda persona dirigida a Vectrax"
+    if _GOVERNANCE_RE.search(raw):
+        return True, "vocabulario de gobernanza (cola de revisión propia)"
+    if tokens & _registered_domain_tokens():
+        return True, "nombre de un dominio registrado en Vectrax"
+
+    # Preguntar por el MECANISMO de aprobación ("¿qué sucede después de
+    # aprobar una propuesta?", "¿qué hace el botón Aprobar?") solo tiene
+    # sentido sobre Vectrax. Se exigen TRES elementos, no dos: ancla de
+    # aprobación, vocabulario de proceso Y un objeto que sea de Vectrax (una
+    # propuesta/idea, o el propio botón). Sin el tercero, "cómo funciona la
+    # aprobación de un préstamo" también entraba — se comprobó.
+    if (tokens & set(_ANCHORS["approval"])) and _PROCESS_RE.search(raw):
+        own_object = (tokens & set(_ANCHORS["proposal"])) or {"boton", "button"} & tokens
+        if own_object:
+            return True, "pregunta por el mecanismo de aprobación de Vectrax"
+
+    return False, "sin señal de que el sujeto sea Vectrax"
+
+
 def classify(text: str) -> EvidenceIntent:
     """Clasifica topicalmente. Devuelve una intención vacía si el texto no
-    pregunta por el estado interno de Vectrax."""
+    pregunta por el estado interno de Vectrax.
+
+    Exige DOS condiciones, no una: un ancla léxica del dominio Y una señal de
+    que el sujeto es el propio Vectrax (ver `_subject_is_vectrax`). Con solo
+    el ancla se secuestraban conversaciones normales — auditoría 2026-09-22.
+    """
     raw = text or ""
     tokens = set(_tokens(raw))
     if not tokens:
         return EvidenceIntent(family="")
 
-    # Un ID explícito es la señal más fuerte que existe: gana siempre.
+    # Un ID explícito es la señal más fuerte que existe: gana siempre, y vale
+    # por sí mismo como señal de sujeto (IDEA-xxxx solo existe en Vectrax).
     match = _IDEA_ID_RE.search(raw)
     if match:
         return EvidenceIntent(
@@ -148,28 +260,41 @@ def classify(text: str) -> EvidenceIntent:
             score=99,
             idea_id=f"IDEA-{match.group(1).upper()}",
             matched=[match.group(0)],
+            subject_reason="identificador IDEA-... explícito",
         )
 
-    self_directed = bool(_SELF_DIRECTED_RE.search(raw))
+    is_internal, reason = _subject_is_vectrax(raw, tokens)
+    if not is_internal:
+        return EvidenceIntent(family="", subject_reason=reason)
 
     best: Optional[EvidenceIntent] = None
     for family, anchors in _ANCHORS.items():
         hits = [a for a in anchors if a in tokens]
         if not hits:
             continue
-        if family in _REQUIRES_SELF_DIRECTED and not self_directed:
-            continue
         candidate = EvidenceIntent(family=family, score=len(hits), matched=hits)
         if best is None or candidate.score > best.score:
             best = candidate
 
     if best is None:
-        return EvidenceIntent(family="")
+        return EvidenceIntent(family="", subject_reason="sin ancla de evidencia interna")
+
+    best.subject_reason = reason
+
+    # El circuito de aprobación gana sobre la cola de propuestas cuando la
+    # pregunta es por el MECANISMO ("¿qué sucede después de aprobar una
+    # propuesta?"): antes caía en `proposal` y respondía con la cola, que no
+    # es lo que se preguntó.
+    approval_hits = [a for a in _ANCHORS["approval"] if a in tokens]
+    if approval_hits and _PROCESS_RE.search(raw):
+        best.family = "approval_pipeline"
+        best.matched = approval_hits
+        return best
 
     # `fallback` y `approval` no son fuentes propias: refinan otra familia.
     if best.family == "fallback":
         best.family = "proposal"
-    elif best.family == "approval" and "proposal" not in best.matched:
+    elif best.family == "approval":
         best.family = "approval_pipeline"
     return best
 

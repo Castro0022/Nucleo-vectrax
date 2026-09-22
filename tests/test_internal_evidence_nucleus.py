@@ -339,6 +339,85 @@ def test_unrelated_questions_are_not_hijacked(evidence_fixture):
         assert (nr.evidence or {}).get("kind") != "internal_evidence", f"secuestrada: {phrase!r}"
 
 
+# Frases de conversación normal que contienen un ancla léxica interna. Las
+# cinco primeras son los casos exactos del informe de auditoría 2026-09-22;
+# el resto son variaciones nuevas, para que pasar exija una regla general.
+_MUST_NOT_REACH_EVIDENCE = [
+    "Tengo un problema con mi carro",
+    "Dame ideas para mi negocio",
+    "Cuál es el dominio de esta función matemática",
+    "Quiero hacer una auditoría de mi empresa",
+    "Tengo problemas en el mercado de Miami",
+    "necesito un diagnóstico del motor del coche",
+    "revisa la propuesta del proveedor antes del viernes",
+    "auditoría financiera anual de la sociedad",
+    "tengo un patrón raro en mis ventas de octubre",
+    "quiero aprobar el presupuesto del equipo",
+    "¿qué pasa después de aprobar mi crédito hipotecario?",
+    "mi empresa necesita una auditoría de seguridad",
+]
+
+
+@pytest.mark.parametrize("phrase", _MUST_NOT_REACH_EVIDENCE)
+def test_normal_conversation_never_reaches_internal_evidence(evidence_fixture, phrase):
+    """Prueba NEGATIVA de integración, por el Núcleo real (no solo el
+    clasificador): una conversación legítima del usuario nunca puede
+    resolverse con la evidencia interna de Vectrax.
+
+    Se siembran diagnóstico y propuesta a propósito: si el override se
+    disparase, la respuesta contendría datos internos y la prueba lo vería.
+    """
+    _seed_diagnostic(evidence_fixture["reports"], problems=7)
+    _seed_proposal(evidence_fixture["ideas"], "IDEA-FB001122")
+
+    nr = _ask(phrase)
+    assert (nr.evidence or {}).get("kind") != "internal_evidence", (
+        f"{phrase!r} llegó a la evidencia interna: {nr.evidence}"
+    )
+    assert nr.tool_executed != "core.nucleus.internal_evidence"
+    # Y no se filtra ningún dato interno en el texto.
+    assert "IDEA-FB001122" not in nr.answer
+    assert "7 problema" not in nr.answer
+
+
+@pytest.mark.parametrize("phrase", _MUST_NOT_REACH_EVIDENCE[:5])
+def test_negative_cases_are_consistent_across_channels(evidence_fixture, phrase):
+    """Los tres canales deben coincidir también al NO activar."""
+    _seed_diagnostic(evidence_fixture["reports"], problems=7)
+    for label, nr in (("web", _ask(phrase, source="api")),
+                      ("cli", _ask(phrase, source="creator_chat")),
+                      ("telegram", _ask_telegram(phrase))):
+        assert (nr.evidence or {}).get("kind") != "internal_evidence", f"{label}: {phrase!r}"
+
+
+def test_approval_circuit_question_routes_to_the_circuit_not_the_queue(evidence_fixture):
+    """«¿Qué sucede después de aprobar una propuesta?» pregunta por el
+    MECANISMO, no por la cola de pendientes. Antes caía en `proposal`."""
+    _seed_proposal(evidence_fixture["ideas"], "IDEA-FB001122")
+    for phrase in ("¿Qué sucede después de aprobar una propuesta?",
+                   "¿Qué hace el botón Aprobar?"):
+        nr = _ask(phrase)
+        assert nr.evidence.get("family") == "approval_pipeline", (
+            f"{phrase!r} -> {nr.evidence.get('family')!r}"
+        )
+
+
+def test_approval_answer_never_claims_execution(evidence_fixture):
+    """La traza describe dos circuitos y la ausencia de ejecutor; jamás
+    afirma que algo se ejecutó o se reparó."""
+    nr = _ask("¿Qué sucede después de aprobar una propuesta?")
+    lowered = nr.answer.lower()
+    for forbidden in ("se ejecutó", "se reparó", "se aplicó", "quedó resuelto"):
+        assert forbidden not in lowered, f"la respuesta afirma ejecución: {forbidden!r}"
+
+
+def test_bare_approved_word_does_not_claim_anything(evidence_fixture):
+    """Decir solo «Aprobado» no puede producir una afirmación de aprobación,
+    ejecución o reparación desde este sistema."""
+    nr = _ask("Aprobado")
+    assert (nr.evidence or {}).get("kind") != "internal_evidence"
+
+
 # ---------------------------------------------------------------------------
 # 4. NÚCLEO ÚNICO (estructural, sobre archivos reales — sin mocks)
 # ---------------------------------------------------------------------------
