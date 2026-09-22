@@ -229,12 +229,53 @@ def test_approval_pipeline_reports_executor_absence_honestly():
     assert result.status in (EvidenceStatus.OK, EvidenceStatus.UNAVAILABLE)
     if result.status is EvidenceStatus.UNAVAILABLE:
         pytest.skip("traza estructural no computable en este entorno")
-    executor = [i for i in result.items if i.scope.startswith("4.")]
+    executor = [i for i in result.items if i.scope.endswith("ejecutor")]
     assert executor, "la traza debe incluir el paso del ejecutor"
     # El estado se DERIVA del código real, no se afirma a ciegas.
     assert executor[0].status in ("present", "absent")
     if executor[0].status == "absent":
         assert "AUSENTE" in executor[0].summary
+
+
+def test_approval_pipeline_keeps_the_two_circuits_separate():
+    """`ideas` y `proposals` son sistemas distintos. Encadenarlos describiría
+    un flujo que no existe — el defecto exacto que esta etapa corrige."""
+    result = InternalEvidence(OWNER).approval_pipeline()
+    if result.status is EvidenceStatus.UNAVAILABLE:
+        pytest.skip("traza estructural no computable en este entorno")
+
+    scopes = [i.scope for i in result.items]
+    assert any(s.startswith("ideas/") for s in scopes)
+    assert any(s.startswith("proposals/") for s in scopes)
+
+    # Cada circuito nombra su propio endpoint y su propio almacén.
+    ideas = {i.scope: i for i in result.items if i.scope.startswith("ideas/")}
+    props = {i.scope: i for i in result.items if i.scope.startswith("proposals/")}
+    assert "/v1/ideas/" in ideas["ideas/1.endpoint"].summary
+    assert "ideas.jsonl" in ideas["ideas/2.persistencia"].summary
+    assert "/v1/proposals/" in props["proposals/1.endpoint"].summary
+    assert "vectrax.db" in props["proposals/2.persistencia"].summary
+
+    # La auditoría de `proposals` NO puede atribuirse al circuito de `ideas`.
+    assert ideas["ideas/3.auditoria"].status == "absent"
+    assert "NO escribe" in ideas["ideas/3.auditoria"].summary
+
+    # Y la relación entre ambos se afirma explícitamente.
+    rel = [i for i in result.items if i.scope == "relacion"]
+    assert rel and rel[0].status == "independent"
+
+
+def test_approval_pipeline_does_not_count_itself_as_executor():
+    """Regresión: buscar el nombre `mark_applied` en vez de la LLAMADA hacía
+    que este propio módulo se contara como ejecutor, produciendo un
+    'PRESENTE' falso."""
+    result = InternalEvidence(OWNER).approval_pipeline()
+    if result.status is EvidenceStatus.UNAVAILABLE:
+        pytest.skip("traza estructural no computable en este entorno")
+    executor = [i for i in result.items if i.scope.endswith("ejecutor")][0]
+    assert "internal_evidence" not in executor.summary, (
+        "el escáner se contó a sí mismo como ejecutor"
+    )
 
 
 def test_approval_pipeline_is_owner_only():

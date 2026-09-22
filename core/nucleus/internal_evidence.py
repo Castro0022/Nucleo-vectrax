@@ -718,69 +718,129 @@ class InternalEvidence:
     # -- traza de solo lectura del botón Aprobar -------------------------
 
     def approval_pipeline(self) -> EvidenceResult:
-        """Traza ESTRUCTURAL del circuito de aprobación, derivada del código.
+        """Traza ESTRUCTURAL de los circuitos de aprobación, derivada del código.
 
-        Responde con honestidad qué ocurre tras pulsar Aprobar hoy. No simula
-        una reparación: verifica en tiempo real si existe un consumidor del
-        estado `approved` y lo reporta tal cual.
+        Vectrax tiene DOS circuitos de aprobación SEPARADOS, y confundirlos
+        haría que el Núcleo explicara un flujo que no existe — exactamente
+        el defecto que esta etapa corrige (auditoría 2026-09-22; la versión
+        anterior los encadenaba como si fueran cuatro pasos de una misma
+        secuencia):
+
+          - `ideas`     -> POST /v1/ideas/{id}/approve  (permiso core.write)
+                           IdeaStore.approve() -> data/ideas.jsonl
+          - `proposals` -> POST /v1/proposals/{id}/approve (permiso apply_proposal)
+                           db.update_proposal_status() -> vectrax.db
+
+        No se llaman entre sí y no comparten almacén. Aprobar una idea NO
+        dispara el endpoint de proposals ni escribe la entrada de auditoría
+        que ese otro circuito sí escribe.
+
+        Todo lo que se afirma aquí se VERIFICA leyendo los archivos reales;
+        nada se da por supuesto.
         """
         kind = "approval_pipeline"
         blocked = self._guard(kind)
         if blocked:
             return blocked
-        src = "services/core/routes/ideas.py + core/idea_store.py (traza estática)"
+        src = "services/core/routes/{ideas,proposals}.py + core/idea_store.py (traza estática)"
 
-        executor_present = False
-        detail = "IdeaStore.mark_applied() no tiene ningún llamador en producción"
         try:
             from core import idea_store as _idea_store
             module_path = Path(_idea_store.__file__).resolve()
             repo_root = module_path.parent.parent
+
+            def _read(rel: str) -> str:
+                try:
+                    return (repo_root / rel).read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    return ""
+
+            ideas_src = _read("services/core/routes/ideas.py")
+            proposals_src = _read("services/core/routes/proposals.py")
+
             # Se acota el recorrido a propósito: un `rglob("*.py")` sobre la
             # raíz entra en `.venv/` (decenas de miles de archivos en la
             # máquina de desarrollo) y convertiría una consulta conversacional
             # en un escaneo de varios segundos. `archive/` y `tests/` se
             # excluyen porque un llamador ahí no es un ejecutor de producción
             # — que es justo lo que esta traza responde.
+            # Se buscan LLAMADAS reales (`.mark_applied(`), no la mera
+            # aparición del nombre: este mismo módulo contiene la cadena que
+            # busca y se contaba a sí mismo como ejecutor — un falso
+            # "PRESENTE" detectado en revisión. Por eso además se excluye
+            # explícitamente el archivo del escáner.
+            self_path = Path(__file__).resolve()
             callers: List[str] = []
             for py in repo_root.rglob("*.py"):
-                parts = set(py.parts)
-                if parts & _SCAN_EXCLUDED_DIRS:
+                if set(py.parts) & _SCAN_EXCLUDED_DIRS:
                     continue
-                if py.resolve() == module_path:
+                resolved = py.resolve()
+                if resolved == module_path or resolved == self_path:
                     continue
                 try:
-                    if "mark_applied" in py.read_text(encoding="utf-8", errors="ignore"):
+                    if ".mark_applied(" in py.read_text(encoding="utf-8", errors="ignore"):
                         callers.append(str(py.relative_to(repo_root)))
                 except OSError:
                     continue
-            executor_present = bool(callers)
-            if callers:
-                detail = "llamadores de mark_applied(): " + ", ".join(sorted(callers)[:5])
         except Exception as exc:
             return _unavailable(kind, src, exc)
 
+        executor_present = bool(callers)
+        ideas_audits = "audit_ledger" in ideas_src
+        proposals_audits = "audit_ledger" in proposals_src
+        linked = ("proposals" in ideas_src) or ("idea_store" in proposals_src)
+
         now = time.time()
-        steps = [
-            ("1. endpoint", "POST /v1/ideas/{id}/approve", "services/core/routes/ideas.py"),
-            ("2. persistencia", "IdeaStore.approve() -> status=approved en data/ideas.jsonl",
-             "core/idea_store.py"),
-            ("3. auditoría", "POST /v1/proposals/{id}/approve escribe entrada en audit_ledger",
-             "services/core/routes/proposals.py"),
-            ("4. ejecutor",
-             "PRESENTE" if executor_present else "AUSENTE: ningún proceso consume el estado approved",
-             "core/idea_store.py::mark_applied"),
-        ]
-        items = [
-            EvidenceItem(
-                kind=kind, source=f"{src} :: {ref}", observed_at=now, scope=step,
-                status="present" if (not step.startswith("4.") or executor_present) else "absent",
-                summary=text, reference=ref, visibility="owner",
+
+        def _item(scope: str, status: str, summary: str, ref: str) -> EvidenceItem:
+            return EvidenceItem(
+                kind=kind, source=f"{src} :: {ref}", observed_at=now, scope=scope,
+                status=status, summary=summary, reference=ref, visibility="owner",
             )
-            for step, text, ref in steps
+
+        items = [
+            # -- Circuito 1: ideas (las IDEA-... del Dashboard) -------------
+            _item("ideas/1.endpoint", "present",
+                  "POST /v1/ideas/{id}/approve (permiso core.write)",
+                  "services/core/routes/ideas.py"),
+            _item("ideas/2.persistencia", "present",
+                  "IdeaStore.approve() -> status=approved en data/ideas.jsonl",
+                  "core/idea_store.py::approve"),
+            _item("ideas/3.auditoria", "present" if ideas_audits else "absent",
+                  ("escribe en audit_ledger" if ideas_audits else
+                   "NO escribe en audit_ledger: aprobar una idea no deja entrada de auditoría"),
+                  "services/core/routes/ideas.py"),
+            _item("ideas/4.ejecutor", "present" if executor_present else "absent",
+                  ("PRESENTE: " + ", ".join(sorted(callers)[:5])) if executor_present else
+                  "AUSENTE: ningún proceso consume el estado approved "
+                  "(IdeaStore.mark_applied() no tiene llamador en producción)",
+                  "core/idea_store.py::mark_applied"),
+
+            # -- Circuito 2: proposals (sistema distinto) -------------------
+            _item("proposals/1.endpoint", "present",
+                  "POST /v1/proposals/{id}/approve (permiso apply_proposal)",
+                  "services/core/routes/proposals.py"),
+            _item("proposals/2.persistencia", "present",
+                  "db.update_proposal_status() -> vectrax.db",
+                  "services/core/routes/proposals.py"),
+            _item("proposals/3.auditoria", "present" if proposals_audits else "absent",
+                  ("escribe entrada en audit_ledger (best-effort)" if proposals_audits else
+                   "NO escribe en audit_ledger"),
+                  "services/core/routes/proposals.py"),
+
+            # -- Relación entre ambos --------------------------------------
+            _item("relacion", "linked" if linked else "independent",
+                  ("los dos circuitos se invocan entre sí" if linked else
+                   "circuitos INDEPENDIENTES: no se llaman entre sí ni comparten almacén; "
+                   "aprobar una idea no dispara el endpoint de proposals"),
+                  "services/core/routes/ideas.py + proposals.py"),
         ]
+
         result = _finalize(kind, src, items)
-        result.detail = detail
+        result.detail = (
+            "dos circuitos separados; ejecutor posterior "
+            + ("presente" if executor_present else "ausente en ambos")
+        )
         return result
 
 
