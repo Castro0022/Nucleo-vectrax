@@ -226,20 +226,91 @@ def _semantic_dedup_key(proposal: Dict[str, Any]) -> str:
     Devuelve "" si la propuesta no trae ningún discriminante estable — en
     ese caso no se deduplica por patrón (fail-open: es preferible una
     propuesta repetida a perder una distinta).
+
+    IMPORTANTE (auditoría 2026-09-22): los campos de primer nivel NO bastan.
+    Dos conflictos del clasificador genuinamente distintos comparten
+    `proposal_type` y `affected_component`, y sus discriminantes reales
+    viven DENTRO de `evidence`:
+
+        {"proposal_type": "conflict_pattern", "affected_component": "semantic_classifier",
+         "evidence": {"from_intent": "ASK_MEMORY",   "to_intent": "AI_SINGLE"}}
+        {"proposal_type": "conflict_pattern", "affected_component": "semantic_classifier",
+         "evidence": {"from_intent": "STORE_MEMORY", "to_intent": "ASK_MEMORY"}}
+
+    Con la versión anterior ambos producían `9ddbb13737a8172f`, así que
+    mientras uno siguiera pendiente el otro se descartaba en silencio: la
+    deduplicación ocultaba una propuesta DISTINTA. Por eso ahora se recorre
+    también `evidence`.
+
+    Criterio dentro de `evidence`: entran los valores que DESCRIBEN el
+    patrón (cadenas, booleanos y listas de cadenas — intents, rutas,
+    categorías); quedan fuera los numéricos, que son conteos, tasas y scores
+    que cambian en cada ciclo sin cambiar el significado, más una lista
+    explícita de claves volátiles (marcas de tiempo, identificadores de
+    ciclo). Si un numérico entrara, la deduplicación dejaría de funcionar y
+    volveríamos al defecto original.
     """
-    stable_fields = (
-        "proposal_type", "type", "category", "intent",
-        "affected_component", "route", "from_route", "to_route",
-    )
-    parts = []
-    for field_name in stable_fields:
-        value = proposal.get(field_name)
-        if value in (None, "", [], {}):
-            continue
-        parts.append(f"{field_name}={str(value).strip().lower()}")
+    parts: List[str] = []
+    _collect_dedup_parts(proposal, "", parts)
+
+    evidence = proposal.get("evidence")
+    if isinstance(evidence, dict):
+        _collect_dedup_parts(evidence, "evidence.", parts)
+
     if not parts:
         return ""
     return hashlib.sha256("|".join(sorted(parts)).encode("utf-8")).hexdigest()[:16]
+
+
+# Claves que NUNCA discriminan un patrón: identificadores de ocurrencia,
+# marcas de tiempo, estado del ciclo de vida y el texto generado (que
+# interpola conteos: "92 casos..." vs "160 casos..."). Todo lo demás que sea
+# descriptivo entra. Es una regla por EXCLUSIÓN a propósito: una lista blanca
+# de campos obliga a enumerar cada tipo de propuesta y se queda corta en
+# cuanto aparece uno nuevo — así se escapó `weak_classification_method`, cuyo
+# discriminante real (`method`) vive en el primer nivel.
+_DEDUP_VOLATILE_KEYS = frozenset({
+    # identidad de la ocurrencia / tiempo
+    "cycle_id", "created_at", "updated_at", "timestamp", "observed_at",
+    "detected_at", "first_seen", "last_seen", "id", "uuid", "run_id",
+    "proposal_id", "idea_id",
+    # ciclo de vida (siempre "pending" al ingerir; la prioridad deriva de
+    # conteos, así que varía sin cambiar el patrón)
+    "status", "state", "priority", "severity",
+    # texto generado que interpola cifras
+    "suggestion", "suggested_action", "description", "title", "message",
+    "detail", "details", "summary", "text", "note",
+    # muestras concretas
+    "sample", "samples", "example", "examples",
+})
+
+
+def _collect_dedup_parts(source: Dict[str, Any], prefix: str, parts: List[str]) -> None:
+    """Extrae los discriminantes estables de `source` hacia `parts`.
+
+    Entra lo que DESCRIBE el patrón: cadenas, booleanos y listas de cadenas
+    (intents, rutas, métodos, categorías). Quedan fuera los numéricos, que en
+    estas propuestas son siempre conteos, tasas, gaps y scores — si entraran,
+    cada ciclo produciría una clave nueva y volveríamos al defecto original.
+    """
+    for key, value in source.items():
+        key_norm = str(key).strip().lower()
+        if key_norm.startswith("_") or key_norm in _DEDUP_VOLATILE_KEYS:
+            continue
+        if key_norm == "evidence":
+            continue  # se recorre aparte, con su propio prefijo
+        if isinstance(value, bool):
+            parts.append(f"{prefix}{key_norm}={str(value).lower()}")
+        elif isinstance(value, str) and value.strip():
+            parts.append(f"{prefix}{key_norm}={value.strip().lower()}")
+        elif isinstance(value, (list, tuple)) and value:
+            # Una lista de cadenas SÍ discrimina (p.ej. las rutas
+            # implicadas). Se ordena para que el orden de la fuente no
+            # genere claves distintas para el mismo patrón.
+            items = [str(v).strip().lower() for v in value if isinstance(v, str)]
+            if items:
+                parts.append(f"{prefix}{key_norm}={','.join(sorted(items))}")
+        # int / float se omiten a propósito.
 
 
 def _get_convergence_level() -> float:

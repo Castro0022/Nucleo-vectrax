@@ -90,6 +90,134 @@ def test_semantic_key_is_empty_without_stable_discriminators():
     """Fail-open: sin discriminante estable no se deduplica (mejor repetir
     que perder una propuesta distinta)."""
     assert _semantic_dedup_key({"cycle_id": 1, "created_at": 2}) == ""
+    assert _semantic_dedup_key({"cycle_id": 9, "created_at": 8, "cases": 42}) == ""
+
+
+# ---------------------------------------------------------------------------
+# Colisión demostrada en la auditoría 2026-09-22
+# ---------------------------------------------------------------------------
+
+def test_conflict_pattern_discriminants_live_inside_evidence():
+    """Colisión EXACTA reportada: dos conflictos genuinamente distintos
+    compartían `proposal_type` y `affected_component`, y sus discriminantes
+    reales (`semantic_intent` / `regex_intent`) viven dentro de `evidence`.
+
+    Ambos producían `9ddbb13737a8172f`, así que mientras uno siguiera
+    pendiente el otro se descartaba en silencio: la deduplicación ocultaba
+    una propuesta DIFERENTE, que es el peor fallo posible aquí.
+    """
+    base = {"type": "conflict_pattern", "affected_component": "semantic_classifier"}
+    a = dict(base, evidence={"semantic_intent": "ASK_MEMORY", "regex_intent": "AI_SINGLE", "cases": 12})
+    b = dict(base, evidence={"semantic_intent": "STORE_MEMORY", "regex_intent": "ASK_MEMORY", "cases": 7})
+
+    ka, kb = _semantic_dedup_key(a), _semantic_dedup_key(b)
+    assert ka and kb
+    assert ka != kb, "dos conflictos distintos siguen colisionando"
+
+
+def test_conflict_pattern_same_conflict_collapses_across_cycles():
+    """El mismo conflicto en dos ciclos SÍ debe seguir colapsando."""
+    base = {"type": "conflict_pattern", "affected_component": "semantic_classifier"}
+    a = dict(base, cycle_id=1, created_at=1000,
+             evidence={"semantic_intent": "ASK_MEMORY", "regex_intent": "AI_SINGLE", "cases": 12})
+    b = dict(base, cycle_id=9, created_at=9000,
+             evidence={"semantic_intent": "ASK_MEMORY", "regex_intent": "AI_SINGLE", "cases": 88})
+    assert _semantic_dedup_key(a) == _semantic_dedup_key(b)
+
+
+# ---------------------------------------------------------------------------
+# Tipos REALES producidos por RouterLearningCycle
+# ---------------------------------------------------------------------------
+# Cada caso: (etiqueta, propuesta_a, propuesta_b, ¿deben compartir clave?)
+# Los tipos salen de `core/router_learning.py::_generate_proposals()`.
+
+_REAL_TYPE_CASES = [
+    (
+        "high_failure_intent · intents distintos",
+        {"type": "high_failure_intent", "intent": "ASK_MEMORY",
+         "failure_rate": 0.4, "total_samples": 50, "priority": "high"},
+        {"type": "high_failure_intent", "intent": "STORE_MEMORY",
+         "failure_rate": 0.5, "total_samples": 80, "priority": "high"},
+        False,
+    ),
+    (
+        "high_failure_intent · mismo intent, otro ciclo",
+        {"type": "high_failure_intent", "intent": "ASK_MEMORY",
+         "failure_rate": 0.4, "total_samples": 50, "cycle_id": 1},
+        {"type": "high_failure_intent", "intent": "ASK_MEMORY",
+         "failure_rate": 0.7, "total_samples": 99, "cycle_id": 9},
+        True,
+    ),
+    (
+        "weak_classification_method · métodos distintos",
+        {"type": "weak_classification_method", "method": "regex",
+         "ambiguity_count": 10, "rate": 0.2},
+        {"type": "weak_classification_method", "method": "semantic",
+         "ambiguity_count": 4, "rate": 0.1},
+        False,
+    ),
+    (
+        "weak_classification_method · mismo método, otro ciclo",
+        {"type": "weak_classification_method", "method": "regex",
+         "ambiguity_count": 10, "rate": 0.2},
+        {"type": "weak_classification_method", "method": "regex",
+         "ambiguity_count": 33, "rate": 0.6},
+        True,
+    ),
+    (
+        "high_fallback_rate · métrica global, dos ciclos",
+        {"type": "high_fallback_rate", "fallback_rate": 0.3, "priority": "medium"},
+        {"type": "high_fallback_rate", "fallback_rate": 0.6, "priority": "high"},
+        True,
+    ),
+    (
+        "high_ambiguity · métrica global, dos ciclos",
+        {"type": "high_ambiguity", "ambiguity_rate": 0.2, "avg_confidence": 0.5},
+        {"type": "high_ambiguity", "ambiguity_rate": 0.9, "avg_confidence": 0.3},
+        True,
+    ),
+    (
+        "confidence_threshold_adjustment · métrica global",
+        {"type": "confidence_threshold_adjustment", "avg_success_conf": 0.8, "gap": 0.1},
+        {"type": "confidence_threshold_adjustment", "avg_success_conf": 0.6, "gap": 0.05},
+        True,
+    ),
+    (
+        "tipos distintos nunca colisionan",
+        {"type": "high_ambiguity", "ambiguity_rate": 0.2},
+        {"type": "high_fallback_rate", "fallback_rate": 0.2},
+        False,
+    ),
+]
+
+
+@pytest.mark.parametrize("label,a,b,same_expected", _REAL_TYPE_CASES,
+                         ids=[c[0] for c in _REAL_TYPE_CASES])
+def test_real_proposal_types_dedup_correctly(label, a, b, same_expected):
+    ka, kb = _semantic_dedup_key(a), _semantic_dedup_key(b)
+    assert ka and kb, f"{label}: clave vacía, no se deduplicaría nada"
+    if same_expected:
+        assert ka == kb, f"{label}: el mismo patrón produjo claves distintas"
+    else:
+        assert ka != kb, f"{label}: patrones distintos colisionaron"
+
+
+def test_generated_text_never_drives_the_key():
+    """El texto generado interpola conteos ('92 casos…' vs '160 casos…'):
+    si entrase en la clave, la deduplicación no colapsaría nunca."""
+    a = {"type": "fallback_resolved", "affected_component": "smart_router",
+         "suggestion": "92 casos donde el fallback resolvió mejor"}
+    b = {"type": "fallback_resolved", "affected_component": "smart_router",
+         "suggestion": "160 casos donde el fallback resolvió mejor"}
+    assert _semantic_dedup_key(a) == _semantic_dedup_key(b)
+
+
+def test_list_order_does_not_change_the_key():
+    a = {"type": "fallback_resolved", "affected_component": "smart_router",
+         "evidence": {"routes": ["resolve_local", "resolve_identity"]}}
+    b = {"type": "fallback_resolved", "affected_component": "smart_router",
+         "evidence": {"routes": ["resolve_identity", "resolve_local"]}}
+    assert _semantic_dedup_key(a) == _semantic_dedup_key(b)
 
 
 # ---------------------------------------------------------------------------
