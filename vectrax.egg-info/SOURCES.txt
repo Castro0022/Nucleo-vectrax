@@ -99,7 +99,6 @@ core/risk_engine.py
 core/roles.py
 core/rules.py
 core/sandbox_runner.py
-core/shadow_mode.py
 core/smoke.py
 core/state_manager.py
 core/strategic_router.py

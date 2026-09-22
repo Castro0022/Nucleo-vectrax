@@ -79,6 +79,43 @@ class TestConfidence:
         assert compute_confidence(_assessment([])) == 1.0
         assert compute_confidence(_assessment([0.7])) == 1.0
 
+    @pytest.mark.parametrize("values,expected", [
+        ([0.5] * 6,                        1.0),
+        ([0.0, 1.0, 0.0, 1.0, 0.0, 1.0],   0.0),
+        ([0.0, 1.0],                       0.0),
+        ([0.4, 0.6],                       0.8),
+        ([0.25, 0.75],                     0.5),
+        ([0.0, 0.5, 1.0],                  0.18350341907227397),
+        ([0.2, 0.4, 0.6, 0.8],             0.5527864045000421),
+        ([0.9, 0.9, 0.9, 0.1],             0.3071796769724491),
+    ])
+    def test_golden_values_are_bit_for_bit_unchanged(self, values, expected):
+        """Valores GOLDEN calculados con la fórmula original de shadow_mode.py.
+
+        `1 − (pstdev(values) / 0.5)`, acotado a [0,1]. Fijarlos aquí impide que
+        el traslado —o cualquier refactor futuro— desplace el resultado. Un
+        desplazamiento cambiaría el `confidence_score` y con él la zona de
+        autonomía asignada a cada propuesta, en silencio.
+
+        Derivados de una reimplementación independiente de la fórmula, NO de la
+        función trasladada: copiarlos de la implementación actual haría la
+        prueba circular. `test_the_formula_itself_is_the_original` mantiene esa
+        comprobación viva para entradas arbitrarias.
+        """
+        assert compute_confidence(_assessment(values)) == pytest.approx(
+            expected, abs=1e-12,
+        )
+
+    def test_the_formula_itself_is_the_original(self):
+        """Recalcula el contrato desde cero, sin leer la implementación."""
+        import statistics
+        for values in ([0.1, 0.9], [0.3, 0.4, 0.5], [0.0, 0.2, 0.8, 1.0],
+                       [0.05] * 4, [1.0, 0.0, 0.5, 0.5, 0.7]):
+            expected = max(0.0, min(1.0, 1.0 - (statistics.pstdev(values) / 0.5)))
+            assert compute_confidence(_assessment(values)) == pytest.approx(
+                expected, abs=1e-12,
+            )
+
 
 class TestItIsStillWiredToProposals:
     """El consumidor real sigue conectado tras el traslado."""
@@ -140,3 +177,40 @@ class TestTheShadowIsGone:
     def test_the_autonomy_zones_no_longer_list_it(self):
         from core.autonomy_policy import SEMI_SAFE_PATHS
         assert "core/shadow_mode.py" not in SEMI_SAFE_PATHS
+
+    def test_the_packaging_manifest_no_longer_lists_it(self):
+        """`vectrax.egg-info/SOURCES.txt` está RASTREADO en git.
+
+        Un manifiesto que lista un archivo inexistente es una mentira sobre el
+        contenido del paquete, no un detalle cosmético.
+        """
+        manifest = _ROOT / "vectrax.egg-info" / "SOURCES.txt"
+        if not manifest.is_file():
+            pytest.skip("el manifiesto no está presente en este árbol")
+        listed = manifest.read_text(encoding="utf-8").splitlines()
+        assert "core/shadow_mode.py" not in listed
+
+    def test_no_orphan_comment_mislabels_another_state_key(self):
+        """El comentario `# Shadow mode` etiquetaba `"meta": {}` tras el borrado.
+
+        Quitar una clave y dejar su comentario convierte la documentación en
+        una etiqueta equivocada sobre la clave siguiente.
+        """
+        text = (_ROOT / "core" / "state_manager.py").read_text(encoding="utf-8")
+        assert "Shadow mode" not in text
+        assert "shadow" not in text.lower()
+
+    def test_this_pr_retires_only_the_old_module(self):
+        """Alcance explícito: los mecanismos constitucionales siguen intactos.
+
+        Retirar `core/shadow_mode.py` NO es retirar el control constitucional.
+        `constitutional_mode` es un interruptor gobernado —shadow/enforce, con
+        kill switch y fail-safe— y sigue exactamente donde estaba.
+        """
+        assert (_ROOT / "core" / "operator" / "constitutional_mode.py").is_file()
+        assert (_ROOT / "core" / "operator" / "constitutional_guard.py").is_file()
+        from core.operator import constitutional_mode
+        assert hasattr(constitutional_mode, "get_mode")
+        assert hasattr(constitutional_mode, "revert_to_shadow")
+        assert constitutional_mode.SHADOW == "shadow"
+        assert constitutional_mode.ENFORCE == "enforce"
