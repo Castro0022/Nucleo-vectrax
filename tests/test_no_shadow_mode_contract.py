@@ -287,3 +287,29 @@ class TestNoMassiveBackfill:
         )
         assert result["evaluated"] == 10
         assert result["truncated"] is True
+
+    def test_dissolutions_are_never_starved_by_the_budget(self, tmp_path):
+        """Dejar de afirmar algo falso es más urgente que afirmar algo nuevo."""
+        from core.learn import causal_learning as cl
+        db = str(tmp_path / "c.db")
+        live = [
+            {
+                "convergence_id": f"VIVA-{i}", "domains": ["market"],
+                "source_pattern_ids": ["A", "B"], "status": "active",
+                "combined_cc": 0.9, "combined_hits": 9,
+            }
+            for i in range(60)
+        ]
+        dissolved = {
+            "convergence_id": "DISUELTA", "domains": ["market"],
+            "source_pattern_ids": ["A", "B"], "status": "dissolved",
+            "combined_cc": 0.9, "combined_hits": 9,
+        }
+        result = cl.evaluate_live_convergences(
+            live + [dissolved], limit=5,
+            stats_fetcher=lambda fp: None, db_path=db,
+        )
+        assert result["truncated"] is True
+        assert result["weakened"] == 1, (
+            "la disolución quedó fuera del presupuesto del ciclo"
+        )

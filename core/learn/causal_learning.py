@@ -1156,7 +1156,14 @@ def evaluate_live_convergences(
         result["errors"].append(f"ensure_production_policies: {exc}")
 
     budget = max(0, int(limit))
-    for entry in entries:
+    # Las disoluciones van PRIMERO. Si el presupuesto se agotara con las
+    # convergencias vivas, una disolución podría no evaluarse nunca y el
+    # criterio seguiría apoyándose en evidencia que ya no existe. Dejar de
+    # afirmar algo falso es más urgente que afirmar algo nuevo.
+    ordered = sorted(
+        entries, key=lambda e: 0 if str(e.get("status")) == "dissolved" else 1,
+    )
+    for entry in ordered:
         domains = [d for d in (entry.get("domains") or []) if d]
         for domain in dict.fromkeys(domains):        # sin duplicados, en orden
             if budget <= 0:
