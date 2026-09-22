@@ -211,11 +211,15 @@ class TestAnthropicProvider:
         provider = AnthropicProvider(api_key="k")
         assert "anthropic.com" in provider.endpoint
 
-    def test_list_models_static(self):
+    async def test_list_models_static(self):
         """Anthropic list_models returns hardcoded list (no API endpoint)."""
-        import asyncio
+        # Se await directamente (pytest-asyncio con asyncio_mode="auto", ver
+        # pyproject.toml) en vez de asyncio.get_event_loop(). Desde Python
+        # 3.10 get_event_loop() ya no crea un loop implicito cuando no hay
+        # ninguno corriendo: lanza "There is no current event loop in thread
+        # 'MainThread'". La expectativa del test no cambia.
         provider = AnthropicProvider(api_key="k")
-        models = asyncio.get_event_loop().run_until_complete(provider.list_models())
+        models = await provider.list_models()
         assert len(models) > 0
         assert any("claude" in m for m in models)
 
