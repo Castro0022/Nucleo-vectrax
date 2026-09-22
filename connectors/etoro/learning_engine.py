@@ -488,6 +488,40 @@ def _feed_gravity(symbols: List[str]) -> int:
     return fed
 
 
+def _record_causal_decision(causal, proposal, mode, *, applied, abstained_reason=""):
+    """Persiste la influencia del aprendizaje en ESTA decisión de trading.
+
+    Cierra el tramo `learning_id -> criterion_version -> decision_id ->
+    application_id` del recorrido causal. El `decision_id` es el
+    `proposal_id`, que es el mismo identificador que conoce el cierre de la
+    operación (`position_manager._close_paper_trade`), así que el resultado
+    puede engancharse después sin inventar ningún vínculo.
+
+    APRENDER NO CONCEDE EJECUTAR. Esta función corre DESPUÉS de que
+    `validate_entry` y `execute_proposal` hayan decidido, no antes: no toca
+    autorización, governor, capital, límites, el modo PAPER/LIVE ni el
+    booleano de entrada. Solo escribe traza, y nunca propaga un fallo.
+    """
+    try:
+        learning_ids = (causal or {}).get("learning_ids") or []
+        if not learning_ids:
+            return
+        from core.learn.causal_learning import record_decision
+        scope = getattr(mode, "value", str(mode))
+        record_decision(
+            learning_ids,
+            decision_id=proposal.proposal_id,
+            applied=applied,
+            action_type="trade_execution" if applied else "trade_blocked",
+            execution_scope=scope,
+            convergence_id=(causal or {}).get("convergence_ids", [""])[0]
+            if (causal or {}).get("convergence_ids") else "",
+            abstained_reason=abstained_reason,
+        )
+    except Exception as exc:
+        logger.debug("causal decision trace error: %s", exc)
+
+
 def _auto_execute_proposals(proposals: List[TradeProposal]) -> int:
     """Auto-execute qualifying proposals if auto-executor is active."""
     if not proposals:
@@ -496,7 +530,9 @@ def _auto_execute_proposals(proposals: List[TradeProposal]) -> int:
         from connectors.etoro.auto_executor import (
             get_mode, AutoMode, execute_proposal, record_symbol_op,
         )
-        from connectors.etoro.entry_validator import validate_entry
+        from connectors.etoro.entry_validator import (
+            convergence_evidence, validate_entry,
+        )
 
         mode = get_mode()
         if mode == AutoMode.OFF:
@@ -508,10 +544,21 @@ def _auto_execute_proposals(proposals: List[TradeProposal]) -> int:
             allowed, reasons = validate_entry(
                 p.symbol, p.direction, p, mode=mode.value,
             )
+            # Aprendizajes que estaban influyendo en el criterio de este
+            # símbolo. NO participan en `allowed`: se leen DESPUÉS de decidir,
+            # solo para poder atribuir la decisión. Si no hay ninguno, no se
+            # registra nada — inventar una aplicación sería afirmar una causa
+            # que no existió.
+            _causal = convergence_evidence(p.symbol)
+
             if not allowed:
                 logger.info(
                     "[AUTO] Proposal %s BLOCKED: %s",
                     p.proposal_id, "; ".join(reasons[:3]),
+                )
+                _record_causal_decision(
+                    _causal, p, mode, applied=False,
+                    abstained_reason="; ".join(reasons[:3]),
                 )
                 continue
 
@@ -520,6 +567,7 @@ def _auto_execute_proposals(proposals: List[TradeProposal]) -> int:
             if result.get("success"):
                 record_symbol_op(p.symbol)
                 executed += 1
+                _record_causal_decision(_causal, p, mode, applied=True)
                 logger.info(
                     "[AUTO] Proposal %s EXECUTED (%s): %s %s $%.0f",
                     p.proposal_id, mode.value.upper(),

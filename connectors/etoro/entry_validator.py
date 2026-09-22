@@ -59,8 +59,15 @@ def validate_entry(
         return False, reasons
 
     # 1. Convergencia fuerte (gravity engine)
-    convergence_ok = _check_convergence(sym)
+    #    La DECISIÓN sigue siendo exactamente el mismo booleano de siempre; lo
+    #    que se añade son los ids que la respaldan, para que después se pueda
+    #    reconstruir qué convergencia y qué aprendizaje influyeron. Aprender no
+    #    relaja ninguna de las condiciones de abajo.
+    convergence = _convergence_evidence(sym)
+    convergence_ok = convergence["matched"]
     evidence["convergence"] = convergence_ok
+    evidence["convergence_ids"] = convergence["convergence_ids"]
+    evidence["learning_ids"] = convergence["learning_ids"]
     if not convergence_ok:
         reasons.append(f"Sin convergencia fuerte para {sym} en gravity engine.")
 
@@ -128,13 +135,23 @@ def validate_entry(
 # Condition checkers
 # ---------------------------------------------------------------------------
 
-def _check_convergence(symbol: str) -> bool:
-    """Check if the symbol has an active canonical convergence (#107).
+def _convergence_evidence(symbol: str) -> Dict[str, Any]:
+    """Convergencias y aprendizajes que respaldan a `symbol`.
 
-    gravity_engine.cross_domain_convergences() is a candidate detector, not
-    a source of truth for consumers — this reads the canonical registry
-    (core.learn.convergence_registry) instead of the raw candidate list.
+    Devuelve ``{"matched": bool, "convergence_ids": [...], "learning_ids": [...]}``.
+
+    `matched` conserva EXACTAMENTE la misma regla que antes (misma consulta,
+    mismo orden, mismos umbrales `hits>=5` y `cc_score>=0.3`), de modo que la
+    decisión de trading no cambia. Lo nuevo son los ids: sin ellos no se puede
+    responder "qué convergencia y qué aprendizaje influyeron en esta entrada".
+
+    Los `learning_ids` son SOLO de aprendizajes en estado LEARNED. Un
+    aprendizaje nunca añade un símbolo que la regla anterior habría rechazado:
+    solo documenta el porqué de los que ya pasaban.
     """
+    result: Dict[str, Any] = {
+        "matched": False, "convergence_ids": [], "learning_ids": [],
+    }
     try:
         from core.learn.convergence_registry import get_canonical_convergences
         active = get_canonical_convergences(status="active")
@@ -143,15 +160,46 @@ def _check_convergence(symbol: str) -> bool:
             domains = (c.get("domain_a", ""), c.get("domain_b", ""))
             entities = (c.get("entity_a_id", ""), c.get("entity_b_id", ""))
             if "market" in domains and any(sym_upper in e.upper() for e in entities):
-                return True
-        # Also check if the market star itself has significant mass
-        from core.learn.gravity_engine import get_gravity_index
-        rec = get_gravity_index().get(f"market:{symbol}")
-        if rec and rec.hits >= 5 and rec.cc_score >= 0.3:
-            return True
+                result["matched"] = True
+                cid = c.get("convergence_id", "")
+                if cid and cid not in result["convergence_ids"]:
+                    result["convergence_ids"].append(cid)
+        if not result["matched"]:
+            # Also check if the market star itself has significant mass
+            from core.learn.gravity_engine import get_gravity_index
+            rec = get_gravity_index().get(f"market:{symbol}")
+            if rec and rec.hits >= 5 and rec.cc_score >= 0.3:
+                result["matched"] = True
     except Exception as exc:
         logger.debug("convergence check failed: %s", exc)
-    return False
+
+    # Aprendizajes consumibles cuya convergencia de origen es una de las
+    # anteriores. Solo lectura; no influye en `matched`.
+    if result["convergence_ids"]:
+        try:
+            from core.learn.causal_learning import consumable_learnings
+            known = set(result["convergence_ids"])
+            for lrn in consumable_learnings("market"):
+                if lrn.get("source_convergence_id") in known:
+                    result["learning_ids"].append(lrn["learning_id"])
+        except Exception as exc:
+            logger.debug("causal learning lookup failed: %s", exc)
+    return result
+
+
+def _check_convergence(symbol: str) -> bool:
+    """Compatibilidad: el booleano de siempre. Ver `_convergence_evidence`."""
+    return _convergence_evidence(symbol)["matched"]
+
+
+def convergence_evidence(symbol: str) -> Dict[str, Any]:
+    """Evidencia causal de `symbol`, para quien deba TRAZAR la decisión.
+
+    Pública porque `learning_engine._auto_execute_proposals` la necesita para
+    registrar a qué aprendizajes atribuir una aplicación o una abstención. No
+    participa en ninguna decisión: la autoriza `validate_entry`, no esto.
+    """
+    return _convergence_evidence(symbol)
 
 
 def _check_pattern(symbol: str, direction: str) -> Tuple[bool, str]:
