@@ -127,14 +127,38 @@ class TestScannerItself:
         assert not _SHADOW_PHRASE.search("overshadowed by the model")
         assert not _FORBIDDEN["shadow_criterion"].search("effective_criterion")
 
-    def test_the_preexisting_shadow_subsystem_is_still_there(self):
-        """Guard del alcance: no se ha borrado un subsistema ajeno al puente.
+    def test_this_contract_is_not_what_removes_the_other_subsystem(self):
+        """Guard del alcance, formulado sobre el CONTRATO y no sobre el archivo.
 
-        `core/shadow_mode.py` existía antes de este PR y no tiene nada que ver
-        con el aprendizaje causal. Si algún día desaparece, que sea por una
-        decisión propia, no como efecto colateral de este contrato.
+        `core/shadow_mode.py` es un subsistema ajeno al puente causal. Este
+        contrato no puede ser la razón de que desaparezca; si desaparece, tiene
+        que ser por una decisión propia tomada en otra parte.
+
+        La versión anterior afirmaba `.is_file()`, y eso era un error mío: ató
+        este PR a que otro no borrara nunca ese archivo. Cuando el PR que lo
+        retira de verdad llegó, los dos quedaban verdes por separado y rojos
+        juntos — exactamente el fallo de integración que hay que evitar.
+
+        Lo que sí debe seguir siendo cierto: mientras exista, el escáner no lo
+        señala; y su ausencia no rompe nada de aquí.
         """
-        assert (_ROOT / "core" / "shadow_mode.py").is_file()
+        path = _ROOT / "core" / "shadow_mode.py"
+        if not path.is_file():
+            pytest.skip(
+                "core/shadow_mode.py ya fue retirado por una decisión propia; "
+                "este contrato no fue la causa"
+            )
+        offenders = [
+            lineno
+            for lineno, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), 1
+            )
+            if any(pat.search(line) for pat in _FORBIDDEN.values())
+        ]
+        assert not offenders, (
+            "el subsistema ajeno usa un identificador que este contrato "
+            f"prohíbe (líneas {offenders}): habría que decidirlo, no arrastrarlo"
+        )
 
 
 class TestNoShadowVocabularyInLiveCode:
