@@ -950,10 +950,26 @@ def _try_self_knowledge_override(
     # market_intents) en vez del stub "no wired" que tenía `_dispatch_executor`
     # -- esto es lo que responde con "el mercado aprendido por Vectrax" para
     # "Háblame de mercado"/"cómo está el mercado"/"precio de btc", etc.
+    # Desambiguación medida (2026-09-22): `detect_market_intent()` clasifica
+    # como `watchlist_review` frases que preguntan por las PROPUESTAS del
+    # propio sistema ("enséñame las propuestas que siguen sin revisar",
+    # "listado de ideas sin aprobar") — comprobado llamándolo directamente.
+    # Sin esta guarda, esas preguntas se respondían con precios de mercado en
+    # vivo. No se toca `market_intents` (su heurística sirve a su dominio):
+    # se cede el turno al override de evidencia interna SOLO cuando el texto
+    # trae un ancla léxica de observación propia. Las consultas de mercado
+    # reales ("cómo está el mercado", "precio de btc", "háblame de mercado",
+    # "muéstrame mi watchlist") no traen ninguna y siguen igual.
     if not _is_personal:
         try:
+            from core.nucleus import evidence_intent as _ev_intent
+            _defers_to_internal_evidence = _ev_intent.classify(text).detected
+        except Exception:
+            _defers_to_internal_evidence = False
+
+        try:
             from intents.market_intents import detect_market_intent
-            if detect_market_intent(text) is not None:
+            if not _defers_to_internal_evidence and detect_market_intent(text) is not None:
                 from core.operator.external_gateway import ExternalGateway
                 _market_answer = ExternalGateway._try_market_resolve(text, user_id=owner)
                 if _market_answer and not _market_answer.lower().startswith(("error", "error:")):
@@ -1031,6 +1047,85 @@ def _try_self_knowledge_override(
         logger.debug("domain criterion override failed: %s", exc)
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Override de evidencia interna — la observación propia de Vectrax
+# ---------------------------------------------------------------------------
+
+def _try_internal_evidence_override(
+    text: str, channel: str, owner: str, source: str, mem: MemoryEvidence,
+    owner_raw: str = "",
+) -> Optional[NucleusResponse]:
+    """Resuelve preguntas sobre la OBSERVACIÓN INTERNA de Vectrax consultando
+    las fuentes reales que el sistema ya produce.
+
+    Devuelve `None` si la pregunta no es sobre el estado interno — en ese caso
+    el Núcleo sigue su camino normal (convergencia, capacidades, herramientas).
+
+    Invariantes que esta función garantiza, y que
+    `tests/test_internal_evidence_nucleus.py` verifica:
+
+    * El texto de la respuesta lo produce `evidence_intent.build_answer()`,
+      que es determinista y solo usa campos del `EvidenceResult`. El LLM no
+      participa: no puede inventar un diagnóstico ni convertir `pending` en
+      resuelto.
+    * `final_action="LOCAL"` (valor ya existente del contrato) porque la
+      respuesta se resuelve con datos propios — nunca escala a herramienta
+      externa.
+    * La autorización sale de la identidad canónica ya resuelta en
+      `_decide()` (pasos 1/1a/1b), no del canal de transporte.
+    * Una consulta no autorizada devuelve igualmente un override (con el
+      texto de rechazo) para que ninguna otra capa pueda filtrar el dato.
+    """
+    try:
+        from core.nucleus import evidence_intent, internal_evidence as _ie
+        from core.nucleus.internal_evidence import EvidenceStatus
+    except Exception as exc:  # pragma: no cover - defensa de import
+        logger.debug("internal evidence unavailable: %s", exc)
+        return None
+
+    intent = evidence_intent.classify(text)
+    if not intent.detected:
+        return None
+
+    # Se resuelve por la FÁBRICA del módulo (no instanciando la clase aquí)
+    # para que una prueba pueda sustituir la FUENTE DE DATOS por una fixture
+    # aislada sin falsear el recorrido: identidad, clasificación de intención,
+    # autorización, redacción y adaptación de canal siguen ejecutándose de
+    # verdad. Es el único punto de inyección, y es deliberado.
+    evidence = _ie.get_internal_evidence(owner, owner_raw=owner_raw)
+    result = evidence_intent.fetch(intent, evidence)
+    answer = evidence_intent.build_answer(result)
+
+    authorized = result.status is not EvidenceStatus.UNAUTHORIZED
+    confidence = {
+        EvidenceStatus.OK: 0.95,
+        EvidenceStatus.STALE: 0.70,
+        EvidenceStatus.EMPTY: 0.60,
+        EvidenceStatus.UNAVAILABLE: 0.40,
+        EvidenceStatus.UNAUTHORIZED: 1.0,   # certeza total sobre el rechazo
+    }.get(result.status, 0.5)
+
+    return NucleusResponse(
+        final_action="LOCAL",
+        candidate_source="",
+        confidence=confidence,
+        reason=(
+            f"internal-evidence override: la pregunta apunta a la observación "
+            f"interna (familia={intent.family}, estado={result.status.value}). "
+            f"Respuesta construida desde la fuente real, sin LLM."
+        ),
+        memory_consulted=True,
+        memory_source="vectrax.db stars + core.nucleus.internal_evidence",
+        memory_evidence=mem.to_dict(),
+        capability_selected="internal_evidence",
+        tool_executed="core.nucleus.internal_evidence",
+        evidence=evidence_intent.describe_for_evidence_field(intent, result),
+        evidence_authorized=authorized,
+        answer=answer,
+        channel=channel, owner=owner, owner_raw=owner_raw, source=source,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1263,6 +1358,39 @@ class NucleusAuthority:
                 source=source,
             )
             return None, decided, record
+
+        # -- 3b. Evidencia interna (observación propia de Vectrax) ----------
+        # Reunificación del Núcleo con su observación interna (2026-09-22):
+        # hasta aquí el Núcleo sabía responder QUIÉN es, pero no QUÉ ha
+        # observado, diagnosticado, propuesto o ejecutado — esa evidencia
+        # existía (IdeaStore, audit_ledger, universe_census,
+        # universe_observer, domain_knowledge) y alimentaba el Dashboard,
+        # pero NINGUNA línea de este módulo la consultaba. Ese era el defecto
+        # real: no un problema de canal ni de routing, sino una fuente sin
+        # cablear.
+        #
+        # PRECEDENCIA (medida, no supuesta): va DESPUÉS del override de
+        # autoconocimiento, que conserva íntegra su prioridad. Esto importa:
+        # una primera versión lo puso antes y ensombreció la ruta
+        # `_DOMAINS_COUNT_RE` -> `domain_census` ("¿Cuántos dominios
+        # tienes?"), que ya respondía bien — lo detectó
+        # `test_incident_20260920_identity_and_capacity_regression.py
+        # ::test_domains_and_capabilities_keep_self_knowledge_routes`. La
+        # regla es reutilizar el contrato existente cuando ya es equivalente,
+        # no reemplazarlo: identidad, capacidades, gravedad, patrones
+        # aprendidos y censo de dominios siguen resolviéndose por sus rutas
+        # de siempre, y esta rama solo atiende lo que ninguna cubría.
+        #
+        # La ÚNICA excepción es el solape con `detect_market_intent()`, que
+        # se resuelve de forma quirúrgica dentro del propio override de
+        # mercado (ver `_try_self_knowledge_override`), no invirtiendo aquí
+        # el orden general.
+        evidence_override = _try_internal_evidence_override(
+            text, channel, canonical_owner, source, mem, owner_raw=owner_raw,
+        )
+        if evidence_override is not None:
+            evidence_override.owner_raw = owner_raw
+            return evidence_override, None, record
 
         # -- 4. Ciclo de convergencia total (motor subordinado) -------------
         if record is None:

@@ -28,6 +28,7 @@ Creador: Mario Bravo Castro
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -207,6 +208,111 @@ class Idea:
 # _get_convergence_level — lee Observer singleton
 # ---------------------------------------------------------------------------
 
+def _semantic_dedup_key(proposal: Dict[str, Any]) -> str:
+    """Identidad POR PATRÓN de una propuesta del router.
+
+    El `source_id` de `ingest_from_router_learning()` es
+    `router_{cycle_id}_{proposal_type}_{created_at}`: identifica la
+    OCURRENCIA, no el patrón. Cada ciclo de aprendizaje produce un valor
+    nuevo, así que dos propuestas que dicen exactamente lo mismo nunca se
+    reconocen como equivalentes. Causa demostrada de la acumulación de
+    `fallback_resolved` casi idénticos, todos `pending`.
+
+    Esta clave usa SOLO los campos que describen QUÉ patrón se observó, y
+    excluye deliberadamente los que cambian en cada ciclo sin cambiar el
+    significado (`cycle_id`, `created_at`, conteos, tasas y el texto
+    generado, que interpola esos conteos: "92 casos…" vs "160 casos…").
+
+    Devuelve "" si la propuesta no trae ningún discriminante estable — en
+    ese caso no se deduplica por patrón (fail-open: es preferible una
+    propuesta repetida a perder una distinta).
+
+    IMPORTANTE (auditoría 2026-09-22): los campos de primer nivel NO bastan.
+    Dos conflictos del clasificador genuinamente distintos comparten
+    `proposal_type` y `affected_component`, y sus discriminantes reales
+    viven DENTRO de `evidence`:
+
+        {"proposal_type": "conflict_pattern", "affected_component": "semantic_classifier",
+         "evidence": {"from_intent": "ASK_MEMORY",   "to_intent": "AI_SINGLE"}}
+        {"proposal_type": "conflict_pattern", "affected_component": "semantic_classifier",
+         "evidence": {"from_intent": "STORE_MEMORY", "to_intent": "ASK_MEMORY"}}
+
+    Con la versión anterior ambos producían `9ddbb13737a8172f`, así que
+    mientras uno siguiera pendiente el otro se descartaba en silencio: la
+    deduplicación ocultaba una propuesta DISTINTA. Por eso ahora se recorre
+    también `evidence`.
+
+    Criterio dentro de `evidence`: entran los valores que DESCRIBEN el
+    patrón (cadenas, booleanos y listas de cadenas — intents, rutas,
+    categorías); quedan fuera los numéricos, que son conteos, tasas y scores
+    que cambian en cada ciclo sin cambiar el significado, más una lista
+    explícita de claves volátiles (marcas de tiempo, identificadores de
+    ciclo). Si un numérico entrara, la deduplicación dejaría de funcionar y
+    volveríamos al defecto original.
+    """
+    parts: List[str] = []
+    _collect_dedup_parts(proposal, "", parts)
+
+    evidence = proposal.get("evidence")
+    if isinstance(evidence, dict):
+        _collect_dedup_parts(evidence, "evidence.", parts)
+
+    if not parts:
+        return ""
+    return hashlib.sha256("|".join(sorted(parts)).encode("utf-8")).hexdigest()[:16]
+
+
+# Claves que NUNCA discriminan un patrón: identificadores de ocurrencia,
+# marcas de tiempo, estado del ciclo de vida y el texto generado (que
+# interpola conteos: "92 casos..." vs "160 casos..."). Todo lo demás que sea
+# descriptivo entra. Es una regla por EXCLUSIÓN a propósito: una lista blanca
+# de campos obliga a enumerar cada tipo de propuesta y se queda corta en
+# cuanto aparece uno nuevo — así se escapó `weak_classification_method`, cuyo
+# discriminante real (`method`) vive en el primer nivel.
+_DEDUP_VOLATILE_KEYS = frozenset({
+    # identidad de la ocurrencia / tiempo
+    "cycle_id", "created_at", "updated_at", "timestamp", "observed_at",
+    "detected_at", "first_seen", "last_seen", "id", "uuid", "run_id",
+    "proposal_id", "idea_id",
+    # ciclo de vida (siempre "pending" al ingerir; la prioridad deriva de
+    # conteos, así que varía sin cambiar el patrón)
+    "status", "state", "priority", "severity",
+    # texto generado que interpola cifras
+    "suggestion", "suggested_action", "description", "title", "message",
+    "detail", "details", "summary", "text", "note",
+    # muestras concretas
+    "sample", "samples", "example", "examples",
+})
+
+
+def _collect_dedup_parts(source: Dict[str, Any], prefix: str, parts: List[str]) -> None:
+    """Extrae los discriminantes estables de `source` hacia `parts`.
+
+    Entra lo que DESCRIBE el patrón: cadenas, booleanos y listas de cadenas
+    (intents, rutas, métodos, categorías). Quedan fuera los numéricos, que en
+    estas propuestas son siempre conteos, tasas, gaps y scores — si entraran,
+    cada ciclo produciría una clave nueva y volveríamos al defecto original.
+    """
+    for key, value in source.items():
+        key_norm = str(key).strip().lower()
+        if key_norm.startswith("_") or key_norm in _DEDUP_VOLATILE_KEYS:
+            continue
+        if key_norm == "evidence":
+            continue  # se recorre aparte, con su propio prefijo
+        if isinstance(value, bool):
+            parts.append(f"{prefix}{key_norm}={str(value).lower()}")
+        elif isinstance(value, str) and value.strip():
+            parts.append(f"{prefix}{key_norm}={value.strip().lower()}")
+        elif isinstance(value, (list, tuple)) and value:
+            # Una lista de cadenas SÍ discrimina (p.ej. las rutas
+            # implicadas). Se ordena para que el orden de la fuente no
+            # genere claves distintas para el mismo patrón.
+            items = [str(v).strip().lower() for v in value if isinstance(v, str)]
+            if items:
+                parts.append(f"{prefix}{key_norm}={','.join(sorted(items))}")
+        # int / float se omiten a propósito.
+
+
 def _get_convergence_level() -> float:
     """
     Lee el nivel de convergencia actual desde PresenciaObserver.
@@ -309,18 +415,56 @@ class IdeaStore:
         affected_component: str,
         evidence: Optional[Dict[str, Any]] = None,
         source_id: str = "",
+        dedup_key: str = "",
     ) -> Optional[Idea]:
         """
         Añade una nueva idea al store.
-        Deduplica por (source, source_id) — no inserta si ya existe con ese source_id.
+
+        Deduplica en DOS ejes independientes:
+
+        * `source_id` — identidad por OCURRENCIA. Evita reprocesar dos veces
+          la misma línea de la fuente. Es el eje que ya existía.
+        * `dedup_key` — identidad por PATRÓN (ver `_semantic_dedup_key()`).
+          Evita acumular propuestas distintas que dicen LO MISMO. Solo
+          suprime cuando la propuesta equivalente sigue `PENDING`: si la
+          anterior ya fue revisada (aprobada/rechazada/aplicada), una nueva
+          aparición del patrón es información nueva y debe verse.
+
+        Por qué hacían falta los dos: el `source_id` de
+        `ingest_from_router_learning()` incorpora `cycle_id` y `created_at`,
+        así que cambia en CADA ciclo de aprendizaje aunque el patrón sea
+        idéntico. Esa es la causa demostrada de la acumulación de propuestas
+        casi iguales sobre `fallback_resolved` (92 → 160 casos entre el 4 y
+        el 21 de septiembre de 2026, todas `pending`). El eje por ocurrencia
+        funcionaba correctamente; lo que faltaba era el eje por patrón.
+
+        Nada de esto reescribe ni borra propuestas existentes: las anteriores
+        no llevan `dedup_key` y conservan intacto su significado histórico.
         """
-        # Deduplication por source_id
-        if source_id:
+        # Eje 1 — deduplicación por ocurrencia (source_id)
+        existing: Optional[Dict[str, Idea]] = None
+        if source_id or dedup_key:
             existing = self._read_all_latest()
+
+        if source_id and existing is not None:
             for idea in existing.values():
                 if idea.source == source and idea.source_id == source_id:
                     logger.debug("IdeaStore.add: skip duplicate source_id=%s", source_id)
                     return None
+
+        # Eje 2 — deduplicación por patrón semántico (dedup_key)
+        if dedup_key and existing is not None:
+            for idea in existing.values():
+                if (idea.source == source
+                        and idea.status == IdeaStatus.PENDING
+                        and (idea.evidence or {}).get("_dedup_key") == dedup_key):
+                    logger.debug(
+                        "IdeaStore.add: skip semantic duplicate dedup_key=%s "
+                        "(ya pendiente como %s)", dedup_key, idea.idea_id,
+                    )
+                    return None
+            evidence = dict(evidence or {})
+            evidence["_dedup_key"] = dedup_key
 
         idea_id = f"IDEA-{uuid.uuid4().hex[:8].upper()}"
         convergence_level = _get_convergence_level()
@@ -482,6 +626,7 @@ class IdeaStore:
                         affected_component=affected,
                         evidence=p.get("evidence", {}),
                         source_id=source_id,
+                        dedup_key=_semantic_dedup_key(p),
                     )
                     if idea:
                         added += 1
