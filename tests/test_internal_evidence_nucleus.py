@@ -373,10 +373,12 @@ def test_no_channel_holds_parallel_cognitive_logic(channel, path):
 
 def test_the_nucleus_is_the_only_caller_of_the_evidence_facade():
     """Invariante de autoridad única sobre el árbol real de producción."""
+    from core.nucleus.internal_evidence import _SCAN_EXCLUDED_DIRS
     callers = []
     for py in _ROOT.rglob("*.py"):
-        parts = py.parts
-        if any(p in parts for p in ("archive", "tests", ".git")):
+        # Mismo recorte que `approval_pipeline()`: sin él, en la máquina de
+        # desarrollo esto entra en `.venv/` y tarda decenas de segundos.
+        if set(py.parts) & _SCAN_EXCLUDED_DIRS:
             continue
         if py.parent.name == "nucleus" and py.parent.parent.name == "core":
             continue

@@ -88,6 +88,13 @@ _STALE_AFTER: Dict[str, float] = {
     "approval_pipeline": float("inf"),  # traza estructural del código, no caduca
 }
 
+# Directorios que nunca contienen un ejecutor de producción y que harían
+# lento (o falso) el escaneo estructural de `approval_pipeline()`.
+_SCAN_EXCLUDED_DIRS = frozenset({
+    ".venv", "venv", "env", ".git", "__pycache__", "node_modules",
+    "build", "dist", ".pytest_cache", "archive", "tests", "site-packages",
+})
+
 # Tipos que solo el owner canónico puede consultar. Un usuario común no debe
 # obtener diagnósticos internos, rutas, infraestructura ni propuestas.
 _OWNER_ONLY = frozenset({
@@ -729,10 +736,16 @@ class InternalEvidence:
             from core import idea_store as _idea_store
             module_path = Path(_idea_store.__file__).resolve()
             repo_root = module_path.parent.parent
+            # Se acota el recorrido a propósito: un `rglob("*.py")` sobre la
+            # raíz entra en `.venv/` (decenas de miles de archivos en la
+            # máquina de desarrollo) y convertiría una consulta conversacional
+            # en un escaneo de varios segundos. `archive/` y `tests/` se
+            # excluyen porque un llamador ahí no es un ejecutor de producción
+            # — que es justo lo que esta traza responde.
             callers: List[str] = []
             for py in repo_root.rglob("*.py"):
-                parts = py.parts
-                if "archive" in parts or "tests" in parts:
+                parts = set(py.parts)
+                if parts & _SCAN_EXCLUDED_DIRS:
                     continue
                 if py.resolve() == module_path:
                     continue
