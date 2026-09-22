@@ -21,6 +21,7 @@ Integration points:
 
 from __future__ import annotations
 
+import statistics
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -486,3 +487,29 @@ def get_risk_engine() -> RiskEngine:
 def assess(ctx: OperationContext) -> RiskAssessment:
     """Shortcut: assess an operation using the global engine."""
     return get_risk_engine().assess(ctx)
+
+
+def compute_confidence(assessment: RiskAssessment) -> float:
+    """
+    Confidence ∈ [0,1] measures how *certain* the engine is about its
+    risk_score.  High confidence = signals agree; low = conflicting signals.
+
+    Method: 1 − normalised standard-deviation of signal values.
+    When all signals are identical → std=0 → confidence=1.
+    Maximum spread (half at 0, half at 1) → std≈0.5 → confidence≈0.
+
+    Vivía en `core/shadow_mode.py`, que era un módulo de observación en sombra
+    que nada activaba. Esta función, en cambio, SIEMPRE estuvo viva:
+    `core/proposal_engine.py` la usa para calcular el `confidence_score` que
+    determina la zona de autonomía de cada propuesta. No tiene ninguna
+    relación semántica con observar en sombra —es estadística pura sobre las
+    señales de riesgo— y sus entradas (`RiskAssessment`, `_clamp`) viven aquí,
+    así que aquí es donde le corresponde estar. Mover el archivo entero sin
+    rescatarla habría roto la clasificación de propuestas.
+    """
+    values = [s.value for s in assessment.signals]
+    if len(values) < 2:
+        return 1.0
+    std = statistics.pstdev(values)  # population std
+    # Max possible pstdev for [0,1] values ≈ 0.5
+    return _clamp(1.0 - (std / 0.5))

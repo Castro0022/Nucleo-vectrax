@@ -34,7 +34,6 @@ DEFAULT_STATE = {
     # Risk engine baselines (EMA)
     "risk_baselines": {},
     # Shadow mode
-    "shadow_mode": {},
     "meta": {},
     # Architecture C: operational mode preference
     "operational_mode": "HOME_AUTO",
