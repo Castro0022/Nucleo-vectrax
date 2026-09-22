@@ -1020,7 +1020,7 @@ class InternalEvidence:
         anterior los encadenaba como si fueran cuatro pasos de una misma
         secuencia):
 
-          - `ideas`     -> POST /v1/ideas/{id}/approve  (permiso core.write)
+          - `ideas`     -> POST /v1/ideas/{id}/approve  (permiso apply_proposal)
                            IdeaStore.approve() -> data/ideas.jsonl
           - `proposals` -> POST /v1/proposals/{id}/approve (permiso apply_proposal)
                            db.update_proposal_status() -> vectrax.db
@@ -1124,8 +1124,15 @@ class InternalEvidence:
                   "services/core/routes/ideas.py + proposals.py"),
 
             # -- Circuito 1: ideas (las IDEA-... del Dashboard) -------------
+            # El permiso citado es el que exige HOY la ruta. Es un literal, no
+            # se deriva del archivo: si `services/core/routes/ideas.py` cambia
+            # de permiso, hay que cambiarlo aquí. Esa sincronía la exige
+            # `tests/test_approval_pipeline_permissions.py`, que compara este
+            # texto contra el literal real de la ruta leído por AST — la traza
+            # se quedó afirmando `core.write` justo después de que la ruta
+            # pasara a `apply_proposal`.
             _item("ideas/1.endpoint", "present",
-                  "POST /v1/ideas/{id}/approve (permiso core.write)",
+                  "POST /v1/ideas/{id}/approve (permiso apply_proposal)",
                   "services/core/routes/ideas.py"),
             _item("ideas/2.persistencia", "present",
                   "IdeaStore.approve() -> status=approved en data/ideas.jsonl",
