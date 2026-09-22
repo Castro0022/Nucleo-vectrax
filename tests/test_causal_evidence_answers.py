@@ -251,6 +251,17 @@ class TestApplicationAnswer:
         item = InternalEvidence(OWNER).causal_applications(learned.learning_id).items[0]
         assert "todavía sin resultado registrado" in item.summary
 
+    def test_a_domain_without_an_executor_says_so(self, learned):
+        """No es "todavía nada": es que nadie puede aplicarlo."""
+        result = InternalEvidence(OWNER).causal_applications(domain="cybersecurity")
+        assert result.status is EvidenceStatus.EMPTY
+        assert "NO_OPERATIONAL_CONSUMER" in result.detail
+        assert "ningún ejecutor consume su criterio" in result.detail
+
+    def test_market_does_have_an_executor(self, learned):
+        result = InternalEvidence(OWNER).causal_applications(domain="market")
+        assert "NO_OPERATIONAL_CONSUMER" not in (result.detail or "")
+
     def test_nothing_applied_says_so(self, learned):
         result = InternalEvidence(OWNER).causal_applications(learned.learning_id)
         assert result.status is EvidenceStatus.EMPTY

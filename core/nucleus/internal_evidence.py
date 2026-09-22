@@ -1208,15 +1208,34 @@ class InternalEvidence:
         return _finalize("criterion_change", src, items)
 
     def causal_applications(
-        self, learning_id: str = "", limit: int = 10,
+        self, learning_id: str = "", domain: str = "", limit: int = 10,
     ) -> EvidenceResult:
-        """"Este criterio influyó aquí; se aplicó o me abstuve; el resultado fue"."""
+        """"Este criterio influyó aquí; se aplicó o me abstuve; el resultado fue".
+
+        Con `domain`, un dominio SIN ejecutor se dice tal cual en vez de
+        responder "todavía nada": no es que aún no haya pasado, es que no hay
+        nadie que pueda aplicarlo. Fabricar aplicaciones para esos dominios
+        llenaría la traza de acontecimientos que nunca ocurrieron.
+        """
         guard = self._guard("causal_application")
         if guard:
             return guard
         src = "core.learn.causal_learning.get_applications"
         try:
-            from core.learn.causal_learning import get_applications
+            from core.learn.causal_learning import (
+                NO_OPERATIONAL_CONSUMER, get_applications, operational_consumer,
+            )
+            if domain and operational_consumer(domain) == NO_OPERATIONAL_CONSUMER:
+                return EvidenceResult(
+                    kind="causal_application", status=EvidenceStatus.EMPTY,
+                    source=f"core.learn.causal_learning.operational_consumer({domain!r})",
+                    detail=(
+                        f"el dominio '{domain}' no tiene ningún consumidor "
+                        f"operativo ({NO_OPERATIONAL_CONSUMER}): observa, "
+                        f"converge y aprende, pero ningún ejecutor consume su "
+                        f"criterio todavía"
+                    ),
+                )
             rows = get_applications(learning_id=learning_id or None, limit=limit)
         except Exception as exc:
             return _unavailable("causal_application", src, exc)
