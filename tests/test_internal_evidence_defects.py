@@ -13,6 +13,10 @@ sobre `core/nucleus/internal_evidence.py`:
      `audit_weekly_*` ganaba a cualquier `audit_daily_*`, por vieja que fuera
      la semanal: "el último diagnóstico" podía tener días.
 
+  3. `recent_audit()` descartaba `metadata` entero e ignoraba el
+     `action_filter` que `core/audit_ledger.py::query()` sí soporta, así que
+     el resumen de los ciclos de dominio nunca llegaba al Núcleo.
+
 AISLAMIENTO: todo con `tmp_path` y dobles inyectados. Ninguna prueba toca
 `vault/`, `audit_ledger.db` ni la librería de dominio real.
 """
@@ -253,3 +257,232 @@ class TestDiagnosticOrdering:
         res = self._evidence(reports).latest_diagnostic()
         assert res.items[0].data["mode"] == "weekly"
         assert res.items[0].scope == "weekly"
+
+
+# ===========================================================================
+# DEFECTO 3 — auditoría: filtro por acción y detalles seguros
+# ===========================================================================
+
+def _row(idx: int, action: str, *, metadata=None, actor="operator",
+         decision="approved", reason="", ts=None):
+    import datetime as dt
+    if ts is None:
+        ts = dt.datetime.now(dt.timezone.utc).isoformat()
+    return {
+        "id": idx,
+        "timestamp": ts,
+        "actor": actor,
+        "role": "owner",
+        "action": action,
+        "diff_hash": "",
+        "decision": decision,
+        "reason": reason,
+        # La columna real de SQLite es TEXT: `query()` devuelve una cadena.
+        "metadata": json.dumps(metadata) if metadata is not None else "{}",
+    }
+
+
+class _FakeLedger:
+    """Doble de `core.audit_ledger` con la MISMA firma de `query()`."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    def query(self, limit=100, action_filter=None):
+        self.calls.append({"limit": limit, "action_filter": action_filter})
+        rows = self.rows
+        if action_filter:
+            rows = [r for r in rows if r["action"] == action_filter]
+        return rows[:limit]
+
+
+@pytest.fixture
+def fake_ledger(monkeypatch):
+    """Inyecta el doble donde `recent_audit()` hace su import diferido."""
+    import core.audit_ledger as real
+
+    def _install(rows):
+        fake = _FakeLedger(rows)
+        monkeypatch.setattr(real, "query", fake.query)
+        return fake
+
+    return _install
+
+
+class TestAuditActionFilter:
+
+    def test_filter_returns_only_the_requested_action(self, fake_ledger):
+        fake = fake_ledger([
+            _row(1, "freight_learning_cycle"),
+            _row(2, "cyber_learning_cycle"),
+            _row(3, "freight_learning_cycle"),
+        ])
+        res = InternalEvidence(OWNER).recent_audit(action="freight_learning_cycle")
+        assert {i.summary for i in res.items} == {"freight_learning_cycle"}
+        assert len(res.items) == 2
+        assert fake.calls[-1]["action_filter"] == "freight_learning_cycle"
+        assert "freight_learning_cycle" in res.source
+
+    def test_without_filter_behaviour_is_unchanged(self, fake_ledger):
+        fake = fake_ledger([_row(1, "a"), _row(2, "b")])
+        res = InternalEvidence(OWNER).recent_audit()
+        assert len(res.items) == 2
+        assert fake.calls[-1]["action_filter"] is None
+        assert res.items[0].scope == "operator"        # actor
+        assert res.items[0].status == "approved"       # decision
+        assert res.items[0].reference == "audit:1"
+
+    def test_unknown_action_is_an_honest_empty(self, fake_ledger):
+        fake_ledger([_row(1, "freight_learning_cycle")])
+        res = InternalEvidence(OWNER).recent_audit(action="no_existe")
+        assert res.status is EvidenceStatus.EMPTY
+        assert "no_existe" in res.detail
+
+
+class TestAuditSafeDetails:
+
+    def test_known_structured_details_reach_the_result(self, fake_ledger):
+        fake_ledger([_row(1, "freight_learning_cycle", metadata={
+            "category": "operator.memory",
+            "risk_zone": "green",
+            "details": {
+                "success": True,
+                "provider": "simulator",
+                "events_ingested": 200,
+                "verified_decisive": 12,
+                "verified_win_rate": 58.3,
+            },
+        })])
+        item = InternalEvidence(OWNER).recent_audit().items[0]
+        d = item.data["details"]
+        assert d["success"] is True
+        assert d["provider"] == "simulator"
+        assert d["events_ingested"] == 200
+        assert d["verified_decisive"] == 12
+        assert d["verified_win_rate"] == 58.3
+        # Dominio derivado del emisor, y alcance derivado del proveedor.
+        assert item.data["domain"] == "freight_logistics"
+        assert item.data["data_scope"] == "simulated"
+        # Campos base intactos.
+        assert item.data["role"] == "owner"
+        assert item.observed_at > 0
+
+    def test_real_provider_is_scoped_as_real(self, fake_ledger):
+        fake_ledger([_row(1, "cyber_learning_cycle", metadata={
+            "details": {"provider": "nvd", "events": 500, "wins": 3},
+        })])
+        item = InternalEvidence(OWNER).recent_audit().items[0]
+        assert item.data["data_scope"] == "real"
+        assert item.data["domain"] == "cybersecurity"
+
+    def test_unknown_provider_is_not_guessed(self, fake_ledger):
+        fake_ledger([_row(1, "cyber_learning_cycle", metadata={
+            "details": {"provider": "otracosa", "events": 1},
+        })])
+        item = InternalEvidence(OWNER).recent_audit().items[0]
+        assert "data_scope" not in item.data
+        assert item.data["details"]["provider"] == "otracosa"
+
+    def test_unknown_action_exposes_no_details(self, fake_ledger):
+        fake_ledger([_row(1, "accion_desconocida", metadata={
+            "details": {"secreto": "valor", "events_ingested": 5},
+        })])
+        item = InternalEvidence(OWNER).recent_audit().items[0]
+        assert "details" not in item.data
+        assert "domain" not in item.data
+
+    def test_unallowlisted_keys_are_dropped(self, fake_ledger):
+        fake_ledger([_row(1, "freight_learning_cycle", metadata={
+            "details": {
+                "events_ingested": 10,
+                "tenant_id": "tenant-abc123",
+                "api_key": "sk-secreto",
+                "path": "/Users/alguien/.env",
+            },
+        })])
+        d = InternalEvidence(OWNER).recent_audit().items[0].data["details"]
+        assert d == {"events_ingested": 10}
+
+    def test_full_metadata_object_is_never_exposed(self, fake_ledger):
+        fake_ledger([_row(1, "freight_learning_cycle", metadata={
+            "category": "operator.memory",
+            "risk_zone": "green",
+            "operator_timestamp": "2026-09-22T00:00:00+00:00",
+            "details": {"events_ingested": 3},
+        })])
+        data = InternalEvidence(OWNER).recent_audit().items[0].data
+        assert "metadata" not in data
+        assert "category" not in data
+        assert "risk_zone" not in data
+        assert "operator_timestamp" not in data
+
+    def test_free_text_is_rejected(self, fake_ledger):
+        """`detail` de los ciclos es `str(exc)[:200]`: puede traer rutas."""
+        fake_ledger([_row(1, "freight_learning_cycle", metadata={
+            "details": {
+                "success": False,
+                "detail": "FileNotFoundError: /Users/mariobravo/.vectrax/x.json",
+            },
+        })])
+        d = InternalEvidence(OWNER).recent_audit().items[0].data["details"]
+        assert d == {"success": False}
+        assert "detail" not in d
+
+    def test_oversized_string_is_rejected(self, fake_ledger):
+        fake_ledger([_row(1, "freight_learning_cycle", metadata={
+            "details": {"provider": "x" * 500, "events_ingested": 1},
+        })])
+        d = InternalEvidence(OWNER).recent_audit().items[0].data["details"]
+        assert "provider" not in d
+        assert d["events_ingested"] == 1
+
+    def test_nested_structures_are_dropped(self, fake_ledger):
+        fake_ledger([_row(1, "freight_learning_cycle", metadata={
+            "details": {
+                "events_ingested": 2,
+                "errors": {"anidado": {"mas": "hondo"}},
+            },
+        })])
+        d = InternalEvidence(OWNER).recent_audit().items[0].data["details"]
+        assert d == {"events_ingested": 2}
+
+    def test_long_lists_are_truncated(self, fake_ledger):
+        fake_ledger([_row(1, "trading_convergence_learner", metadata={
+            "details": {"drift_kinds": [f"k{i}" for i in range(50)]},
+        })])
+        d = InternalEvidence(OWNER).recent_audit().items[0].data["details"]
+        assert len(d["drift_kinds"]) == 8
+
+    def test_missing_metadata_is_backward_compatible(self, fake_ledger):
+        fake_ledger([_row(1, "freight_learning_cycle", metadata=None)])
+        item = InternalEvidence(OWNER).recent_audit().items[0]
+        assert "details" not in item.data
+        assert item.data["role"] == "owner"
+        assert item.summary == "freight_learning_cycle"
+
+    def test_unparseable_metadata_does_not_break(self, fake_ledger):
+        rows = [_row(1, "freight_learning_cycle")]
+        rows[0]["metadata"] = "{esto no es json"
+        fake_ledger(rows)
+        item = InternalEvidence(OWNER).recent_audit().items[0]
+        assert "details" not in item.data
+        assert item.summary == "freight_learning_cycle"
+
+
+class TestAuditAuthorization:
+
+    def test_stranger_gets_neither_counts_nor_details(self, fake_ledger):
+        fake_ledger([_row(1, "freight_learning_cycle", metadata={
+            "details": {"events_ingested": 999},
+        })])
+        res = InternalEvidence(STRANGER).recent_audit()
+        assert res.status is EvidenceStatus.UNAUTHORIZED
+        assert res.items == []
+        assert "999" not in json.dumps(res.to_dict())
+
+    def test_stranger_cannot_bypass_with_a_filter(self, fake_ledger):
+        fake_ledger([_row(1, "freight_learning_cycle")])
+        res = InternalEvidence(STRANGER).recent_audit(action="freight_learning_cycle")
+        assert res.status is EvidenceStatus.UNAUTHORIZED
+        assert res.items == []

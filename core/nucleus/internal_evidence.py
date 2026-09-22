@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -108,6 +109,125 @@ _OWNER_ONLY = frozenset({
 # inventarse un nombre de clave: leer `total_patterns` —que la fuente nunca
 # produjo— hacía que el Núcleo reportara 0 patrones siempre.
 _DOMAIN_PATTERN_COUNT_KEY = "patterns"
+
+
+# ---------------------------------------------------------------------------
+# Auditoría: exposición SEGURA de `metadata.details`
+# ---------------------------------------------------------------------------
+# `core/audit_ledger.py` guarda un `metadata` JSON libre y
+# `core/operator/ledger_bridge.py::record_event()` mete ahí el `details` que le
+# pase cada llamador. `recent_audit()` lo descartaba entero, así que el resumen
+# real de los ciclos de dominio (cuántos eventos, cuántos verificados, con qué
+# proveedor) no llegaba nunca al Núcleo.
+#
+# No se expone el objeto completo: solo las acciones de forma CONOCIDA, y de
+# ellas solo las claves de esta lista permitida. Todo lo demás se descarta.
+
+_AUDIT_CYCLE_FIELDS = frozenset({
+    "success", "provider", "events_requested", "events_ingested", "errors",
+    "stars_before", "stars_after", "mature_stars", "patterns_elevated",
+    "elapsed_s", "verified_decisive", "verified_wins", "verified_losses",
+    "verified_win_rate", "verified_accuracy",
+})
+
+_AUDIT_DETAIL_ALLOWLIST: Dict[str, frozenset] = {
+    "freight_learning_cycle": _AUDIT_CYCLE_FIELDS,
+    "real_estate_learning_cycle": _AUDIT_CYCLE_FIELDS,
+    "cyber_learning_cycle": frozenset({
+        "success", "provider", "events", "verified_decisive",
+        "wins", "losses", "elapsed_s",
+    }),
+    "gravity_sync": frozenset({
+        "patterns_promoted", "stars_mass_updated", "errors", "elapsed_s",
+    }),
+    "trading_convergence_learner": frozenset({
+        "proposals_generated", "drift_kinds", "observed_wr_pct",
+    }),
+}
+
+# Dominio de cada ciclo, derivado del MÓDULO que emite la acción
+# (`connectors/*/learning_cycle.py::_record_ledger`), no del contenido del
+# registro: el contenido es dato, el emisor es código.
+_AUDIT_ACTION_DOMAIN: Dict[str, str] = {
+    "freight_learning_cycle": "freight_logistics",
+    "real_estate_learning_cycle": "florida_real_estate",
+    "cyber_learning_cycle": "cybersecurity",
+    "trading_convergence_learner": "market",
+}
+
+# Alcance por nombre de proveedor. `simulator` es el nombre que devuelven los
+# tres `simulator_adapter.py`; `nvd`/`rentcast`/`attom` son los proveedores
+# reales. Un proveedor desconocido NO se clasifica: se omite el alcance en vez
+# de adivinarlo.
+_AUDIT_SCOPE_BY_PROVIDER: Dict[str, str] = {
+    "simulator": "simulated",
+    "nvd": "real",
+    "rentcast": "real",
+    "attom": "real",
+    "real": "real",
+}
+
+_AUDIT_DETAIL_MAX_KEYS = 20      # profundidad 1, ancho acotado
+_AUDIT_DETAIL_MAX_LIST = 8
+_AUDIT_DETAIL_MAX_STR = 40
+
+# Un valor de cadena solo pasa si parece un identificador/enumerado corto.
+# Rechaza por construcción texto libre, rutas, mensajes de excepción y
+# cualquier cosa con espacios — que es donde aparecen rutas y credenciales.
+_AUDIT_SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.:+-]{1,%d}$" % _AUDIT_DETAIL_MAX_STR)
+
+
+def _audit_safe_scalar(value: Any) -> Any:
+    """Escalar seguro, o `None` si hay que descartarlo."""
+    if isinstance(value, bool):          # antes que int: bool es subclase de int
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return round(value, 6)
+    if isinstance(value, str):
+        return value if _AUDIT_SAFE_TOKEN_RE.match(value) else None
+    return None
+
+
+def _audit_safe_details(action: str, raw: Any) -> Dict[str, Any]:
+    """Proyección segura de `metadata.details` para una acción conocida.
+
+    Profundidad 1: un dict o una lista de dicts anidados se descarta entera.
+    """
+    allowed = _AUDIT_DETAIL_ALLOWLIST.get(action)
+    if not allowed or not isinstance(raw, dict):
+        return {}
+    safe: Dict[str, Any] = {}
+    for key in sorted(raw):
+        if len(safe) >= _AUDIT_DETAIL_MAX_KEYS:
+            break
+        if key not in allowed:
+            continue
+        value = raw[key]
+        if isinstance(value, (list, tuple)):
+            items = [_audit_safe_scalar(v) for v in list(value)[:_AUDIT_DETAIL_MAX_LIST]]
+            items = [v for v in items if v is not None]
+            if items:
+                safe[key] = items
+            continue
+        scalar = _audit_safe_scalar(value)
+        if scalar is not None:
+            safe[key] = scalar
+    return safe
+
+
+def _audit_metadata(raw: Any) -> Dict[str, Any]:
+    """`metadata` viene como TEXTO JSON desde la columna de SQLite."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -541,32 +661,76 @@ class InternalEvidence:
 
     # -- auditoría -------------------------------------------------------
 
-    def recent_audit(self, limit: int = 10) -> EvidenceResult:
-        """Entradas recientes del `audit_ledger` (append-only, solo lectura)."""
+    def recent_audit(
+        self, limit: int = 10, action: Optional[str] = None,
+    ) -> EvidenceResult:
+        """Entradas recientes del `audit_ledger` (append-only, solo lectura).
+
+        `action` filtra por acción exacta reutilizando el `action_filter` que
+        `core/audit_ledger.py::query()` YA soporta y que esta fachada ignoraba.
+        Sin `action`, el comportamiento es el de siempre.
+
+        De `metadata` NO se expone el objeto completo: solo se proyecta
+        `metadata.details` para las acciones de forma conocida
+        (`_AUDIT_DETAIL_ALLOWLIST`) y solo las claves permitidas, con límites de
+        ancho, longitud y profundidad. El texto libre se descarta por
+        construcción — ahí es donde aparecerían rutas o credenciales.
+
+        La autorización no cambia: sigue siendo `_guard("audit")`, owner-only.
+        Un usuario no autorizado no recibe items, ni conteos, ni detalles.
+        """
         blocked = self._guard("audit")
         if blocked:
             return blocked
+        wanted = (action or "").strip()
         src = "core.audit_ledger.query() (audit_ledger.db)"
+        if wanted:
+            src = f"{src} action={wanted!r}"
         try:
             from core import audit_ledger
-            rows = audit_ledger.query(limit=max(1, limit))
+            rows = audit_ledger.query(
+                limit=max(1, limit), action_filter=wanted or None,
+            )
         except Exception as exc:
             return _unavailable("audit", src, exc)
-        items = [
-            EvidenceItem(
+
+        items: List[EvidenceItem] = []
+        for row in rows:
+            row_action = str(row.get("action") or "")
+            metadata = _audit_metadata(row.get("metadata"))
+            details = _audit_safe_details(row_action, metadata.get("details"))
+
+            data: Dict[str, Any] = {
+                "role": row.get("role"),
+                "reason": row.get("reason"),
+            }
+            domain = _AUDIT_ACTION_DOMAIN.get(row_action)
+            if domain:
+                data["domain"] = domain
+            provider = details.get("provider")
+            if isinstance(provider, str):
+                scope = _AUDIT_SCOPE_BY_PROVIDER.get(provider.lower())
+                if scope:
+                    data["data_scope"] = scope
+            if details:
+                data["details"] = details
+
+            items.append(EvidenceItem(
                 kind="audit",
                 source=src,
                 observed_at=_parse_iso(row.get("timestamp")),
                 scope=str(row.get("actor") or ""),
                 status=str(row.get("decision") or ""),
-                summary=str(row.get("action") or ""),
+                summary=row_action,
                 reference=f"audit:{row.get('id')}",
                 visibility="owner",
-                data={"role": row.get("role"), "reason": row.get("reason")},
-            )
-            for row in rows
-        ]
-        return _finalize("audit", src, items)
+                data=data,
+            ))
+
+        result = _finalize("audit", src, items)
+        if not items and wanted:
+            result.detail = f"sin entradas de auditoría para la acción {wanted!r}"
+        return result
 
     # -- motores y servicios ---------------------------------------------
 
