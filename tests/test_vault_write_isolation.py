@@ -10,12 +10,14 @@ contador `applications` de una regla real.
 
 CAUSA
 -----
-`LearnedRulesStore.__init__` tenía `path: str = RULES_PATH` como argumento por
-defecto. Python evalúa los valores por defecto UNA vez, al importar el módulo,
-así que la ruta quedaba congelada antes de que cualquier fixture pudiera
-redirigirla con `monkeypatch.setenv("VECTRAX_VAULT_DIR", ...)`. El singleton de
-`get_rules_store()` heredaba esa ruta y toda escritura caía en el archivo
-rastreado.
+`tests/conftest.py::_hermetic_base` (autouse) YA redirigía `VECTRAX_VAULT_DIR`
+a un vault temporal en cada prueba. El problema es que este módulo no lo
+honraba: `LearnedRulesStore.__init__` tenía `path: str = RULES_PATH` como
+argumento por defecto, y Python evalúa los valores por defecto UNA vez, al
+importar el módulo, desde `core.learn.VAULT_DIR` (= raíz del proyecto). La ruta
+quedaba congelada y el aislamiento del conftest no tenía ningún efecto sobre
+ella — la misma clase de fallo que el propio conftest ya compensaba caso a caso
+para `observation_ledger` y `user_memory` con `monkeypatch.setattr`.
 
 CORRECCIÓN
 ----------
@@ -29,7 +31,6 @@ Estas pruebas NO modifican, restauran ni limpian el vault: solo leen su hash.
 from __future__ import annotations
 
 import hashlib
-import subprocess
 import sys
 from pathlib import Path
 
@@ -199,27 +200,64 @@ class TestTrackedVaultIsNeverWritten:
             "Debería haber escrito en el vault redirigido."
         )
 
-    @pytest.mark.integration
-    def test_previously_contaminating_module_no_longer_touches_the_vault(self):
-        """Ejecuta en subproceso el módulo que contaminaba y compara el hash.
+    def test_the_contaminating_test_body_is_now_isolated(self, tmp_path, monkeypatch):
+        """Ejecuta EN PROCESO el cuerpo del test que contaminaba, con su mismo
+        aislamiento, y comprueba que el archivo rastreado no se mueve.
 
-        Es el guard literal: "ejecutar las pruebas de aprendizaje no modifica el
-        archivo rastreado del vault".
+        Deliberadamente NO se lanza un pytest anidado en subproceso: el proyecto
+        depende de `sentence-transformers` (y por tanto de torch), así que un
+        proceso hijo vuelve a pagar la importación del stack de embeddings
+        dentro del propio quality gate — coste alto e impredecible en CI para
+        una propiedad que se puede demostrar aquí mismo.
+
+        La verificación de extremo a extremo ("la suite COMPLETA no toca el
+        vault") se hace por MEDICIÓN, no dentro de la suite:
+
+            git worktree add /tmp/base <SHA_BASE>
+            (cd /tmp/base && python -m pytest tests -q; git status --short vault/)
+            (cd .       && python -m pytest tests -q; git status --short vault/)
+
+        Sobre 5f7a5d7 la primera imprime `M vault/learned_rules.jsonl` y la
+        segunda no imprime nada.
         """
         before = _sha256(_TRACKED_RULES)
         if before is None:
             pytest.skip("vault/learned_rules.jsonl no está presente en este árbol")
 
-        target = _ROOT / "tests" / "integration" / "test_presencia_pura.py"
-        if not target.is_file():
-            pytest.skip("el módulo de referencia no existe en este árbol")
-
-        proc = subprocess.run(
-            [sys.executable, "-m", "pytest", str(target), "-q", "-p", "no:cacheprovider"],
-            cwd=str(_ROOT), capture_output=True, text=True, timeout=600,
+        # La ruta de PRODUCCIÓN es el archivo rastreado: eso es lo que el store
+        # usaba siempre, ignorando el aislamiento que `conftest._hermetic_base`
+        # ya aplicaba. Ahora el aislamiento se honra y el store resuelve fuera.
+        assert RULES_PATH == str(_TRACKED_RULES)
+        assert LearnedRulesStore().path != RULES_PATH, (
+            "conftest._hermetic_base debería tener el vault redirigido a tmp"
         )
-        assert proc.returncode == 0, f"la suite de referencia falló:\n{proc.stdout[-2000:]}"
+
+        monkeypatch.setenv("VECTRAX_VAULT_DIR", str(tmp_path / "vault"))
+        import core.state_manager as sm
+        monkeypatch.setattr(sm, "STATE_PATH", str(tmp_path / "cognition_state.json"))
+        monkeypatch.setattr(sm, "RUNTIME_DIR", str(tmp_path))
+        reset_rules_store()
+
+        from core.nucleus.presencia_pura import activate, deactivate
+        from core.convergence_hook import run_convergence_cycle
+
+        activate()
+        try:
+            record = run_convergence_cycle(
+                "mensaje procesado en presencia pura", source="test", owner="test_user",
+            )
+            assert record is not None
+            assert "memory" in record.phases_completed
+            assert "gravitation" in record.phases_completed
+        finally:
+            deactivate()
+            try:
+                from core.nucleus import total_convergence
+                total_convergence.reset_convergence_engine()
+            except Exception:
+                pass
+
         assert _sha256(_TRACKED_RULES) == before, (
-            "Ejecutar tests/integration/test_presencia_pura.py modificó "
-            "vault/learned_rules.jsonl. El aislamiento del almacén ha vuelto a romperse."
+            "El cuerpo de tests/integration/test_presencia_pura.py volvió a "
+            "escribir en vault/learned_rules.jsonl."
         )
