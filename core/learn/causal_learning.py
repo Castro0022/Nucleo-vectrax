@@ -237,8 +237,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_application_outcome
 def connect(db_path: Optional[str] = None) -> sqlite3.Connection:
     """Abre el almacén y crea el esquema (idempotente).
 
-    Crea el directorio SOLO aquí, es decir solo cuando alguien va a usar la
-    base de verdad. Importar este módulo o calcular una ruta no toca disco.
+    Crea el directorio y el esquema. Es la ruta de ESCRITURA: los lectores
+    pasan por `_open_for_read()`, que devuelve `None` si el almacén todavía no
+    existe en lugar de crearlo. Importar este módulo o calcular una ruta no
+    toca disco.
     """
     path = db_path or default_db_path()
     directory = os.path.dirname(path)
@@ -252,6 +254,24 @@ def connect(db_path: Optional[str] = None) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=10000")
     conn.executescript(_SCHEMA)
     return conn
+
+
+def _open_for_read(db_path: Optional[str] = None) -> Optional[sqlite3.Connection]:
+    """Conexión para LEER. Devuelve `None` si el almacén todavía no existe.
+
+    Un lector nunca crea el almacén. Importa porque `criterion.py` consulta
+    aprendizajes en CADA pregunta de criterio: si leer creara el archivo, una
+    simple consulta sembraría `causal_learning.db` en el vault (o en el
+    directorio que apuntara `VECTRAX_VAULT_DIR` en ese momento) como efecto
+    secundario. El almacén lo crea quien escribe, que es el ciclo vivo.
+
+    Si el archivo YA existe se pasa por `connect()`, que garantiza el esquema:
+    un almacén de una versión anterior no puede hacer fallar una lectura.
+    """
+    path = db_path or default_db_path()
+    if not os.path.exists(path):
+        return None
+    return connect(path)
 
 
 # ---------------------------------------------------------------------------
@@ -655,7 +675,9 @@ def get_policy(domain: str, db_path: Optional[str] = None) -> Optional[LearningP
     todavía no declara bajo qué condiciones converger implica aprender, y la
     evaluación terminará en `AWAITING_POLICY`.
     """
-    conn = connect(db_path)
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return None
     try:
         row = conn.execute(
             "SELECT * FROM learning_policies WHERE domain=? "
@@ -681,7 +703,9 @@ def get_policy(domain: str, db_path: Optional[str] = None) -> Optional[LearningP
 
 
 def list_policies(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
-    conn = connect(db_path)
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return []
     try:
         rows = [dict(r) for r in conn.execute(
             "SELECT * FROM learning_policies ORDER BY domain, policy_version DESC"
@@ -1348,7 +1372,9 @@ def outcome_balance(
     learning_id: str, db_path: Optional[str] = None,
 ) -> Dict[str, int]:
     """Refuerzos y contradicciones acumulados de un aprendizaje."""
-    conn = connect(db_path)
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return {"reinforcing": 0, "contradicting": 0, "other": 0}
     try:
         rows = conn.execute(
             "SELECT outcome_status, COUNT(*) AS c FROM learning_applications "
@@ -1376,7 +1402,9 @@ def outcome_balance(
 # ---------------------------------------------------------------------------
 
 def get_learning(learning_id: str, db_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    conn = connect(db_path)
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return None
     try:
         row = conn.execute(
             "SELECT * FROM learning_traces WHERE learning_id=?", (learning_id,),
@@ -1404,7 +1432,9 @@ def list_learnings(
         sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY updated_at DESC LIMIT ?"
     params.append(int(limit))
-    conn = connect(db_path)
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return []
     try:
         return [_learning_to_dict(r) for r in conn.execute(sql, params).fetchall()]
     finally:
@@ -1443,7 +1473,9 @@ def get_decisions(
         sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY evaluated_at DESC LIMIT ?"
     params.append(int(limit))
-    conn = connect(db_path)
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return []
     try:
         rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     finally:
@@ -1468,7 +1500,9 @@ def get_applications(
         params.append(learning_id)
     sql += " ORDER BY applied_at DESC LIMIT ?"
     params.append(int(limit))
-    conn = connect(db_path)
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return []
     try:
         rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     finally:
@@ -1481,7 +1515,9 @@ def get_applications(
 def get_state_events(
     learning_id: str, limit: int = 50, db_path: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    conn = connect(db_path)
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return []
     try:
         return [dict(r) for r in conn.execute(
             "SELECT * FROM learning_state_events WHERE learning_id=? "
@@ -1502,7 +1538,9 @@ def count_revisions(
     `domain` agrega todos los dominios participantes; con él responde por el
     criterio de ese dominio, que es la unidad que usa el gate.
     """
-    conn = connect(db_path)
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return 0
     try:
         return _distinct_revisions(conn, convergence_id, domain)
     finally:

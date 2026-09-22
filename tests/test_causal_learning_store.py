@@ -788,7 +788,26 @@ class TestReadersDoNotWrite:
         cl.get_policy("market", db_path=db)
         assert _checkpoint() == before
 
+    def test_a_read_never_creates_the_store(self, db):
+        """Leer no puede sembrar un archivo en el vault.
+
+        `criterion.rank_domain_evidence()` consulta aprendizajes en CADA
+        pregunta de criterio. Si leer creara el almacén, una simple consulta
+        tendría como efecto secundario crear `causal_learning.db` allí donde
+        apuntase `VECTRAX_VAULT_DIR` en ese instante.
+        """
+        assert cl.list_learnings(db_path=db) == []
+        assert cl.consumable_learnings("market", db_path=db) == []
+        assert cl.get_policy("market", db_path=db) is None
+        assert cl.count_revisions("CONV-1", db_path=db) == 0
+        assert cl.outcome_balance("LRN-1", db_path=db) == {
+            "reinforcing": 0, "contradicting": 0, "other": 0,
+        }
+        assert not Path(db).exists(), "una lectura creó el almacén"
+        assert not Path(db).parent.exists(), "una lectura creó el directorio"
+
     def test_readers_on_an_empty_store_return_empty(self, db):
+        cl.connect(db).close()          # almacén existente pero vacío
         assert cl.list_learnings(db_path=db) == []
         assert cl.consumable_learnings("market", db_path=db) == []
         assert cl.get_decisions(db_path=db) == []
