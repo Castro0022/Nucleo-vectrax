@@ -245,6 +245,94 @@ real. Nunca como un cero, y nunca como una afirmación.
 
 ---
 
+## 11. Verificación: suite completa y comparación con la base
+
+Ambas ejecuciones con el **mismo entorno** y el mismo intérprete, en worktrees
+separados, sin aleatorización (`-p no:randomly`):
+
+| | Base `42720ce` | Rama |
+|---|---|---|
+| Fallos | 35 | 35 |
+| Pasan | 4221 | 4371 |
+| Omitidos | 3 | 3 |
+
+```
+comm -13 base_failures.txt branch_failures.txt   -> vacío (ninguna regresión)
+comm -23 base_failures.txt branch_failures.txt   -> vacío
+diff base_failures.txt branch_failures.txt       -> idénticos
+```
+
+Los **conjuntos** de fallos son idénticos, no solo los recuentos. Ningún test
+causal falla.
+
+Los 35 fallos son **preexistentes** y ajenos a este PR; se concentran en ocho
+archivos que este PR no toca:
+
+| Archivo | Fallos |
+|---|---|
+| `tests/test_comm_engines.py` | 11 |
+| `tests/test_user_independence.py` | 8 |
+| `tests/test_star_deriver.py` | 7 |
+| `tests/test_phase3.py` | 5 |
+| `tests/test_personal_memory_retrieval.py` | 1 |
+| `tests/test_nucleus_reunification.py` | 1 |
+| `tests/test_collective_gravity.py` | 1 |
+| `tests/test_collective_convergence.py` | 1 |
+
+### El vault no se tocó
+
+`vault/learned_rules.jsonl` mantiene el hash del preflight
+`ce31ba15ed63b04a01c94c2e41c20bfb9e9fac3098c772cf12fbcc1aeb9af653` **después**
+de la suite completa, y `git status --short vault/` queda vacío. El aislamiento
+que introdujo el PR #124 sigue funcionando.
+
+`vault/causal_learning.db` **nunca se creó** en el vault vivo durante las
+pruebas.
+
+---
+
+## 12. Dos defectos que encontré revisando mi propio diff
+
+Los anoto porque ninguno lo habría detectado una prueba escrita desde el
+enunciado; salieron de releer el diff buscando qué lo rompería.
+
+### Las disoluciones podían morir de hambre
+
+Las convergencias disueltas se añadían al final de la lista del ciclo. Con más
+de `MAX_EVALUATIONS_PER_CYCLE` convergencias vivas, una disolución podía no
+evaluarse **nunca**, y el criterio seguiría apoyándose en evidencia que ya no
+existe. Ahora se procesan primero.
+
+### Leer creaba el almacén
+
+Todos los lectores pasaban por `connect()`, que hace `makedirs` y crea el
+esquema. Como `criterion.rank_domain_evidence()` consulta aprendizajes en CADA
+pregunta de criterio, una simple consulta sembraba `causal_learning.db` allí
+donde apuntara `VECTRAX_VAULT_DIR` en ese instante — y contradecía el contrato
+que el propio módulo declara. Los lectores devuelven ahora vacío si el almacén
+no existe; lo crea quien escribe, que es el ciclo vivo.
+
+Y un tercero, detectado por una prueba mientras se escribía: `PromotionDecision`
+reportaba el estado propuesto por el gate (`LEARNED`) mientras la traza
+persistida seguía en `CONTRADICTED`. Un consumidor que leyera la decisión
+habría creído que se aprendió algo que no se aprendió. Ahora la decisión
+reporta el estado efectivo.
+
+---
+
+## 13. Lo que queda fuera de este PR
+
+- **No se fusiona, no se despliega.** El PR queda abierto para tu revisión y la
+  de ChatGPT.
+- **No se ejecuta backfill.** Las 121.206 convergencias históricas y la base de
+  25,4 GB no se tocan.
+- **No se toca configuración viva, ni datos vivos, ni Docker, ni el entorno
+  virtual roto, ni los temporales huérfanos de Freight.**
+- **No se activan ejecutores nuevos.** Los existentes conservan sus controles.
+- **No se toca el subsistema "shadow" preexistente** (ver anexo).
+
+---
+
 ## Anexo — El subsistema "shadow" preexistente
 
 No es uno, son **tres** cosas que comparten la palabra. Ninguna se toca en este
