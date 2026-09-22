@@ -265,6 +265,50 @@ def test_approval_pipeline_keeps_the_two_circuits_separate():
     assert rel and rel[0].status == "independent"
 
 
+def test_executor_absence_is_claimed_only_where_it_is_proven():
+    """`mark_applied` pertenece al circuito `ideas`. Generalizar su ausencia
+    a `proposals` era una afirmación no demostrada (auditoría 2026-09-22).
+
+    `ideas` puede afirmar ausencia porque tiene un punto de aplicación único
+    y nombrado. `proposals` no lo tiene, así que su estado honesto es
+    `unverified`: ni presencia ni ausencia quedan demostradas.
+    """
+    result = InternalEvidence(OWNER).approval_pipeline()
+    if result.status is EvidenceStatus.UNAVAILABLE:
+        pytest.skip("traza estructural no computable en este entorno")
+
+    by_scope = {i.scope: i for i in result.items}
+    assert "ideas/4.ejecutor" in by_scope
+    assert "proposals/4.ejecutor" in by_scope, "falta el ítem separado de proposals"
+
+    assert by_scope["ideas/4.ejecutor"].status in ("present", "absent")
+    assert by_scope["proposals/4.ejecutor"].status in ("present", "absent", "unverified")
+
+    # El detalle afirma POR CIRCUITO, nunca "en ambos".
+    assert "ambos" not in result.detail.lower(), (
+        f"el detalle generaliza sobre los dos circuitos: {result.detail!r}"
+    )
+    assert "ideas:" in result.detail and "proposals:" in result.detail
+
+
+def test_proposals_executor_is_not_claimed_from_the_ideas_scan():
+    """Si `proposals` se reporta como no verificado, debe decir por qué y no
+    presentar candidatos como si fueran ejecutores demostrados."""
+    result = InternalEvidence(OWNER).approval_pipeline()
+    if result.status is EvidenceStatus.UNAVAILABLE:
+        pytest.skip("traza estructural no computable en este entorno")
+    item = {i.scope: i for i in result.items}["proposals/4.ejecutor"]
+    if item.status == "unverified":
+        assert "NO VERIFICADO" in item.summary
+        # Los candidatos viajan como DATOS, nunca como afirmación de ejecutor.
+        assert "PRESENTE" not in item.summary
+        assert isinstance(item.data.get("candidatos_no_verificados", []), list)
+        # Y el ítem se ancla en el almacén de proposals, no en el de ideas:
+        # su estado no procede del escaneo de `mark_applied`.
+        assert "proposals" in item.reference
+        assert "mark_applied" not in item.reference
+
+
 def test_approval_pipeline_does_not_count_itself_as_executor():
     """Regresión: buscar el nombre `mark_applied` en vez de la LLAMADA hacía
     que este propio módulo se contara como ejecutor, produciendo un

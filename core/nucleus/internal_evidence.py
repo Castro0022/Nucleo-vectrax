@@ -771,6 +771,19 @@ class InternalEvidence:
             # explícitamente el archivo del escáner.
             self_path = Path(__file__).resolve()
             callers: List[str] = []
+            # Archivos que TOCAN el estado approved de las propuestas de
+            # vectrax.db. Son CANDIDATOS, no ejecutores demostrados: los que
+            # aparecen (endpoint y CLI) solo listan o fijan el estado. Un
+            # escaneo estático no distingue "lee approved y actúa" de "lee
+            # approved y lo muestra", así que este circuito se reporta como
+            # NO VERIFICADO y estos nombres viajan como pistas para revisión
+            # humana, nunca como una afirmación de que exista un ejecutor.
+            #
+            # Buscar solo `update_proposal_status` sería peor: daría un falso
+            # positivo con `connectors/etoro/auto_executor.py`, que usa la
+            # función HOMÓNIMA de `connectors/etoro/learning_engine.py` sobre
+            # otro almacén — un tercer sistema, no este circuito.
+            proposal_candidates: List[str] = []
             for py in repo_root.rglob("*.py"):
                 if set(py.parts) & _SCAN_EXCLUDED_DIRS:
                     continue
@@ -778,10 +791,15 @@ class InternalEvidence:
                 if resolved == module_path or resolved == self_path:
                     continue
                 try:
-                    if ".mark_applied(" in py.read_text(encoding="utf-8", errors="ignore"):
-                        callers.append(str(py.relative_to(repo_root)))
+                    body = py.read_text(encoding="utf-8", errors="ignore")
                 except OSError:
                     continue
+                rel = str(py.relative_to(repo_root))
+                if ".mark_applied(" in body:
+                    callers.append(rel)
+                if ("get_proposals(" in body and "approved" in body
+                        and "vectrax" in body):
+                    proposal_candidates.append(rel)
         except Exception as exc:
             return _unavailable(kind, src, exc)
 
@@ -827,6 +845,25 @@ class InternalEvidence:
                   ("escribe entrada en audit_ledger (best-effort)" if proposals_audits else
                    "NO escribe en audit_ledger"),
                   "services/core/routes/proposals.py"),
+            # El estado de este ejecutor NO puede deducirse del escaneo de
+            # `mark_applied`, que pertenece al circuito `ideas`. Sin un punto
+            # de aplicación único y nombrado como el de `ideas`, la ausencia
+            # no es demostrable: se reporta `unverified` y se dice qué se
+            # buscó, en vez de generalizar "ausente en ambos".
+            EvidenceItem(
+                kind=kind,
+                source=f"{src} :: vectrax.db proposals (get_proposals + approved)",
+                observed_at=now, scope="proposals/4.ejecutor", status="unverified",
+                summary=(
+                    "NO VERIFICADO por esta traza. A diferencia de `ideas`, este "
+                    "circuito no tiene un punto de aplicación único y nombrado "
+                    "(como mark_applied), así que ni su presencia ni su ausencia "
+                    "quedan demostradas por un escaneo estático. Los archivos que "
+                    "tocan el estado approved solo listan o lo fijan."
+                ),
+                reference="vectrax.db proposals", visibility="owner",
+                data={"candidatos_no_verificados": sorted(proposal_candidates)[:8]},
+            ),
 
             # -- Relación entre ambos --------------------------------------
             _item("relacion", "linked" if linked else "independent",
@@ -837,9 +874,14 @@ class InternalEvidence:
         ]
 
         result = _finalize(kind, src, items)
+        # El detalle se afirma POR CIRCUITO. Decir "ausente en ambos" a partir
+        # de un escaneo de `mark_applied` —que solo pertenece a `ideas`— era
+        # una generalización no demostrada (auditoría 2026-09-22).
         result.detail = (
-            "dos circuitos separados; ejecutor posterior "
-            + ("presente" if executor_present else "ausente en ambos")
+            "dos circuitos separados · ideas: ejecutor "
+            + ("presente" if executor_present else "ausente (demostrado: sin "
+               "llamadores de mark_applied)")
+            + " · proposals: ejecutor NO VERIFICADO por esta traza"
         )
         return result
 
