@@ -171,6 +171,10 @@ def fetch_pattern_stats(fingerprint: str) -> Optional[Dict[str, float]]:
             "win_rate": win_rate,
             "expectancy": win_rate - (losses / graded),
             "confidence": min(1.0, graded / 20.0),  # más historia → más confianza
+            # Tamaño de muestra REAL: outcomes graduados (win/loss), no hits ni
+            # confirmaciones del escáner. El puente causal lo exige para poder
+            # contrastar contra core.domain_knowledge.MIN_SAMPLE sin suponerlo.
+            "sample_size": float(graded),
         }
     except Exception:
         return None
