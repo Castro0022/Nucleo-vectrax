@@ -282,8 +282,10 @@ td { padding: 5px 8px; border-bottom: 1px solid rgba(26,34,53,0.3); font-family:
     // === CONVERGENCIAS ===
     html += sectionTitle('🔗 Convergencias');
 
-    html += card('🔗', 'Cross-Domain', [
-      metric('Convergencias activas', fmt(c.cross_domain), 'accent'),
+    html += card('🔗', 'Convergencias', [
+      metric('Total canónico', fmt(c.total), 'accent'),
+      metric('Activas', fmt(c.active)),
+      metric('Cruzan dos dominios', fmt(c.cross_domain)),
     ].join(''));
 
     const details = c.details || [];
