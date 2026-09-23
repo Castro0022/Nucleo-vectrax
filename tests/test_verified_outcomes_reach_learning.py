@@ -842,3 +842,192 @@ class TestACrashCannotDoubleCount:
         assert counts[og.APPLIED] == 8
         assert len(index.get("market:AAPL").verified_outcomes) == 8
         assert og.applied_count(fingerprint="market:AAPL") == 8
+
+
+# ===========================================================================
+# 10. Los dos fallos bajo carga de la revisión de 5b5a11d
+# ===========================================================================
+
+def _park(index, fingerprint: str, n: int, tag: str) -> None:
+    """Aparca `n` resultados para una estrella que todavía no existe."""
+    from core.learn.outcome_adapter import Outcome, OutcomeStatus
+
+    og.apply_verified_outcomes(
+        [
+            (fingerprint, Outcome(
+                prediction_id=f"{tag}-{i}", domain="market",
+                subject=fingerprint.split(":")[-1],
+                status=OutcomeStatus.WIN, score=1.0,
+            ))
+            for i in range(n)
+        ],
+        source="test",
+        index=index,
+    )
+
+
+class TestNoPendingResultIsStarved:
+    """Fallo 3: el reintento tomaba siempre los aparcados MÁS ANTIGUOS.
+
+    Con `ORDER BY deferred_at ASC LIMIT n`, si esos n seguían sin estrella se
+    volvían a elegir en cada ciclo y ningún aparcado posterior se examinaba
+    jamás — ni siquiera uno cuya estrella ya existía. Un atasco permanente
+    detrás de un grupo bloqueado.
+    """
+
+    def test_a_blocked_head_does_not_hide_a_ready_result(self, index):
+        _park(index, "market:BLOCKED", 3, "blocked")   # llegan ANTES
+        _park(index, "market:READY", 2, "ready")       # llegan DESPUÉS
+        _make_star(index, "market:READY", "market")    # y SÍ tienen estrella
+
+        # El presupuesto solo alcanza para el grupo bloqueado.
+        recovered = 0
+        for _ in range(3):
+            recovered += og.retry_pending("market", index=index, limit=3)[og.RECOVERED]
+
+        assert recovered == 2, "los aparcados de detrás nunca se examinaron"
+        assert _verdicts(index, "market:READY") == ["win", "win"]
+        assert og.pending_count(domain="market") == 3   # los bloqueados siguen
+
+    def test_every_parked_result_is_examined_within_a_full_sweep(self, index):
+        """La tabla entera se recorre en ceil(total / limit) ciclos."""
+        for k in range(4):
+            _park(index, f"market:S{k}", 5, f"s{k}")
+        assert og.pending_count(domain="market") == 20
+
+        seen = set()
+        for _ in range(4):                       # 20 aparcados / limit 5
+            before = {(r["fingerprint"], r["prediction_id"], r["attempts"])
+                      for r in og.pending_outcomes(domain="market", limit=100)}
+            og.retry_pending("market", index=index, limit=5)
+            after = {(r["fingerprint"], r["prediction_id"], r["attempts"])
+                     for r in og.pending_outcomes(domain="market", limit=100)}
+            seen |= {(f, p) for f, p, _a in after} - {(f, p) for f, p, _a in before}
+
+        # Tras un barrido completo, todos han sido intentados al menos 2 veces
+        # (la del aparcado + la del reintento): ninguno quedó sin examinar.
+        assert all(r["attempts"] >= 2
+                   for r in og.pending_outcomes(domain="market", limit=100))
+
+    def test_the_rotation_state_lives_on_disk_not_in_memory(self, index):
+        """El turno está persistido: cada llamada abre su propia conexión.
+
+        Un reintento que guardara el cursor en memoria volvería a empezar por
+        el principio en cada arranque del proceso, y el grupo bloqueado de
+        cabecera atascaría la cola otra vez tras cada reinicio.
+        """
+        _park(index, "market:BLOCKED", 3, "blocked")
+        first = {r["prediction_id"]: r["last_attempt_at"]
+                 for r in og.pending_outcomes(domain="market", limit=10)}
+
+        og.retry_pending("market", index=index, limit=3)
+
+        second = {r["prediction_id"]: r["last_attempt_at"]
+                  for r in og.pending_outcomes(domain="market", limit=10)}
+        assert second.keys() == first.keys()
+        assert all(second[k] >= first[k] for k in first)
+        assert any(second[k] > first[k] for k in first), (
+            "el intento no quedó sellado en disco: la rotación no avanza"
+        )
+
+    def test_a_newly_parked_result_waits_its_turn_but_does_land(self, index):
+        """Un aparcado nuevo va al final de la cola (acaba de fallar), pero la
+        cola avanza: aterriza dentro del barrido, no 'algún día'."""
+        _park(index, "market:BLOCKED", 3, "blocked")
+        og.retry_pending("market", index=index, limit=3)
+
+        _park(index, "market:READY", 1, "ready")
+        _make_star(index, "market:READY", "market")
+
+        # 4 aparcados con presupuesto 3 -> el barrido completo son 2 ciclos.
+        recovered = sum(
+            og.retry_pending("market", index=index, limit=3)[og.RECOVERED]
+            for _ in range(2)
+        )
+
+        assert recovered == 1
+        assert _verdicts(index, "market:READY") == ["win"]
+
+    def test_a_star_arriving_late_is_still_served(self, index):
+        """Tres ciclos bloqueados y la estrella llega al cuarto."""
+        _park(index, "market:BLOCKED", 5, "blocked")
+        _park(index, "market:LATE", 2, "late")
+
+        for _ in range(3):
+            assert og.retry_pending("market", index=index, limit=4)[og.RECOVERED] == 0
+
+        _make_star(index, "market:LATE", "market")
+        recovered = sum(
+            og.retry_pending("market", index=index, limit=4)[og.RECOVERED]
+            for _ in range(3)
+        )
+
+        assert recovered == 2
+        assert _verdicts(index, "market:LATE") == ["win", "win"]
+
+
+class TestVerifiedEvidenceIsNeverDiscarded:
+    """Fallo 4: al llegar al tope, el código borraba los aparcados más
+    antiguos. Era un error mío, y del peor tipo: convertía un problema visible
+    —una tabla que crece porque no se crean estrellas— en uno invisible,
+    aprendizaje verificado que desaparece sin que nadie lo note. Y el criterio
+    lo agravaba: los más antiguos son los que más tiempo llevan esperando.
+    """
+
+    def test_crossing_the_threshold_deletes_nothing(self, index, monkeypatch, caplog):
+        monkeypatch.setattr(og, "PENDING_ALERT_THRESHOLD", 5)
+
+        _park(index, "market:GHOST", 8, "ghost")
+
+        assert og.pending_count(domain="market") == 8, "se descartó evidencia"
+        ids = {r["prediction_id"] for r in og.pending_outcomes(domain="market", limit=50)}
+        assert ids == {f"ghost-{i}" for i in range(8)}
+
+    def test_crossing_the_threshold_warns(self, index, monkeypatch, caplog):
+        monkeypatch.setattr(og, "PENDING_ALERT_THRESHOLD", 3)
+
+        with caplog.at_level("WARNING", logger="vectrax.outcome_gravity"):
+            _park(index, "market:GHOST", 5, "ghost")
+
+        assert any("esperando una estrella" in r.message for r in caplog.records)
+
+    def test_the_oldest_parked_result_still_lands_when_its_star_arrives(
+        self, index, monkeypatch,
+    ):
+        """El que más tiempo llevaba esperando es el que antes se borraba."""
+        monkeypatch.setattr(og, "PENDING_ALERT_THRESHOLD", 2)
+
+        _park(index, "market:OLDEST", 1, "oldest")
+        for k in range(6):
+            _park(index, f"market:NOISE{k}", 3, f"noise{k}")
+
+        _make_star(index, "market:OLDEST", "market")
+        for _ in range(8):
+            og.retry_pending("market", index=index, limit=4)
+
+        assert _verdicts(index, "market:OLDEST") == ["win"]
+
+    def test_no_bulk_delete_of_pending_evidence_exists(self):
+        """Un aparcado solo desaparece al APLICARSE, nunca en bloque.
+
+        El borrado anterior era un `DELETE ... WHERE rowid IN (SELECT ...
+        LIMIT n)`: una sentencia que elimina un número arbitrario de filas de
+        golpe. Se comprueba que no queda ninguna así, sin depender de cómo
+        esté escrita: se cuentan las sentencias y se exige que todas estén
+        acotadas a UNA fila por su clave primaria.
+        """
+        import inspect
+        import re
+
+        src = inspect.getsource(og)
+        statements = re.findall(
+            r"DELETE FROM pending_outcomes\s*(?:\"\s*\n\s*\")?([^\"]*)", src,
+        )
+        assert statements, "la sentencia cambió de forma: revisar esta prueba"
+        for stmt in statements:
+            flat = " ".join(stmt.split())
+            assert flat.startswith(
+                "WHERE fingerprint = ? AND prediction_id = ?"
+            ), f"borrado no acotado a una sola fila: {flat!r}"
+        assert "rowid IN" not in src
+        assert "LIMIT" not in src.split("DELETE FROM pending_outcomes")[1][:200]

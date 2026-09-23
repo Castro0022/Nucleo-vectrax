@@ -110,12 +110,22 @@ NO_IDENTITY = "no_identity"    # falta fingerprint o prediction_id
 RESULTS = (APPLIED, DUPLICATE, NOT_DECISIVE, DEFERRED, RECOVERED,
            NO_STAR, NO_IDENTITY)
 
-#: Tope de resultados aparcados. Existe solo para que un fallo persistente —una
-#: estrella que nunca llega a crearse— no haga crecer la tabla sin límite. Al
-#: superarlo se descartan los MÁS ANTIGUOS (los que más tiempo llevan esperando
-#: una estrella que no aparece) y se deja constancia en el log: nunca en
-#: silencio.
-MAX_PENDING = 20000
+#: Umbral de AVISO para la tabla de aparcados. No borra nada.
+#:
+#: Antes esto era un tope que descartaba los aparcados más antiguos al
+#: superarlo. Era un error, y contradecía el motivo mismo de este módulo: un
+#: aparcado es un resultado VERIFICADO contra la verdad objetiva del dominio,
+#: la evidencia más cara que produce el sistema. Descartarlo convierte un
+#: problema visible —una tabla que crece porque las estrellas no se están
+#: creando— en uno invisible: aprendizaje que se pierde sin que nadie lo note.
+#: Y el criterio de descarte agravaba el error, porque los más antiguos son
+#: precisamente los que más tiempo llevan acumulando derecho a ser aplicados.
+#:
+#: Ahora se avisa y se conserva. Una tabla que crece es el síntoma de otra
+#: cosa (estrellas que no llegan a existir) y se arregla ahí, no borrando la
+#: evidencia. `pending_outcomes()` permite ver exactamente qué espera y desde
+#: cuándo.
+PENDING_ALERT_THRESHOLD = 20000
 
 
 def vault_dir() -> str:
@@ -158,6 +168,7 @@ CREATE TABLE IF NOT EXISTS pending_outcomes (
     source         TEXT NOT NULL DEFAULT '',
     resolved_ts    REAL NOT NULL DEFAULT 0.0,
     deferred_at    REAL NOT NULL DEFAULT 0.0,
+    last_attempt_at REAL NOT NULL DEFAULT 0.0,
     attempts       INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (fingerprint, prediction_id)
 );
@@ -168,9 +179,11 @@ CREATE INDEX IF NOT EXISTS idx_applied_outcomes_domain
     ON applied_outcomes (domain, subject);
 """
 
+#: El índice sigue al ORDEN DE REINTENTO (`last_attempt_at`), no al de llegada:
+#: es la columna por la que `retry_pending` recorre la tabla.
 _CREATE_PENDING_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_pending_outcomes_domain
-    ON pending_outcomes (domain, deferred_at);
+CREATE INDEX IF NOT EXISTS idx_pending_outcomes_retry
+    ON pending_outcomes (domain, last_attempt_at);
 """
 
 
@@ -183,10 +196,31 @@ def _get_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.execute(_CREATE_TABLE)
     conn.execute(_CREATE_PENDING)
+    _migrate_pending(conn)
     conn.execute(_CREATE_INDEX)
     conn.execute(_CREATE_PENDING_INDEX)
     conn.commit()
     return conn
+
+
+def _migrate_pending(conn: sqlite3.Connection) -> None:
+    """Anade `last_attempt_at` a una tabla creada antes de que existiera.
+
+    Este almacen es nuevo y no esta desplegado, pero una copia de la rama
+    anterior ya pudo crear la tabla sin esa columna; sin la migracion, el
+    reintento fallaria con "no such column" y los aparcados quedarian
+    inalcanzables — perder evidencia por un detalle de esquema seria el mismo
+    fallo que esta correccion elimina. Se siembra con `deferred_at` para que
+    el orden de reintento parta del de llegada.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(pending_outcomes)")}
+    if "last_attempt_at" in cols:
+        return
+    conn.execute(
+        "ALTER TABLE pending_outcomes "
+        "ADD COLUMN last_attempt_at REAL NOT NULL DEFAULT 0.0"
+    )
+    conn.execute("UPDATE pending_outcomes SET last_attempt_at = deferred_at")
 
 
 def _open_for_read(db_path: Optional[str] = None) -> Optional[sqlite3.Connection]:
@@ -233,35 +267,34 @@ def _defer(conn, fingerprint: str, outcome: Outcome, source: str, now: float) ->
         """
         INSERT INTO pending_outcomes
             (fingerprint, prediction_id, domain, subject, status,
-             score, source, resolved_ts, deferred_at, attempts)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+             score, source, resolved_ts, deferred_at, last_attempt_at, attempts)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(fingerprint, prediction_id)
-        DO UPDATE SET attempts = attempts + 1
+        DO UPDATE SET attempts = attempts + 1, last_attempt_at = excluded.last_attempt_at
         """,
         (
             fingerprint, outcome.prediction_id, outcome.domain, outcome.subject,
             outcome.status.value, float(outcome.score or 0.0), source,
-            float(getattr(outcome, "resolved_ts", 0.0) or 0.0), now,
+            float(getattr(outcome, "resolved_ts", 0.0) or 0.0), now, now,
         ),
     )
 
 
-def _trim_pending(conn) -> None:
-    """Mantiene la tabla de aparcados por debajo de `MAX_PENDING`."""
+def _alert_if_pending_grows(conn) -> None:
+    """Avisa si la tabla de aparcados crece. NO borra nada.
+
+    Que haya muchos aparcados significa que hay estrellas que no se estan
+    creando; el arreglo esta ahi, no en descartar los resultados que esperan.
+    """
     row = conn.execute("SELECT COUNT(*) FROM pending_outcomes").fetchone()
-    excess = (int(row[0]) if row else 0) - MAX_PENDING
-    if excess <= 0:
+    total = int(row[0]) if row else 0
+    if total < PENDING_ALERT_THRESHOLD:
         return
-    conn.execute(
-        "DELETE FROM pending_outcomes WHERE rowid IN ("
-        "  SELECT rowid FROM pending_outcomes ORDER BY deferred_at ASC LIMIT ?"
-        ")",
-        (excess,),
-    )
     logger.warning(
-        "outcome_gravity: %d resultados aparcados descartados por exceder "
-        "MAX_PENDING=%d; sus estrellas nunca llegaron a existir",
-        excess, MAX_PENDING,
+        "outcome_gravity: %d resultados verificados esperando una estrella "
+        "(umbral %d). NO se descarta ninguno: revisar por que no se estan "
+        "creando esos patrones. Ver outcome_gravity.pending_outcomes().",
+        total, PENDING_ALERT_THRESHOLD,
     )
 
 
@@ -373,7 +406,7 @@ def apply_verified_outcomes(
                         (fingerprint, outcome.prediction_id),
                     )
                     _defer(conn, fingerprint, outcome, source, now)
-            _trim_pending(conn)
+            _alert_if_pending_grows(conn)
         conn.commit()
     except Exception as exc:
         try:
@@ -433,6 +466,24 @@ def retry_pending(
     nunca. Un ciclo sin senales nuevas sigue teniendo que recuperar lo
     aparcado.
 
+    RECORRIDO JUSTO, SIN BLOQUEO DE CABECERA
+    ----------------------------------------
+    Los candidatos se ordenan por `last_attempt_at` —el menos recientemente
+    intentado primero—, NO por antiguedad de llegada, y a todo lo examinado se
+    le sella el intento aunque siga sin estrella.
+
+    Ordenar por `deferred_at` tenia un fallo grave: los mismos `limit`
+    aparcados mas antiguos se elegian en cada ciclo, asi que si sus estrellas
+    nunca llegaban a existir, ningun aparcado posterior se examinaba jamas —
+    ni siquiera uno cuya estrella ya estaba creada. Un atasco permanente
+    detras de un grupo bloqueado. Es el mismo defecto de inanicion que el
+    presupuesto de convergencias del puente causal ya resolvio ordenando por
+    el menos recientemente evaluado; aqui se repite la misma solucion.
+
+    Con el sello, la tabla entera se recorre en `ceil(total / limit)` ciclos
+    pase lo que pase con las estrellas, y el orden es estable entre reinicios
+    porque `last_attempt_at` esta persistido.
+
     Devuelve el recuento por resultado; `recovered` son los que aterrizaron
     ahora. Nunca lanza.
     """
@@ -452,7 +503,7 @@ def retry_pending(
         where, params = ("WHERE domain = ?", [domain]) if domain else ("", [])
         rows = conn.execute(
             f"SELECT {', '.join(_COLUMNS[:-1])} FROM pending_outcomes {where} "
-            "ORDER BY deferred_at ASC LIMIT ?",
+            "ORDER BY last_attempt_at ASC, rowid ASC LIMIT ?",
             (*params, int(limit)),
         ).fetchall()
         if not rows:
@@ -464,11 +515,15 @@ def retry_pending(
         ])
         for (fingerprint, outcome, row_source), ok in zip(parked, written):
             if not ok:
+                # Sigue sin estrella. Se sella el intento IGUALMENTE: es lo que
+                # hace que el proximo ciclo mire a los siguientes en vez de
+                # volver a tropezar con estos mismos.
                 counts[DEFERRED] += 1
                 conn.execute(
-                    "UPDATE pending_outcomes SET attempts = attempts + 1 "
+                    "UPDATE pending_outcomes "
+                    "SET attempts = attempts + 1, last_attempt_at = ? "
                     "WHERE fingerprint = ? AND prediction_id = ?",
-                    (fingerprint, outcome.prediction_id),
+                    (now, fingerprint, outcome.prediction_id),
                 )
                 continue
             counts[RECOVERED] += 1
@@ -519,7 +574,7 @@ def pending_outcomes(
     conn = _open_for_read(db_path)
     if conn is None:
         return []
-    cols = (*_COLUMNS[:-1], "deferred_at", "attempts")
+    cols = (*_COLUMNS[:-1], "deferred_at", "last_attempt_at", "attempts")
     where, params = ("WHERE domain = ?", [domain]) if domain else ("", [])
     try:
         rows = conn.execute(
