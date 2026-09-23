@@ -1343,3 +1343,180 @@ class TestALockedStoreNeverLosesTheResult:
         conn.close()
 
         assert mode.lower() == "wal"
+
+
+# ===========================================================================
+# 12. Los dos fallos de la revisión de b590511
+# ===========================================================================
+
+class TestAnyStoreFailureIsReportedAsFailed:
+    """Fallo 7: un fallo del almacén distinto de «base bloqueada» —disco
+    lleno, permisos, corrupción— devolvía `no_star`. Market lo leía como un
+    estado terminal normal, escribía el ledger y marcaba la señal aunque la
+    gravedad no hubiera guardado nada: esa señal no se reintentaba nunca.
+
+    El estado `no_star` ya no existe. Lo que no queda atendido es `FAILED`,
+    sin excepciones, y `accounted()` es la única pregunta que decide si el
+    llamador puede dar el lote por hecho.
+    """
+
+    @staticmethod
+    def _break_the_store(exc: Exception):
+        real = og._get_conn
+
+        def _broken(*a, **k):
+            raise exc
+
+        og._get_conn = _broken
+        return lambda: setattr(og, "_get_conn", real)
+
+    def test_a_full_disk_is_reported_as_failed(self, index):
+        import sqlite3
+
+        _make_star(index, "market:AAPL", "market")
+        restore = self._break_the_store(
+            sqlite3.OperationalError("database or disk is full")
+        )
+        try:
+            counts = og.apply_verified_outcomes(
+                [("market:AAPL", _market_outcome(1))], source="t", index=index,
+            )
+        finally:
+            restore()
+
+        assert counts[og.FAILED] == 1, counts
+        assert not og.accounted(counts)
+
+    def test_the_signal_is_not_marked_when_the_disk_is_full(
+        self, index, monkeypatch,
+    ):
+        import sqlite3
+
+        sig = _win_signal(1)
+        TestALockedStoreNeverLosesTheResult._install_recorder(monkeypatch, [sig])
+        _make_star(index, "market:AAPL", "market")
+
+        restore = self._break_the_store(
+            sqlite3.OperationalError("database or disk is full")
+        )
+        try:
+            market_vc.run_market_verification()
+        finally:
+            restore()
+
+        assert sig.signal_id not in market_vc._load_verified_ids()
+        assert vledger.load_outcomes("market") == []
+
+        # Y el siguiente ciclo, con disco, lo recupera.
+        market_vc.run_market_verification()
+        assert _verdicts(index, "market:AAPL") == ["win"]
+        assert sig.signal_id in market_vc._load_verified_ids()
+
+    def test_an_unavailable_gravity_index_is_reported_as_failed(self, index):
+        counts = og.apply_verified_outcomes(
+            [("market:AAPL", _market_outcome(1))], source="t",
+            index=_ExplodingIndex(),
+        )
+
+        assert counts[og.FAILED] == 1, counts
+        assert not og.accounted(counts)
+
+    def test_no_status_can_be_mistaken_for_success(self):
+        """`no_star` era el estado trampa: fallo disfrazado de terminal."""
+        assert not hasattr(og, "NO_STAR")
+        assert set(og.RESULTS) - set(og.ACCOUNTED) == {og.FAILED}
+
+    def test_an_unbalanced_count_is_forced_to_failed(self, index, monkeypatch):
+        """Conservación: si la suma no cuadra, la diferencia es FAILED.
+
+        Es la red que hace fail-safe cualquier rama de error futura, que es
+        justo de donde han salido estos dos fallos.
+        """
+        _make_star(index, "market:AAPL", "market")
+
+        def _loses_one(*a, **k):
+            return {k2: 0 for k2 in og.RESULTS}      # no contabiliza nada
+
+        monkeypatch.setattr(og, "_apply_once", _loses_one)
+
+        counts = og.apply_verified_outcomes(
+            [("market:AAPL", _market_outcome(i)) for i in range(3)],
+            source="t", index=index,
+        )
+
+        assert counts[og.FAILED] == 3, counts
+        assert not og.accounted(counts)
+
+
+class _ExplodingIndex:
+    def record_verified_outcomes(self, entries):
+        raise RuntimeError("índice de gravedad caído")
+
+    def load_raw(self):
+        raise RuntimeError("índice de gravedad caído")
+
+
+class TestALedgerFailureDoesNotMarkTheSignal:
+    """Fallo 8: si la escritura del ledger fallaba, Market marcaba la señal
+    igualmente. `vledger.record_outcome` no lanza —devuelve False—, y ese
+    False se ignoraba: el ledger se quedaba sin el resultado y la señal no se
+    volvía a presentar.
+    """
+
+    def test_a_rejected_ledger_write_leaves_the_signal_unmarked(
+        self, index, monkeypatch,
+    ):
+        sig = _win_signal(1)
+        TestALockedStoreNeverLosesTheResult._install_recorder(monkeypatch, [sig])
+        _make_star(index, "market:AAPL", "market")
+        monkeypatch.setattr(market_vc.vledger, "record_outcome", lambda o: False)
+
+        market_vc.run_market_verification()
+
+        assert sig.signal_id not in market_vc._load_verified_ids()
+
+    def test_the_next_cycle_writes_the_ledger_without_duplicating_gravity(
+        self, index, monkeypatch,
+    ):
+        sig = _win_signal(1)
+        TestALockedStoreNeverLosesTheResult._install_recorder(monkeypatch, [sig])
+        _make_star(index, "market:AAPL", "market")
+
+        # Se sustituye SOLO la escritura del ledger, y se restaura a mano.
+        # `monkeypatch.undo()` no vale aquí: revierte también el `setenv` de
+        # VECTRAX_VAULT_DIR que instala la fixture autouse del conftest, de
+        # modo que la siguiente escritura iría al VAULT DE PRODUCCIÓN. Ese era
+        # exactamente el origen del `outcome_gravity.db` que aparecía de vez
+        # en cuando en el vault y que no había conseguido reproducir.
+        real_record = market_vc.vledger.record_outcome
+        market_vc.vledger.record_outcome = lambda o: False
+        try:
+            market_vc.run_market_verification()
+        finally:
+            market_vc.vledger.record_outcome = real_record
+
+        market_vc.run_market_verification()
+
+        assert sig.signal_id in market_vc._load_verified_ids()
+        assert len(vledger.load_outcomes("market")) == 1
+        # La gravedad NO se duplica: el reintento la reconoce por su clave.
+        assert _verdicts(index, "market:AAPL") == ["win"]
+        assert og.applied_count(fingerprint="market:AAPL") == 1
+
+    def test_only_the_rejected_one_stays_unmarked(self, index, monkeypatch):
+        """Un rechazo puntual no arrastra a las demás señales del lote."""
+        sigs = [_win_signal(i) for i in range(4)]
+        TestALockedStoreNeverLosesTheResult._install_recorder(monkeypatch, sigs)
+        _make_star(index, "market:AAPL", "market")
+
+        rejected = "sig-win-AAPL-2"
+        monkeypatch.setattr(
+            market_vc.vledger, "record_outcome",
+            lambda o: o.prediction_id != rejected,
+        )
+
+        market_vc.run_market_verification()
+
+        marked = market_vc._load_verified_ids()
+        assert rejected not in marked
+        assert all(s.signal_id in marked for s in sigs if s.signal_id != rejected)

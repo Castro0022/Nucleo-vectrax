@@ -165,16 +165,26 @@ def _verify(signals: Iterable[Any], record: bool):
         fed = outcome_gravity.apply_verified_outcomes(
             to_gravity, source=_GRAVITY_SOURCE,
         )
-        if fed.get(outcome_gravity.FAILED, 0):
+        if not outcome_gravity.accounted(fed):
             logger.warning(
                 "market.verification | lote NO contabilizado (%d resultados): "
                 "no se marcan como verificados; se repetirán en el próximo ciclo",
-                fed[outcome_gravity.FAILED],
+                fed.get(outcome_gravity.FAILED, 0),
             )
         else:
             for prediction_id, outcome in sig_by_prediction.items():
-                vledger.record_outcome(outcome)
-                handled_ids.append(prediction_id)
+                # `record_outcome` NO lanza: devuelve False si no pudo escribir
+                # (disco lleno, permisos). Ignorar ese False marcaba la señal
+                # como verificada con el ledger sin su resultado, y la señal no
+                # se volvía a presentar. Solo se marca lo que quedó escrito.
+                if vledger.record_outcome(outcome):
+                    handled_ids.append(prediction_id)
+                else:
+                    logger.warning(
+                        "market.verification | el ledger rechazó %s: no se "
+                        "marca como verificada; se repetirá en el próximo ciclo",
+                        prediction_id,
+                    )
 
     score = score_outcomes(_DOMAIN, outcomes)
     logger.info(

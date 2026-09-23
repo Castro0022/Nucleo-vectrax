@@ -104,12 +104,33 @@ DUPLICATE = "duplicate"        # esta (fingerprint, prediction_id) ya se aplicó
 NOT_DECISIVE = "not_decisive"  # NEUTRAL/PENDING: no es ni acierto ni fallo
 DEFERRED = "deferred"          # la estrella aún no existe: aparcado, se reintenta
 RECOVERED = "recovered"        # aparcado antes, aplicado ahora que hay estrella
-NO_STAR = "no_star"            # no se pudo ni intentar (índice/almacén caídos)
 NO_IDENTITY = "no_identity"    # falta fingerprint o prediction_id
 FAILED = "failed"              # el lote NO quedó contabilizado: reintentar
 
 RESULTS = (APPLIED, DUPLICATE, NOT_DECISIVE, DEFERRED, RECOVERED,
-           NO_STAR, NO_IDENTITY, FAILED)
+           NO_IDENTITY, FAILED)
+
+#: Estados en los que el resultado quedó DURABLEMENTE atendido: aplicado a la
+#: estrella, reconocido como ya aplicado, aparcado para reintento, o descartado
+#: por no ser graduable / no tener identidad. Todo lo demás es `FAILED`.
+ACCOUNTED = (APPLIED, DUPLICATE, NOT_DECISIVE, DEFERRED, RECOVERED, NO_IDENTITY)
+
+
+def accounted(counts: Dict[str, int]) -> bool:
+    """¿Puede el llamador dar este lote por atendido?
+
+    Existe como función —y no como un `counts["failed"] == 0` suelto en cada
+    llamador— porque de esta pregunta depende que market marque una señal como
+    verificada y no la vuelva a presentar nunca. Un fallo de almacenamiento que
+    el llamador confunda con "hecho" pierde el resultado para siempre.
+
+    Antes había un estado `no_star` que se devolvía tanto cuando el índice de
+    gravedad no estaba disponible como cuando el almacén fallaba por cualquier
+    causa que no fuera un bloqueo —disco lleno, permisos, corrupción—. Market
+    lo leía como un estado terminal normal y marcaba la señal igual. Ese estado
+    ya no existe: lo que no queda atendido es `FAILED`, sin excepciones.
+    """
+    return int(counts.get(FAILED, 0)) == 0
 
 #: Espera máxima a que otro escritor suelte la base, en milisegundos. SQLite
 #: reintenta internamente durante este tiempo en vez de devolver
@@ -293,6 +314,35 @@ def _empty_counts() -> Dict[str, int]:
 
 # ── Aplicación ────────────────────────────────────────────────────────
 
+def _balanced(counts: Dict[str, int], total: int) -> Dict[str, int]:
+    """CONSERVACION DE RESULTADOS: cada elemento cae en exactamente un estado.
+
+    Si la suma no cuadra con el tamano del lote, la diferencia se contabiliza
+    como `FAILED`. Es la direccion segura: `FAILED` significa "reintentar", y
+    un reintento es idempotente (la clave primaria y el `prediction_id` de la
+    gravedad lo garantizan), mientras que dar por atendido algo que no lo esta
+    pierde el resultado para siempre.
+
+    Existe porque los dos ultimos fallos encontrados en revision fueron del
+    mismo tipo: una ruta de error que devolvia un estado que el llamador leia
+    como terminal. Este control convierte cualquier futuro descuadre —incluida
+    una rama de error que alguien anada manana— en un reintento, no en una
+    perdida silenciosa.
+    """
+    total_counted = sum(int(v) for v in counts.values())
+    if total_counted == total:
+        return counts
+    missing = total - total_counted
+    balanced = dict(counts)
+    balanced[FAILED] = int(balanced.get(FAILED, 0)) + max(missing, 0)
+    logger.warning(
+        "outcome_gravity: el recuento no cuadra (%d contabilizados de %d); "
+        "la diferencia se marca como FAILED para que se reintente",
+        total_counted, total,
+    )
+    return balanced
+
+
 def _outcome_ts(outcome: Outcome, fallback: float) -> float:
     """Instante en que se resolvio el resultado contra la verdad del dominio.
 
@@ -417,14 +467,17 @@ def apply_verified_outcomes(
     try:
         gravity = _resolve_index(index)
     except Exception as exc:
-        logger.warning("outcome_gravity: gravity index no disponible: %s", exc)
-        counts[NO_STAR] += len(candidates)
+        logger.warning(
+            "outcome_gravity: gravity index no disponible (%s); el lote NO "
+            "queda contabilizado", exc,
+        )
+        counts[FAILED] += len(candidates)
         return counts
 
     for attempt in range(1, LOCK_RETRIES + 1):
         result = _apply_once(candidates, source, gravity, db_path, counts)
         if result is not None:
-            return result
+            return _balanced(result, len(items))
         if attempt < LOCK_RETRIES:
             time.sleep(0.2 * attempt)
     failed = _empty_counts()
@@ -451,8 +504,14 @@ def _apply_once(
     except Exception as exc:
         if _is_locked(exc):
             return None
-        logger.warning("outcome_gravity: almacen no disponible: %s", exc)
-        counts[NO_STAR] += len(candidates)
+        # Cualquier otro fallo del almacen —disco lleno, permisos, corrupcion—
+        # deja el lote SIN contabilizar igual que un bloqueo. Devolver aqui un
+        # estado que el llamador leyera como terminal perdia el resultado.
+        logger.warning(
+            "outcome_gravity: almacen no disponible (%s); el lote NO queda "
+            "contabilizado", exc,
+        )
+        counts[FAILED] += len(candidates)
         return counts
 
     now = time.time()
@@ -533,9 +592,9 @@ def apply_verified_outcome(
         [(fingerprint, outcome)], source, index=index, db_path=db_path,
     )
     for key in RESULTS:
-        if counts[key]:
+        if counts.get(key):
             return key
-    return NO_STAR  # el lote se aborto (ver el WARNING del lote)
+    return FAILED  # no se contabilizo en ningun estado: reintentar
 
 
 def retry_pending(
