@@ -8,11 +8,43 @@ Modes (persisted in ~/.vectrax/etoro_auto_config.json):
   PAPER — simulates trades without real money. Builds track record.
   LIVE  — executes real trades via eToro API. Requires phase requirements met.
 
-Phase requirements to enter LIVE:
-  1. Creator must explicitly activate LIVE
-  2. PAPER phase must have ≥ MIN_PAPER_SIGNALS resolved signals
-  3. PAPER phase win rate must be ≥ MIN_PAPER_WIN_RATE %
-  4. ETORO_ENVIRONMENT must be set to "real" by creator
+Phase requirements to enter LIVE — two gates, deliberately different:
+
+  Manual (/vx market live on, activate_live()) — unchanged from before:
+    1. PAPER phase must have ≥ MIN_PAPER_SIGNALS resolved signals
+    2. PAPER phase win rate must be ≥ MIN_PAPER_WIN_RATE %
+    3. ETORO_ENVIRONMENT must already be set to "real" by the creator
+    4. Real API credentials (ETORO_API_KEY / ETORO_USER_KEY) must be configured
+
+  Automatic (fires the instant a PAPER trade closes and the count reaches
+  the threshold) — deliberately does NOT gate on win rate:
+    1. PAPER phase must have ≥ MIN_PAPER_SIGNALS resolved signals
+    2. ETORO_ENVIRONMENT must already be set to "real" by the creator
+    3. Real API credentials (ETORO_API_KEY / ETORO_USER_KEY) must be configured
+
+Automatic PAPER → LIVE promotion:
+  The moment a PAPER trade closes (record_trade_result(is_paper=True)) and
+  that close brings the count to ≥ MIN_PAPER_SIGNALS with a real
+  environment and real credentials already configured, the mode flips to
+  LIVE right there — no creator button press required at that instant.
+  This code NEVER writes ETORO_ENVIRONMENT and NEVER places a real order
+  itself; it only flips the persisted `mode` field once every requirement
+  already holds true from data / configuration set by the creator
+  beforehand. If any requirement is missing, the mode stays PAPER and the
+  reason is persisted to `last_auto_promotion_reason` (visible via
+  /vx market auto status and format_auto_status()).
+  Because the check only runs inside an actual trade-closing call, merely
+  restarting the process (or deploying this change onto a config that
+  already has ≥30 resolved PAPER trades) can never by itself trigger the
+  promotion — only a genuine new PAPER close event evaluates it, and it is
+  re-evaluated fresh (idempotently) on every such close.
+  One-shot: it only fires the very first time LIVE is reached
+  (cfg["live_activated_at"] still unset). Once LIVE has been reached —
+  automatically or manually — any later return to PAPER (a deliberate
+  pause, or a risk circuit-breaker: consecutive losses / daily loss limit)
+  always requires the creator's manual /vx market live on to go LIVE
+  again; the automatic path never re-fires, so a safety shutdown can never
+  be silently undone.
 
 Hard risk limits (enforced on every LIVE trade):
   MAX_POSITION_USD      = 100    per trade max exposure
@@ -72,6 +104,7 @@ DEFAULTS = {
     "paper_trades_total":      0,
     "paper_trades_wins":       0,
     "last_shutdown_reason":    "",
+    "last_auto_promotion_reason": "",   # visible reason auto-LIVE stayed blocked
 }
 
 
@@ -203,18 +236,45 @@ def activate_paper() -> str:
     )
 
 
-def activate_live(user_id: str) -> str:
+def _environment_and_credentials_reasons() -> List[str]:
     """
-    Attempt to activate LIVE mode. Validates all phase requirements.
-    Returns status message (success or reason for refusal).
+    Blocking reasons from the runtime environment alone: real
+    ETORO_ENVIRONMENT and real API credentials, both set by the creator
+    beforehand — never written by this module. Shared by every LIVE gate
+    (manual and automatic); nothing here ever mutates os.environ.
     """
-    cfg = _load_config()
+    reasons: List[str] = []
 
-    # Check paper phase requirements
+    env = os.environ.get("ETORO_ENVIRONMENT", "demo")
+    if env != "real":
+        reasons.append(
+            "ETORO_ENVIRONMENT no está en 'real'. "
+            "Ejecuta /vx etoro env real primero."
+        )
+
+    api_key  = os.environ.get("ETORO_API_KEY", "").strip()
+    user_key = os.environ.get("ETORO_USER_KEY", "").strip()
+    if not api_key or not user_key:
+        reasons.append(
+            "Credenciales reales no configuradas "
+            "(ETORO_API_KEY / ETORO_USER_KEY)."
+        )
+
+    return reasons
+
+
+def _live_readiness_reasons(cfg: Dict) -> List[str]:
+    """
+    Every phase requirement for the MANUAL /vx market live on command:
+    ≥ min_paper_signals resolved PAPER trades, ≥ min_paper_win_rate win
+    rate, real environment, real credentials. Returns the list of blocking
+    reasons — empty means every requirement is met.
+    """
+    reasons: List[str] = []
+
     paper_wr = _get_paper_win_rate(cfg)
     n_paper  = cfg["paper_trades_total"]
 
-    reasons = []
     if n_paper < cfg["min_paper_signals"]:
         reasons.append(
             f"Se necesitan ≥{cfg['min_paper_signals']} señales PAPER "
@@ -226,19 +286,48 @@ def activate_live(user_id: str) -> str:
             f"(mínimo: {cfg['min_paper_win_rate']:.0f}%)"
         )
 
-    # Check environment
-    env = os.environ.get("ETORO_ENVIRONMENT", "demo")
-    if env != "real":
+    reasons.extend(_environment_and_credentials_reasons())
+    return reasons
+
+
+def _auto_promotion_reasons(cfg: Dict) -> List[str]:
+    """
+    Every phase requirement for the AUTOMATIC PAPER → LIVE promotion,
+    evaluated the instant a PAPER trade closes: ≥ min_paper_signals
+    resolved PAPER trades, real environment, real credentials. Deliberately
+    does NOT check win rate — only the manual /vx market live on command
+    (see _live_readiness_reasons) still gates on ≥ min_paper_win_rate.
+    Returns the list of blocking reasons — empty means promotion proceeds.
+    """
+    reasons: List[str] = []
+
+    n_paper = cfg["paper_trades_total"]
+    if n_paper < cfg["min_paper_signals"]:
         reasons.append(
-            "ETORO_ENVIRONMENT no está en 'real'. "
-            "Ejecuta /vx etoro env real primero."
+            f"Se necesitan ≥{cfg['min_paper_signals']} operaciones PAPER "
+            f"cerradas (actuales: {n_paper})"
         )
+
+    reasons.extend(_environment_and_credentials_reasons())
+    return reasons
+
+
+def activate_live(user_id: str) -> str:
+    """
+    Attempt to activate LIVE mode manually. Validates all phase
+    requirements. Returns status message (success or reason for refusal).
+    """
+    cfg = _load_config()
+    reasons = _live_readiness_reasons(cfg)
 
     if reasons:
         return (
             "❌ Requisitos LIVE no cumplidos:\n"
             + "\n".join(f"  • {r}" for r in reasons)
         )
+
+    paper_wr = _get_paper_win_rate(cfg)
+    n_paper  = cfg["paper_trades_total"]
 
     _set_mode(AutoMode.LIVE, activated_by=user_id)
     return (
@@ -251,6 +340,78 @@ def activate_live(user_id: str) -> str:
         f"  • Cierre por pérdidas consecutivas: {cfg['max_consecutive_losses']}\n"
         f"  • Max posiciones simultáneas: {cfg['max_positions_open']}"
     )
+
+
+def _maybe_auto_promote_to_live(cfg: Dict) -> None:
+    """
+    Evaluate automatic PAPER → LIVE promotion. Called from
+    record_trade_result() the instant a PAPER trade closes — never from
+    startup/config-load, so a restart (or deploying this change onto a
+    config that already has ≥ min_paper_signals resolved trades) cannot by
+    itself trigger it; only a genuine new close event does.
+
+    One-shot: it only fires the very first time Vectrax leaves the initial
+    PAPER build-up phase (cfg["live_activated_at"] is still unset). If LIVE
+    was reached before — automatically or via the manual command — and a
+    later event (a deliberate pause or a risk circuit-breaker: consecutive
+    losses / daily loss limit) put it back in PAPER, reactivating LIVE
+    again always requires the creator's manual /vx market live on. This
+    guarantees a safety shutdown is never silently undone by an unrelated
+    PAPER trade closing afterward.
+
+    Mutates `cfg` in place (mode, live_activated_by/_at,
+    last_auto_promotion_reason). The caller persists it. Never touches
+    ETORO_ENVIRONMENT and never places an order — it only flips the
+    persisted mode once every requirement already holds.
+    """
+    if cfg.get("mode") != AutoMode.PAPER.value:
+        return  # only PAPER auto-promotes; OFF/LIVE are left untouched
+    if cfg.get("halt"):
+        return
+
+    if cfg.get("live_activated_at"):
+        # LIVE was already reached before (auto or manual) and later moved
+        # back to PAPER. Do not re-promote automatically — a safety
+        # shutdown must never be undone without the creator's own command.
+        cfg["last_auto_promotion_reason"] = (
+            "LIVE ya se activó antes; una nueva activación requiere "
+            "el comando manual /vx market live on."
+        )
+        return
+
+    reasons = _auto_promotion_reasons(cfg)
+    if reasons:
+        cfg["last_auto_promotion_reason"] = "; ".join(reasons)
+        return
+
+    n_paper  = cfg["paper_trades_total"]
+    paper_wr = _get_paper_win_rate(cfg)  # informational only — not a gate here
+
+    cfg["last_auto_promotion_reason"] = ""
+    cfg["mode"]               = AutoMode.LIVE.value
+    cfg["live_activated_by"]  = "auto:paper_threshold"
+    cfg["live_activated_at"]  = time.time()
+
+    logger.warning(
+        "[AUTO] 🔴 PROMOCIÓN AUTOMÁTICA a LIVE: %d trades PAPER cerrados | WR=%.1f%%",
+        n_paper, paper_wr,
+    )
+    try:
+        from connectors.etoro.learning_engine import _tg_notify
+        _tg_notify(
+            "🔴 Vectrax pasó automáticamente a LIVE\n\n"
+            f"Se cerró la operación PAPER #{n_paper} (WR actual: {paper_wr:.1f}%, "
+            f"no exigido para esta promoción automática).\n"
+            f"Requisitos cumplidos: ≥{cfg['min_paper_signals']} operaciones PAPER "
+            f"cerradas, ETORO_ENVIRONMENT=real, credenciales reales configuradas.\n\n"
+            f"Límites activos: máx/operación ${cfg['max_position_usd']:.0f} | "
+            f"máx pérdida/día ${cfg['max_daily_loss_usd']:.0f} | "
+            f"stop-loss {cfg['stop_loss_pct']:.1f}% | "
+            f"cierre tras {cfg['max_consecutive_losses']} pérdidas consecutivas | "
+            f"máx posiciones {cfg['max_positions_open']}."
+        )
+    except Exception:
+        pass
 
 
 def deactivate(reason: str = "manual") -> None:
@@ -332,6 +493,8 @@ def record_trade_result(
         if won:
             cfg["paper_trades_wins"] += 1
         logger.info("[AUTO] PAPER trade result: PnL=%.2f USD | won=%s", pnl_usd, won)
+        # Evaluate automatic PAPER → LIVE promotion right on this close.
+        _maybe_auto_promote_to_live(cfg)
     else:
         if pnl_usd < 0:
             cfg["daily_loss_usd"] += abs(pnl_usd)
@@ -345,11 +508,18 @@ def record_trade_result(
             pnl_usd, cfg["consecutive_losses"], cfg["daily_loss_usd"],
         )
 
-        # Auto-shutdown check after recording
+        # Auto-shutdown check after recording. Mutates the same local `cfg`
+        # that the final _save_config(cfg) below persists — calling
+        # _set_mode() here would race with it: _set_mode() writes "paper" to
+        # disk via its OWN freshly-loaded copy, and the unconditional
+        # _save_config(cfg) at the end of this function would then overwrite
+        # that write with this function's local `cfg`, which never saw the
+        # mode change and still says "live" — silently undoing the
+        # circuit-breaker shutdown. Setting cfg["mode"] directly avoids that.
         if cfg["consecutive_losses"] >= cfg["max_consecutive_losses"]:
-            _set_mode(
-                AutoMode.PAPER,
-                reason=f"auto-shutdown after {cfg['consecutive_losses']} consecutive losses",
+            cfg["mode"] = AutoMode.PAPER.value
+            cfg["last_shutdown_reason"] = (
+                f"auto-shutdown after {cfg['consecutive_losses']} consecutive losses"
             )
             logger.warning(
                 "[AUTO] 🛑 AUTO-SHUTDOWN: %d consecutive losses → reverting to PAPER",
@@ -357,9 +527,9 @@ def record_trade_result(
             )
 
         if cfg["daily_loss_usd"] >= cfg["max_daily_loss_usd"]:
-            _set_mode(
-                AutoMode.PAPER,
-                reason=f"auto-shutdown: daily loss limit ${cfg['max_daily_loss_usd']:.0f} reached",
+            cfg["mode"] = AutoMode.PAPER.value
+            cfg["last_shutdown_reason"] = (
+                f"auto-shutdown: daily loss limit ${cfg['max_daily_loss_usd']:.0f} reached"
             )
             logger.warning("[AUTO] 🛑 DAILY LOSS LIMIT reached → reverting to PAPER")
 
@@ -560,8 +730,8 @@ def format_auto_status() -> str:
     lines = [
         f"{icon} Auto-Executor: {mode.value.upper()}\n",
         "📊 Fase PAPER:",
-        f"  Señales resueltas: {sig_ok}",
-        f"  Win rate:          {wr_ok}",
+        f"  Operaciones cerradas (gate automático): {sig_ok}",
+        f"  Win rate (solo gate manual):            {wr_ok}",
         "",
         "🛡 Límites de riesgo:",
         f"  Max/operación:    ${cfg['max_position_usd']:.0f}",
@@ -574,11 +744,16 @@ def format_auto_status() -> str:
     if cfg.get("last_shutdown_reason"):
         lines.append(f"\n🔔 Último shutdown: {cfg['last_shutdown_reason']}")
 
+    if mode == AutoMode.PAPER and cfg.get("last_auto_promotion_reason"):
+        blocked = cfg["last_auto_promotion_reason"].replace("; ", "\n  • ")
+        lines.append(f"\n⏸ LIVE automático pendiente:\n  • {blocked}")
+
     if mode == AutoMode.LIVE and cfg.get("live_activated_at"):
         import datetime
         ts_str = datetime.datetime.utcfromtimestamp(
             cfg["live_activated_at"]
         ).strftime("%Y-%m-%d %H:%M UTC")
-        lines.append(f"\n🔴 LIVE activado: {ts_str}")
+        by = cfg.get("live_activated_by") or "?"
+        lines.append(f"\n🔴 LIVE activado: {ts_str} (por {by})")
 
     return "\n".join(lines)
