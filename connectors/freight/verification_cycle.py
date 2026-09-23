@@ -221,21 +221,6 @@ CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
 ))
 
 
-def _batch_origin(events) -> str:
-    """De dónde vino este lote: el proveedor que emitió los eventos.
-
-    Se lee de los propios eventos en vez de fijarlo, porque el dominio admite
-    varios proveedores (simulador, y feeds reales) y la evidencia de uno no
-    vale lo mismo que la del otro. Sellarlo como constante habría hecho
-    indistinguible lo simulado de lo real en el ledger.
-    """
-    origins = sorted({
-        str(getattr(ev, "source", "") or "").strip()
-        for ev in (events or [])
-    } - {""})
-    return "+".join(origins) if origins else ""
-
-
 def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
     """Resuelve los eventos de resultado de freight en Outcomes verificados.
 
@@ -250,24 +235,30 @@ def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
     outcome_contract.recover(CONTRACT)
 
     outcomes: List[Outcome] = []
+    evidences: List[outcome_contract.Evidence] = []
+    # UNA sola pasada sobre `events`: puede ser un iterable consumible, y la
+    # procedencia se lee del evento que la produjo, no del lote.
     for ev in events:
         et = _event_type(ev)
         if et not in _OUTCOME_EVENTS:
             continue
         data = _event_data(ev)
         observation = {"event_type": et, **data}
+        item_id = _prediction_id(ev)
         pred = Prediction(
             domain=_DOMAIN,
             subject=_subject(data),
             predicted="on_time",
-            prediction_id=_prediction_id(ev),
+            prediction_id=item_id,
         )
-        outcomes.append(_ADAPTER.resolve(pred, observation))
+        outcome = _ADAPTER.resolve(pred, observation)
+        outcomes.append(outcome)
+        if outcome.status is not OutcomeStatus.PENDING:
+            evidences.append(outcome_contract.evidence(
+                item_id, _event_source(ev), outcome,
+            ))
 
-    decisive = [o for o in outcomes if o.status is not OutcomeStatus.PENDING]
-    report = outcome_contract.commit(
-        CONTRACT, decisive, record=record, origin=_batch_origin(events),
-    )
+    report = outcome_contract.commit(CONTRACT, evidences, record=record)
     score = score_outcomes(_DOMAIN, outcomes)
     logger.info(
         "freight.verification | batch=%d | decisive=%d | WR=%.0f%% | acc=%.2f "

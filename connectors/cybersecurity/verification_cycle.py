@@ -147,15 +147,21 @@ def resolve_cve(ev: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
     }
 
 
-def _mark_seen(seen_by_cve: Mapping[str, Dict[str, Any]],
-               handled_ids: Sequence[str]) -> bool:
-    """Marca como vistas las CVE cuyo resultado quedó escrito, y solo esas.
+def _origin_of(ev: Any) -> str:
+    """De dónde vino ESTA CVE: el feed que la emitió."""
+    return str(getattr(ev, "source", "") or "nvd+kev")
 
-    `handled_ids` son identidades a nivel de subject (``{cve_id}|{nivel}``);
-    la marca es por CVE, así que se toma el prefijo.
+
+def _mark_seen(seen_by_cve: Mapping[str, Dict[str, Any]],
+               complete_items: Sequence[str]) -> bool:
+    """Marca las CVE cuya evidencia quedó COMPLETA, y solo esas.
+
+    `complete_items` son ya identidades de CVE: el contrato confirma por ÍTEM,
+    no por resultado, así que aquí no hay prefijo que deducir — y una CVE a la
+    que le falte un nivel no llega hasta aquí.
     """
     ok = True
-    for cve_id in {str(pid).split("|", 1)[0] for pid in handled_ids}:
+    for cve_id in {str(i) for i in complete_items}:
         rec = seen_by_cve.get(cve_id)
         if rec is None:
             continue
@@ -178,7 +184,7 @@ def verify_events(events: Iterable[Any], record: bool = True,
     (backfill) persiste el dict una vez por ventana. La masa NO se re-incrementa
     en re-ejecuciones ni en flips (is_changed)."""
     cve_outcomes: List[Outcome] = []
-    to_ledger: List[Outcome] = []
+    evidences: List[outcome_contract.Evidence] = []
     seen_by_cve: Dict[str, Dict[str, Any]] = {}
     for ev in events:
         r = resolve_cve(ev, now)
@@ -192,14 +198,23 @@ def verify_events(events: Iterable[Any], record: bool = True,
         cve_outcomes.append(o)  # nivel CVE (subject = nivel más fino o cve:id)
 
         if record and o.status in (OutcomeStatus.WIN, OutcomeStatus.LOSS) and (is_new or is_changed):
-            to_ledger.extend(
-                Outcome(
-                    prediction_id=f"{r['cve_id']}|{level}",
-                    domain=DOMAIN, subject=subject_key,
-                    status=o.status, score=o.score, evidence=o.evidence,
-                )
-                for level, subject_key in r["subjects"]
-            )
+            # UNA CVE produce VARIOS resultados, uno por peldaño de la
+            # escalera. Se entregan JUNTOS como una sola evidencia: el
+            # contrato solo confirma la CVE si TODOS quedan escritos.
+            # Entregarlos sueltos la marcaba en cuanto aterrizaba cualquiera
+            # de ellos, y lo que faltara se perdía para siempre.
+            evidences.append(outcome_contract.Evidence(
+                item_id=r["cve_id"],
+                origin=_origin_of(ev),
+                outcomes=tuple(
+                    Outcome(
+                        prediction_id=f"{r['cve_id']}|{level}",
+                        domain=DOMAIN, subject=subject_key,
+                        status=o.status, score=o.score, evidence=o.evidence,
+                    )
+                    for level, subject_key in r["subjects"]
+                ),
+            ))
         if gravity_records is not None and is_new:
             _accumulate_mass(gravity_records, r["dims"])
     # La persistencia y el marcado pasan por el contrato COMÚN. Con
@@ -208,16 +223,15 @@ def verify_events(events: Iterable[Any], record: bool = True,
     # `seen_ledger` se confirma DESPUÉS de escribir, y solo de las CVE
     # escritas (ver `outcome_contract._confirm`).
     outcome_contract.commit(
-        CONTRACT, to_ledger, record=record, origin="nvd+kev",
+        CONTRACT, evidences, record=record,
         confirm=lambda ids: _mark_seen(seen_by_cve, ids),
     )
     if record:
         # Las CVE sin resultado decisivo que escribir no pasan por el lote,
         # pero sí se han visto: se marcan aquí, donde no hay nada que perder.
-        written = {pid.split("|", 1)[0] for o in to_ledger
-                   for pid in (o.prediction_id,)}
+        submitted = {e.item_id for e in evidences}
         for cve_id, seen_rec in seen_by_cve.items():
-            if cve_id not in written:
+            if cve_id not in submitted:
                 seen_ledger.upsert(seen_rec)
     score = score_outcomes(DOMAIN, cve_outcomes)
     logger.info(

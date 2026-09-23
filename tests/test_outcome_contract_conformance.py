@@ -187,6 +187,12 @@ def _outcome(contract, pid: str, status=OutcomeStatus.WIN, ts: float = 5000.0):
     )
 
 
+def _ev(contract, pid: str, status=OutcomeStatus.WIN, ts: float = 5000.0,
+        origin: str = "prueba"):
+    """La evidencia 1:1 que usan las comprobaciones genéricas."""
+    return oc.evidence(pid, origin, _outcome(contract, pid, status, ts))
+
+
 def _ids(contract):
     return [o.prediction_id for o in vledger.load_outcomes(contract.domain)]
 
@@ -384,7 +390,7 @@ class TestRequirementOneStableIdentity:
             status=OutcomeStatus.WIN, score=1.0,
         )
 
-        report = oc.commit(contract, [nameless])
+        report = oc.commit(contract, [oc.evidence("", "prueba", nameless)])
 
         assert report.no_identity == 1
         assert report.ledger_written == 0
@@ -403,7 +409,7 @@ class TestRequirementTwoWritesAreConfirmed:
         if contract.feeds_gravity:
             _make_star(index, contract)
 
-        report = oc.commit(contract, [_outcome(contract, "a"), _outcome(contract, "b")])
+        report = oc.commit(contract, [_ev(contract, "a"), _ev(contract, "b")])
 
         assert report.ledger_written == 2
         assert report.accounted
@@ -417,7 +423,7 @@ class TestRequirementTwoWritesAreConfirmed:
 
         restore = _break_the_store()
         try:
-            report = oc.commit(contract, [_outcome(contract, "a")])
+            report = oc.commit(contract, [_ev(contract, "a")])
         finally:
             restore()
 
@@ -430,7 +436,7 @@ class TestRequirementTwoWritesAreConfirmed:
             _make_star(index, contract)
         monkeypatch.setattr(oc.vledger, "record_outcome", lambda o: False)
 
-        report = oc.commit(contract, [_outcome(contract, "a")])
+        report = oc.commit(contract, [_ev(contract, "a")])
 
         assert report.handled_ids == ()
         assert not report.accounted
@@ -448,10 +454,10 @@ class TestRequirementThreeNoDuplication:
     ):
         if contract.feeds_gravity:
             _make_star(index, contract)
-        outcome = _outcome(contract, "a")
+        ev = _ev(contract, "a")
 
-        oc.commit(contract, [outcome])
-        second = oc.commit(contract, [outcome])
+        oc.commit(contract, [ev])
+        second = oc.commit(contract, [ev])
 
         assert _ids(contract) == ["a"]
         assert second.ledger_written == 0
@@ -461,9 +467,8 @@ class TestRequirementThreeNoDuplication:
     def test_the_accumulated_score_is_not_inflated(self, contract, index):
         if contract.feeds_gravity:
             _make_star(index, contract)
-        batch = [_outcome(contract, "a"), _outcome(contract, "b"),
-                 _outcome(contract, "c"),
-                 _outcome(contract, "d", OutcomeStatus.LOSS)]
+        batch = [_ev(contract, "a"), _ev(contract, "b"), _ev(contract, "c"),
+                 _ev(contract, "d", OutcomeStatus.LOSS)]
 
         for _ in range(3):
             oc.commit(contract, batch)
@@ -491,8 +496,8 @@ class TestASupersedingDomainKeepsItsRule:
     def test_a_second_write_supersedes_instead_of_being_skipped(self, index):
         contract = self._superseding()
 
-        oc.commit(contract, [_outcome(contract, "CVE-1|family", OutcomeStatus.LOSS)])
-        oc.commit(contract, [_outcome(contract, "CVE-1|family", OutcomeStatus.WIN)])
+        oc.commit(contract, [_ev(contract, "CVE-1|family", OutcomeStatus.LOSS)])
+        oc.commit(contract, [_ev(contract, "CVE-1|family", OutcomeStatus.WIN)])
 
         rows = vledger.load_outcomes(contract.domain)
         assert len(rows) == 2, "la supersesión quedó suprimida"
@@ -520,7 +525,7 @@ class TestTheSourceDecidesTheFailureRule:
 
         restore = _break_the_store()
         try:
-            report = oc.commit(contract, [_outcome(contract, "a")])
+            report = oc.commit(contract, [_ev(contract, "a")])
         finally:
             restore()
 
@@ -542,7 +547,7 @@ class TestTheSourceDecidesTheFailureRule:
 
         restore = _break_the_store()
         try:
-            report = oc.commit(contract, [_outcome(contract, "a")])
+            report = oc.commit(contract, [_ev(contract, "a")])
         finally:
             restore()
 
@@ -566,15 +571,15 @@ class TestGravityFedDomains:
     def test_the_verdict_reaches_the_star(self, contract, index):
         fingerprint = _make_star(index, contract)
 
-        oc.commit(contract, [_outcome(contract, "a"),
-                             _outcome(contract, "b", OutcomeStatus.LOSS)])
+        oc.commit(contract, [_ev(contract, "a"),
+                             _ev(contract, "b", OutcomeStatus.LOSS)])
 
         assert _verdicts(index, fingerprint) == ["win", "loss"]
 
     def test_a_missing_star_parks_the_result_instead_of_losing_it(
         self, contract, index,
     ):
-        report = oc.commit(contract, [_outcome(contract, "a")])
+        report = oc.commit(contract, [_ev(contract, "a")])
 
         assert og.pending_count(domain=contract.domain) == 1
         assert report.ledger_written == 1 or contract.replayable
@@ -587,7 +592,7 @@ class TestGravityFedDomains:
 
     def test_recovery_is_idempotent(self, contract, index):
         fingerprint = _make_star(index, contract)
-        oc.commit(contract, [_outcome(contract, "a"), _outcome(contract, "b")])
+        oc.commit(contract, [_ev(contract, "a"), _ev(contract, "b")])
 
         for _ in range(4):
             oc.recover(contract)
@@ -598,7 +603,7 @@ class TestGravityFedDomains:
 
     def test_provenance_names_the_domain_cycle(self, contract, index):
         _make_star(index, contract)
-        oc.commit(contract, [_outcome(contract, "a")])
+        oc.commit(contract, [_ev(contract, "a")])
 
         rows = og.provenance(domain=contract.domain)
         assert len(rows) == 1
@@ -726,7 +731,7 @@ class TestReconciliationSweepsTheWholeLedger:
         restore = _break_the_store()
         try:
             for i in range(12):
-                oc.commit(contract, [_outcome(contract, f"old-{i}", ts=1000.0 + i)])
+                oc.commit(contract, [_ev(contract, f"old-{i}", ts=1000.0 + i)])
         finally:
             restore()
 
@@ -750,7 +755,7 @@ class TestReconciliationSweepsTheWholeLedger:
     def test_the_watermark_advances_and_persists(self, contract, index):
         _make_star(index, contract)
         for i in range(5):
-            oc.commit(contract, [_outcome(contract, f"a-{i}", ts=2000.0 + i)])
+            oc.commit(contract, [_ev(contract, f"a-{i}", ts=2000.0 + i)])
 
         before = og.reconcile_position(contract.domain)
         og.reconcile_from_ledger(
@@ -769,7 +774,7 @@ class TestReconciliationSweepsTheWholeLedger:
         restore = _break_the_store()
         try:
             for i in range(3):
-                oc.commit(contract, [_outcome(contract, f"b-{i}", ts=3000.0 + i)])
+                oc.commit(contract, [_ev(contract, f"b-{i}", ts=3000.0 + i)])
         finally:
             restore()
         if contract.replayable:
@@ -822,18 +827,18 @@ class TestTheEvidenceSaysWhatItIsAndWhereItCameFrom:
 
     def test_the_core_stamps_the_origin_the_domain_supplies(self, contract):
         """La procedencia es del LOTE, no una constante del módulo."""
-        report = oc.commit(contract, [_outcome(contract, "a")], origin="feed-X")
+        report = oc.commit(contract, [_ev(contract, "a", origin="feed-X")])
 
-        assert report.origin == "feed-X"
+        assert report.origins == ("feed-X",)
         rows = vledger.load_outcomes(contract.domain)
         assert rows[-1].evidence["origin"] == "feed-X"
 
     def test_an_absent_origin_falls_back_to_the_cycle_never_to_nothing(
         self, contract,
     ):
-        report = oc.commit(contract, [_outcome(contract, "a")], origin="  ")
+        report = oc.commit(contract, [_ev(contract, "a", origin="  ")])
 
-        assert report.origin == contract.source
+        assert report.origins == (contract.source,)
         assert vledger.load_outcomes(contract.domain)[-1].evidence["origin"]
 
 
@@ -873,6 +878,183 @@ class TestSimulatedEvidenceIsDistinguishableFromReal:
 
         vc.verify_events([simulated])
         vc.verify_events([real])
+
+        origins = {r.evidence.get("origin") for r in vledger.load_outcomes(domain)}
+        assert origins == {"sim", "dat_feed"}, origins
+
+
+# ===========================================================================
+# 9. Un ítem se confirma SOLO con su evidencia completa
+# ===========================================================================
+
+@CONFIRMING
+class TestPartialEvidenceIsNeverConfirmed:
+    """Un ítem puede producir VARIOS resultados: una CVE deja uno por cada
+    peldaño de su escalera.
+
+    Confirmando por RESULTADO, la CVE quedaba marcada en cuanto aterrizaba
+    cualquiera de ellos. Si un nivel se escribía y otro fallaba, la CVE no se
+    volvía a presentar nunca y la parte que faltó se perdía para siempre — con
+    `replayable=True`, que decía justo lo contrario.
+
+    La unidad que entra al núcleo es la EVIDENCIA de un ítem, y la regla es del
+    contrato: se confirma cuando TODOS sus resultados quedaron escritos.
+    """
+
+    @staticmethod
+    def _multi(contract, item="ITEM-1", n=3):
+        return oc.Evidence(
+            item_id=item, origin="prueba",
+            outcomes=tuple(_outcome(contract, f"{item}|n{i}") for i in range(n)),
+        )
+
+    def test_a_partial_write_confirms_nothing(self, contract, index):
+        if contract.feeds_gravity:
+            _make_star(index, contract)
+        ev = self._multi(contract)
+        rejected = ev.outcomes[1].prediction_id
+        real = oc.vledger.record_outcome
+        oc.vledger.record_outcome = (
+            lambda o: False if o.prediction_id == rejected else real(o)
+        )
+        try:
+            report = oc.commit(contract, [ev])
+        finally:
+            oc.vledger.record_outcome = real
+
+        assert report.partial_items == ("ITEM-1",), report
+        assert report.complete_items == ()
+        assert not report.accounted
+
+    def test_the_marker_is_not_set_for_a_partial_item(self, contract, index):
+        if contract.feeds_gravity:
+            _make_star(index, contract)
+        marked: list = []
+        ev = self._multi(contract)
+        rejected = ev.outcomes[-1].prediction_id
+        real = oc.vledger.record_outcome
+        oc.vledger.record_outcome = (
+            lambda o: False if o.prediction_id == rejected else real(o)
+        )
+        try:
+            oc.commit(contract, [ev], confirm=lambda ids: marked.extend(ids) or True)
+        finally:
+            oc.vledger.record_outcome = real
+
+        assert marked == [], (
+            f"{contract.domain}: se marcó un ítem con evidencia incompleta"
+        )
+
+    def test_a_complete_item_is_confirmed(self, contract, index):
+        if contract.feeds_gravity:
+            _make_star(index, contract)
+        marked: list = []
+
+        oc.commit(contract, [self._multi(contract)],
+                  confirm=lambda ids: marked.extend(ids) or True)
+
+        assert marked == ["ITEM-1"]
+
+    def test_one_partial_item_does_not_block_the_complete_ones(
+        self, contract, index,
+    ):
+        if contract.feeds_gravity:
+            _make_star(index, contract)
+        good = self._multi(contract, "OK-1")
+        bad = self._multi(contract, "BAD-1")
+        rejected = bad.outcomes[0].prediction_id
+        marked: list = []
+        real = oc.vledger.record_outcome
+        oc.vledger.record_outcome = (
+            lambda o: False if o.prediction_id == rejected else real(o)
+        )
+        try:
+            report = oc.commit(contract, [good, bad],
+                               confirm=lambda ids: marked.extend(ids) or True)
+        finally:
+            oc.vledger.record_outcome = real
+
+        assert marked == ["OK-1"]
+        assert report.partial_items == ("BAD-1",)
+
+
+class TestCybersecurityKeepsAllItsLevels:
+    """El caso concreto, por el ciclo REAL: una CVE con varios peldaños."""
+
+    def test_a_cve_with_a_rejected_level_is_not_marked_as_seen(self, index):
+        import importlib
+
+        from connectors.cybersecurity import seen_ledger
+
+        cvc = importlib.import_module("connectors.cybersecurity.verification_cycle")
+        sample = SAMPLES["cybersecurity"]
+
+        real = oc.vledger.record_outcome
+        calls = {"n": 0}
+
+        def _one_fails(o):
+            calls["n"] += 1
+            return False if calls["n"] == 1 else real(o)
+
+        oc.vledger.record_outcome = _one_fails
+        try:
+            cvc.verify_events([sample.item])
+        finally:
+            oc.vledger.record_outcome = real
+
+        assert seen_ledger.get(_CVE["cve_id"]) is None, (
+            "la CVE quedó marcada con un nivel sin escribir: se perdería"
+        )
+
+        cvc.verify_events([sample.item])
+        assert seen_ledger.get(_CVE["cve_id"]) is not None
+
+
+# ===========================================================================
+# 10. La procedencia viaja con cada evidencia, no con el lote
+# ===========================================================================
+
+class TestProvenanceTravelsWithEachEvidence:
+
+    @ALL
+    def test_a_mixed_batch_keeps_each_provenance(self, contract, index):
+        """Un lote que mezcla simulador y feed real no puede estamparlos
+        igual: es justo lo que la procedencia existe para distinguir."""
+        if contract.feeds_gravity:
+            _make_star(index, contract)
+
+        oc.commit(contract, [
+            _ev(contract, "a", origin="simulador"),
+            _ev(contract, "b", origin="feed_real"),
+        ])
+
+        by_id = {o.prediction_id: o.evidence.get("origin")
+                 for o in vledger.load_outcomes(contract.domain)}
+        assert by_id == {"a": "simulador", "b": "feed_real"}, by_id
+
+    @pytest.mark.parametrize(
+        "domain,module",
+        [("freight_logistics", "connectors.freight.verification_cycle"),
+         ("florida_real_estate", "connectors.real_estate.verification_cycle")],
+    )
+    def test_the_real_cycle_reads_the_events_only_once(
+        self, domain, module, index,
+    ):
+        """Con un iterable CONSUMIBLE, recorrer los eventos por segunda vez
+        para obtener el origen no devuelve nada. La procedencia se lee en la
+        misma pasada que los resuelve."""
+        import importlib
+
+        vc = importlib.import_module(module)
+        contract = oc.contract_for(domain)
+        if contract.feeds_gravity:
+            _make_star(index, contract)
+
+        simulated = SAMPLES[domain].item
+        real = SAMPLES[domain].other
+        real.source = "dat_feed"
+
+        vc.verify_events(iter([simulated, real]))   # <- generador, un solo paso
 
         origins = {r.evidence.get("origin") for r in vledger.load_outcomes(domain)}
         assert origins == {"sim", "dat_feed"}, origins

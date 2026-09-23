@@ -147,6 +147,17 @@ def _fingerprint_from_outcome(outcome) -> str:
     return star_fingerprint_for(getattr(outcome, "subject", ""))
 
 
+def _origin_of(sig: Any) -> str:
+    """De dónde vino ESTA señal: el proveedor que la registró.
+
+    Se lee de la señal, no se fija en el ciclo: market admite más de un
+    broker, y la evidencia de uno no vale lo mismo que la de otro. Cuando la
+    señal no lo dice, el `signal_recorder` es la procedencia honesta.
+    """
+    return str(getattr(sig, "source", "") or getattr(sig, "provider", "")
+               or "signal_recorder")
+
+
 def _signal_identity(sig: Any) -> str:
     """Identidad del resultado de una señal: su `signal_id`.
 
@@ -186,17 +197,23 @@ def _verify(signals: Iterable[Any], record: bool):
     todavía no está verificada, y marcarla la habría excluido para siempre.
     """
     outcomes: List[Outcome] = []
+    evidences: List[outcome_contract.Evidence] = []
     for sig in signals:
         pred, obs = _signal_to_pair(sig)
-        outcomes.append(_ADAPTER.resolve(pred, obs))
+        outcome = _ADAPTER.resolve(pred, obs)
+        outcomes.append(outcome)
+        if outcome.status is not OutcomeStatus.PENDING:
+            # Una señal produce UN resultado, pero se entrega como evidencia
+            # igualmente: la regla de "confirmar solo lo completo" es del
+            # contrato y vale igual para 1:1 que para 1:N.
+            evidences.append(outcome_contract.evidence(
+                _signal_identity(sig), _origin_of(sig), outcome,
+            ))
 
-    decisive = [o for o in outcomes if o.status is not OutcomeStatus.PENDING]
     # El marcador de esta fuente (`market_verified.json`) lo confirma el
-    # CONTRATO, al final y solo con lo que quedó escrito. Marcarlo desde el
-    # ciclo era lo que perdía una señal cuando alguna escritura fallaba.
+    # CONTRATO, al final y solo con los ítems cuya evidencia quedó completa.
     report = outcome_contract.commit(
-        CONTRACT, decisive, record=record, confirm=_mark_verified,
-        origin="signal_recorder",
+        CONTRACT, evidences, record=record, confirm=_mark_verified,
     )
     score = score_outcomes(_DOMAIN, outcomes)
     logger.info(

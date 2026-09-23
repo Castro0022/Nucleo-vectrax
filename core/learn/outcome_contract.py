@@ -120,6 +120,57 @@ def derive_identity(
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
 
 
+# ── La unidad que entra al núcleo ─────────────────────────────────────
+
+@dataclass(frozen=True)
+class Evidence:
+    """TODO lo que un ítem de origen produjo, junto y con su procedencia.
+
+    POR QUÉ LA UNIDAD ES EL ÍTEM Y NO EL RESULTADO
+    -----------------------------------------------
+    Un ítem puede producir VARIOS resultados: una CVE deja uno por cada peldaño
+    de su escalera de subjects. Cuando el núcleo recibía resultados sueltos no
+    podía saber cuándo un ítem estaba COMPLETO, así que el marcador de la
+    fuente se confirmaba en cuanto aterrizaba cualquiera de ellos. Si un nivel
+    se escribía y otro fallaba, la CVE quedaba marcada con evidencia
+    incompleta y no volvía a presentarse jamás: la parte que faltó se perdía
+    para siempre.
+
+    Con la evidencia como unidad, la regla se puede enunciar y comprobar:
+    **un ítem se confirma cuando TODOS sus resultados quedaron escritos, y no
+    antes**. Vale igual para un dominio 1:1 (market, freight, real estate),
+    donde la evidencia tiene un solo resultado.
+
+    POR QUÉ LA PROCEDENCIA VIAJA AQUÍ
+    ----------------------------------
+    Antes era del LOTE. Dos problemas: un lote que mezclara simulador y feed
+    real le ponía a todo la misma procedencia combinada —haciendo
+    indistinguible lo simulado de lo real, que es justo lo que la procedencia
+    existe para evitar—; y obtenerla exigía recorrer los eventos una SEGUNDA
+    vez, cosa que con un iterable consumible no devuelve nada. Viajando con
+    cada evidencia se lee una sola vez, del evento que la produjo.
+    """
+
+    #: Identidad del ÍTEM de origen (la señal, el evento, la CVE).
+    item_id: str
+    #: De dónde vino ESE dato: el proveedor o feed concreto.
+    origin: str
+    #: Todos los resultados que ese ítem produjo.
+    outcomes: Tuple[Outcome, ...]
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.item_id) and all(
+            getattr(o, "prediction_id", "") for o in self.outcomes
+        )
+
+
+def evidence(item_id: str, origin: str, *outcomes: Outcome) -> Evidence:
+    """Atajo legible para el caso 1:1, que es el de la mayoría de dominios."""
+    return Evidence(item_id=str(item_id), origin=str(origin),
+                    outcomes=tuple(outcomes))
+
+
 # ── El contrato ───────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -221,8 +272,12 @@ class CommitReport:
     ledger_written: int = 0
     ledger_skipped: int = 0
     no_identity: int = 0
-    #: De dónde venía el dato de este lote.
-    origin: str = ""
+    #: Ítems cuya evidencia quedó COMPLETA: los únicos confirmables.
+    complete_items: Tuple[str, ...] = ()
+    #: Ítems con parte de su evidencia sin escribir: NO se confirman.
+    partial_items: Tuple[str, ...] = ()
+    #: Procedencias vistas en este lote (puede haber varias).
+    origins: Tuple[str, ...] = ()
     gravity: Mapping[str, int] = field(default_factory=dict)
     #: `None` si el dominio no tiene marcador; si lo tiene, si quedó escrito.
     confirmed: Optional[bool] = None
@@ -236,87 +291,94 @@ class CommitReport:
 
 def commit(
     contract: DomainContract,
-    outcomes: Sequence[Outcome],
+    evidences: Sequence[Evidence],
     *,
     record: bool = True,
-    origin: Optional[str] = None,
     confirm: Optional[Callable[[Sequence[str]], bool]] = None,
 ) -> CommitReport:
-    """Persiste un lote de resultados verificados cumpliendo el contrato.
+    """Persiste las EVIDENCIAS de un lote cumpliendo el contrato.
+
+    La unidad es la evidencia de un ítem, no el resultado suelto: ver
+    `Evidence`. De ahí salen los dos invariantes que el núcleo puede exigir.
 
     Orden y razones:
 
-    1. Se apartan los resultados SIN identidad. No se escriben en ninguna
-       parte y quedan en el log como WARNING: una fila sin identidad es
-       indistinguible de otra y rompe toda deduplicación posterior.
-    1.b Se sella la PROCEDENCIA de cada evidencia (`origin`): de dónde venía
-       el dato. `origin` es del LOTE porque un ciclo lee de un proveedor por
-       vez. Sin esto, la evidencia de un simulador y la de un feed real son
-       indistinguibles en el ledger, y el núcleo no puede decidir qué
-       significa lo observado — aprendería de datos simulados como si fueran
-       reales. Es lo mismo que la identidad: el dominio lo declara, el núcleo
-       lo exige y lo registra.
-    2. Se lleva el lote a la gravedad (si el dominio la alimenta) y se
-       comprueba con `accounted()` que el recuento cubre el lote entero.
-    3. El ledger se escribe según `replayable` (ver el encabezado del módulo).
-       La deduplicación por identidad se aplica salvo en dominios con
-       `supersedes=True`.
-    4. Y SOLO ENTONCES se confirma el marcador de la fuente, con los ítems
-       que quedaron escritos y con ninguno más. Esta es la razón de que
-       `confirm` se pase aquí en vez de llamarlo el ciclo: el orden es la
-       garantía, y un orden que cada dominio escribe a mano es un orden que
-       algún dominio escribirá al revés. Ya pasó dos veces —market marcaba el
-       lote entero, cybersecurity marcaba la CVE antes de escribir su
-       resultado— y en ambos casos el resultado se perdía para siempre pese a
-       que la fuente podía releerse.
+    1. Se aparta la evidencia INCOMPLETA —sin identidad de ítem, o con algún
+       resultado sin `prediction_id`—. No se escribe nada de ella: una fila
+       sin identidad es indistinguible de otra y rompe toda deduplicación.
+    2. Se sella en cada resultado QUÉ MIDE (`unit`) y DE DÓNDE VINO
+       (`origin`, el de SU evidencia). Sin eso el núcleo no puede decidir qué
+       significa lo observado: aprendería de datos simulados como de reales.
+    3. Se lleva el lote a la gravedad (si el dominio la alimenta) y
+       `accounted()` comprueba que el recuento cubre el lote entero.
+    4. El ledger se escribe según `replayable` (ver el encabezado del módulo).
+       La deduplicación por identidad se aplica salvo con `supersedes=True`.
+    5. Y SOLO ENTONCES se confirma el marcador de la fuente, con los ítems
+       cuya evidencia quedó COMPLETA y con ninguno más. Un ítem al que le
+       falte cualquiera de sus resultados no se confirma: volverá a
+       presentarse, y la deduplicación por identidad impedirá que lo ya
+       escrito se escriba dos veces.
 
-    Devuelve un `CommitReport`. `handled_ids` son los que el dominio puede dar
-    por cerrados —marcarlos, no volver a presentarlos—; en un dominio no
-    reemitible es informativo, porque no hay nada que marcar.
+    Que el orden y la completitud vivan aquí es la garantía. Un orden que cada
+    dominio escribe a mano es un orden que algún dominio escribirá al revés:
+    ya pasó dos veces (market marcaba el lote entero; cybersecurity marcaba la
+    CVE antes de escribir su resultado) y las dos se perdía evidencia pese a
+    que la fuente podía releerse.
 
     Nunca lanza.
     """
-    total = len(outcomes)
+    total = sum(len(e.outcomes) for e in evidences)
     if total == 0:
         return CommitReport(domain=contract.domain, total=0)
 
-    with_identity: List[Outcome] = []
+    usable: List[Evidence] = []
     no_identity = 0
-    for outcome in outcomes:
-        if getattr(outcome, "prediction_id", ""):
-            with_identity.append(outcome)
+    for ev in evidences:
+        if ev.complete:
+            usable.append(ev)
         else:
-            no_identity += 1
+            no_identity += len(ev.outcomes)
     if no_identity:
         logger.warning(
-            "%s | %d resultados SIN identidad: no se persisten. Un resultado "
-            "sin `prediction_id` no puede deduplicarse ni recuperarse.",
+            "%s | %d resultados en evidencias INCOMPLETAS: no se persisten. "
+            "Sin identidad de ítem o de resultado no hay deduplicación ni "
+            "recuperación posibles.",
             contract.domain, no_identity,
         )
-    if not with_identity:
+    if not usable:
         return CommitReport(domain=contract.domain, total=total,
                             accounted=False, no_identity=no_identity)
 
-    where_from = str(origin or contract.source).strip() or contract.source
-    with_identity = [
-        replace(o, evidence={
-            **dict(o.evidence), "origin": where_from, "unit": contract.unit,
-        })
-        for o in with_identity
-    ]
+    # 2. Sellar unidad y procedencia. La procedencia es la de SU evidencia.
+    stamped: List[Tuple[Evidence, List[Outcome]]] = []
+    for ev in usable:
+        where_from = str(ev.origin).strip() or contract.source
+        stamped.append((ev, [
+            replace(o, evidence={
+                **dict(o.evidence), "origin": where_from,
+                "unit": contract.unit,
+            })
+            for o in ev.outcomes
+        ]))
+    origins = tuple(sorted({
+        str(ev.origin).strip() or contract.source for ev, _ in stamped
+    }))
+    flat = [o for _ev, outs in stamped for o in outs]
 
     if not record:
         return CommitReport(
             domain=contract.domain, total=total, no_identity=no_identity,
-            handled_ids=tuple(o.prediction_id for o in with_identity),
+            handled_ids=tuple(o.prediction_id for o in flat),
+            complete_items=tuple(ev.item_id for ev, _ in stamped),
+            origins=origins,
         )
 
-    # 2. Gravedad.
+    # 3. Gravedad.
     gravity_counts: Dict[str, int] = {}
     gravity_ok = True
     if contract.feeds_gravity:
         pairs: List[Tuple[str, Outcome]] = []
-        for outcome in with_identity:
+        for outcome in flat:
             try:
                 fingerprint = contract.star_for(outcome)
             except Exception:
@@ -329,7 +391,7 @@ def commit(
             )
             gravity_ok = outcome_gravity.accounted(gravity_counts, len(pairs))
 
-    # 3. Ledger.
+    # 4. Ledger.
     if not gravity_ok and contract.replayable:
         # La fuente puede volver a presentar el lote entero: no se escribe
         # nada, así ledger, gravedad y marcador avanzan juntos o no avanzan.
@@ -337,11 +399,11 @@ def commit(
             "%s | lote NO contabilizado (%d): no se escribe el ledger ni se "
             "marca nada; la fuente lo volverá a presentar",
             contract.domain,
-            gravity_counts.get(outcome_gravity.FAILED, len(with_identity)),
+            gravity_counts.get(outcome_gravity.FAILED, len(flat)),
         )
         return CommitReport(
             domain=contract.domain, total=total, accounted=False,
-            no_identity=no_identity, origin=where_from, gravity=gravity_counts,
+            no_identity=no_identity, origins=origins, gravity=gravity_counts,
         )
 
     already = (
@@ -349,42 +411,53 @@ def commit(
         else outcome_gravity.ledger_prediction_ids(contract.domain)
     )
     handled: List[str] = []
+    complete: List[str] = []
+    partial: List[str] = []
     written = skipped = 0
-    for outcome in with_identity:
-        pid = outcome.prediction_id
-        if pid in already:
-            # Ya está en el ledger de una pasada anterior cuyo cierre no llegó
-            # a completarse. Reescribirlo duplicaría la fila y el DomainScore
-            # acumulado contaría las dos.
-            skipped += 1
-            handled.append(pid)
-            continue
-        if vledger.record_outcome(outcome):
-            written += 1
-            already.add(pid)
-            handled.append(pid)
-        else:
-            # `record_outcome` no lanza: devuelve False. Ignorarlo dejaba el
-            # ledger sin el resultado y el dominio dándolo por cerrado.
-            logger.warning(
-                "%s | el ledger rechazó %s: no se da por cerrado",
-                contract.domain, pid,
-            )
+    for ev, outs in stamped:
+        landed = 0
+        for outcome in outs:
+            pid = outcome.prediction_id
+            if pid in already:
+                # Ya está en el ledger de una pasada anterior que no llegó a
+                # cerrarse. Reescribirlo duplicaría la fila y el DomainScore
+                # acumulado contaría las dos.
+                skipped += 1
+                landed += 1
+                handled.append(pid)
+                continue
+            if vledger.record_outcome(outcome):
+                written += 1
+                landed += 1
+                already.add(pid)
+                handled.append(pid)
+            else:
+                # `record_outcome` no lanza: devuelve False.
+                logger.warning(
+                    "%s | el ledger rechazó %s", contract.domain, pid,
+                )
+        (complete if landed == len(outs) else partial).append(ev.item_id)
 
+    if partial:
+        logger.warning(
+            "%s | %d ítems con evidencia INCOMPLETA no se confirman; volverán "
+            "a presentarse y lo ya escrito no se duplicará: %s",
+            contract.domain, len(partial), sorted(partial)[:5],
+        )
     if not gravity_ok:
         logger.warning(
             "%s | %d resultados no llegaron a la gravedad; están en el ledger "
             "y se recuperarán en el próximo ciclo",
-            contract.domain,
-            gravity_counts.get(outcome_gravity.FAILED, 0),
+            contract.domain, gravity_counts.get(outcome_gravity.FAILED, 0),
         )
 
-    confirmed = _confirm(contract, confirm, handled)
+    confirmed = _confirm(contract, confirm, complete)
     return CommitReport(
         domain=contract.domain, total=total, handled_ids=tuple(handled),
-        accounted=gravity_ok and len(handled) == len(with_identity),
+        accounted=gravity_ok and not partial,
         ledger_written=written, ledger_skipped=skipped,
-        no_identity=no_identity, origin=where_from,
+        no_identity=no_identity, complete_items=tuple(complete),
+        partial_items=tuple(partial), origins=origins,
         gravity=gravity_counts, confirmed=confirmed,
     )
 
@@ -392,9 +465,13 @@ def commit(
 def _confirm(
     contract: DomainContract,
     confirm: Optional[Callable[[Sequence[str]], bool]],
-    handled: Sequence[str],
+    complete_items: Sequence[str],
 ) -> Optional[bool]:
-    """Marca en la fuente los ítems que YA quedaron escritos, y solo esos.
+    """Marca en la fuente los ÍTEMS cuya evidencia quedó COMPLETA, y solo esos.
+
+    Recibe identidades de ÍTEM, no de resultado. La diferencia importa donde
+    un ítem produce varios resultados: confirmar por resultado marcaba la CVE
+    en cuanto aterrizaba cualquiera de sus niveles, aunque a otro le faltara.
 
     Se llama en un único punto, al final de `commit()`, para que ningún
     dominio pueda adelantarlo. Si el marcador falla no se pierde nada: los
@@ -409,10 +486,10 @@ def _confirm(
                 contract.domain,
             )
         return None
-    if not handled:
+    if not complete_items:
         return True
     try:
-        ok = bool(confirm(tuple(handled)))
+        ok = bool(confirm(tuple(complete_items)))
     except Exception as exc:
         logger.warning("%s | el marcador de fuente falló: %s", contract.domain, exc)
         ok = False
@@ -420,7 +497,7 @@ def _confirm(
         logger.warning(
             "%s | %d ítems quedaron sin marcar: se volverán a presentar y la "
             "deduplicación por identidad evitará que se escriban dos veces",
-            contract.domain, len(handled),
+            contract.domain, len(complete_items),
         )
     return ok
 
