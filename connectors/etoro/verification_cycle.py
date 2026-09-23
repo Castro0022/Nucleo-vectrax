@@ -173,11 +173,27 @@ def _signal_identity(sig: Any) -> str:
 #: presentar mientras no esté marcada, así que ante un fallo de la gravedad el
 #: contrato NO escribe el ledger y NO devuelve nada que marcar: el lote entero
 #: se repite, y las tres escrituras avanzan juntas o no avanzan.
+def _origin_kind(origin: str) -> str:
+    """De qué tipo es esta procedencia de market.
+
+    Las señales del `signal_recorder` se resuelven contra el PRECIO REALIZADO
+    de un mercado real, así que son observación real. El PAPER-shadow y las
+    fixtures no lo son.
+    """
+    name = str(origin or "").strip().lower()
+    if not name:
+        return outcome_contract.UNKNOWN
+    if "sim" in name or "shadow" in name or "paper" in name or name in ("test", "fixture"):
+        return outcome_contract.SIMULATED
+    return outcome_contract.REAL
+
+
 CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
     domain=_DOMAIN,
     source=_GRAVITY_SOURCE,
     unit="señal de mercado resuelta contra el precio realizado",
     identify=_signal_identity,
+    origin_kind=_origin_kind,
     replayable=True,
     star_for=_fingerprint_from_outcome,
     confirms=True,

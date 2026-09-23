@@ -103,11 +103,27 @@ def _prediction_id(ev: Any) -> str:
 #: gravedad con resultados verificados — el contrato cubre entonces identidad y
 #: ledger, y la conformidad se comprueba sobre lo que declara, no sobre lo que
 #: se supone. Conectarlo a la gravedad es un cambio aparte.
+def _origin_kind(origin: str) -> str:
+    """De qué tipo es esta procedencia de real estate.
+
+    Igual que freight: el proveedor por defecto es el simulador
+    (`REAL_ESTATE_FEED_PROVIDER`), y ATTOM o RentCast son observaciones
+    reales del mercado.
+    """
+    name = str(origin or "").strip().lower()
+    if not name:
+        return outcome_contract.UNKNOWN
+    if "sim" in name or name in ("test", "fixture"):
+        return outcome_contract.SIMULATED
+    return outcome_contract.REAL
+
+
 CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
     domain=_DOMAIN,
     source="real_estate.verification_cycle",
     unit="desenlace de listado verificado contra su cierre",
     identify=_prediction_id,
+    origin_kind=_origin_kind,
     replayable=False,
 ))
 

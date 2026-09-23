@@ -539,6 +539,7 @@ class GravityIndex:
 
     def record_verified_outcome(
         self, fingerprint: str, outcome: str, outcome_id: str, ts: float = 0.0,
+        origin_kind: str = "unknown",
     ) -> bool:
         """Anota UN resultado VERIFICADO en la historia graduable de una estrella.
 
@@ -547,17 +548,21 @@ class GravityIndex:
         de un solo elemento y delega en el mismo cuerpo para que no puedan
         divergir.
         """
-        return self.record_verified_outcomes([(fingerprint, outcome, outcome_id, ts)])[0]
+        return self.record_verified_outcomes(
+            [(fingerprint, outcome, outcome_id, ts, origin_kind)]
+        )[0]
 
     def record_verified_outcomes(
-        self, entries: Iterable[Tuple[str, str, str, float]],
+        self, entries: Iterable[Tuple[str, str, str, float, str]],
     ) -> List[bool]:
         """Anota resultados VERIFICADOS en `verified_outcomes`, en UNA sola
         transaccion (un lock, una lectura, una escritura para todo el lote).
 
-        Cada elemento es ``(fingerprint, status, outcome_id, ts)``, donde `ts`
-        es el instante en que ese resultado se RESOLVIO contra la verdad del
-        dominio. Devuelve una lista de booleanos PARALELA a la entrada: True
+        Cada elemento es ``(fingerprint, status, outcome_id, ts, origin_kind)``:
+        `ts` es el instante en que ese resultado se RESOLVIO contra la verdad
+        del dominio, y `origin_kind` de qué tipo de observacion viene (real,
+        simulada o desconocida), que es lo que permite al graduador decidir si
+        puede aprender de el. Devuelve una lista de booleanos PARALELA a la entrada: True
         donde la estrella existe y el resultado quedo anotado.
 
         IDEMPOTENTE POR `outcome_id`
@@ -618,7 +623,9 @@ class GravityIndex:
         with self._locked(exclusive=True):
             records = self._read_from_disk()
             touched = False
-            for i, (fingerprint, outcome, outcome_id, ts) in enumerate(items):
+            for i, entry in enumerate(items):
+                fingerprint, outcome, outcome_id, ts = entry[:4]
+                origin_kind = str(entry[4]) if len(entry) > 4 else "unknown"
                 rec = records.get(fingerprint)
                 if rec is None:
                     continue
@@ -626,9 +633,14 @@ class GravityIndex:
                 if any(_verified_entry_id(e) == outcome_id
                        for e in rec.verified_outcomes):
                     continue  # ya anotado (reintento inmediato tras una caida)
-                rec.verified_outcomes.append(
-                    {"status": str(outcome), "id": str(outcome_id), "ts": float(ts)}
-                )
+                rec.verified_outcomes.append({
+                    "status": str(outcome), "id": str(outcome_id),
+                    "ts": float(ts),
+                    # QUÉ TIPO de observación es. El graduador decide con esto
+                    # si el resultado puede enseñar: ver
+                    # `core.gravity_kernel.signals._gradable_history`.
+                    "origin_kind": origin_kind,
+                })
                 # La ventana son los N resultados MAS RECIENTES por el instante
                 # en que se resolvieron, no los N ultimos escritos. Ver el
                 # razonamiento en el docstring.

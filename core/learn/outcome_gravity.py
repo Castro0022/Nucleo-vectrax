@@ -210,6 +210,7 @@ CREATE TABLE IF NOT EXISTS pending_outcomes (
     resolved_ts    REAL NOT NULL DEFAULT 0.0,
     deferred_at    REAL NOT NULL DEFAULT 0.0,
     last_attempt_at REAL NOT NULL DEFAULT 0.0,
+    origin_kind    TEXT NOT NULL DEFAULT 'unknown',
     attempts       INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (fingerprint, prediction_id)
 );
@@ -299,13 +300,19 @@ def _migrate_pending(conn: sqlite3.Connection) -> None:
     el orden de reintento parta del de llegada.
     """
     cols = {r[1] for r in conn.execute("PRAGMA table_info(pending_outcomes)")}
-    if "last_attempt_at" in cols:
-        return
-    conn.execute(
-        "ALTER TABLE pending_outcomes "
-        "ADD COLUMN last_attempt_at REAL NOT NULL DEFAULT 0.0"
-    )
-    conn.execute("UPDATE pending_outcomes SET last_attempt_at = deferred_at")
+    if "last_attempt_at" not in cols:
+        conn.execute(
+            "ALTER TABLE pending_outcomes "
+            "ADD COLUMN last_attempt_at REAL NOT NULL DEFAULT 0.0"
+        )
+        conn.execute("UPDATE pending_outcomes SET last_attempt_at = deferred_at")
+    if "origin_kind" not in cols:
+        # Lo aparcado antes de que existiera la clase queda como `unknown`:
+        # no se le supone una procedencia que nunca se registró.
+        conn.execute(
+            "ALTER TABLE pending_outcomes "
+            "ADD COLUMN origin_kind TEXT NOT NULL DEFAULT 'unknown'"
+        )
 
 
 def _open_for_read(db_path: Optional[str] = None) -> Optional[sqlite3.Connection]:
@@ -364,6 +371,16 @@ def _balanced(counts: Dict[str, int], total: int) -> Dict[str, int]:
     return balanced
 
 
+def _outcome_kind(outcome: Outcome) -> str:
+    """Clase de procedencia que `outcome_contract.commit()` selló en la
+    evidencia. Sin sello, `unknown`: no se supone nada."""
+    try:
+        kind = str(dict(outcome.evidence).get("origin_kind") or "").strip()
+    except Exception:
+        kind = ""
+    return kind or "unknown"
+
+
 def _outcome_ts(outcome: Outcome, fallback: float) -> float:
     """Instante en que se resolvio el resultado contra la verdad del dominio.
 
@@ -395,8 +412,9 @@ def _defer(conn, fingerprint: str, outcome: Outcome, source: str, now: float) ->
         """
         INSERT INTO pending_outcomes
             (fingerprint, prediction_id, domain, subject, status,
-             score, source, resolved_ts, deferred_at, last_attempt_at, attempts)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+             score, source, resolved_ts, deferred_at, last_attempt_at,
+             origin_kind, attempts)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(fingerprint, prediction_id)
         DO UPDATE SET attempts = attempts + 1, last_attempt_at = excluded.last_attempt_at
         """,
@@ -404,6 +422,7 @@ def _defer(conn, fingerprint: str, outcome: Outcome, source: str, now: float) ->
             fingerprint, outcome.prediction_id, outcome.domain, outcome.subject,
             outcome.status.value, float(outcome.score or 0.0), source,
             float(getattr(outcome, "resolved_ts", 0.0) or 0.0), now, now,
+            _outcome_kind(outcome),
         ),
     )
 
@@ -549,7 +568,8 @@ def _apply_once(
         # 3. Anotar en la gravedad (una sola transaccion para todo el lote).
         if claimed:
             written = gravity.record_verified_outcomes([
-                (fp, o.status.value, o.prediction_id, _outcome_ts(o, now))
+                (fp, o.status.value, o.prediction_id, _outcome_ts(o, now),
+                 _outcome_kind(o))
                 for fp, o in claimed
             ])
             for (fingerprint, outcome), ok in zip(claimed, written):
@@ -686,16 +706,18 @@ def retry_pending(
     try:
         where, params = ("WHERE domain = ?", [domain]) if domain else ("", [])
         rows = conn.execute(
-            f"SELECT {', '.join(_COLUMNS[:-1])} FROM pending_outcomes {where} "
+            f"SELECT {', '.join(_COLUMNS[:-1])}, origin_kind "
+            f"FROM pending_outcomes {where} "
             "ORDER BY last_attempt_at ASC, rowid ASC LIMIT ?",
             (*params, int(limit)),
         ).fetchall()
         if not rows:
             return counts
 
-        parked = [(r[0], _outcome_from_row(r), r[6]) for r in rows]
+        parked = [(r[0], _outcome_from_row(r, r[-1]), r[6]) for r in rows]
         written = gravity.record_verified_outcomes([
-            (fp, o.status.value, o.prediction_id, _outcome_ts(o, now))
+            (fp, o.status.value, o.prediction_id, _outcome_ts(o, now),
+             _outcome_kind(o))
             for fp, o, _src in parked
         ])
         for (fingerprint, outcome, row_source), ok in zip(parked, written):
@@ -741,13 +763,14 @@ def retry_pending(
     return counts
 
 
-def _outcome_from_row(row) -> Outcome:
+def _outcome_from_row(row, origin_kind: str = "unknown") -> Outcome:
     """Reconstruye el `Outcome` aparcado. No recalcula nada: el veredicto es el
     que produjo el `OutcomeAdapter` en su momento, tal cual quedo guardado."""
     return Outcome(
         prediction_id=row[1], domain=row[2], subject=row[3],
         status=OutcomeStatus(row[4]), score=float(row[5] or 0.0),
         resolved_ts=float(row[7] or 0.0),
+        evidence={"origin_kind": origin_kind},
     )
 
 

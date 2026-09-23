@@ -211,11 +211,30 @@ def _fingerprint_from_outcome(outcome) -> Optional[str]:
 #: que retener el ledger ante un fallo de la gravedad no protegería el
 #: resultado, lo perdería. El contrato escribe siempre el ledger y recupera la
 #: gravedad después desde ahí.
+def _origin_kind(origin: str) -> str:
+    """De qué tipo es esta procedencia de freight.
+
+    El proveedor por defecto es el SIMULADOR (`FREIGHT_FEED_PROVIDER`, default
+    "simulator"), así que hoy prácticamente toda la evidencia de este dominio
+    es simulada — y el núcleo no la gradúa. Es la respuesta honesta: un patrón
+    de freight no puede cualificar con entregas que nunca ocurrieron. Cuando
+    se conecte un feed real (DAT, Truckstop, el CRM de un bróker), esa
+    evidencia sí enseñará, sin tocar nada más.
+    """
+    name = str(origin or "").strip().lower()
+    if not name:
+        return outcome_contract.UNKNOWN
+    if "sim" in name or name in ("test", "fixture"):
+        return outcome_contract.SIMULATED
+    return outcome_contract.REAL
+
+
 CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
     domain=_DOMAIN,
     source=_GRAVITY_SOURCE,
     unit="entrega verificada contra su puntualidad",
     identify=_prediction_id,
+    origin_kind=_origin_kind,
     replayable=False,
     star_for=_fingerprint_from_outcome,
 ))

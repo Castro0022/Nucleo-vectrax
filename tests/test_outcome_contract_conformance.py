@@ -45,6 +45,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from core.learn import causal_learning as cl  # noqa: E402
 from core.learn import outcome_contract as oc  # noqa: E402
 from core.learn import outcome_gravity as og  # noqa: E402
 from core.learn import verification_ledger as vledger  # noqa: E402
@@ -833,13 +834,21 @@ class TestTheEvidenceSaysWhatItIsAndWhereItCameFrom:
         rows = vledger.load_outcomes(contract.domain)
         assert rows[-1].evidence["origin"] == "feed-X"
 
-    def test_an_absent_origin_falls_back_to_the_cycle_never_to_nothing(
-        self, contract,
-    ):
+    def test_an_absent_origin_is_unknown_never_the_cycle_name(self, contract):
+        """No saber de dónde vino se DICE, no se rellena.
+
+        Antes una procedencia ausente se sustituía por el nombre del ciclo.
+        Eso la hacía PARECER conocida: una etiqueta verosímil ocupando el
+        sitio de un dato que no se tenía, indistinguible de una procedencia
+        real. Fabricar procedencia es el mismo error que fabricar resultados.
+        """
         report = oc.commit(contract, [_ev(contract, "a", origin="  ")])
 
-        assert report.origins == (contract.source,)
-        assert vledger.load_outcomes(contract.domain)[-1].evidence["origin"]
+        assert report.origins == (oc.UNKNOWN,)
+        row = vledger.load_outcomes(contract.domain)[-1]
+        assert row.evidence["origin"] == oc.UNKNOWN
+        assert row.evidence["origin_kind"] == oc.UNKNOWN
+        assert contract.source not in str(row.evidence["origin"])
 
 
 def test_every_domain_measures_something_distinct():
@@ -1058,3 +1067,160 @@ class TestProvenanceTravelsWithEachEvidence:
 
         origins = {r.evidence.get("origin") for r in vledger.load_outcomes(domain)}
         assert origins == {"sim", "dat_feed"}, origins
+
+
+# ===========================================================================
+# 11. QUÉ USO hace el núcleo de cada evidencia: el recorrido hasta el criterio
+# ===========================================================================
+
+@GRAVITY
+class TestTheCoreDecidesWhatItCanLearnFrom:
+    """Guardar la procedencia no es usarla.
+
+    Hasta aquí el contrato registraba de dónde venía cada evidencia y después
+    aprendía de todas por igual. Estas pruebas siguen una evidencia SIMULADA y
+    una REAL hasta `qualify_pattern()` —el punto donde el núcleo decide si un
+    patrón tiene criterio— y comprueban que hace un uso distinto de cada una.
+
+    La regla: lo simulado se registra y se puede auditar, pero NO cualifica un
+    patrón. Aprender de un simulador y aplicar ese criterio a decisiones
+    reales es el error que la procedencia existe para impedir.
+    """
+
+    @staticmethod
+    def _feed(contract, index, n, origin, status=OutcomeStatus.WIN, tag="e"):
+        return oc.commit(contract, [
+            _ev(contract, f"{tag}-{origin}-{i}", status, ts=6000.0 + i,
+                origin=origin)
+            for i in range(n)
+        ])
+
+    def test_simulated_evidence_is_recorded(self, contract, index):
+        fingerprint = _make_star(index, contract)
+
+        self._feed(contract, index, 3, "simulator")
+
+        # Está: se puede auditar qué se excluyó y por qué.
+        assert len(index.get(fingerprint).verified_outcomes) == 3
+        assert len(vledger.load_outcomes(contract.domain)) == 3
+        rows = og.provenance(domain=contract.domain)
+        assert len(rows) == 3
+
+    def test_simulated_evidence_does_not_grade_the_pattern(self, contract, index):
+        from core.gravity_kernel.signals import fetch_pattern_stats
+
+        fingerprint = _make_star(index, contract)
+        self._feed(contract, index, 20, "simulator")
+
+        assert fetch_pattern_stats(fingerprint) is None, (
+            f"{contract.domain}: un patrón se graduó con evidencia simulada"
+        )
+
+    def test_real_evidence_does_grade_the_pattern(self, contract, index):
+        from core.gravity_kernel.signals import fetch_pattern_stats
+
+        fingerprint = _make_star(index, contract)
+        self._feed(contract, index, 16, "dat_feed")
+        self._feed(contract, index, 4, "dat_feed", OutcomeStatus.LOSS, tag="l")
+
+        stats = fetch_pattern_stats(fingerprint)
+        assert stats is not None
+        assert stats["sample_size"] == 20
+        assert stats["win_rate"] == pytest.approx(0.8)
+        assert stats["real"] == 20
+        assert stats["simulated"] == 0
+
+    def test_simulated_evidence_does_not_dilute_the_real_one(
+        self, contract, index,
+    ):
+        """Lo importante: mezcladas, el criterio sale del subconjunto real."""
+        from core.gravity_kernel.signals import fetch_pattern_stats
+
+        fingerprint = _make_star(index, contract)
+        # 5 reales, todas acierto. 10 simuladas, todas fallo.
+        self._feed(contract, index, 5, "dat_feed", tag="r")
+        self._feed(contract, index, 10, "simulator", OutcomeStatus.LOSS, tag="s")
+
+        stats = fetch_pattern_stats(fingerprint)
+        assert stats["sample_size"] == 5, stats
+        assert stats["win_rate"] == pytest.approx(1.0), stats
+        assert stats["simulated"] == 10   # visible, no silenciada
+        assert stats["real"] == 5
+
+    def test_a_simulated_pattern_never_qualifies(self, contract, index):
+        """El recorrido entero: evidencia simulada -> NO hay criterio."""
+        fingerprint = _make_star(index, contract)
+        self._feed(contract, index, 20, "simulator")
+
+        stats = cl.qualify_pattern(
+            fingerprint, cl.build_production_policy(contract.domain),
+        )
+
+        assert not stats.qualified, stats.reason
+        assert "no tiene outcomes graduados" in stats.reason
+
+    def test_the_same_evidence_from_a_real_feed_does_qualify(
+        self, contract, index,
+    ):
+        """La misma evidencia, cambiando SOLO la procedencia, sí cualifica.
+
+        Es la comparación que demuestra que la decisión la toma la procedencia
+        y no otra cosa del dato.
+        """
+        fingerprint = _make_star(index, contract)
+        self._feed(contract, index, 16, "dat_feed")
+        self._feed(contract, index, 4, "dat_feed", OutcomeStatus.LOSS, tag="l")
+
+        stats = cl.qualify_pattern(
+            fingerprint, cl.build_production_policy(contract.domain),
+        )
+
+        assert stats.qualified, stats.reason
+        assert stats.sample_size == 20
+        assert stats.win_rate == pytest.approx(80.0)
+
+    def test_the_breakdown_makes_the_exclusion_auditable(self, contract, index):
+        """Excluir en silencio sería otro agujero: se puede preguntar."""
+        from core.gravity_kernel.signals import provenance_breakdown
+
+        fingerprint = _make_star(index, contract)
+        self._feed(contract, index, 3, "dat_feed", tag="r")
+        self._feed(contract, index, 2, "simulator", tag="s")
+        self._feed(contract, index, 1, "", tag="u")
+
+        breakdown = provenance_breakdown(index.get(fingerprint))
+        assert breakdown == {"real": 3, "simulated": 2, "unknown": 1}, breakdown
+
+
+class TestFreightLearnsFromSimulatedDataToday:
+    """Consecuencia concreta, dicha en vez de escondida.
+
+    `FREIGHT_FEED_PROVIDER` y `REAL_ESTATE_FEED_PROVIDER` valen "simulator"
+    por defecto, así que HOY casi toda la evidencia de esos dos dominios es
+    simulada — y desde este cambio ya no gradúa. Un patrón de freight no puede
+    cualificar con entregas que nunca ocurrieron, y eso significa que la
+    demostración de aprendizaje de freight en rondas anteriores de este PR
+    estaba hecha sobre datos simulados.
+
+    No se cambia el proveedor por defecto aquí: es una decisión de operación.
+    Lo que sí se fija es que el núcleo ya no confunde una cosa con la otra.
+    """
+
+    def test_the_simulator_is_classified_as_simulated(self):
+        for domain in ("freight_logistics", "florida_real_estate"):
+            contract = oc.contract_for(domain)
+            assert contract.origin_kind("simulator") == oc.SIMULATED, domain
+            assert contract.origin_kind("sim") == oc.SIMULATED, domain
+
+    def test_a_real_feed_is_classified_as_real(self):
+        assert oc.contract_for("freight_logistics").origin_kind("dat") == oc.REAL
+        assert oc.contract_for("florida_real_estate").origin_kind("attom") == oc.REAL
+
+    def test_market_prices_and_cve_feeds_are_real(self):
+        assert oc.contract_for("market").origin_kind("signal_recorder") == oc.REAL
+        assert oc.contract_for("cybersecurity").origin_kind("nvd+kev") == oc.REAL
+
+    def test_market_paper_shadow_is_not_real(self):
+        """El PAPER-shadow no observa el mundo: registra hipótesis."""
+        contract = oc.contract_for("market")
+        assert contract.origin_kind("paper_shadow") == oc.SIMULATED

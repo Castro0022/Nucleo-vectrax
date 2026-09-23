@@ -87,11 +87,26 @@ def _cve_identity(ev: Any) -> str:
 #: `replayable=True`: el backfill vuelve a leer las CVE, y `seen_ledger` decide
 #: por su cuenta qué es nuevo o cambió. `star_for=None`: la masa de estrellas
 #: la acumula la ingesta (`_accumulate_mass`), no los resultados verificados.
+def _origin_kind(origin: str) -> str:
+    """De qué tipo es esta procedencia de cybersecurity.
+
+    NVD y el catálogo KEV son registros reales de vulnerabilidades explotadas;
+    no hay simulador en este dominio.
+    """
+    name = str(origin or "").strip().lower()
+    if not name:
+        return outcome_contract.UNKNOWN
+    if "sim" in name or name in ("test", "fixture"):
+        return outcome_contract.SIMULATED
+    return outcome_contract.REAL
+
+
 CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
     domain=DOMAIN,
     source="cybersecurity.verification_cycle",
     unit="CVE verificada contra su entrada en KEV",
     identify=_cve_identity,
+    origin_kind=_origin_kind,
     replayable=True,
     supersedes=True,
     confirms=True,

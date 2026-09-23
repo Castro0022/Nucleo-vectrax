@@ -171,14 +171,41 @@ def _gradable_history(rec) -> List[str]:
     """
     verified = list(getattr(rec, "verified_outcomes", []) or [])
     if verified:
-        # Cada entrada es {"status": ..., "id": ...}; al graduador solo le
-        # concierne el veredicto. Se tolera una entrada en texto plano por si
-        # quedara alguna de la forma anterior del campo.
-        return [
-            str(e.get("status", "")) if isinstance(e, dict) else str(e)
-            for e in verified
-        ]
+        # LA DECISIÓN DEL NÚCLEO SOBRE QUÉ EVIDENCIA PUEDE ENSEÑAR.
+        #
+        # Guardar la procedencia no es usarla. Un resultado marcado como
+        # SIMULADO se conserva en la estrella —es observable, y su exclusión
+        # tiene que poder auditarse— pero NO se gradúa: aprender de un
+        # simulador y aplicar ese criterio a decisiones reales es exactamente
+        # el error que la procedencia existe para impedir.
+        #
+        # `unknown` sí gradúa, y se cuenta aparte (ver `derive_pattern_stats`):
+        # es un hueco que cerrar, no una contaminación demostrada. Dejar de
+        # graduarlo sería un cambio de comportamiento mayor que el que
+        # corresponde decidir aquí, y quedaría invisible.
+        out = []
+        for e in verified:
+            if not isinstance(e, dict):
+                out.append(str(e))       # forma antigua del campo
+                continue
+            if str(e.get("origin_kind", "")) == "simulated":
+                continue
+            out.append(str(e.get("status", "")))
+        return out
     return list(getattr(rec, "outcome_history", []) or [])
+
+
+def provenance_breakdown(rec) -> Dict[str, int]:
+    """Cuántos resultados verificados tiene la estrella de cada procedencia.
+
+    Permite responder "¿sobre qué está aprendiendo este patrón?" sin adivinar,
+    y hace visible lo que el graduador excluyó en vez de dejarlo en silencio.
+    """
+    counts: Dict[str, int] = {}
+    for e in list(getattr(rec, "verified_outcomes", []) or []):
+        kind = str(e.get("origin_kind", "unknown")) if isinstance(e, dict) else "unknown"
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
 
 
 def derive_pattern_stats(rec) -> Optional[Dict[str, float]]:
@@ -203,6 +230,7 @@ def derive_pattern_stats(rec) -> Optional[Dict[str, float]]:
         if graded == 0:
             return None
         win_rate = wins / graded
+        breakdown = provenance_breakdown(rec)
         return {
             "win_rate": win_rate,
             "expectancy": win_rate - (losses / graded),
@@ -211,6 +239,12 @@ def derive_pattern_stats(rec) -> Optional[Dict[str, float]]:
             # confirmaciones del escáner. El puente causal lo exige para poder
             # contrastar contra core.domain_knowledge.MIN_SAMPLE sin suponerlo.
             "sample_size": float(graded),
+            # Sobre QUÉ está aprendiendo este patrón. `simulated` son los que
+            # el núcleo excluyó del cálculo; `unknown`, los que cuentan pero
+            # cuya procedencia nadie declaró.
+            "real": float(breakdown.get("real", 0)),
+            "simulated": float(breakdown.get("simulated", 0)),
+            "unknown": float(breakdown.get("unknown", 0)),
         }
     except Exception:
         return None

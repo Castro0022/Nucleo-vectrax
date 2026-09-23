@@ -85,9 +85,18 @@ def _neutral_signal(i: int, symbol: str = "AAPL") -> _Signal:
 
 
 class _FreightEvent:
+    """Una entrega REAL verificada.
+
+    `source` es un feed real a propósito. Desde que la procedencia es
+    consecuente (ver `core/learn/outcome_contract.py`), una entrega de
+    "simulator" se registra pero NO gradúa el patrón, y estas pruebas van
+    sobre el recorrido del aprendizaje, no sobre la exclusión de lo simulado
+    —que tiene las suyas en `test_outcome_contract_conformance.py`.
+    """
+
     __slots__ = ("event_type", "data", "source", "ts")
 
-    def __init__(self, event_type, data, source="simulator", ts=0.0):
+    def __init__(self, event_type, data, source="dat_feed", ts=0.0):
         self.event_type = event_type
         self.data = dict(data)
         self.source = source

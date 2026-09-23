@@ -120,6 +120,30 @@ def derive_identity(
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
 
 
+# ── Clase de procedencia: lo que decide qué puede usarse para APRENDER ──
+
+#: Observación del mundo real. Es la única que puede cualificar un patrón.
+REAL = "real"
+#: Generada por un simulador. Se registra y se puede leer, pero NO enseña.
+SIMULATED = "simulated"
+#: No se sabe. No se inventa: se dice.
+UNKNOWN = "unknown"
+
+ORIGIN_KINDS = (REAL, SIMULATED, UNKNOWN)
+
+
+def unknown_origin(origin: str) -> str:
+    """Clasificación por defecto: no saber.
+
+    Un dominio que no declare de qué tipo son sus procedencias no recibe una
+    suposición favorable. Antes la procedencia ausente se sustituía por el
+    nombre del ciclo, lo que la hacía PARECER conocida: una etiqueta
+    verosímil ocupando el sitio de un dato que no se tenía. Eso es fabricar
+    procedencia, que es exactamente lo que este contrato existe para impedir.
+    """
+    return UNKNOWN
+
+
 # ── La unidad que entra al núcleo ─────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -199,6 +223,15 @@ class DomainContract:
     star_for: Optional[Callable[[Outcome], Optional[str]]] = None
     #: ¿Una escritura posterior supersede a la anterior? (cybersecurity)
     supersedes: bool = False
+    #: QUÉ TIPO de observación es cada procedencia de este dominio.
+    #:
+    #: Solo el dominio sabe si "simulator" es un simulador; solo el núcleo
+    #: decide qué hacer con esa respuesta. Esa división es el punto: el
+    #: dominio DESCRIBE su fuente, el núcleo DECIDE si con eso se aprende.
+    #:
+    #: Por defecto, `unknown_origin`: no saber. Un dominio que no lo declare
+    #: no obtiene el beneficio de la duda.
+    origin_kind: Callable[[str], str] = unknown_origin
     #: ¿La fuente tiene un MARCADOR que impide volver a presentar el ítem?
     #:
     #: market lo tiene (`market_verified.json`) y cybersecurity también
@@ -349,19 +382,41 @@ def commit(
         return CommitReport(domain=contract.domain, total=total,
                             accounted=False, no_identity=no_identity)
 
-    # 2. Sellar unidad y procedencia. La procedencia es la de SU evidencia.
+    # 2. Sellar unidad, procedencia y CLASE de procedencia.
+    #
+    #    Una procedencia ausente es `unknown`, NUNCA el nombre del ciclo: una
+    #    etiqueta verosímil en el sitio de un dato que no se tiene es peor que
+    #    la ausencia, porque no se distingue de una procedencia real.
     stamped: List[Tuple[Evidence, List[Outcome]]] = []
     for ev in usable:
-        where_from = str(ev.origin).strip() or contract.source
+        where_from = str(ev.origin).strip() or UNKNOWN
+        if where_from == UNKNOWN:
+            # Sin procedencia no hay nada que clasificar. Preguntarle al
+            # dominio por una procedencia que no existe invita a que le ponga
+            # una etiqueta —`_origin_kind("unknown")` devolvía REAL, porque
+            # "unknown" no se parece a un simulador—, que es fabricarla por
+            # otra vía. Lo decide el núcleo, y decide que no lo sabe.
+            kind = UNKNOWN
+        else:
+            try:
+                kind = str(contract.origin_kind(where_from) or UNKNOWN)
+            except Exception:
+                kind = UNKNOWN
+        if kind not in ORIGIN_KINDS:
+            logger.warning(
+                "%s | clase de procedencia desconocida %r para %r: se trata "
+                "como %s", contract.domain, kind, where_from, UNKNOWN,
+            )
+            kind = UNKNOWN
         stamped.append((ev, [
             replace(o, evidence={
                 **dict(o.evidence), "origin": where_from,
-                "unit": contract.unit,
+                "origin_kind": kind, "unit": contract.unit,
             })
             for o in ev.outcomes
         ]))
     origins = tuple(sorted({
-        str(ev.origin).strip() or contract.source for ev, _ in stamped
+        str(o.evidence["origin"]) for _ev, outs in stamped for o in outs
     }))
     flat = [o for _ev, outs in stamped for o in outs]
 
