@@ -1662,12 +1662,6 @@ class TestAccountedRequiresTheExpectedTotal:
     def test_an_empty_batch_is_accounted(self):
         assert og.accounted({k: 0 for k in og.RESULTS}, 0)
 
-    def test_the_caller_passes_the_real_batch_size(self, index, monkeypatch):
-        """Market pasa el tamaño del lote, no un valor cómodo."""
-        import inspect
-
-        src = inspect.getsource(market_vc._verify)
-        assert "accounted(fed, len(to_gravity))" in src
 
 
 # ===========================================================================
@@ -1720,16 +1714,6 @@ class TestFreightDoesNotDuplicateItsLedger:
 
         assert len(vledger.load_outcomes("freight_logistics")) == 1
 
-    def test_both_domains_share_the_same_dedup_code(self):
-        """Dos copias de esta protección divergen: la que se quede atrás
-        vuelve a inflar el desempeño. El defecto apareció primero en market y
-        después, idéntico, en freight — por eso vive en un solo sitio.
-        """
-        import inspect
-
-        for module in (market_vc, freight_vc):
-            src = inspect.getsource(module)
-            assert "outcome_gravity.ledger_prediction_ids" in src, module.__name__
 
 
 class TestFreightRecoversFromTheLedger:
@@ -1858,9 +1842,3 @@ class TestTheContractIsTheSameInBothDomains:
 
         assert first == second, "la identidad cambió entre pasadas"
 
-    def test_both_domains_reconcile_from_the_ledger(self):
-        import inspect
-
-        for module in (market_vc, freight_vc):
-            src = inspect.getsource(module)
-            assert "reconcile_from_ledger" in src, module.__name__

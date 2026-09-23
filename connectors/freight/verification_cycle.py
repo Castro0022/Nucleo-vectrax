@@ -29,7 +29,7 @@ from core.learn.outcome_adapter import (
     Prediction,
     score_outcomes,
 )
-from core.learn import outcome_gravity
+from core.learn import outcome_contract
 from core.learn import verification_ledger as vledger
 from connectors.freight.freight_outcome_adapter import FreightOutcomeAdapter
 
@@ -88,25 +88,15 @@ def _event_ts(ev: Any) -> float:
 def _prediction_id(ev: Any) -> str:
     """Identidad estable de ESTE evento de resultado.
 
-    `FreightEvent` no tiene id (ver `connectors/freight/base.py`: sus slots son
-    event_type/data/source/ts), y `Prediction.prediction_id` quedaba en "". Sin
-    identidad no hay deduplicación posible: re-verificar el mismo lote —que es
-    lo que ocurre si un ciclo se reintenta— volvería a contar cada entrega en
-    la historia acotada de la estrella, y además expulsaría resultados
-    distintos.
-
-    Se deriva de TODO lo que define el evento (tipo, origen, instante y datos,
-    con las claves ordenadas para que el JSON sea canónico), así que el mismo
-    evento da siempre el mismo id y dos eventos distintos no colisionan. No se
-    inventa nada: es un resumen del evento que ya existe, no un dato nuevo.
+    `FreightEvent` no trae identificador (sus slots son
+    event_type/data/source/ts), así que se deriva con la función COMPARTIDA
+    `outcome_contract.derive_identity`, la misma que usa real estate. Dos
+    copias de esa derivación divergen, y la que se quede atrás vuelve a
+    duplicar el ledger.
     """
-    try:
-        payload = json.dumps(_event_data(ev), sort_keys=True, default=str,
-                             ensure_ascii=False)
-    except Exception:
-        payload = str(_event_data(ev))
-    raw = f"{_event_type(ev)}|{_event_source(ev)}|{_event_ts(ev):.6f}|{payload}"
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
+    return outcome_contract.derive_identity(
+        _event_type(ev), _event_data(ev), _event_source(ev), _event_ts(ev),
+    )
 
 
 #: El evento cuya estrella describe la SITUACIÓN comprometida (la reserva de
@@ -215,43 +205,35 @@ def _fingerprint_from_outcome(outcome) -> Optional[str]:
     return star_fingerprint_for_subject(getattr(outcome, "subject", ""))
 
 
+#: EL CONTRATO DE ESTE DOMINIO.
+#:
+#: `replayable=False`: el proveedor emite cada evento UNA vez y no vuelve, así
+#: que retener el ledger ante un fallo de la gravedad no protegería el
+#: resultado, lo perdería. El contrato escribe siempre el ledger y recupera la
+#: gravedad después desde ahí.
+CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
+    domain=_DOMAIN,
+    source=_GRAVITY_SOURCE,
+    identify=_prediction_id,
+    replayable=False,
+    star_for=_fingerprint_from_outcome,
+))
+
+
 def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
     """Resuelve los eventos de resultado de freight en Outcomes verificados.
 
     - Filtra a ``delivery_complete`` / ``delay_reported`` (los que tienen verdad).
     - subject = region|carrier; predicción favorable = "on_time".
     - Resuelve vía el mismo ``FreightOutcomeAdapter`` (núcleo invariante detrás).
-    - Persiste los decisivos en el ledger (si ``record``).
+    - Persistencia y recuperación: `core.learn.outcome_contract`, COMÚN a todos
+      los dominios. Este ciclo no decide cuándo escribir el ledger ni cómo
+      deduplicar: declara su contrato y el contrato lo aplica.
     - Devuelve el DomainScore de ESTE lote (el acumulado está en el ledger).
-
-    Empieza recuperando lo que quedó atrás: los aparcados, y los resultados que
-    están en el ledger pero no llegaron a la gravedad. Los eventos del
-    proveedor no se repiten entre ciclos, así que un resultado que no se aplicó
-    en su momento solo puede recuperarse desde uno de esos dos sitios, nunca
-    esperando a que el evento vuelva.
-
-    LA ASIMETRÍA CON MARKET, Y POR QUÉ AQUÍ SE RESUELVE AL REVÉS
-    ------------------------------------------------------------
-    Market, ante un fallo del almacén de gravedad, NO escribe el ledger y NO
-    marca la señal: el ciclo siguiente repite el lote entero. Puede permitírselo
-    porque la señal vive en `signal_recorder` y se vuelve a presentar.
-
-    Freight no tiene esa red: el evento lo emitió un proveedor en streaming y no
-    vuelve. Retener el ledger aquí no protegería el resultado, lo perdería del
-    todo. Por eso freight escribe SIEMPRE el ledger —que es durable e
-    independiente de este almacén— y deja que
-    `outcome_gravity.reconcile_from_ledger()` ponga la gravedad al día en un
-    ciclo posterior. El ledger pasa a ser la fuente de recuperación, que es el
-    papel que ya tenía como registro de verdad del dominio.
     """
-    outcome_gravity.retry_pending(_DOMAIN)
-    outcome_gravity.reconcile_from_ledger(
-        _DOMAIN, _fingerprint_from_outcome, source=_GRAVITY_SOURCE,
-    )
+    outcome_contract.recover(CONTRACT)
 
-    already = outcome_gravity.ledger_prediction_ids(_DOMAIN) if record else set()
     outcomes: List[Outcome] = []
-    to_gravity: List[tuple] = []
     for ev in events:
         et = _event_type(ev)
         if et not in _OUTCOME_EVENTS:
@@ -264,39 +246,17 @@ def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
             predicted="on_time",
             prediction_id=_prediction_id(ev),
         )
-        outcome = _ADAPTER.resolve(pred, observation)
-        outcomes.append(outcome)
-        if record and outcome.status is not OutcomeStatus.PENDING:
-            # El ledger NO deduplica: re-verificar el mismo lote —un ciclo que
-            # se reintenta, un proveedor que reemite— escribía la misma línea
-            # otra vez e inflaba el DomainScore acumulado. Reproducido: 2
-            # resultados pasaban a 4 filas y n_decisive=4.
-            if outcome.prediction_id not in already:
-                vledger.record_outcome(outcome)
-                already.add(outcome.prediction_id)
-            fp = star_fingerprint_for(data)
-            if fp:
-                to_gravity.append((fp, outcome))
+        outcomes.append(_ADAPTER.resolve(pred, observation))
 
-    fed = outcome_gravity.apply_verified_outcomes(
-        to_gravity, source=_GRAVITY_SOURCE,
-    ) if to_gravity else {}
-    if to_gravity and not outcome_gravity.accounted(fed, len(to_gravity)):
-        # No se puede reintentar el evento, pero el resultado ya está en el
-        # ledger: la reconciliación del próximo ciclo lo recupera desde ahí.
-        logger.warning(
-            "freight.verification | %d resultados no llegaron a la gravedad "
-            "(almacén no disponible); están en el ledger y se recuperarán en "
-            "el próximo ciclo", fed.get(outcome_gravity.FAILED, len(to_gravity)),
-        )
-
+    decisive = [o for o in outcomes if o.status is not OutcomeStatus.PENDING]
+    report = outcome_contract.commit(CONTRACT, decisive, record=record)
     score = score_outcomes(_DOMAIN, outcomes)
     logger.info(
         "freight.verification | batch=%d | decisive=%d | WR=%.0f%% | acc=%.2f "
-        "| gravity_applied=%d | contabilizado=%s",
+        "| ledger=%d (dup evitados=%d) | gravity=%d | contabilizado=%s",
         score.n_total, score.n_decisive, score.win_rate, score.accuracy,
-        fed.get(outcome_gravity.APPLIED, 0),
-        outcome_gravity.accounted(fed, len(to_gravity)),
+        report.ledger_written, report.ledger_skipped, report.gravity_applied,
+        report.accounted,
     )
     return score
 

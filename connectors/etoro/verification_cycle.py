@@ -27,7 +27,7 @@ from core.learn.outcome_adapter import (
     Prediction,
     score_outcomes,
 )
-from core.learn import outcome_gravity
+from core.learn import outcome_contract
 from core.learn import verification_ledger as vledger
 from connectors.etoro.trading_outcome_adapter import TradingOutcomeAdapter
 
@@ -138,17 +138,6 @@ def star_fingerprint_for(symbol: str) -> str:
     return f"market:{str(symbol or '').upper()}"
 
 
-def _already_in_ledger() -> set:
-    """`prediction_id` que el ledger de market ya contiene.
-
-    La lógica vive en `outcome_gravity.ledger_prediction_ids()`, compartida con
-    freight: el mismo defecto apareció primero aquí y después, idéntico y peor,
-    allí. Dos copias de la misma protección divergen, y la que se quede atrás
-    vuelve a inflar el desempeño acumulado sin que nadie lo note.
-    """
-    return outcome_gravity.ledger_prediction_ids(_DOMAIN)
-
-
 def _fingerprint_from_outcome(outcome) -> str:
     """La estrella de un resultado recuperado del ledger.
 
@@ -158,81 +147,58 @@ def _fingerprint_from_outcome(outcome) -> str:
     return star_fingerprint_for(getattr(outcome, "subject", ""))
 
 
+def _signal_identity(sig: Any) -> str:
+    """Identidad del resultado de una señal: su `signal_id`.
+
+    Market tiene identificador natural, así que NO se deriva del payload:
+    `signal_id` es estable aunque cambie el formato de la señal.
+    """
+    return str(getattr(sig, "signal_id", "") or "")
+
+
+#: EL CONTRATO DE ESTE DOMINIO.
+#:
+#: `replayable=True`: la señal vive en `signal_recorder` y el ciclo la vuelve a
+#: presentar mientras no esté marcada, así que ante un fallo de la gravedad el
+#: contrato NO escribe el ledger y NO devuelve nada que marcar: el lote entero
+#: se repite, y las tres escrituras avanzan juntas o no avanzan.
+CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
+    domain=_DOMAIN,
+    source=_GRAVITY_SOURCE,
+    identify=_signal_identity,
+    replayable=True,
+    star_for=_fingerprint_from_outcome,
+))
+
+
 def _verify(signals: Iterable[Any], record: bool):
     """Cuerpo de la verificación. Devuelve ``(score, handled_ids)``.
 
-    ``handled_ids`` son los `signal_id` cuyo resultado quedó DURABLEMENTE
-    contabilizado: aplicado a la estrella, reconocido como duplicado o
-    aparcado para reintento. Solo esos puede marcar el ciclo como verificados.
+    `handled_ids` son los `signal_id` que el contrato dio por cerrados: solo
+    esos puede marcar el ciclo como verificados. La persistencia —qué se
+    escribe, en qué orden, y qué se deduplica— la decide
+    `core.learn.outcome_contract`, común a todos los dominios; aquí solo se
+    resuelven las señales contra la verdad del precio.
 
-    ORDEN DE LAS ESCRITURAS
-    -----------------------
-    Primero la gravedad, después el ledger. Es deliberado: si el almacén de
-    `outcome_gravity` está bloqueado por otro escritor, el lote NO queda
-    contabilizado, y entonces tampoco se escribe en el ledger ni se marca la
-    señal. Así las tres cosas —ledger, gravedad y marcador— avanzan juntas o
-    no avanzan, y el siguiente ciclo repite el lote completo sin duplicar
-    nada. Al revés (ledger primero) un bloqueo dejaba el ledger escrito y la
-    señal marcada con el resultado perdido, o bien lo duplicaba en el ledger
-    al reintentar.
-
-    Una señal cuyo resultado es PENDING tampoco se marca: todavía no está
-    verificada, y marcarla la habría excluido para siempre.
+    Una señal cuyo resultado es PENDING no se entrega al contrato ni se marca:
+    todavía no está verificada, y marcarla la habría excluido para siempre.
     """
     outcomes: List[Outcome] = []
-    to_gravity: List[tuple] = []
-    sig_by_prediction: Dict[str, Any] = {}
     for sig in signals:
         pred, obs = _signal_to_pair(sig)
-        outcome = _ADAPTER.resolve(pred, obs)
-        outcomes.append(outcome)
-        if record and outcome.status is not OutcomeStatus.PENDING:
-            to_gravity.append((star_fingerprint_for(outcome.subject), outcome))
-            sig_by_prediction[outcome.prediction_id] = outcome
+        outcomes.append(_ADAPTER.resolve(pred, obs))
 
-    fed: Dict[str, int] = {}
-    handled_ids: List[str] = []
-    if to_gravity:
-        fed = outcome_gravity.apply_verified_outcomes(
-            to_gravity, source=_GRAVITY_SOURCE,
-        )
-        if not outcome_gravity.accounted(fed, len(to_gravity)):
-            logger.warning(
-                "market.verification | lote NO contabilizado (%d resultados): "
-                "no se marcan como verificados; se repetirán en el próximo ciclo",
-                fed.get(outcome_gravity.FAILED, 0),
-            )
-        else:
-            already = _already_in_ledger()
-            for prediction_id, outcome in sig_by_prediction.items():
-                if prediction_id in already:
-                    # Ya está en el ledger de una pasada anterior cuyo marcador
-                    # no llegó a escribirse. Volver a escribirlo duplicaría la
-                    # fila; darlo por atendido es lo correcto, porque el
-                    # resultado SÍ está donde tenía que estar.
-                    handled_ids.append(prediction_id)
-                    continue
-                # `record_outcome` NO lanza: devuelve False si no pudo escribir
-                # (disco lleno, permisos). Ignorar ese False marcaba la señal
-                # como verificada con el ledger sin su resultado, y la señal no
-                # se volvía a presentar. Solo se marca lo que quedó escrito.
-                if vledger.record_outcome(outcome):
-                    handled_ids.append(prediction_id)
-                else:
-                    logger.warning(
-                        "market.verification | el ledger rechazó %s: no se "
-                        "marca como verificada; se repetirá en el próximo ciclo",
-                        prediction_id,
-                    )
-
+    decisive = [o for o in outcomes if o.status is not OutcomeStatus.PENDING]
+    report = outcome_contract.commit(CONTRACT, decisive, record=record)
     score = score_outcomes(_DOMAIN, outcomes)
     logger.info(
         "market.verification | batch=%d | decisive=%d | WR=%.0f%% | acc=%.2f "
-        "| gravity_applied=%d | contabilizados=%d",
+        "| ledger=%d (dup evitados=%d) | gravity=%d | cerrados=%d",
         score.n_total, score.n_decisive, score.win_rate, score.accuracy,
-        fed.get(outcome_gravity.APPLIED, 0), len(handled_ids),
+        report.ledger_written, report.ledger_skipped, report.gravity_applied,
+        len(report.handled_ids),
     )
-    return score, handled_ids
+    return score, list(report.handled_ids)
 
 
 def verify_signals(signals: Iterable[Any], record: bool = True) -> DomainScore:
@@ -264,13 +230,7 @@ def run_market_verification(record: bool = True) -> DomainScore:
     delante de todas las salidas tempranas: un ciclo sin señales nuevas sigue
     teniendo que recuperar lo aparcado.
     """
-    outcome_gravity.retry_pending(_DOMAIN)
-    # Red adicional: market casi nunca la necesita —puede volver a presentar la
-    # señal— pero el paso es el MISMO que usa freight, y compartirlo evita que
-    # una de las dos rutas se quede atrás. Cuando todo fue bien, no hace nada.
-    outcome_gravity.reconcile_from_ledger(
-        _DOMAIN, _fingerprint_from_outcome, source=_GRAVITY_SOURCE,
-    )
+    outcome_contract.recover(CONTRACT)
 
     try:
         from connectors.etoro.signal_recorder import load_signals, SignalStatus

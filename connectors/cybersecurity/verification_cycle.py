@@ -30,6 +30,7 @@ from core.learn.outcome_adapter import (
     Prediction,
     score_outcomes,
 )
+from core.learn import outcome_contract
 from core.learn import verification_ledger as vledger
 from connectors.cybersecurity import seen_ledger
 from connectors.cybersecurity.base import DOMAIN
@@ -58,6 +59,41 @@ def _parse_iso(s: Any) -> Optional[datetime]:
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except Exception:
         return None
+
+
+def _cve_identity(ev: Any) -> str:
+    """Identidad del resultado: el `cve_id`, que la fuente ya trae.
+
+    A nivel de subject la identidad completa es ``{cve_id}|{nivel}`` (ver
+    `verify_events`): una misma CVE produce un resultado por cada peldaño de la
+    escalera y cada uno es una fila distinta con su propia identidad.
+    """
+    data = getattr(ev, "data", None) or (ev if isinstance(ev, Mapping) else {})
+    return str(data.get("cve_id") or "").strip().upper()
+
+
+#: EL CONTRATO DE ESTE DOMINIO.
+#:
+#: `supersedes=True` es la razón por la que el contrato tiene ese campo. Una
+#: CVE vieja que entra en KEV pasa de LOSS a WIN, y este dominio ESCRIBE una
+#: fila que supersede a la anterior, deduplicando en la LECTURA
+#: (`_dedupe_latest`, que se queda con el `resolved_ts` más reciente). Eso no
+#: es un defecto: es cómo se corrige un veredicto cuando la verdad cambia.
+#: Forzarle la deduplicación de escritura del resto de dominios lo rompería, y
+#: un contrato que solo sirve si todos los dominios se parecen no es un
+#: contrato. Queda exento de esa regla y conserva las demás, empezando por la
+#: identidad.
+#:
+#: `replayable=True`: el backfill vuelve a leer las CVE, y `seen_ledger` decide
+#: por su cuenta qué es nuevo o cambió. `star_for=None`: la masa de estrellas
+#: la acumula la ingesta (`_accumulate_mass`), no los resultados verificados.
+CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
+    domain=DOMAIN,
+    source="cybersecurity.verification_cycle",
+    identify=_cve_identity,
+    replayable=True,
+    supersedes=True,
+))
 
 
 def resolve_cve(ev: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -120,6 +156,7 @@ def verify_events(events: Iterable[Any], record: bool = True,
     (backfill) persiste el dict una vez por ventana. La masa NO se re-incrementa
     en re-ejecuciones ni en flips (is_changed)."""
     cve_outcomes: List[Outcome] = []
+    to_ledger: List[Outcome] = []
     for ev in events:
         r = resolve_cve(ev, now)
         if r["excluded"] or not r["cve_id"]:
@@ -129,14 +166,21 @@ def verify_events(events: Iterable[Any], record: bool = True,
         cve_outcomes.append(o)  # nivel CVE (subject = nivel más fino o cve:id)
 
         if record and o.status in (OutcomeStatus.WIN, OutcomeStatus.LOSS) and (is_new or is_changed):
-            for level, subject_key in r["subjects"]:
-                vledger.record_outcome(Outcome(
+            to_ledger.extend(
+                Outcome(
                     prediction_id=f"{r['cve_id']}|{level}",
                     domain=DOMAIN, subject=subject_key,
                     status=o.status, score=o.score, evidence=o.evidence,
-                ))
+                )
+                for level, subject_key in r["subjects"]
+            )
         if gravity_records is not None and is_new:
             _accumulate_mass(gravity_records, r["dims"])
+    # La persistencia pasa por el contrato COMÚN, igual que los demás dominios.
+    # Con `supersedes=True` no se deduplica la escritura, así que el
+    # comportamiento es el mismo de siempre; lo que se gana es el control de
+    # identidad y un informe de lo que realmente quedó escrito.
+    outcome_contract.commit(CONTRACT, to_ledger, record=record)
     score = score_outcomes(DOMAIN, cve_outcomes)
     logger.info(
         "cyber.verification | batch=%d | dec=%d | WR=%.0f%% | wins=%d losses=%d neutral=%d pending=%d",

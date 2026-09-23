@@ -23,6 +23,7 @@ from core.learn.outcome_adapter import (
     Prediction,
     score_outcomes,
 )
+from core.learn import outcome_contract
 from core.learn import verification_ledger as vledger
 from connectors.real_estate.real_estate_outcome_adapter import RealEstateOutcomeAdapter
 
@@ -58,6 +59,58 @@ def _subject(data: Mapping[str, Any]) -> str:
     return "|".join(parts) if parts else "unknown"
 
 
+def _event_source(ev: Any) -> str:
+    src = getattr(ev, "source", None)
+    if src is None and isinstance(ev, Mapping):
+        src = ev.get("source")
+    return str(src or "")
+
+
+def _event_ts(ev: Any) -> float:
+    ts = getattr(ev, "ts", None)
+    if ts is None and isinstance(ev, Mapping):
+        ts = ev.get("ts")
+    try:
+        return float(ts or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _prediction_id(ev: Any) -> str:
+    """Identidad estable de ESTE evento de desenlace.
+
+    Antes NO existía: `Prediction(...)` se construía sin `prediction_id`, así
+    que quedaba en "" y todas las filas del ledger eran indistinguibles entre
+    sí. Reproducido: el mismo evento procesado dos veces dejaba 2 filas y
+    n_decisive=2, inflando el desempeño que alimenta el criterio. Y como la
+    deduplicación compartida descarta los ids vacíos,
+    `ledger_prediction_ids('florida_real_estate')` devolvía un conjunto vacío:
+    ninguna protección podía ayudarle.
+
+    `RealEstateEvent` no trae identificador propio (sus campos son
+    event_type/data/ts), así que se deriva con la función COMPARTIDA
+    `outcome_contract.derive_identity`, la misma que usa freight.
+    """
+    return outcome_contract.derive_identity(
+        _event_type(ev), _event_data(ev), _event_source(ev), _event_ts(ev),
+    )
+
+
+#: EL CONTRATO DE ESTE DOMINIO.
+#:
+#: `replayable=False`: el proveedor (simulador, ATTOM, RESO/MLS) emite el
+#: evento una vez. `star_for=None`: este dominio todavía NO alimenta la
+#: gravedad con resultados verificados — el contrato cubre entonces identidad y
+#: ledger, y la conformidad se comprueba sobre lo que declara, no sobre lo que
+#: se supone. Conectarlo a la gravedad es un cambio aparte.
+CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
+    domain=_DOMAIN,
+    source="real_estate.verification_cycle",
+    identify=_prediction_id,
+    replayable=False,
+))
+
+
 def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
     """Resuelve los eventos de desenlace en Outcomes verificados.
 
@@ -67,6 +120,8 @@ def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
     - Persiste los decisivos en el ledger (si record).
     - Devuelve el DomainScore de ESTE lote (el acumulado está en el ledger).
     """
+    outcome_contract.recover(CONTRACT)
+
     outcomes: List[Outcome] = []
     for ev in events:
         et = _event_type(ev)
@@ -74,15 +129,20 @@ def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
             continue
         data = _event_data(ev)
         observation = {"event_type": et, **data}
-        pred = Prediction(domain=_DOMAIN, subject=_subject(data), predicted="sells")
-        outcome = _ADAPTER.resolve(pred, observation)
-        outcomes.append(outcome)
-        if record and outcome.status is not OutcomeStatus.PENDING:
-            vledger.record_outcome(outcome)
+        pred = Prediction(
+            domain=_DOMAIN, subject=_subject(data), predicted="sells",
+            prediction_id=_prediction_id(ev),
+        )
+        outcomes.append(_ADAPTER.resolve(pred, observation))
+
+    decisive = [o for o in outcomes if o.status is not OutcomeStatus.PENDING]
+    report = outcome_contract.commit(CONTRACT, decisive, record=record)
     score = score_outcomes(_DOMAIN, outcomes)
     logger.info(
-        "real_estate.verification | batch=%d | decisive=%d | WR=%.0f%% | acc=%.2f",
+        "real_estate.verification | batch=%d | decisive=%d | WR=%.0f%% | "
+        "acc=%.2f | ledger=%d (dup evitados=%d)",
         score.n_total, score.n_decisive, score.win_rate, score.accuracy,
+        report.ledger_written, report.ledger_skipped,
     )
     return score
 
