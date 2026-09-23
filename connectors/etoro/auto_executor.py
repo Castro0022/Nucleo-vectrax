@@ -8,19 +8,19 @@ Modes (persisted in ~/.vectrax/etoro_auto_config.json):
   PAPER — simulates trades without real money. Builds track record.
   LIVE  — executes real trades via eToro API. Requires phase requirements met.
 
-Phase requirements to enter LIVE — two gates, deliberately different:
-
-  Manual (/vx market live on, activate_live()) — unchanged from before:
-    1. PAPER phase must have ≥ MIN_PAPER_SIGNALS resolved signals
-    2. PAPER phase win rate must be ≥ MIN_PAPER_WIN_RATE %
-    3. ETORO_ENVIRONMENT must already be set to "real" by the creator
-    4. Real API credentials (ETORO_API_KEY / ETORO_USER_KEY) must be configured
-
-  Automatic (fires the instant a PAPER trade closes and the count reaches
-  the threshold) — deliberately does NOT gate on win rate:
-    1. PAPER phase must have ≥ MIN_PAPER_SIGNALS resolved signals
-    2. ETORO_ENVIRONMENT must already be set to "real" by the creator
-    3. Real API credentials (ETORO_API_KEY / ETORO_USER_KEY) must be configured
+Phase requirements to enter LIVE — ONE gate, shared by the manual
+/vx market live on command and the automatic promotion below (explicit
+creator instruction, 2026-09-23: neither path gates on win rate):
+  1. PAPER phase must have ≥ MIN_PAPER_SIGNALS resolved (closed) trades,
+     each counted at most once — see `record_trade_result`'s `trade_id`
+     idempotency key.
+  2. ETORO_ENVIRONMENT must already be set to "real" by the creator.
+  3. Real API credentials (ETORO_API_KEY / ETORO_USER_KEY) must be
+     configured.
+`min_paper_win_rate` still exists in config and is still tracked
+(paper_trades_wins) and reported informationally (status panel, Telegram,
+dashboards, convergence_learner's adaptive gap analysis) — it is simply not
+a condition for either LIVE gate.
 
 Automatic PAPER → LIVE promotion:
   The moment a PAPER trade closes (record_trade_result(is_paper=True)) and
@@ -58,6 +58,7 @@ Any safety breach reverts the mode to PAPER and logs the reason.
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -75,6 +76,12 @@ _CONFIG_FILE = os.path.join(
 _PAPER_LOG_FILE = os.path.join(
     os.path.expanduser("~"), ".vectrax", "etoro_paper_trades.jsonl"
 )
+
+# How many recent PAPER trade_ids record_trade_result() remembers for
+# duplicate-close detection. Bounded so the config file cannot grow forever;
+# far larger than any realistic double-delivery window (a retried close
+# lands within seconds/minutes, not hundreds of trades later).
+_MAX_RECORDED_TRADE_IDS = 500
 
 # ── Default risk limits ───────────────────────────────────────────────
 DEFAULTS = {
@@ -105,6 +112,7 @@ DEFAULTS = {
     "paper_trades_wins":       0,
     "last_shutdown_reason":    "",
     "last_auto_promotion_reason": "",   # visible reason auto-LIVE stayed blocked
+    "recorded_paper_trade_ids": [],     # dedup horizon — see record_trade_result
 }
 
 
@@ -119,16 +127,29 @@ class AutoMode(str, Enum):
 # ── Config I/O ────────────────────────────────────────────────────────
 
 def _load_config() -> Dict:
+    """
+    Load the persisted config, backfilled with DEFAULTS for any key a
+    stored file predates. Uses copy.deepcopy(DEFAULTS), not dict(DEFAULTS):
+    a shallow copy shares mutable values (approved_symbols,
+    daily_ops_by_symbol, recorded_paper_trade_ids — all lists/dicts) with
+    the DEFAULTS module global itself. A caller that then mutates one
+    in place (record_trade_result's dedup list, record_symbol_op's daily
+    counter) was silently corrupting DEFAULTS for the rest of the process:
+    proven to leak between wholly unrelated, individually-isolated tests
+    the moment both happened to hit this no-stored-value fallback in the
+    same pytest run — exactly a "passes alone, fails with the full suite"
+    symptom. deepcopy makes every returned cfg's containers independent.
+    """
     try:
         if os.path.exists(_CONFIG_FILE):
             with open(_CONFIG_FILE) as f:
                 stored = json.load(f)
-            cfg = dict(DEFAULTS)
+            cfg = copy.deepcopy(DEFAULTS)
             cfg.update(stored)
             return cfg
     except Exception:
         pass
-    return dict(DEFAULTS)
+    return copy.deepcopy(DEFAULTS)
 
 
 def _save_config(cfg: Dict) -> None:
@@ -230,9 +251,9 @@ def activate_paper() -> str:
     return (
         f"🟡 Modo PAPER activado.\n"
         f"Vectrax simulará operaciones sin dinero real.\n"
-        f"Paper trades: {cfg['paper_trades_total']} | WR: {paper_wr:.0f}%\n"
-        f"Requisito LIVE: ≥{cfg['min_paper_signals']} señales, "
-        f"≥{cfg['min_paper_win_rate']:.0f}% WR"
+        f"Paper trades: {cfg['paper_trades_total']} | WR: {paper_wr:.0f}% (informativo)\n"
+        f"Requisito LIVE: ≥{cfg['min_paper_signals']} operaciones PAPER cerradas, "
+        f"entorno real y credenciales reales configuradas."
     )
 
 
@@ -265,39 +286,15 @@ def _environment_and_credentials_reasons() -> List[str]:
 
 def _live_readiness_reasons(cfg: Dict) -> List[str]:
     """
-    Every phase requirement for the MANUAL /vx market live on command:
-    ≥ min_paper_signals resolved PAPER trades, ≥ min_paper_win_rate win
-    rate, real environment, real credentials. Returns the list of blocking
-    reasons — empty means every requirement is met.
-    """
-    reasons: List[str] = []
-
-    paper_wr = _get_paper_win_rate(cfg)
-    n_paper  = cfg["paper_trades_total"]
-
-    if n_paper < cfg["min_paper_signals"]:
-        reasons.append(
-            f"Se necesitan ≥{cfg['min_paper_signals']} señales PAPER "
-            f"(actuales: {n_paper})"
-        )
-    if paper_wr < cfg["min_paper_win_rate"]:
-        reasons.append(
-            f"Win rate PAPER insuficiente: {paper_wr:.1f}% "
-            f"(mínimo: {cfg['min_paper_win_rate']:.0f}%)"
-        )
-
-    reasons.extend(_environment_and_credentials_reasons())
-    return reasons
-
-
-def _auto_promotion_reasons(cfg: Dict) -> List[str]:
-    """
-    Every phase requirement for the AUTOMATIC PAPER → LIVE promotion,
-    evaluated the instant a PAPER trade closes: ≥ min_paper_signals
-    resolved PAPER trades, real environment, real credentials. Deliberately
-    does NOT check win rate — only the manual /vx market live on command
-    (see _live_readiness_reasons) still gates on ≥ min_paper_win_rate.
-    Returns the list of blocking reasons — empty means promotion proceeds.
+    Every phase requirement for entering LIVE — shared by the MANUAL
+    /vx market live on command and the AUTOMATIC promotion evaluated on
+    every PAPER close: ≥ min_paper_signals resolved (closed) PAPER trades,
+    real environment, real credentials. Deliberately does NOT check win
+    rate on either path (explicit creator instruction, 2026-09-23 session:
+    "quítalo también de la vía manual"). `min_paper_win_rate` remains in
+    config and is still tracked/reported — it is just not a gate here.
+    Returns the list of blocking reasons — empty means every requirement
+    is met.
     """
     reasons: List[str] = []
 
@@ -379,7 +376,7 @@ def _maybe_auto_promote_to_live(cfg: Dict) -> None:
         )
         return
 
-    reasons = _auto_promotion_reasons(cfg)
+    reasons = _live_readiness_reasons(cfg)
     if reasons:
         cfg["last_auto_promotion_reason"] = "; ".join(reasons)
         return
@@ -481,18 +478,48 @@ def check_risk_before_trade(
 def record_trade_result(
     pnl_usd: float,
     is_paper: bool = True,
+    trade_id: Optional[str] = None,
 ) -> None:
     """
     Record the result of an executed trade and update risk counters.
+
+    `trade_id` is REQUIRED when is_paper=True: it is the idempotency key
+    that stops a duplicated/retried close event for the SAME operation
+    (e.g. two overlapping position_manager.check_open_positions() runs
+    both reading the trade as still "open" before either one's file write
+    lands) from inflating paper_trades_total/paper_trades_wins and
+    advancing the automatic LIVE promotion on a phantom extra trade. A
+    trade_id already seen is a no-op: nothing is counted or re-evaluated.
     """
+    if is_paper and not trade_id:
+        raise ValueError(
+            "record_trade_result(is_paper=True) requires trade_id — the "
+            "PAPER counters must never advance from an unidentified close"
+        )
+
     cfg = _reset_daily_loss_if_new_day(_load_config())
     won = pnl_usd > 0
 
     if is_paper:
+        recorded = cfg.setdefault("recorded_paper_trade_ids", [])
+        if trade_id in recorded:
+            logger.warning(
+                "[AUTO] Resultado PAPER duplicado ignorado para %s "
+                "(ya contabilizado — paper_trades_total sin cambios)",
+                trade_id,
+            )
+            return
+        recorded.append(trade_id)
+        if len(recorded) > _MAX_RECORDED_TRADE_IDS:
+            del recorded[: len(recorded) - _MAX_RECORDED_TRADE_IDS]
+
         cfg["paper_trades_total"] += 1
         if won:
             cfg["paper_trades_wins"] += 1
-        logger.info("[AUTO] PAPER trade result: PnL=%.2f USD | won=%s", pnl_usd, won)
+        logger.info(
+            "[AUTO] PAPER trade result: %s | PnL=%.2f USD | won=%s",
+            trade_id, pnl_usd, won,
+        )
         # Evaluate automatic PAPER → LIVE promotion right on this close.
         _maybe_auto_promote_to_live(cfg)
     else:
@@ -722,16 +749,14 @@ def format_auto_status() -> str:
     icon = mode_icons.get(mode, "?")
 
     req_signals = cfg["min_paper_signals"]
-    req_wr      = cfg["min_paper_win_rate"]
     n_paper     = cfg["paper_trades_total"]
     sig_ok  = "✅" if n_paper >= req_signals else f"❌ ({n_paper}/{req_signals})"
-    wr_ok   = "✅" if paper_wr >= req_wr    else f"❌ ({paper_wr:.0f}%/{req_wr:.0f}%)"
 
     lines = [
         f"{icon} Auto-Executor: {mode.value.upper()}\n",
         "📊 Fase PAPER:",
-        f"  Operaciones cerradas (gate automático): {sig_ok}",
-        f"  Win rate (solo gate manual):            {wr_ok}",
+        f"  Operaciones cerradas (requisito LIVE): {sig_ok}",
+        f"  Win rate actual: {paper_wr:.0f}% (informativo — no es requisito para LIVE)",
         "",
         "🛡 Límites de riesgo:",
         f"  Max/operación:    ${cfg['max_position_usd']:.0f}",

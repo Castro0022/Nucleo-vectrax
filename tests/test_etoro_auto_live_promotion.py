@@ -6,26 +6,37 @@ Vectrax pase de PAPER a LIVE en el instante en que se cierra la operación
 PAPER que alcanza `min_paper_signals` (por defecto 30), sin que el creador
 tenga que ejecutar /vx market live on en ese momento.
 
-Reglas verificadas aquí (acordadas explícitamente con el creador):
-  - El gate AUTOMÁTICO exige: ≥30 operaciones PAPER cerradas, entorno real
-    (ETORO_ENVIRONMENT=real) y credenciales reales configuradas. Deliberadamente
-    NO exige win rate.
-  - El gate MANUAL (/vx market live on, activate_live()) es el que conserva el
-    requisito de ≥60% de aciertos — sin cambios respecto al comportamiento
-    previo.
-  - Si falta una condición del gate automático, el modo permanece en PAPER y
-    el motivo queda visible en cfg["last_auto_promotion_reason"] /
-    format_auto_status().
+Reglas verificadas aquí (acordadas explícitamente con el creador, incluida la
+corrección del 2026-09-23 sobre la revisión del PR #130):
+  - Gate ÚNICO, compartido por el automático (cierre de la PAPER #30) y por
+    /vx market live on: ≥30 operaciones PAPER cerradas + entorno real
+    (ETORO_ENVIRONMENT=real) + credenciales reales. NINGUNO de los dos exige
+    win rate — `min_paper_win_rate` sigue en la config y se reporta como dato
+    informativo, pero no bloquea ninguna vía.
+  - Si falta una condición, el modo permanece en PAPER y el motivo queda
+    visible en cfg["last_auto_promotion_reason"] / format_auto_status().
   - Es un disparo único (one-shot): solo promueve la primera vez que se sale
     de la fase PAPER inicial. Si un corte de seguridad (pérdidas consecutivas
     o pérdida diaria) revierte LIVE a PAPER, una operación PAPER posterior NO
     vuelve a promover sola — hace falta el comando manual.
+  - record_trade_result(is_paper=True) EXIGE un trade_id y lo usa como clave
+    de idempotencia: un mismo trade_id reenviado (p. ej. dos corridas
+    solapadas de check_open_positions() sobre la misma operación aún "open")
+    no vuelve a sumar a paper_trades_total ni reevalúa la promoción.
   - Nunca escribe ETORO_ENVIRONMENT ni coloca una orden real, ni siquiera
     cuando esta suite corre.
+  - _load_config() nunca devuelve un contenedor mutable (approved_symbols,
+    daily_ops_by_symbol, recorded_paper_trade_ids) que sea EL MISMO objeto
+    que el de auto_executor.DEFAULTS — esa era la causa raíz real de por
+    qué las pruebas nuevas pasaban solas pero fallaban junto al resto de
+    la suite: cualquier prueba (de este archivo o de cualquier otro) que
+    llegara primero al camino "sin config todavía" mutaba DEFAULTS mismo,
+    y esa contaminación quedaba para el resto del proceso de pytest.
 """
 from __future__ import annotations
 
 import ast
+import itertools
 import sys
 from pathlib import Path
 
@@ -82,9 +93,23 @@ def no_real_orders(monkeypatch):
     monkeypatch.setattr(trade_executor, "execute_open", _boom)
 
 
-def _close_paper(pnl: float, n: int = 1) -> None:
+_trade_seq = itertools.count(1)
+
+
+def _new_trade_id() -> str:
+    return f"PAPER-TEST-{next(_trade_seq)}"
+
+
+def _close_paper(pnl: float, n: int = 1) -> list[str]:
+    """Close `n` DISTINCT paper trades (each its own trade_id) and return the
+    ids used, in order — so a test can replay the last one to simulate a
+    duplicate/retried close of that exact operation."""
+    ids = []
     for _ in range(n):
-        auto_executor.record_trade_result(pnl, is_paper=True)
+        tid = _new_trade_id()
+        auto_executor.record_trade_result(pnl, is_paper=True, trade_id=tid)
+        ids.append(tid)
+    return ids
 
 
 # ── 1. Transición 29 → 30 ────────────────────────────────────────────────
@@ -104,8 +129,7 @@ class TestTransition29To30:
         self, isolated_executor, real_env, tg_calls
     ):
         auto_executor.activate_paper()
-        # 20 losses + 9 wins = 29 closes, WR far below 60% — the automatic
-        # gate must not care.
+        # 20 losses + 9 wins = 29 closes, WR far below 60% — no gate cares.
         _close_paper(-5.0, n=20)
         _close_paper(5.0, n=9)
         assert auto_executor.get_mode() == AutoMode.PAPER
@@ -125,9 +149,10 @@ class TestTransition29To30:
         assert "LIVE" in tg_calls[0]
 
 
-# ── 2. Caso con menos de 60% (el gate automático no lo bloquea) ───────────
+# ── 2. Caso con menos de 60% — ningún gate lo exige, ni el automático ni el
+#      manual (corrección del creador sobre la primera versión del PR) ────
 
-class TestWinRateIsNotAnAutomaticGate:
+class TestWinRateIsNeverAGate:
 
     def test_low_win_rate_does_not_block_automatic_promotion(
         self, isolated_executor, real_env, tg_calls
@@ -142,43 +167,39 @@ class TestWinRateIsNotAnAutomaticGate:
         assert auto_executor.get_mode() == AutoMode.LIVE
         assert len(tg_calls) == 1
 
-    def test_auto_promotion_reasons_never_mention_win_rate(self, isolated_executor, real_env):
+    def test_live_readiness_reasons_never_mention_win_rate(self, isolated_executor, real_env):
         cfg = auto_executor.get_config()
         cfg["paper_trades_total"] = 30
-        cfg["paper_trades_wins"] = 0
-        reasons = auto_executor._auto_promotion_reasons(cfg)
-        assert reasons == []
-        assert not any("win rate" in r.lower() or "wr" in r.lower() for r in reasons)
-
-    def test_manual_gate_still_requires_60_percent(self, isolated_executor, real_env):
-        cfg = auto_executor.get_config()
-        cfg["paper_trades_total"] = 30
-        cfg["paper_trades_wins"] = 10   # WR = 33%
+        cfg["paper_trades_wins"] = 0   # WR = 0%
         reasons = auto_executor._live_readiness_reasons(cfg)
-        assert any("Win rate" in r for r in reasons)
+        assert reasons == []
+        assert not any("win rate" in r.lower() or " wr" in r.lower() for r in reasons)
 
-    def test_manual_activate_live_blocked_below_60_percent(self, isolated_executor, real_env):
+    def test_manual_activate_live_also_ignores_win_rate(self, isolated_executor, real_env):
+        """The creator's correction: /vx market live on must NOT require 60%
+        either — only the automatic path was exempted in the first version
+        of this PR; the manual command still blocked below 60%. Fixed."""
         cfg = auto_executor.get_config()
         cfg["mode"] = AutoMode.PAPER.value
         cfg["paper_trades_total"] = 30
-        cfg["paper_trades_wins"] = 10
-        auto_executor._save_config(cfg)
-
-        result = auto_executor.activate_live("tg:2030762343")
-        assert "❌" in result
-        assert "Win rate" in result
-        assert auto_executor.get_mode() == AutoMode.PAPER
-
-    def test_manual_activate_live_succeeds_at_60_percent(self, isolated_executor, real_env):
-        cfg = auto_executor.get_config()
-        cfg["mode"] = AutoMode.PAPER.value
-        cfg["paper_trades_total"] = 30
-        cfg["paper_trades_wins"] = 18   # exactly 60%
+        cfg["paper_trades_wins"] = 1   # WR ≈ 3.3% — would fail the old 60% gate
         auto_executor._save_config(cfg)
 
         result = auto_executor.activate_live("tg:2030762343")
         assert "🔴" in result
+        assert "❌" not in result
         assert auto_executor.get_mode() == AutoMode.LIVE
+
+    def test_status_panel_shows_win_rate_as_informational_not_a_gate(
+        self, isolated_executor, real_env
+    ):
+        cfg = auto_executor.get_config()
+        cfg["paper_trades_total"] = 5
+        cfg["paper_trades_wins"] = 0
+        auto_executor._save_config(cfg)
+        panel = auto_executor.format_auto_status()
+        assert "informativo" in panel.lower()
+        assert "no es requisito" in panel.lower()
 
 
 # ── 3. Condiciones faltantes: permanece en PAPER con motivo visible ──────
@@ -253,7 +274,7 @@ class TestRestarts:
         auto_executor.activate_paper()
         cfg = auto_executor.get_config()
         cfg["paper_trades_total"] = 35
-        cfg["paper_trades_wins"] = 5   # low WR too — irrelevant to the auto gate
+        cfg["paper_trades_wins"] = 5
         auto_executor._save_config(cfg)
 
         # "Restart": reload state, read status — no trade closes anywhere.
@@ -269,26 +290,64 @@ class TestRestarts:
         assert len(tg_calls) == 1
 
 
-# ── 5. Resultados duplicados ──────────────────────────────────────────────
+# ── 5. Resultados duplicados — protección REAL del contador ──────────────
 
-class TestDuplicateResults:
+class TestDuplicateResultsDoNotInflateTheCounter:
 
-    def test_duplicate_close_after_promotion_does_not_double_fire(
+    def test_missing_trade_id_for_paper_result_is_rejected(self, isolated_executor, real_env):
+        """The idempotency key is not optional: a caller that cannot name
+        the operation must not be able to advance the PAPER counter."""
+        with pytest.raises(ValueError):
+            auto_executor.record_trade_result(1.0, is_paper=True)
+        assert auto_executor.get_config()["paper_trades_total"] == 0
+
+    def test_duplicate_trade_id_at_the_threshold_does_not_inflate_the_count(
         self, isolated_executor, real_env, tg_calls
     ):
+        """
+        The exact race Mario described: check_open_positions() runs twice,
+        overlapping, on the same still-"open" 30th trade — both calls reach
+        record_trade_result() with the SAME trade_id. paper_trades_total
+        must end at 30, not 31, and the promotion must not double-fire.
+        """
         auto_executor.activate_paper()
-        _close_paper(1.0, n=30)
-        assert auto_executor.get_mode() == AutoMode.LIVE
-        activated_at = auto_executor.get_config()["live_activated_at"]
-        assert len(tg_calls) == 1
+        _close_paper(1.0, n=29)
+        assert auto_executor.get_config()["paper_trades_total"] == 29
 
-        # A duplicate/retried close event for what is conceptually the same
-        # trade (e.g. a retried position_manager cycle) must not re-fire.
-        _close_paper(1.0, n=1)
+        thirtieth_id = _new_trade_id()
+        auto_executor.record_trade_result(1.0, is_paper=True, trade_id=thirtieth_id)
+        assert auto_executor.get_config()["paper_trades_total"] == 30
+        assert auto_executor.get_mode() == AutoMode.LIVE
+        assert len(tg_calls) == 1
+        activated_at = auto_executor.get_config()["live_activated_at"]
+
+        # The retried/duplicated delivery of the SAME close event.
+        auto_executor.record_trade_result(1.0, is_paper=True, trade_id=thirtieth_id)
         cfg = auto_executor.get_config()
+        assert cfg["paper_trades_total"] == 30, "a duplicate result must NOT inflate the counter"
+        assert cfg["paper_trades_wins"] == 30
         assert cfg["mode"] == AutoMode.LIVE.value
-        assert cfg["live_activated_at"] == activated_at        # untouched
-        assert len(tg_calls) == 1                               # not re-notified
+        assert cfg["live_activated_at"] == activated_at   # untouched
+        assert len(tg_calls) == 1                          # not re-notified
+
+    def test_duplicate_trade_id_before_threshold_does_not_advance_the_count(
+        self, isolated_executor, real_env, tg_calls
+    ):
+        """A retry storm on the 29th operation (recorded 3 times under the
+        same trade_id) must still count as exactly one — it must never be
+        the thing that silently pushes the total to 30/30."""
+        auto_executor.activate_paper()
+        _close_paper(1.0, n=28)
+        assert auto_executor.get_config()["paper_trades_total"] == 28
+
+        retry_id = _new_trade_id()
+        for _ in range(3):
+            auto_executor.record_trade_result(1.0, is_paper=True, trade_id=retry_id)
+
+        cfg = auto_executor.get_config()
+        assert cfg["paper_trades_total"] == 29, "3 retries of the same close must count once"
+        assert auto_executor.get_mode() == AutoMode.PAPER   # still short of 30
+        assert tg_calls == []
 
     def test_duplicate_blocked_evaluation_is_idempotent(
         self, isolated_executor, monkeypatch, tg_calls
@@ -300,7 +359,7 @@ class TestDuplicateResults:
         _close_paper(1.0, n=30)
         reason_1 = auto_executor.get_config()["last_auto_promotion_reason"]
 
-        _close_paper(1.0, n=1)   # another close, still blocked the same way
+        _close_paper(1.0, n=1)   # another (distinct) close, still blocked the same way
         reason_2 = auto_executor.get_config()["last_auto_promotion_reason"]
 
         assert reason_1 == reason_2
@@ -346,7 +405,68 @@ class TestOneShotAfterSafetyShutdown:
         assert auto_executor.get_mode() == AutoMode.LIVE
 
 
-# ── 7. Nunca toca ETORO_ENVIRONMENT ni coloca una orden real ─────────────
+# ── 7. Causa raíz de "pasa solo, falla junto al resto": DEFAULTS mutable ──
+
+class TestConfigIsolationFromGlobalDefaults:
+    """
+    The actual reason 14 of these tests failed only when run inside the
+    full 4.752-test suite (reported on PR #130): _load_config() used to
+    return dict(DEFAULTS), a SHALLOW copy. Any DEFAULTS value that is a
+    list/dict (approved_symbols, daily_ops_by_symbol, and this PR's new
+    recorded_paper_trade_ids) was therefore the SAME object as
+    auto_executor.DEFAULTS[...] whenever no config file existed yet — the
+    exact situation every isolated_executor-based test starts from. The
+    first test (anywhere in the whole suite, not just this file) to mutate
+    that list in place — record_trade_result()'s dedup list included —
+    permanently corrupted the shared DEFAULTS global for every test that
+    ran afterward in the same pytest process, in whatever order the full
+    suite happened to collect them. Standalone runs of just this file
+    never exposed it reliably because ordering differs. Fixed by
+    _load_config() returning copy.deepcopy(DEFAULTS) instead.
+    """
+
+    def test_load_config_never_aliases_a_mutable_default(self, isolated_executor):
+        cfg = auto_executor.get_config()
+        for key in ("approved_symbols", "daily_ops_by_symbol", "recorded_paper_trade_ids"):
+            assert cfg[key] is not auto_executor.DEFAULTS[key], (
+                f"cfg[{key!r}] is the SAME object as DEFAULTS[{key!r}] — "
+                "mutating it would corrupt every other test in this process"
+            )
+
+    def test_mutating_returned_config_never_leaks_into_defaults_or_other_tests(
+        self, isolated_executor, real_env, tg_calls
+    ):
+        # Exactly the sequence that corrupted DEFAULTS before the fix: the
+        # very first record_trade_result() call in a brand-new isolated
+        # config (no file on disk yet).
+        auto_executor.activate_paper()
+        auto_executor.record_trade_result(1.0, is_paper=True, trade_id="ISOLATION-CHECK")
+
+        assert auto_executor.DEFAULTS["recorded_paper_trade_ids"] == []
+        assert auto_executor.DEFAULTS["approved_symbols"] == []
+        assert auto_executor.DEFAULTS["daily_ops_by_symbol"] == {}
+
+    def test_a_second_unrelated_isolated_config_starts_clean(
+        self, isolated_executor, real_env, tg_calls, tmp_path, monkeypatch
+    ):
+        """Simulates two DIFFERENT tests (this one running after the one
+        above, sharing the same Python process like the real suite does):
+        a second, wholly unrelated isolated config must start with an
+        empty dedup list, not one poisoned by the previous test."""
+        auto_executor.activate_paper()
+        auto_executor.record_trade_result(1.0, is_paper=True, trade_id="FIRST-TEST-TRADE")
+
+        # A second, independent isolated config — as if a different test
+        # function (fresh tmp_path) ran next in the same process.
+        monkeypatch.setattr(auto_executor, "_CONFIG_FILE", str(tmp_path / "other_cfg.json"))
+        monkeypatch.setattr(auto_executor, "_PAPER_LOG_FILE", str(tmp_path / "other_trades.jsonl"))
+        auto_executor.activate_paper()
+        cfg2 = auto_executor.get_config()
+        assert cfg2["recorded_paper_trade_ids"] == []
+        assert cfg2["paper_trades_total"] == 0
+
+
+# ── 8. Nunca toca ETORO_ENVIRONMENT ni coloca una orden real ─────────────
 
 class TestStaticSafetyInvariants:
 

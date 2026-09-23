@@ -49,9 +49,12 @@ def check_open_positions() -> List[Dict[str, Any]]:
             result = _close_paper_trade(trade, close_reason)
             if result:
                 actions.append(result)
-                # Record PnL
+                # Record PnL — trade_id is the idempotency key that stops a
+                # retried close (e.g. two overlapping check_open_positions()
+                # runs racing on the same still-"open" trade) from double-
+                # counting toward paper_trades_total.
                 pnl = result.get("pnl_usd", 0)
-                record_trade_result(pnl, is_paper=True)
+                record_trade_result(pnl, is_paper=True, trade_id=trade.trade_id)
                 # Log to observation ledger
                 _log_exit_observation(trade, close_reason, result)
 
