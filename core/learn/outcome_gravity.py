@@ -106,9 +106,18 @@ DEFERRED = "deferred"          # la estrella aún no existe: aparcado, se reinte
 RECOVERED = "recovered"        # aparcado antes, aplicado ahora que hay estrella
 NO_STAR = "no_star"            # no se pudo ni intentar (índice/almacén caídos)
 NO_IDENTITY = "no_identity"    # falta fingerprint o prediction_id
+FAILED = "failed"              # el lote NO quedó contabilizado: reintentar
 
 RESULTS = (APPLIED, DUPLICATE, NOT_DECISIVE, DEFERRED, RECOVERED,
-           NO_STAR, NO_IDENTITY)
+           NO_STAR, NO_IDENTITY, FAILED)
+
+#: Espera máxima a que otro escritor suelte la base, en milisegundos. SQLite
+#: reintenta internamente durante este tiempo en vez de devolver
+#: "database is locked" al primer intento.
+BUSY_TIMEOUT_MS = 30000
+
+#: Reintentos propios ante un bloqueo que sobreviva a `BUSY_TIMEOUT_MS`.
+LOCK_RETRIES = 3
 
 #: Umbral de AVISO para la tabla de aparcados. No borra nada.
 #:
@@ -187,13 +196,47 @@ CREATE INDEX IF NOT EXISTS idx_pending_outcomes_retry
 """
 
 
+def _apply_pragmas(conn: sqlite3.Connection) -> None:
+    """Configura la base para que DOS ESCRITORES A LA VEZ no se tumben.
+
+    Por defecto, SQLite usa un diario de rollback y un bloqueo de fichero que
+    hace que el segundo escritor reciba `database is locked` en cuanto el
+    primero tarde un poco. Con el ciclo de market y el de freight corriendo a
+    la vez, eso ocurre: se reprodujo, y la segunda aplicación quedaba en cero.
+
+    * ``journal_mode=WAL``: lectores y un escritor conviven sin bloquearse.
+    * ``busy_timeout``: ante un bloqueo, SQLite espera y reintenta por su
+      cuenta durante ese tiempo en vez de fallar al primer intento.
+    * ``synchronous=NORMAL``: el compromiso habitual con WAL; no arriesga la
+      integridad de la base, solo permite que el sistema agrupe los fsync.
+
+    Nunca lanza: si el sistema de ficheros no admite WAL (algunos montajes de
+    red), se sigue con el modo por defecto y queda el `busy_timeout`, que ya
+    es la mayor parte de la protección.
+    """
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {int(BUSY_TIMEOUT_MS)}")
+    except Exception as exc:  # pragma: no cover - depende del sistema
+        logger.debug("outcome_gravity: busy_timeout no aplicado: %s", exc)
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+    except Exception as exc:  # pragma: no cover - depende del sistema
+        logger.debug("outcome_gravity: WAL no disponible: %s", exc)
+
+
+def _is_locked(exc: Exception) -> bool:
+    return isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower()
+
+
 def _get_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
     """Conexión de ESCRITURA: crea el directorio y la tabla si hacen falta."""
     path = store_path(db_path)
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_MS / 1000.0)
+    _apply_pragmas(conn)
     conn.execute(_CREATE_TABLE)
     conn.execute(_CREATE_PENDING)
     _migrate_pending(conn)
@@ -249,6 +292,20 @@ def _empty_counts() -> Dict[str, int]:
 
 
 # ── Aplicación ────────────────────────────────────────────────────────
+
+def _outcome_ts(outcome: Outcome, fallback: float) -> float:
+    """Instante en que se resolvio el resultado contra la verdad del dominio.
+
+    Es lo que ORDENA la ventana acotada de la estrella, asi que un resultado
+    recuperado del aparcadero ocupa el lugar que le corresponde por cuando
+    ocurrio, no por cuando se pudo anotar.
+    """
+    try:
+        ts = float(getattr(outcome, "resolved_ts", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        ts = 0.0
+    return ts if ts > 0 else fallback
+
 
 def _resolve_index(index: Any):
     if index is not None:
@@ -364,9 +421,36 @@ def apply_verified_outcomes(
         counts[NO_STAR] += len(candidates)
         return counts
 
+    for attempt in range(1, LOCK_RETRIES + 1):
+        result = _apply_once(candidates, source, gravity, db_path, counts)
+        if result is not None:
+            return result
+        if attempt < LOCK_RETRIES:
+            time.sleep(0.2 * attempt)
+    failed = _empty_counts()
+    failed[FAILED] = len(items)
+    logger.warning(
+        "outcome_gravity: lote de %d NO contabilizado tras %d intentos "
+        "(base bloqueada). El llamador NO debe darlo por verificado.",
+        len(items), LOCK_RETRIES,
+    )
+    return failed
+
+
+def _apply_once(
+    candidates: List[Tuple[str, Outcome]],
+    source: str,
+    gravity: Any,
+    db_path: Optional[str],
+    base_counts: Dict[str, int],
+) -> Optional[Dict[str, int]]:
+    """Un intento de la transaccion. `None` si la base estaba bloqueada."""
+    counts = dict(base_counts)
     try:
         conn = _get_conn(db_path)
     except Exception as exc:
+        if _is_locked(exc):
+            return None
         logger.warning("outcome_gravity: almacen no disponible: %s", exc)
         counts[NO_STAR] += len(candidates)
         return counts
@@ -385,7 +469,8 @@ def apply_verified_outcomes(
         # 3. Anotar en la gravedad (una sola transaccion para todo el lote).
         if claimed:
             written = gravity.record_verified_outcomes([
-                (fp, o.status.value, o.prediction_id) for fp, o in claimed
+                (fp, o.status.value, o.prediction_id, _outcome_ts(o, now))
+                for fp, o in claimed
             ])
             for (fingerprint, outcome), ok in zip(claimed, written):
                 if ok:
@@ -413,8 +498,12 @@ def apply_verified_outcomes(
             conn.rollback()
         except Exception:
             pass
+        if _is_locked(exc):
+            return None
         logger.warning("outcome_gravity: lote no aplicado: %s", exc)
-        return _empty_counts()
+        failed = _empty_counts()
+        failed[FAILED] = len(candidates)
+        return failed
     finally:
         try:
             conn.close()
@@ -485,10 +574,25 @@ def retry_pending(
     porque `last_attempt_at` esta persistido.
 
     Devuelve el recuento por resultado; `recovered` son los que aterrizaron
-    ahora. Nunca lanza.
+    ahora. NUNCA lanza, ni siquiera si la base está bloqueada: el llamador la
+    invoca por delante de su propio manejo de errores.
     """
     counts = _empty_counts()
-    conn = _open_for_read(db_path)
+    try:
+        conn = _open_for_read(db_path)
+    except Exception as exc:
+        # La base puede estar tomada por otro escritor. Esto NO puede
+        # propagarse: `retry_pending` es lo primero que hace
+        # `run_market_verification`, por delante de su propio try, así que una
+        # excepción aquí tumbaba la verificación entera del ciclo — un
+        # bloqueo transitorio impedía además verificar las señales nuevas.
+        # Los aparcados siguen en la tabla; el próximo ciclo los reintenta.
+        counts[FAILED] = 1
+        logger.warning(
+            "outcome_gravity: no se pudo abrir el aparcadero (%s); "
+            "el reintento se pospone al próximo ciclo", exc,
+        )
+        return counts
     if conn is None:
         return counts
     try:
@@ -511,7 +615,8 @@ def retry_pending(
 
         parked = [(r[0], _outcome_from_row(r), r[6]) for r in rows]
         written = gravity.record_verified_outcomes([
-            (fp, o.status.value, o.prediction_id) for fp, o, _src in parked
+            (fp, o.status.value, o.prediction_id, _outcome_ts(o, now))
+            for fp, o, _src in parked
         ])
         for (fingerprint, outcome, row_source), ok in zip(parked, written):
             if not ok:
@@ -571,7 +676,11 @@ def pending_outcomes(
     db_path: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Resultados verificados que esperan a que exista su estrella."""
-    conn = _open_for_read(db_path)
+    try:
+        conn = _open_for_read(db_path)
+    except Exception as exc:
+        logger.debug("outcome_gravity pending_outcomes no disponible: %s", exc)
+        return []
     if conn is None:
         return []
     cols = (*_COLUMNS[:-1], "deferred_at", "last_attempt_at", "attempts")
@@ -592,7 +701,11 @@ def pending_outcomes(
 
 def pending_count(*, domain: Optional[str] = None,
                   db_path: Optional[str] = None) -> int:
-    conn = _open_for_read(db_path)
+    try:
+        conn = _open_for_read(db_path)
+    except Exception as exc:
+        logger.debug("outcome_gravity pending_count no disponible: %s", exc)
+        return 0
     if conn is None:
         return 0
     where, params = ("WHERE domain = ?", [domain]) if domain else ("", [])
@@ -620,7 +733,11 @@ def provenance(
     """Qué resultados verificados alimentaron a qué estrellas, y de dónde
     vinieron. Es la respuesta auditable a "¿por qué este patrón cualificó?".
     """
-    conn = _open_for_read(db_path)
+    try:
+        conn = _open_for_read(db_path)
+    except Exception as exc:
+        logger.debug("outcome_gravity provenance no disponible: %s", exc)
+        return []
     if conn is None:
         return []
     clauses: List[str] = []
@@ -654,7 +771,11 @@ def applied_count(
     db_path: Optional[str] = None,
 ) -> int:
     """Cuántos resultados verificados distintos se han aplicado."""
-    conn = _open_for_read(db_path)
+    try:
+        conn = _open_for_read(db_path)
+    except Exception as exc:
+        logger.debug("outcome_gravity applied_count no disponible: %s", exc)
+        return 0
     if conn is None:
         return 0
     clauses: List[str] = []

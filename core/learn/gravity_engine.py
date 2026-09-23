@@ -115,6 +115,19 @@ def _verified_entry_id(entry: Any) -> str:
     return ""
 
 
+def _verified_entry_ts(entry: Any) -> float:
+    """El instante en que se RESOLVIO ese resultado contra la verdad del
+    dominio. Es lo que ordena la ventana; una entrada sin el se trata como la
+    mas antigua posible, que es el lugar seguro (nunca desplaza a una mas
+    reciente)."""
+    if isinstance(entry, dict):
+        try:
+            return float(entry.get("ts", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
 class GravityIndex:
     """Persisted gravity index — one GravityRecord per fingerprint."""
 
@@ -525,7 +538,7 @@ class GravityIndex:
     # -- queries ------------------------------------------------------------
 
     def record_verified_outcome(
-        self, fingerprint: str, outcome: str, outcome_id: str,
+        self, fingerprint: str, outcome: str, outcome_id: str, ts: float = 0.0,
     ) -> bool:
         """Anota UN resultado VERIFICADO en la historia graduable de una estrella.
 
@@ -534,28 +547,45 @@ class GravityIndex:
         de un solo elemento y delega en el mismo cuerpo para que no puedan
         divergir.
         """
-        return self.record_verified_outcomes([(fingerprint, outcome, outcome_id)])[0]
+        return self.record_verified_outcomes([(fingerprint, outcome, outcome_id, ts)])[0]
 
     def record_verified_outcomes(
-        self, triples: Iterable[Tuple[str, str, str]],
+        self, entries: Iterable[Tuple[str, str, str, float]],
     ) -> List[bool]:
         """Anota resultados VERIFICADOS en `verified_outcomes`, en UNA sola
         transaccion (un lock, una lectura, una escritura para todo el lote).
 
-        Cada elemento es ``(fingerprint, status, outcome_id)``. Devuelve una
-        lista de booleanos PARALELA a la entrada: True donde la estrella existe
-        y el resultado quedo anotado.
+        Cada elemento es ``(fingerprint, status, outcome_id, ts)``, donde `ts`
+        es el instante en que ese resultado se RESOLVIO contra la verdad del
+        dominio. Devuelve una lista de booleanos PARALELA a la entrada: True
+        donde la estrella existe y el resultado quedo anotado.
 
         IDEMPOTENTE POR `outcome_id`
         ----------------------------
         Si la estrella ya tiene una entrada con ese id, NO se anade una segunda
         y se devuelve True igualmente: el resultado ya esta donde tiene que
-        estar. Esto es lo que cierra la ventana entre esta escritura y la
-        confirmacion del registro de procedencia. Una caida justo en medio
-        dejaba antes el resultado anotado pero no registrado, y el reintento lo
-        contaba dos veces: inflaba el win_rate y ademas expulsaba otro
-        resultado del final de la ventana acotada. Ahora el reintento reconoce
-        su propia escritura anterior y solo confirma el registro.
+        estar. Esto cierra la ventana entre esta escritura y la confirmacion
+        del registro de procedencia: una caida justo en medio dejaba el
+        resultado anotado pero no registrado, y el reintento lo contaba dos
+        veces.
+
+        LA VENTANA SON LOS N MAS RECIENTES, NO LOS N ULTIMOS ESCRITOS
+        -------------------------------------------------------------
+        La comprobacion por id no basta por si sola, y creer que si bastaba fue
+        un error de razonamiento: solo puede reconocer lo que TODAVIA esta en
+        la ventana. Si entre la caida y el reintento llegan mas de
+        `MAX_OUTCOME_HISTORY` resultados nuevos, el id del interrumpido ya fue
+        desplazado, el reintento no lo reconoce y lo volvia a insertar COMO
+        RECIENTE: un resultado viejo resucitaba, expulsaba a uno genuinamente
+        nuevo del final de la ventana y alteraba el criterio.
+
+        Por eso la lista se mantiene ORDENADA por `ts` y se conservan los N
+        ultimos. Con ese invariante, reinsertar un resultado ya superado es
+        inofensivo: vuelve a caer fuera de la ventana inmediatamente, y nunca
+        puede desplazar a uno mas reciente. Ademas coloca en su sitio a un
+        resultado recuperado del aparcadero, cuya verdad se resolvio antes de
+        los que llegaron mientras esperaba — antes se anotaba como si fuera el
+        mas nuevo.
 
         Es deliberadamente mas estrecho que `record_event()`:
 
@@ -581,24 +611,28 @@ class GravityIndex:
         que un patron cualifique. Los umbrales (MIN_SAMPLE, MIN_WIN_RATE,
         MIN_EXPECTANCY) y la ventana sobre la que se miden quedan como estaban.
         """
-        items = list(triples)
+        items = list(entries)
         if not items:
             return []
         results = [False] * len(items)
         with self._locked(exclusive=True):
             records = self._read_from_disk()
             touched = False
-            for i, (fingerprint, outcome, outcome_id) in enumerate(items):
+            for i, (fingerprint, outcome, outcome_id, ts) in enumerate(items):
                 rec = records.get(fingerprint)
                 if rec is None:
                     continue
                 results[i] = True
                 if any(_verified_entry_id(e) == outcome_id
                        for e in rec.verified_outcomes):
-                    continue  # ya anotado (reintento tras una caida)
+                    continue  # ya anotado (reintento inmediato tras una caida)
                 rec.verified_outcomes.append(
-                    {"status": str(outcome), "id": str(outcome_id)}
+                    {"status": str(outcome), "id": str(outcome_id), "ts": float(ts)}
                 )
+                # La ventana son los N resultados MAS RECIENTES por el instante
+                # en que se resolvieron, no los N ultimos escritos. Ver el
+                # razonamiento en el docstring.
+                rec.verified_outcomes.sort(key=_verified_entry_ts)
                 if len(rec.verified_outcomes) > MAX_OUTCOME_HISTORY:
                     rec.verified_outcomes = rec.verified_outcomes[-MAX_OUTCOME_HISTORY:]
                 records[fingerprint] = rec

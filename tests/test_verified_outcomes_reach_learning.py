@@ -1031,3 +1031,315 @@ class TestVerifiedEvidenceIsNeverDiscarded:
             ), f"borrado no acotado a una sola fila: {flat!r}"
         assert "rowid IN" not in src
         assert "LIMIT" not in src.split("DELETE FROM pending_outcomes")[1][:200]
+
+
+# ===========================================================================
+# 11. Los dos fallos de la revisión de 0097272
+# ===========================================================================
+
+def _market_outcome(i: int, status: str = "win", ts: float = 0.0):
+    """Un Outcome de market con instante de resolución explícito."""
+    from core.learn.outcome_adapter import Outcome, OutcomeStatus
+
+    return Outcome(
+        prediction_id=f"p{i}", domain="market", subject="AAPL",
+        status=OutcomeStatus.WIN if status == "win" else OutcomeStatus.LOSS,
+        score=1.0 if status == "win" else -1.0,
+        resolved_ts=ts or float(1000 + i),
+    )
+
+
+class TestAnOldResultCannotComeBackAsRecent:
+    """Fallo 5: tras una interrupción, si entraban más de 20 resultados antes
+    del reintento, el interrumpido ya había sido desplazado de la ventana; el
+    reintento no lo reconocía por id y lo reinsertaba COMO RECIENTE —
+    expulsando a uno genuinamente nuevo y alterando el criterio.
+
+    La comprobación por id solo ve lo que sigue en la ventana. Creer que
+    bastaba fue un error de razonamiento mío. La ventana se mantiene ahora
+    ordenada por el instante en que cada resultado se resolvió, así que
+    reinsertar algo ya superado es inofensivo: vuelve a caer fuera.
+    """
+
+    def test_the_interrupted_result_does_not_evict_a_newer_one(self, index):
+        from core.learn.gravity_engine import MAX_OUTCOME_HISTORY
+
+        _make_star(index, "market:AAPL", "market")
+        old = _market_outcome(0, "loss", ts=1000.0)
+
+        # Se interrumpe justo después de escribir en gravedad.
+        real = index.record_verified_outcomes
+
+        def _boom(entries):
+            real(entries)
+            raise RuntimeError("caída entre gravedad y commit")
+
+        index.record_verified_outcomes = _boom
+        og.apply_verified_outcome("market:AAPL", old, source="test")
+        index.record_verified_outcomes = real
+        assert _verdicts(index, "market:AAPL") == ["loss"]
+
+        # Llegan MÁS de 20 resultados nuevos antes del reintento.
+        og.apply_verified_outcomes(
+            [("market:AAPL", _market_outcome(i, "win", ts=2000.0 + i))
+             for i in range(1, 26)],
+            source="test",
+        )
+        window = _verdicts(index, "market:AAPL")
+        assert len(window) == MAX_OUTCOME_HISTORY
+        assert window.count("loss") == 0, "el viejo debería haber salido ya"
+
+        # El reintento del interrumpido: ya no lo reconoce por id.
+        og.apply_verified_outcome("market:AAPL", old, source="test")
+
+        window = _verdicts(index, "market:AAPL")
+        assert len(window) == MAX_OUTCOME_HISTORY
+        assert window.count("loss") == 0, (
+            "un resultado viejo resucitó y desplazó a uno más reciente"
+        )
+        assert window.count("win") == MAX_OUTCOME_HISTORY
+
+    def test_the_window_holds_the_most_recent_by_resolution_time(self, index):
+        _make_star(index, "market:AAPL", "market")
+
+        # Se aplican desordenados a propósito.
+        og.apply_verified_outcomes(
+            [("market:AAPL", _market_outcome(i, "win", ts=5000.0 + i))
+             for i in range(20)],
+            source="test",
+        )
+        og.apply_verified_outcome(
+            "market:AAPL", _market_outcome(99, "loss", ts=1.0), source="test",
+        )
+
+        # El de ts=1.0 es el más antiguo de todos: no entra en la ventana.
+        assert _verdicts(index, "market:AAPL").count("loss") == 0
+
+    def test_a_recovered_result_is_placed_by_when_it_happened(self, index):
+        """Un aparcado se anotaba como si fuera el más nuevo. Su verdad se
+        resolvió antes que la de los que llegaron mientras esperaba."""
+        from core.learn.outcome_adapter import Outcome, OutcomeStatus
+
+        og.apply_verified_outcomes(
+            [("market:LATE", Outcome(
+                prediction_id="viejo", domain="market", subject="LATE",
+                status=OutcomeStatus.LOSS, score=-1.0, resolved_ts=10.0))],
+            source="test",
+        )
+        assert og.pending_count(domain="market") == 1
+
+        _make_star(index, "market:LATE", "market")
+        og.apply_verified_outcomes(
+            [("market:LATE", Outcome(
+                prediction_id=f"nuevo-{i}", domain="market", subject="LATE",
+                status=OutcomeStatus.WIN, score=1.0, resolved_ts=9000.0 + i))
+             for i in range(20)],
+            source="test",
+        )
+        og.retry_pending("market", index=index)
+
+        # Recuperado, pero por antigüedad queda fuera de los 20 más recientes.
+        assert _verdicts(index, "market:LATE").count("loss") == 0
+        assert og.provenance(fingerprint="market:LATE", prediction_id="viejo")
+
+    def test_the_near_term_retry_still_dedupes_by_id(self, index):
+        """La comprobación por id sigue haciendo su trabajo cuando toca."""
+        _make_star(index, "market:AAPL", "market")
+        outcome = _market_outcome(1, "win", ts=3000.0)
+
+        for _ in range(4):
+            index.record_verified_outcome(
+                "market:AAPL", "win", outcome.prediction_id, 3000.0,
+            )
+
+        assert _verdicts(index, "market:AAPL") == ["win"]
+
+
+class TestALockedStoreNeverLosesTheResult:
+    """Fallo 6: con dos escrituras simultáneas, una recibía
+    `database is locked`; esa aplicación quedaba en cero y, en Market, la
+    señal quedaba marcada como verificada y no se volvía a intentar.
+    """
+
+    @staticmethod
+    def _install_recorder(monkeypatch, signals):
+        import connectors.etoro.signal_recorder as rec
+
+        class _Status:
+            class PENDING:
+                value = "pending"
+
+        monkeypatch.setattr(rec, "load_signals", lambda *a, **k: list(signals),
+                            raising=False)
+        monkeypatch.setattr(rec, "SignalStatus", _Status, raising=False)
+
+    @staticmethod
+    def _lock_the_store():
+        """Simula que otro escritor tiene la base tomada.
+
+        Devuelve la función que suelta el bloqueo. No se usa
+        `monkeypatch.undo()`: revertiría también el índice temporal de la
+        fixture `index`.
+        """
+        import sqlite3
+
+        real = og._get_conn
+
+        def _locked(*a, **k):
+            raise sqlite3.OperationalError("database is locked")
+
+        og._get_conn = _locked
+
+        def _release():
+            og._get_conn = real
+
+        return _release
+
+    def test_a_locked_store_reports_failure_instead_of_zero(self, index, monkeypatch):
+        _make_star(index, "market:AAPL", "market")
+        release = self._lock_the_store()
+        try:
+            counts = og.apply_verified_outcomes(
+                [("market:AAPL", _market_outcome(1))], source="test", index=index,
+            )
+        finally:
+            release()
+
+        assert counts[og.FAILED] == 1, counts
+        assert counts[og.APPLIED] == 0
+
+    def test_the_signal_is_not_marked_when_the_store_is_locked(
+        self, index, monkeypatch,
+    ):
+        sig = _win_signal(1)
+        self._install_recorder(monkeypatch, [sig])
+        _make_star(index, "market:AAPL", "market")
+        release = self._lock_the_store()
+        try:
+            market_vc.run_market_verification()
+        finally:
+            release()
+
+        assert sig.signal_id not in market_vc._load_verified_ids(), (
+            "la señal quedó marcada pese a que su resultado se perdió"
+        )
+        assert vledger.load_outcomes("market") == []
+
+    def test_the_next_cycle_recovers_it_once_the_lock_clears(
+        self, index, monkeypatch,
+    ):
+        sig = _win_signal(1)
+        self._install_recorder(monkeypatch, [sig])
+        _make_star(index, "market:AAPL", "market")
+
+        release = self._lock_the_store()
+        try:
+            market_vc.run_market_verification()
+        finally:
+            release()               # se suelta el bloqueo
+
+        market_vc.run_market_verification()
+
+        assert _verdicts(index, "market:AAPL") == ["win"]
+        assert sig.signal_id in market_vc._load_verified_ids()
+        assert len(vledger.load_outcomes("market")) == 1, "el ledger se duplicó"
+
+    def test_a_locked_store_that_already_exists_does_not_raise(
+        self, index, monkeypatch,
+    ):
+        """El caso que la prueba anterior no cubría.
+
+        `retry_pending` se llama por delante del `try` de
+        `run_market_verification`, así que una excepción ahí tumbaba la
+        verificación entera del ciclo. No se veía cuando el almacén todavía no
+        existía —`_open_for_read` devuelve None antes de abrirlo—, solo cuando
+        ya había uno. Lo encontró la reproducción sobre el pipeline real, no
+        esta suite.
+        """
+        sig = _win_signal(1)
+        self._install_recorder(monkeypatch, [sig])
+        _make_star(index, "market:AAPL", "market")
+
+        # Se crea el almacén de verdad (con aparcados dentro).
+        og.apply_verified_outcome("market:GHOST", _market_outcome(7), source="t")
+        assert Path(og.store_path()).exists()
+
+        release = self._lock_the_store()
+        try:
+            score = market_vc.run_market_verification()   # no debe lanzar
+            assert og.retry_pending("market")[og.FAILED] == 1
+        finally:
+            release()
+
+        # El score describe lo que se RESOLVIÓ en el lote, no lo que se
+        # persistió: la señal sí se resolvió. Lo que no debe haber ocurrido es
+        # darla por guardada.
+        assert score.n_decisive == 1
+        assert sig.signal_id not in market_vc._load_verified_ids()
+        assert vledger.load_outcomes("market") == []
+        assert _verdicts(index, "market:AAPL") == []
+
+    def test_every_read_survives_a_locked_store(self, index, monkeypatch):
+        og.apply_verified_outcome("market:GHOST", _market_outcome(7), source="t")
+
+        release = self._lock_the_store()
+        try:
+            assert og.provenance() == []
+            assert og.applied_count() == 0
+            assert og.pending_outcomes() == []
+            assert og.pending_count() == 0
+        finally:
+            release()
+
+    def test_a_pending_signal_is_never_marked_verified(self, index, monkeypatch):
+        """Un PENDING no está verificado; marcarlo lo excluía para siempre."""
+        sig = _Signal("sig-pending", "AAPL", "buy", 0.0, 101.0)   # entry inválido
+        self._install_recorder(monkeypatch, [sig])
+        _make_star(index, "market:AAPL", "market")
+
+        market_vc.run_market_verification()
+
+        assert sig.signal_id not in market_vc._load_verified_ids()
+
+    def test_two_concurrent_writers_both_land(self, tmp_path, index):
+        """Dos escritores reales a la vez sobre la misma base."""
+        import threading
+
+        _make_star(index, "market:AAPL", "market")
+        errors: list = []
+        done: list = []
+
+        def _worker(tag: str):
+            try:
+                c = og.apply_verified_outcomes(
+                    [("market:AAPL", _market_outcome(int(tag) * 100 + i,
+                                                     "win", ts=7000.0 + i))
+                     for i in range(10)],
+                    source=f"w{tag}", index=index,
+                )
+                done.append(c)
+            except Exception as exc:          # pragma: no cover
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_worker, args=(str(t),)) for t in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, errors
+        assert sum(c[og.FAILED] for c in done) == 0, done
+        assert sum(c[og.APPLIED] for c in done) == 40
+        assert og.applied_count(fingerprint="market:AAPL") == 40
+
+    def test_the_store_uses_wal(self, tmp_path):
+        """WAL es lo que permite que un lector no tumbe a un escritor."""
+        import sqlite3
+
+        db = str(tmp_path / "og.db")
+        og._get_conn(db).close()
+        conn = sqlite3.connect(db)
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        conn.close()
+
+        assert mode.lower() == "wal"

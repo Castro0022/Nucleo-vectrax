@@ -256,3 +256,43 @@ def isolated_user_memory(tmp_path, monkeypatch):
         monkeypatch.setattr(_um, "_store", None, raising=False)
     except Exception:
         yield None
+
+
+# ---------------------------------------------------------------------------
+# Red de seguridad: la suite no crea el almacén de producción
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True, scope="session")
+def _production_outcome_store_is_never_created():
+    """Falla la sesión si la suite crea `<vault de producción>/outcome_gravity.db`.
+
+    `_hermetic_base` ya redirige `VECTRAX_VAULT_DIR` en cada prueba, y
+    `core/learn/outcome_gravity.py` resuelve la ruta en cada llamada (hay
+    pruebas que lo fijan). Aun así, durante el desarrollo de este almacén
+    apareció una vez ese fichero en el vault de producción con filas de
+    prueba, de forma INTERMITENTE: una traza sobre cada apertura de la base no
+    llegó a dispararse en dos pasadas completas de la suite, así que no se
+    identificó al responsable.
+
+    Dar por resuelto lo que no se ha reproducido sería peor que dejarlo
+    visible. Esta comprobación convierte esa fuga —venga de donde venga, de una
+    prueba, de un hilo que sobrevive a su `monkeypatch` o de un subproceso con
+    el entorno limpio— en un fallo ruidoso de la sesión en vez de un fichero
+    que aparece en silencio. Solo lee rutas; no borra ni modifica nada.
+    """
+    try:
+        from core.learn.outcome_gravity import (
+            PRODUCTION_VAULT_DIR, STORE_FILENAME,
+        )
+    except Exception:
+        yield
+        return
+
+    path = os.path.join(PRODUCTION_VAULT_DIR, STORE_FILENAME)
+    existed_before = os.path.exists(path)
+    yield
+    if not existed_before and os.path.exists(path):
+        pytest.fail(
+            f"La suite creó el almacén de PRODUCCIÓN {path}. Alguna prueba "
+            "escapa a VECTRAX_VAULT_DIR: localizarla antes de fusionar."
+        )

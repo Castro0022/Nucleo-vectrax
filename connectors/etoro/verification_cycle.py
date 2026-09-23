@@ -127,6 +127,65 @@ def star_fingerprint_for(symbol: str) -> str:
     return f"market:{str(symbol or '').upper()}"
 
 
+def _verify(signals: Iterable[Any], record: bool):
+    """Cuerpo de la verificación. Devuelve ``(score, handled_ids)``.
+
+    ``handled_ids`` son los `signal_id` cuyo resultado quedó DURABLEMENTE
+    contabilizado: aplicado a la estrella, reconocido como duplicado o
+    aparcado para reintento. Solo esos puede marcar el ciclo como verificados.
+
+    ORDEN DE LAS ESCRITURAS
+    -----------------------
+    Primero la gravedad, después el ledger. Es deliberado: si el almacén de
+    `outcome_gravity` está bloqueado por otro escritor, el lote NO queda
+    contabilizado, y entonces tampoco se escribe en el ledger ni se marca la
+    señal. Así las tres cosas —ledger, gravedad y marcador— avanzan juntas o
+    no avanzan, y el siguiente ciclo repite el lote completo sin duplicar
+    nada. Al revés (ledger primero) un bloqueo dejaba el ledger escrito y la
+    señal marcada con el resultado perdido, o bien lo duplicaba en el ledger
+    al reintentar.
+
+    Una señal cuyo resultado es PENDING tampoco se marca: todavía no está
+    verificada, y marcarla la habría excluido para siempre.
+    """
+    outcomes: List[Outcome] = []
+    to_gravity: List[tuple] = []
+    sig_by_prediction: Dict[str, Any] = {}
+    for sig in signals:
+        pred, obs = _signal_to_pair(sig)
+        outcome = _ADAPTER.resolve(pred, obs)
+        outcomes.append(outcome)
+        if record and outcome.status is not OutcomeStatus.PENDING:
+            to_gravity.append((star_fingerprint_for(outcome.subject), outcome))
+            sig_by_prediction[outcome.prediction_id] = outcome
+
+    fed: Dict[str, int] = {}
+    handled_ids: List[str] = []
+    if to_gravity:
+        fed = outcome_gravity.apply_verified_outcomes(
+            to_gravity, source=_GRAVITY_SOURCE,
+        )
+        if fed.get(outcome_gravity.FAILED, 0):
+            logger.warning(
+                "market.verification | lote NO contabilizado (%d resultados): "
+                "no se marcan como verificados; se repetirán en el próximo ciclo",
+                fed[outcome_gravity.FAILED],
+            )
+        else:
+            for prediction_id, outcome in sig_by_prediction.items():
+                vledger.record_outcome(outcome)
+                handled_ids.append(prediction_id)
+
+    score = score_outcomes(_DOMAIN, outcomes)
+    logger.info(
+        "market.verification | batch=%d | decisive=%d | WR=%.0f%% | acc=%.2f "
+        "| gravity_applied=%d | contabilizados=%d",
+        score.n_total, score.n_decisive, score.win_rate, score.accuracy,
+        fed.get(outcome_gravity.APPLIED, 0), len(handled_ids),
+    )
+    return score, handled_ids
+
+
 def verify_signals(signals: Iterable[Any], record: bool = True) -> DomainScore:
     """Resuelve las señales dadas en Outcomes verificados vía TradingOutcomeAdapter.
 
@@ -136,26 +195,7 @@ def verify_signals(signals: Iterable[Any], record: bool = True) -> DomainScore:
     desempeño real. Devuelve el DomainScore de ESTE lote (el acumulado vive en
     el ledger).
     """
-    outcomes: List[Outcome] = []
-    to_gravity: List[tuple] = []
-    for sig in signals:
-        pred, obs = _signal_to_pair(sig)
-        outcome = _ADAPTER.resolve(pred, obs)
-        outcomes.append(outcome)
-        if record and outcome.status is not OutcomeStatus.PENDING:
-            vledger.record_outcome(outcome)
-            to_gravity.append((star_fingerprint_for(outcome.subject), outcome))
-    fed = outcome_gravity.apply_verified_outcomes(
-        to_gravity, source=_GRAVITY_SOURCE,
-    ) if to_gravity else {}
-    score = score_outcomes(_DOMAIN, outcomes)
-    logger.info(
-        "market.verification | batch=%d | decisive=%d | WR=%.0f%% | acc=%.2f "
-        "| gravity_applied=%d",
-        score.n_total, score.n_decisive, score.win_rate, score.accuracy,
-        fed.get(outcome_gravity.APPLIED, 0),
-    )
-    return score
+    return _verify(signals, record)[0]
 
 
 def run_market_verification(record: bool = True) -> DomainScore:
@@ -202,9 +242,13 @@ def run_market_verification(record: bool = True) -> DomainScore:
     if not fresh:
         return DomainScore(domain=_DOMAIN)
 
-    score = verify_signals(fresh, record=record)
+    score, handled_ids = _verify(fresh, record=record)
     if record:
-        _mark_verified([getattr(s, "signal_id", "") for s in fresh])
+        # SOLO las que quedaron contabilizadas. Marcar el lote entero era el
+        # agujero: ante un bloqueo de la base o un resultado todavía PENDING,
+        # la señal quedaba marcada y no se volvía a presentar nunca, así que
+        # su resultado se perdía aunque el problema fuera transitorio.
+        _mark_verified(handled_ids)
     return score
 
 
