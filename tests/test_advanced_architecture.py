@@ -334,13 +334,17 @@ class TestTradingConvergenceLearner:
         monkeypatch.setattr(cl, "_load_config", lambda: {"min_paper_win_rate": 60.0, "min_paper_signals": 30})
         monkeypatch.setattr(cl, "_PROPOSALS_FILE", props_file)
 
-        # Patch auto_executor save to detect any write attempt
-        try:
-            import connectors.etoro.auto_executor as ae
-            original_save = ae._save_config
-            ae._save_config = lambda cfg: config_writes.append(cfg)
-        except Exception:
-            pass
+        # Patch auto_executor save to detect any write attempt. Uses
+        # monkeypatch (not a bare attribute assignment) so the real
+        # _save_config is restored when this test ends — a bare
+        # `ae._save_config = lambda ...` here previously leaked a no-op
+        # stand-in for the rest of the pytest session, silently turning
+        # every other test's config writes (anywhere in connectors/etoro)
+        # into no-ops for as long as the process lived. That is what made
+        # unrelated tests pass in isolation and fail only inside the full
+        # suite, depending on whether this test had already run first.
+        import connectors.etoro.auto_executor as ae
+        monkeypatch.setattr(ae, "_save_config", lambda cfg: config_writes.append(cfg))
 
         run_observation_cycle()
         assert len(config_writes) == 0, "Learner must NEVER write to auto_executor config"
