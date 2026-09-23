@@ -61,8 +61,9 @@ def clean_env(monkeypatch):
 
 @pytest.fixture
 def temp_ledger(tmp_path, monkeypatch):
-    monkeypatch.setattr(ledger, "VAULT_DIR", str(tmp_path))
-    monkeypatch.setattr(ledger, "LEDGER_PATH", str(tmp_path / "test_ledger.db"))
+    # `audit_ledger` resuelve la ruta en cada acceso: la variable de entorno
+    # basta y es lo único que sigue siendo cierto.
+    monkeypatch.setenv("VECTRAX_VAULT_DIR", str(tmp_path))
 
 
 @pytest.fixture

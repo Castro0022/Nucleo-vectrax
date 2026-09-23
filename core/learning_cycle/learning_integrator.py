@@ -240,16 +240,18 @@ class LearningIntegrator:
             except Exception:
                 pass
 
-            # === FILTRO CONSTITUCIONAL (Fase 1 — SHADOW MODE) ================
+            # === FILTRO CONSTITUCIONAL (punto de aplicación) =================
             # Choke point 3: aprendizaje. Integrar una hipótesis como regla
             # activa es exactamente el caso que la Ley 7 (Generación) protege
-            # ("no convertir hipótesis en conocimiento sin verificación"). Solo
-            # observa y registra — la decisión real la sigue tomando
-            # check_authority() de abajo, sin cambios.
-            try:
-                from core.operator.constitutional_guard import shadow_check
-                from core.operator.constitutional_filter import ActionProposal
-                shadow_check(ActionProposal(
+            # ("no convertir hipótesis en conocimiento sin verificación").
+            #
+            # Antes este bloque llamaba a `shadow_check()` y DESCARTABA el
+            # veredicto sin asignarlo. Ahora se obedece: si el control impide
+            # la activación, la regla no se activa y se dice por qué.
+            from core.operator.constitutional_guard import enforce_check
+            from core.operator.constitutional_filter import ActionProposal
+            _gate = enforce_check(
+                ActionProposal(
                     action="activate_learned_rule",
                     correlation_id=rule_id,
                     classification=category,
@@ -262,9 +264,25 @@ class LearningIntegrator:
                     # en integrate()), asi que el conocimiento SI fue verificado.
                     is_learning_context=True,
                     knowledge_verified=True,
-                ))
-            except Exception as _cf_exc:
-                logger.debug("Constitutional shadow check failed (passthrough): %s", _cf_exc)
+                ),
+                application_point=(
+                    "core.learning_cycle.learning_integrator.integrate"
+                ),
+                actor=category,
+            )
+            if not _gate.allowed:
+                # Mismo contrato que la rama de abajo: la función devuelve
+                # bool y deja la regla PENDIENTE notificando al creador. El
+                # control constitucional añade un motivo para no activarla, no
+                # una forma distinta de responder.
+                logger.warning(
+                    "[CONSTITUTIONAL] regla %s NO activada: %s",
+                    rule_id, _gate.reason,
+                )
+                self._notify_creator_for_approval(
+                    rule_id, hyp, category, _gate.reason,
+                )
+                return False
 
             decision = check_authority(
                 "activate_learned_rule",

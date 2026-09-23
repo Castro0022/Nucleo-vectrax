@@ -47,7 +47,7 @@ from core.operator.constitutional_filter import (
     PrincipleVerdict,
     evaluate,
 )
-from core.operator.constitutional_guard import shadow_check
+from core.operator.constitutional_guard import enforce_check
 from core.operator.external_gateway import ExternalGateway, GatewayResult
 from core.operator.identity import FUNDAMENTAL_LAWS, verify_identity_integrity
 
@@ -59,18 +59,14 @@ from core.operator.identity import FUNDAMENTAL_LAWS, verify_identity_integrity
 @pytest.fixture(autouse=True)
 def _isolated_audit_ledger(tmp_path, monkeypatch):
     """
-    audit_ledger.py calcula VAULT_DIR/LEDGER_PATH a nivel de módulo, así que
-    monkeypatch.setenv("VECTRAX_VAULT_DIR") por sí solo no basta si el módulo
-    ya fue importado en la sesión (mismo patrón que observation_ledger en
-    conftest.py). Redirigimos el atributo directamente para garantizar que
-    estos tests nunca toquen el ledger real del creador.
+    `audit_ledger` resuelve `VECTRAX_VAULT_DIR` EN CADA ACCESO, así que basta
+    con redirigir la variable de entorno. Antes calculaba la ruta al importar
+    y había que parchear el atributo: ese apaño dejó de hacer falta y, peor,
+    dejó de funcionar — parchear un atributo que ya nadie lee habría mandado
+    estos tests al ledger real del creador.
     """
-    import core.audit_ledger as _al
-
-    db_path = str(tmp_path / "audit_ledger_test.db")
-    monkeypatch.setattr(_al, "VAULT_DIR", str(tmp_path), raising=False)
-    monkeypatch.setattr(_al, "LEDGER_PATH", db_path, raising=False)
-    yield db_path
+    monkeypatch.setenv("VECTRAX_VAULT_DIR", str(tmp_path))
+    yield str(tmp_path / "audit_ledger.db")
 
 
 @pytest.fixture(autouse=True)
@@ -254,15 +250,18 @@ class TestTechnicalFailureNeverSilentlyAuthorizes:
             verdict = evaluate(ActionProposal(action="respond"))
         assert verdict.overall == PrincipleVerdict.CAUTION
 
-    def test_shadow_check_never_raises_even_if_ledger_is_down(self):
+    def test_enforce_check_never_raises_even_if_ledger_is_down(self):
         with patch(
             "core.operator.constitutional_guard._record_ledger",
             side_effect=RuntimeError("ledger unavailable"),
         ):
             # No debe lanzar — un fallo de infraestructura nunca debe
             # propagarse al caller (el pipeline de mensajes).
-            verdict = shadow_check(ActionProposal(action="respond", classification="x"))
-        assert verdict.overall in (PrincipleVerdict.PASS, PrincipleVerdict.CAUTION, PrincipleVerdict.BLOCK)
+            gate = enforce_check(
+                ActionProposal(action="respond", classification="x"),
+                application_point="test",
+            )
+        assert gate.overall in ("pass", "caution", "block")
 
 
 # ===========================================================================
@@ -307,33 +306,44 @@ class TestFundamentalLawsIntact:
 # ===========================================================================
 
 class TestLedgerRecording:
-    def test_shadow_check_writes_one_ledger_entry_with_seven_results(self):
-        verdict = shadow_check(ActionProposal(action="respond", classification="market", correlation_id="TEST-001"))
+    def test_enforce_check_writes_one_ledger_entry_with_seven_results(self):
+        gate = enforce_check(
+            ActionProposal(action="respond", classification="market",
+                           correlation_id="TEST-001"),
+            application_point="test",
+        )
         entries = _entries_for("TEST-001")
         assert len(entries) == 1
         details = entries[0]["meta"]["details"]
         assert len(details["results"]) == 7
-        assert details["overall"] == verdict.overall.value
-        assert details["mode"] == "shadow"
-        assert "simulated_decision_authority" in details
+        assert details["overall"] == gate.overall
+        assert details["mode"] == "active"
+        # `simulated_decision_authority` se retiró: describía qué HABRÍA
+        # decidido la autoridad si el veredicto se aplicara. Ahora se aplica,
+        # así que simular la aplicación sería describir lo que ya ocurre.
+        assert "simulated_decision_authority" not in details
+        # Lo que sí tiene que estar, para reconstruir la decisión sin repetirla:
+        for field in ("correlation_id", "action", "application_point", "actor",
+                      "mode", "timestamp", "allowed", "overall", "rules"):
+            assert field in details, f"la decisión no guarda {field!r}"
 
     def test_ledger_entry_action_prefixed_with_mode(self):
-        shadow_check(ActionProposal(action="respond", classification="x", correlation_id="TEST-002"))
+        enforce_check(ActionProposal(action="respond", classification="x", correlation_id="TEST-002"), application_point="test")
         entries = _entries_for("TEST-002")
-        assert entries[0]["action"] == "constitutional:shadow:respond"
+        assert entries[0]["action"] == "constitutional:active:respond"
 
     def test_block_verdict_recorded_as_red_risk_zone(self):
-        shadow_check(ActionProposal(
+        enforce_check(ActionProposal(
             action="integrate", correlation_id="TEST-003", classification="x",
             action_logged=True, interaction_recorded=True,
             is_learning_context=True, knowledge_verified=False,
-        ))
+        ), application_point="test")
         entries = _entries_for("TEST-003")
         meta = entries[0]["meta"]
         assert meta["risk_zone"] == "red"
 
     def test_caution_verdict_recorded_as_yellow_risk_zone(self):
-        shadow_check(ActionProposal(action="respond", correlation_id="TEST-004"))  # sin classification
+        enforce_check(ActionProposal(action="respond", correlation_id="TEST-004"), application_point="test")  # sin classification
         entries = _entries_for("TEST-004")
         assert entries[0]["meta"]["risk_zone"] == "yellow"
 
@@ -420,13 +430,12 @@ class TestAllEarlyReturnsReachChokePoint:
         # El resultado devuelto al caller es EXACTAMENTE el que produjo la
         # ruta interna — el choke point observa, nunca altera (shadow mode).
         assert result is shape
-        assert result.response == shape.response
 
         entries = _entries_for(shape.event_id)
         assert len(entries) == 1, f"Ruta {shape_name} no llegó al choke point constitucional"
         details = entries[0]["meta"]["details"]
         assert len(details["results"]) == 7
-        assert details["mode"] == "shadow"
+        assert details["mode"] == "active"
 
     def test_empty_content_path_produces_no_constitutional_entry(self):
         """No hay acción real que evaluar cuando el mensaje está vacío."""
@@ -470,13 +479,48 @@ class TestAllEarlyReturnsReachChokePoint:
 # 7. Shadow mode NUNCA altera el comportamiento — ni con veredicto BLOCK
 # ===========================================================================
 
-class TestShadowModeNeverAltersBehavior:
-    def test_default_mode_is_shadow(self):
-        assert constitutional_mode.get_mode() == constitutional_mode.SHADOW
+@pytest.fixture(autouse=True)
+def _isolated_mode_file(tmp_path, monkeypatch):
+    """El estado del modo vive en `~/.vectrax/constitutional_mode.json`.
 
-    def test_forced_block_verdict_does_not_change_response(self):
-        """Incluso si los 7 principios darían BLOCK, la respuesta real al
-        usuario no cambia en modo shadow — el choke point solo observa."""
+    Sin esto, un test que llama a `set_mode()` escribe en el HOME real del
+    desarrollador y deja a los siguientes dependiendo del orden de ejecución.
+    """
+    monkeypatch.setattr(
+        constitutional_mode, "_MODE_PATH",
+        str(tmp_path / "constitutional_mode.json"), raising=False,
+    )
+    constitutional_mode._cache["mode"] = None
+    yield
+    constitutional_mode._cache["mode"] = None
+
+
+class TestTheControlAlwaysApplies:
+    def test_default_mode_is_active(self):
+        """El control nace ENCENDIDO. Un control que nace apagado no se enciende."""
+        assert constitutional_mode.get_mode() == constitutional_mode.ACTIVE
+        assert constitutional_mode.DEFAULT_MODE == constitutional_mode.ACTIVE
+
+    def test_there_is_no_observation_mode(self):
+        """No queda ningún modo en el que el veredicto se evalúe y se descarte."""
+        assert set(constitutional_mode._VALID_MODES) == {"active", "paused"}
+        for gone in ("SHADOW", "ENFORCE", "is_shadow", "is_enforce",
+                     "revert_to_shadow"):
+            assert not hasattr(constitutional_mode, gone), (
+                f"sobrevive un vestigio del modo de observación: {gone}"
+            )
+        import core.operator.constitutional_guard as guard
+        assert not hasattr(guard, "shadow_check")
+        assert not hasattr(guard, "_simulate_decision_authority")
+
+    def test_a_forced_block_verdict_now_changes_the_response(self):
+        """Antes este test afirmaba lo contrario, y ESA era la avería.
+
+        Con el modo de observación retirado, un BLOCK de los 7 principios
+        sustituye la respuesta real. Si esta prueba volviera a pasar
+        afirmando que la respuesta no cambia, el control habría vuelto a ser
+        decorativo.
+        """
         import core.operator.constitutional_filter as _cf
         from core.operator.constitutional_filter import PrincipleResult
 
@@ -494,11 +538,29 @@ class TestShadowModeNeverAltersBehavior:
              patch.object(_cf, "_EVALUATORS", tuple(broken)):
             result = gw.receive_message(user_id="u1", content="x", channel="web")
 
-        assert result.response == shape.response
-        assert result.processed is True
+        # No se compara el TEXTO: esta shape ya respondía con el mismo mensaje
+        # de contención, así que coincidir no probaría nada. Lo inequívoco es
+        # que la respuesta pasó a estar ORIGINADA por el control.
+        assert result.source == "constitutional_block", (
+            "el BLOCK se registró pero no gobernó la respuesta: "
+            "el control volvió a ser decorativo"
+        )
+        assert result.resolve_mode == "constitutional_block"
+        assert result.evidence["constitutional_overall"] == "block"
+        assert result.evidence["constitutional_flagged"] == ["L7=block"]
         entries = _entries_for(shape.event_id)
-        assert entries[0]["meta"]["details"]["overall"] == "block"  # se registró el BLOCK...
-        assert result.response == shape.response  # ...pero la respuesta no cambió
+        assert entries[0]["meta"]["details"]["overall"] == "block"
+        assert entries[0]["meta"]["details"]["allowed"] is False
+
+    def test_a_paused_control_stops_the_action(self):
+        """La pausa de emergencia DETIENE; no es una puerta abierta."""
+        shape = _EARLY_RETURN_SHAPES["fallthrough_smartrouter_online_L1700"]
+        gw = ExternalGateway()
+        constitutional_mode.pause(changed_by="test")
+        with patch.object(gw, "_do_receive_message", return_value=shape):
+            result = gw.receive_message(user_id="u1", content="x", channel="web")
+        assert result.source == "constitutional_unavailable"
+        assert result.evidence["constitutional_overall"] == "unavailable"
 
     def test_receive_message_never_raises_if_constitutional_filter_explodes(self):
         shape = _EARLY_RETURN_SHAPES["greeting_L434"]
@@ -508,25 +570,25 @@ class TestShadowModeNeverAltersBehavior:
             result = gw.receive_message(user_id="u1", content="hola", channel="web")
         assert result.response == shape.response
 
-    def test_constitutional_mode_defaults_to_shadow_on_corrupt_file(self, tmp_path, monkeypatch):
+    def test_a_corrupt_file_fails_closed_to_paused(self, tmp_path, monkeypatch):
         bad_path = tmp_path / "bad_mode.json"
         bad_path.write_text("{not valid json")
         monkeypatch.setattr(constitutional_mode, "_MODE_PATH", str(bad_path), raising=False)
         constitutional_mode._cache["mode"] = None
-        assert constitutional_mode.get_mode() == constitutional_mode.SHADOW
+        assert constitutional_mode.get_mode() == constitutional_mode.PAUSED
 
-    def test_constitutional_mode_defaults_to_shadow_on_invalid_value(self, tmp_path, monkeypatch):
+    def test_an_invalid_value_fails_closed_to_paused(self, tmp_path, monkeypatch):
         bad_path = tmp_path / "bad_mode2.json"
         bad_path.write_text(json.dumps({"mode": "yolo"}))
         monkeypatch.setattr(constitutional_mode, "_MODE_PATH", str(bad_path), raising=False)
         constitutional_mode._cache["mode"] = None
-        assert constitutional_mode.get_mode() == constitutional_mode.SHADOW
+        assert constitutional_mode.get_mode() == constitutional_mode.PAUSED
 
-    def test_set_mode_and_revert_roundtrip(self):
-        constitutional_mode.set_mode(constitutional_mode.ENFORCE, changed_by="test")
-        assert constitutional_mode.get_mode() == constitutional_mode.ENFORCE
-        constitutional_mode.revert_to_shadow(changed_by="test_killswitch")
-        assert constitutional_mode.get_mode() == constitutional_mode.SHADOW
+    def test_pause_and_resume_roundtrip(self):
+        constitutional_mode.set_mode(constitutional_mode.ACTIVE, changed_by="test")
+        assert constitutional_mode.get_mode() == constitutional_mode.ACTIVE
+        constitutional_mode.pause(changed_by="test_killswitch")
+        assert constitutional_mode.get_mode() == constitutional_mode.PAUSED
 
     def test_set_mode_rejects_invalid_value(self):
         with pytest.raises(ValueError):
@@ -539,18 +601,17 @@ class TestShadowModeNeverAltersBehavior:
 #     external_gateway.py")
 # ===========================================================================
 
-class TestEnforceModeAltersResponse:
-    """Con constitutional_mode='enforce', el choke point de
-    external_gateway.py ACTÚA sobre el veredicto: BLOCK y
-    CAUTION-no-autorizado sustituyen la respuesta real; PASS y
-    CAUTION-autorizado la dejan intacta. Nunca silencioso (siempre hay
-    respuesta), nunca lanza (fallo técnico -> passthrough)."""
+class TestBlockReplacesTheResponse:
+    """El choke point de external_gateway.py ACTÚA SIEMPRE sobre el
+    veredicto: BLOCK y CAUTION-no-autorizado sustituyen la respuesta real;
+    PASS y CAUTION-autorizado la dejan intacta. Nunca silencioso (siempre hay
+    respuesta), nunca lanza (fallo técnico -> respuesta de contención)."""
 
-    def test_forced_block_replaces_response_in_enforce_mode(self):
+    def test_forced_block_replaces_the_response(self):
         import core.operator.constitutional_filter as _cf
         from core.operator.constitutional_filter import PrincipleResult
 
-        constitutional_mode.set_mode(constitutional_mode.ENFORCE, changed_by="test")
+        constitutional_mode.set_mode(constitutional_mode.ACTIVE, changed_by="test")
         shape = _EARLY_RETURN_SHAPES["fallthrough_smartrouter_online_L1700"]
         gw = ExternalGateway()
 
@@ -572,14 +633,14 @@ class TestEnforceModeAltersResponse:
         assert result.processed is True
         entries = _entries_for(shape.event_id)
         assert entries[0]["meta"]["details"]["overall"] == "block"
-        assert entries[0]["meta"]["details"]["mode"] == "enforce"
+        assert entries[0]["meta"]["details"]["mode"] == "active"
 
-    def test_caution_denied_replaces_response_in_enforce_mode(self):
+    def test_caution_denied_replaces_the_response(self):
         """Sin classification -> Ley 1 CAUTION. Con DecisionAuthority
         mockeado a no-autorizado, la respuesta se sustituye."""
         from core.operator.decision_authority import DecisionResult, Authority
 
-        constitutional_mode.set_mode(constitutional_mode.ENFORCE, changed_by="test")
+        constitutional_mode.set_mode(constitutional_mode.ACTIVE, changed_by="test")
         shape = GatewayResult(
             event_id="cid-caution-denied", user_id="u1", channel="web",
             response="respuesta original", source="", resolve_mode="",
@@ -601,11 +662,11 @@ class TestEnforceModeAltersResponse:
         assert result.response
         assert result.source == "constitutional_caution_denied"
 
-    def test_caution_approved_leaves_response_unchanged_in_enforce_mode(self):
+    def test_caution_approved_leaves_the_response_unchanged(self):
         """Sin classification -> CAUTION, pero 'respond' es AUTO_ACTION real
         (fix de decision_authority.py) -> DecisionAuthority auto-aprueba,
         sin mockear nada -> respuesta sin cambios."""
-        constitutional_mode.set_mode(constitutional_mode.ENFORCE, changed_by="test")
+        constitutional_mode.set_mode(constitutional_mode.ACTIVE, changed_by="test")
         shape = GatewayResult(
             event_id="cid-caution-ok", user_id="u1", channel="web",
             response="respuesta original", source="", resolve_mode="",
@@ -618,7 +679,7 @@ class TestEnforceModeAltersResponse:
         assert result.response == "respuesta original"
 
     def test_pass_verdict_leaves_response_unchanged_in_enforce_mode(self):
-        constitutional_mode.set_mode(constitutional_mode.ENFORCE, changed_by="test")
+        constitutional_mode.set_mode(constitutional_mode.ACTIVE, changed_by="test")
         shape = _EARLY_RETURN_SHAPES["fallthrough_memory_L1700"]
         gw = ExternalGateway()
         with patch.object(gw, "_do_receive_message", return_value=shape):
@@ -626,7 +687,7 @@ class TestEnforceModeAltersResponse:
         assert result.response == shape.response
 
     def test_receive_message_never_raises_if_enforce_gate_explodes(self):
-        constitutional_mode.set_mode(constitutional_mode.ENFORCE, changed_by="test")
+        constitutional_mode.set_mode(constitutional_mode.ACTIVE, changed_by="test")
         shape = _EARLY_RETURN_SHAPES["greeting_L434"]
         gw = ExternalGateway()
         with patch.object(gw, "_do_receive_message", return_value=shape), \
@@ -634,15 +695,28 @@ class TestEnforceModeAltersResponse:
             result = gw.receive_message(user_id="u1", content="hola", channel="web")
         assert result.response == shape.response
 
-    def test_shadow_mode_unaffected_by_new_enforce_code_path(self):
-        """Regresión explícita: con el modo en su default (shadow), el
-        código nuevo de enforce NUNCA se ejecuta — comportamiento idéntico."""
-        assert constitutional_mode.get_mode() == constitutional_mode.SHADOW
-        shape = _EARLY_RETURN_SHAPES["fallthrough_smartrouter_online_L1700"]
+    def test_pass_leaves_the_response_untouched(self):
+        """PASS continúa: el control aplica, y aplicar no es entorpecer.
+
+        Sustituye a la antigua regresión "en shadow el camino de enforce nunca
+        se ejecuta", que protegía un modo que ya no existe. Lo que hay que
+        proteger ahora es que un veredicto favorable no altere nada.
+        """
+        assert constitutional_mode.get_mode() == constitutional_mode.ACTIVE
+        # COPIA: `_EARLY_RETURN_SHAPES` es estado compartido a nivel de módulo
+        # y el gate muta el resultado IN-PLACE (`result is shape`). Reutilizar
+        # el original aquí heredaría el bloqueo que le dejó otro test.
+        expected = "Según lo que encontré, esto es lo que puedo decirte."
+        shape = GatewayResult(
+            event_id="cid-pass-untouched", user_id="u1", channel="web",
+            response=expected, source="smart_router", resolve_mode="online",
+            timestamp=0.0, processed=True,
+        )
         gw = ExternalGateway()
         with patch.object(gw, "_do_receive_message", return_value=shape):
             result = gw.receive_message(user_id="u1", content="x", channel="web")
-        assert result.response == shape.response
+        assert result.response == expected
+        assert result.source != "constitutional_block"
 
 
 # ===========================================================================
@@ -693,7 +767,7 @@ class TestTradingPaperUnaffected:
 
         # Importar/usar el filtro constitucional no debe tocar config de trading.
         evaluate(ActionProposal(action="respond"))
-        shadow_check(ActionProposal(action="respond", correlation_id="TEST-TRADE-1"))
+        enforce_check(ActionProposal(action="respond", correlation_id="TEST-TRADE-1"), application_point="test")
 
         assert ae.get_mode() == ae.AutoMode.OFF  # default sin cambios
         assert ae.get_config()["mode"] == "off"
@@ -751,17 +825,30 @@ class TestIdeaCreationChokePoint:
         assert len(entries) == 1
         assert len(entries[0]["meta"]["details"]["results"]) == 7
 
-    def test_add_idea_never_raises_if_constitutional_guard_fails(self, tmp_path):
-        from core.idea_store import IdeaStore, IdeaSource, IdeaPriority
+    def test_a_crashed_guard_fails_closed_instead_of_passing_through(self, tmp_path):
+        """Antes esta prueba exigía PASSTHROUGH: si el guard fallaba, la idea
+        se creaba igual. Ese era el fallback silencioso.
 
-        store = IdeaStore(path=str(tmp_path / "ideas2.jsonl"))
+        Un control que se cae y deja pasar no es un control. Ahora un fallo
+        del guard detiene la acción y dice por qué.
+        """
+        from core.idea_store import (
+            ConstitutionalBlock, IdeaPriority, IdeaSource, IdeaStore,
+        )
+
+        store = IdeaStore(path=str(tmp_path / "ideas.jsonl"))
         with patch(
-            "core.operator.constitutional_guard.shadow_check",
+            "core.operator.constitutional_guard.enforce_check",
             side_effect=RuntimeError("boom"),
         ):
-            idea = store.add(
-                title="X", description="Y", source=IdeaSource.MANUAL,
-                priority=IdeaPriority.LOW, impact_score=0.1,
-                affected_component="x",
-            )
-        assert idea is not None  # la creación de la idea no se vio afectada
+            with pytest.raises(ConstitutionalBlock) as excinfo:
+                store.add(
+                    title="idea con guard caído",
+                    description="d",
+                    source=IdeaSource.ROUTER_LEARNING,
+                    priority=IdeaPriority.MEDIUM,
+                    impact_score=0.5,
+                    affected_component="core",
+                )
+        assert "no pudo evaluar" in str(excinfo.value)
+        assert "boom" in str(excinfo.value)

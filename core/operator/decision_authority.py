@@ -99,6 +99,14 @@ AUTO_ACTIONS = frozenset({
     "investigate_anomaly",
     "verify_hypothesis",
     "generate_hypothesis",
+    # "create_idea" es el nombre REAL que usa core/idea_store.py::create al
+    # construir su ActionProposal. Crear una idea es reversible y no ejecuta
+    # nada: queda en PENDING y no tiene ningún efecto hasta que el creador la
+    # apruebe explícitamente (APLICARLA es "execute_proposal", que sigue en
+    # AUTHORIZED_ACTIONS). Sin clasificar, caía en "acción no clasificada" ->
+    # CAUTION no auto-aprobado, y con el control constitucional aplicándose de
+    # verdad eso detendría toda la generación de ideas.
+    "create_idea",
     "detect_patterns",
     "detect_constellations",
 

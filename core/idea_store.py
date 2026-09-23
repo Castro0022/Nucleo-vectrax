@@ -30,13 +30,14 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import re
 import logging
 import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("vectrax.idea_store")
 
@@ -337,6 +338,150 @@ def _get_convergence_level() -> float:
 # IdeaStore — store JSONL persistente
 # ---------------------------------------------------------------------------
 
+class ConstitutionalBlock(RuntimeError):
+    """El filtro constitucional DECIDIÓ impedir la acción.
+
+    Es un veredicto, no una avería: hay reglas que lo justifican y un
+    `correlation_id` con el que auditarlo. Lleva la `GateDecision` para que el
+    llamador pueda explicar la causa sin reconstruirla ni volver a evaluar.
+    """
+
+    def __init__(self, reason: str, gate=None):
+        super().__init__(reason)
+        self.reason = reason
+        self.gate = gate
+
+    @property
+    def correlation_id(self) -> str:
+        return getattr(self.gate, "correlation_id", "") if self.gate else ""
+
+    @property
+    def rules(self) -> tuple:
+        return tuple(getattr(self.gate, "rules", ()) or ()) if self.gate else ()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "correlation_id": self.correlation_id,
+            "rules": list(self.rules),
+            "reason": self.reason,
+        }
+
+
+#: Patrones de secreto que NUNCA pueden llegar al ledger. El orden importa:
+#: las URLs con credenciales se tratan antes que el `clave=valor` genérico.
+_SECRET_PATTERNS = (
+    # URL con autenticación embebida: esquema://usuario:contraseña@host
+    (re.compile(r"(\w+://)[^\s:/@]+:[^\s@]+@"), r"\1[REDACTADO]@"),
+    # Cabecera Bearer / Basic / Token
+    (re.compile(r"\b(Bearer|Basic|Token)\s+[A-Za-z0-9\-._~+/=]{6,}",
+                re.IGNORECASE), r"\1 [REDACTADO]"),
+    # clave=valor y clave: valor para nombres sensibles
+    # El prefijo opcional (`client_secret`, `x-api-key`, `db_password`) hace
+    # falta: el guion bajo es carácter de palabra, así que `\bsecret\b` no
+    # encuentra frontera dentro de `client_secret`.
+    (re.compile(
+        r"\b([\w.-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|"
+        r"auth|authorization|credential|private[_-]?key|access[_-]?key|"
+        r"session[_-]?id|cookie))\s*[:=]\s*[\"']?[^\s\"',;)]+",
+        re.IGNORECASE), r"\1=[REDACTADO]"),
+    # Cadenas largas que parecen claves (hex o base64 de 24+ caracteres)
+    (re.compile(r"\b[A-Fa-f0-9]{24,}\b"), "[REDACTADO]"),
+    (re.compile(r"\b[A-Za-z0-9+/]{32,}={0,2}\b"), "[REDACTADO]"),
+)
+
+
+def _sanitize_cause(exc: BaseException) -> str:
+    """Causa técnica legible SIN filtrar secretos ni interioridades.
+
+    Va a un asiento de auditoría que puede leer cualquiera con acceso al
+    ledger, y el mensaje de una excepción puede arrastrar cualquier cosa: una
+    cadena de conexión con contraseña, una cabecera `Authorization`, una clave
+    de API que el cliente HTTP metió en el texto del error.
+
+    Se redacta antes de acotar, para que truncar no deje media credencial
+    visible. Queda el tipo de excepción y un mensaje saneado, que es lo que
+    sirve para diagnosticar.
+    """
+    text = f"{type(exc).__name__}: {exc}"
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    # Rutas absolutas -> solo el nombre final.
+    text = re.sub(r"(/[\w.\-]+){2,}",
+                  lambda m: ".../" + m.group(0).rsplit("/", 1)[-1], text)
+    text = re.sub(r"[A-Za-z]:\\[^\s]+", "...", text)
+    return text[:300]
+
+
+class ConstitutionalGuardUnavailable(ConstitutionalBlock):
+    """El control no pudo PRONUNCIARSE. Es una avería técnica, no un veredicto.
+
+    Se distingue de `ConstitutionalBlock` a propósito: ambos impiden la acción
+    —el control falla cerrado— pero significan cosas opuestas. Uno dice "esto
+    no debe hacerse, y estas reglas lo explican"; el otro dice "no sé si debe
+    hacerse". Contarlos juntos convertiría una avería en un bloqueo legítimo
+    en las estadísticas, y un bloqueo legítimo en ruido de infraestructura.
+
+    Lleva su propia identidad porque una avería que detiene trabajo tiene que
+    poder auditarse igual que un veredicto: sin `correlation_id` ni título, el
+    asiento diría que algo falló pero no qué se quedó sin crear.
+    """
+
+    def __init__(self, reason: str, *, correlation_id: str = "",
+                 title: str = "", application_point: str = "",
+                 technical_cause: str = ""):
+        super().__init__(reason)
+        self._correlation_id = correlation_id
+        self.title = title
+        self.application_point = application_point
+        self.technical_cause = technical_cause
+
+    @property
+    def correlation_id(self) -> str:
+        return self._correlation_id
+
+
+@dataclass
+class ConstitutionalUnavailableRecord:
+    """Una indisponibilidad del control, como dato."""
+    correlation_id: str
+    title: str
+    application_point: str
+    technical_cause: str
+    source: str
+    timestamp: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "correlation_id": self.correlation_id,
+            "title": self.title,
+            "application_point": self.application_point,
+            "technical_cause": self.technical_cause,
+            "source": self.source,
+            "timestamp": self.timestamp,
+        }
+
+
+@dataclass
+class ConstitutionalBlockRecord:
+    """Un bloqueo, como dato. No como una omisión silenciosa."""
+    correlation_id: str
+    reason: str
+    rules: Tuple[str, ...]
+    source: str
+    title: str
+    timestamp: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "correlation_id": self.correlation_id,
+            "reason": self.reason,
+            "rules": list(self.rules),
+            "source": self.source,
+            "title": self.title,
+            "timestamp": self.timestamp,
+        }
+
+
 class IdeaStore:
     """
     Almacén persistente de ideas operacionales.
@@ -482,37 +627,67 @@ class IdeaStore:
             created_at=_now_iso(),
             source_id=source_id,
         )
+        # === FILTRO CONSTITUCIONAL (punto de aplicación) ======================
+        # Choke point 4: generación de ideas. Antes este bloque llamaba a
+        # `shadow_check()` y DESCARTABA el veredicto sin asignarlo: el control
+        # aparentaba existir aquí y no gobernaba nada, ni siquiera con la
+        # bandera global en enforce. Ahora se obedece.
+        #
+        # `action_logged=False` sigue reflejando con honestidad que la creación
+        # de ideas no pasa por el audit ledger, solo por el logger de Python.
+        from core.operator.constitutional_guard import enforce_check
+        from core.operator.constitutional_filter import ActionProposal
+        try:
+            gate = enforce_check(
+                ActionProposal(
+                    action="create_idea",
+                    correlation_id=idea.idea_id,
+                    classification=source.value,
+                    is_irreversible=False,
+                    interaction_recorded=True,
+                    domain=affected_component,
+                    action_logged=False,
+                    is_hypothesis_context=True,
+                    has_counter_evidence=False,
+                ),
+                application_point="core.idea_store.IdeaStore.create",
+                actor=str(source.value),
+            )
+        except Exception as exc:
+            # FALLA CERRADO. Antes este bloque dejaba pasar la idea cuando el
+            # guard fallaba ("passthrough"), que es exactamente el fallback
+            # silencioso que no debe existir: un control que se cae y deja
+            # pasar no es un control.
+            logger.error(
+                "[CONSTITUTIONAL] guard caído al crear idea %s: %s",
+                idea.idea_id, exc,
+            )
+            raise ConstitutionalGuardUnavailable(
+                f"El control constitucional no pudo evaluar la creación de la "
+                f"idea ({exc}). Se detiene por seguridad.",
+                correlation_id=idea.idea_id,
+                title=title,
+                application_point="core.idea_store.IdeaStore.create",
+                technical_cause=_sanitize_cause(exc),
+            )
+
+        if not gate.allowed:
+            # La idea NO se persiste. Se explica la causa en lugar de crearla
+            # y dejar que alguien descubra después que no debió existir.
+            logger.warning(
+                "[CONSTITUTIONAL] idea %s bloqueada: %s", idea.idea_id, gate.reason,
+            )
+            raise ConstitutionalBlock(gate.reason, gate)
+
+
+        # Solo ahora se persiste. El control corre ANTES de escribir: si
+        # corriera después, una idea bloqueada quedaría ya en el JSONL y el
+        # bloqueo sería una protesta a posteriori, no un impedimento.
         self._append(idea)
         logger.info(
             "IdeaStore: nueva idea %s [%s] score=%.2f | %s",
             idea.idea_id, idea.priority.value, idea.priority_score, title[:50]
         )
-
-        # === FILTRO CONSTITUCIONAL (Fase 1 — SHADOW MODE) =====================
-        # Choke point 4: generación de ideas. Solo observa y registra — crear
-        # una idea sigue siendo un cambio reversible y de bajo riesgo (queda
-        # PENDING hasta que el creador la apruebe), así que no se modela como
-        # "is_learning_context" (eso aplica recién cuando se APLICA una idea,
-        # Fase 4). `action_logged=False` refleja con honestidad que hoy la
-        # creación de ideas no pasa por el audit ledger, solo por el logger de
-        # Python — hallazgo real que quedará documentado en la matriz de
-        # cobertura de la Fase 1.
-        try:
-            from core.operator.constitutional_guard import shadow_check
-            from core.operator.constitutional_filter import ActionProposal
-            shadow_check(ActionProposal(
-                action="create_idea",
-                correlation_id=idea.idea_id,
-                classification=source.value,
-                is_irreversible=False,
-                interaction_recorded=True,
-                domain=affected_component,
-                action_logged=False,
-                is_hypothesis_context=True,
-                has_counter_evidence=False,
-            ))
-        except Exception as _cf_exc:
-            logger.debug("Constitutional shadow check failed (passthrough): %s", _cf_exc)
 
         return idea
 
@@ -564,6 +739,149 @@ class IdeaStore:
         return True
 
     # ── Ingesta desde RouterLearningEngine ────────────────────────────────
+
+    # ── Bloqueos constitucionales: dato, no omisión ───────────────────────
+
+    #: Tope del historial en memoria. Un bloqueo repetido no puede crecer sin
+    #: límite; el registro completo y permanente vive en el ledger que escribe
+    #: `enforce_check()`.
+    MAX_CONSTITUTIONAL_BLOCKS = 100
+
+    def _record_constitutional_block(self, exc, *, source: str, title: str) -> None:
+        """Deja constancia de un bloqueo con todo lo necesario para auditarlo.
+
+        Un bloqueo constitucional no es "no salió nada de esta fuente": es una
+        decisión con reglas y un `correlation_id`. Si se absorbiera en el
+        `except Exception` genérico junto a un timeout de red, sería
+        indistinguible de una omisión normal — que es exactamente lo que no
+        puede pasar.
+        """
+        record = ConstitutionalBlockRecord(
+            correlation_id=exc.correlation_id,
+            reason=exc.reason,
+            rules=exc.rules,
+            source=source,
+            title=title[:120],
+            timestamp=time.time(),
+        )
+        blocks = getattr(self, "_constitutional_blocks", None)
+        if blocks is None:
+            blocks = self._constitutional_blocks = []
+        blocks.append(record)
+        del blocks[:-self.MAX_CONSTITUTIONAL_BLOCKS]
+        logger.warning(
+            "[CONSTITUTIONAL] idea BLOQUEADA en %s | correlation_id=%s | "
+            "reglas=%s | motivo=%s | titulo=%r",
+            source, record.correlation_id or "(sin id)",
+            list(record.rules) or "(ninguna)", record.reason, record.title,
+        )
+
+        # ASIENTO PERSISTENTE. El WARNING de arriba es observabilidad: se
+        # rota, se pierde y nadie lo consulta después. La auditoría vive en
+        # `<vault>/audit_ledger.db` (tabla `audit_ledger`, categoría
+        # CONSTITUTIONAL), que sobrevive al proceso y se consulta con
+        # `core.audit_ledger.query()`.
+        #
+        # `enforce_check()` ya asienta su propia decisión, pero desde la
+        # `ActionProposal` no viaja el TÍTULO de la idea: sin él, el asiento
+        # dice qué regla bloqueó y no qué se bloqueó. Este asiento lo añade.
+        try:
+            from core.operator import ledger_bridge as _ledger
+            _ledger.record_event(
+                action=f"constitutional_block:create_idea:{source}",
+                category=_ledger.EventCategory.CONSTITUTIONAL,
+                risk_zone=_ledger.RiskZone.RED,
+                actor=source,
+                reason=record.reason,
+                details={
+                    "correlation_id": record.correlation_id,
+                    "title": record.title,
+                    "rules": list(record.rules),
+                    "reason": record.reason,
+                    "source": source,
+                    "blocked_action": "create_idea",
+                },
+            )
+        except Exception as exc:
+            # No poder asentar es grave y se dice, pero no puede convertir un
+            # bloqueo ya decidido en una excepción para la ingesta.
+            logger.error(
+                "[CONSTITUTIONAL] no se pudo asentar el bloqueo %s: %s",
+                record.correlation_id or "(sin id)", exc,
+            )
+
+    def _record_constitutional_unavailable(self, exc, *, source: str) -> None:
+        """Deja constancia de que el control NO PUDO pronunciarse.
+
+        Sin esto, una avería del guard se veía desde fuera como "0 añadidas,
+        0 bloqueadas": idéntico a que no hubiera ideas que importar. Una
+        avería que está deteniendo trabajo no puede parecer silencio.
+
+        Se cuenta y se asienta APARTE de los veredictos: mezclarlas haría que
+        una caída de infraestructura inflara la cuenta de bloqueos legítimos.
+        """
+        record = ConstitutionalUnavailableRecord(
+            correlation_id=getattr(exc, "correlation_id", "") or "",
+            title=(getattr(exc, "title", "") or "")[:120],
+            application_point=getattr(exc, "application_point", "") or "",
+            technical_cause=getattr(exc, "technical_cause", "") or _sanitize_cause(exc),
+            source=source,
+            timestamp=time.time(),
+        )
+        items = getattr(self, "_constitutional_unavailable", None)
+        if items is None:
+            items = self._constitutional_unavailable = []
+        items.append(record)
+        del items[:-self.MAX_CONSTITUTIONAL_BLOCKS]
+        logger.error(
+            "[CONSTITUTIONAL] control NO DISPONIBLE en %s | correlation_id=%s | "
+            "punto=%s | causa=%s | titulo=%r",
+            source, record.correlation_id or "(sin id)",
+            record.application_point or "(sin punto)",
+            record.technical_cause, record.title,
+        )
+        try:
+            from core.operator import ledger_bridge as _ledger
+            _ledger.record_event(
+                # Acción DISTINTA de `constitutional_block:`: quien audite no
+                # puede confundir una avería con un veredicto ni al filtrar.
+                action=f"constitutional_unavailable:create_idea:{source}",
+                category=_ledger.EventCategory.CONSTITUTIONAL,
+                risk_zone=_ledger.RiskZone.RED,
+                actor=source,
+                reason=record.technical_cause,
+                details={
+                    "correlation_id": record.correlation_id,
+                    "title": record.title,
+                    "application_point": record.application_point,
+                    "technical_cause": record.technical_cause,
+                    "timestamp": record.timestamp,
+                    "source": source,
+                    "blocked_action": "create_idea",
+                    "kind": "guard_unavailable",
+                },
+            )
+        except Exception as ledger_exc:
+            logger.error(
+                "[CONSTITUTIONAL] no se pudo asentar la indisponibilidad %s: %s",
+                record.correlation_id or "(sin id)", ledger_exc,
+            )
+
+    def constitutional_unavailable(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Indisponibilidades registradas, de la más reciente a la más antigua."""
+        items = getattr(self, "_constitutional_unavailable", None) or []
+        return [r.to_dict() for r in reversed(items[-limit:])]
+
+    def constitutional_unavailable_count(self) -> int:
+        return len(getattr(self, "_constitutional_unavailable", None) or [])
+
+    def constitutional_blocks(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Bloqueos registrados, del más reciente al más antiguo."""
+        blocks = getattr(self, "_constitutional_blocks", None) or []
+        return [r.to_dict() for r in reversed(blocks[-limit:])]
+
+    def constitutional_block_count(self) -> int:
+        return len(getattr(self, "_constitutional_blocks", None) or [])
 
     def ingest_from_router_learning(self) -> int:
         """
@@ -617,24 +935,46 @@ class IdeaStore:
                     description = p.get("suggested_action", "Ver evidencia adjunta")
                     affected = p.get("affected_component", "smart_router")
 
-                    idea = self.add(
-                        title=title,
-                        description=description,
-                        source=IdeaSource.ROUTER_LEARNING,
-                        priority=priority,
-                        impact_score=impact_score,
-                        affected_component=affected,
-                        evidence=p.get("evidence", {}),
-                        source_id=source_id,
-                        dedup_key=_semantic_dedup_key(p),
-                    )
-                    if idea:
-                        added += 1
+                    try:
+                        idea = self.add(
+                            title=title,
+                            description=description,
+                            source=IdeaSource.ROUTER_LEARNING,
+                            priority=priority,
+                            impact_score=impact_score,
+                            affected_component=affected,
+                            evidence=p.get("evidence", {}),
+                            source_id=source_id,
+                            dedup_key=_semantic_dedup_key(p),
+                        )
+                        if idea:
+                            added += 1
+                    except ConstitutionalGuardUnavailable as _cu:
+                        # Avería del control. Se REGISTRA (para que no parezca
+                        # silencio) y se relanza: si el guard está caído, los
+                        # elementos siguientes tampoco podrían validarse.
+                        self._record_constitutional_unavailable(
+                            _cu, source='router_learning',
+                        )
+                        raise
+                    except ConstitutionalBlock as _cb:
+                        # Veredicto sobre ESTA idea. Se registra con su título real y
+                        # el lote continúa: un bloqueo no debe silenciar a los demás.
+                        self._record_constitutional_block(
+                            _cb, source='router_learning', title=title,
+                        )
+                        continue
 
             if added:
                 logger.info("IdeaStore: %d ideas ingresadas desde RouterLearning", added)
             return added
 
+        except ConstitutionalGuardUnavailable as exc:
+            # Avería del control: tratamiento técnico de siempre.
+            logger.warning(
+                "IdeaStore.ingest_from_router_learning: control no disponible: %s", exc,
+            )
+            return 0
         except Exception as exc:
             logger.warning("IdeaStore.ingest_from_router_learning failed: %s", exc)
             return 0
@@ -657,31 +997,45 @@ class IdeaStore:
                 if rec.status != "pending":
                     continue
 
-                idea = self.add(
-                    title=(
-                        f"Ajuste umbral {rec.threshold_name} "
-                        f"{'↑' if rec.direction == 'up' else '↓'} "
-                        f"{rec.current_value:.2f}→{rec.recommended_value:.2f}"
-                    ),
-                    description=rec.reasoning[:500],
-                    source=IdeaSource.CONVERGENCE_LEARNER,
-                    priority=IdeaPriority.HIGH if rec.confidence >= 0.7 else IdeaPriority.MEDIUM,
-                    impact_score=min(0.95, rec.confidence),
-                    affected_component=f"presencia_observer.{rec.threshold_name}",
-                    evidence={
-                        "rec_id":         rec.rec_id,
-                        "motor":          rec.motor_name or "GLOBAL",
-                        "threshold":      rec.threshold_name,
-                        "current":        rec.current_value,
-                        "recommended":    rec.recommended_value,
-                        "direction":      rec.direction,
-                        "sample_size":    rec.sample_size,
-                        "confidence":     round(rec.confidence, 4),
-                    },
-                    source_id=f"conv_{rec.rec_id}",
-                )
-                if idea:
-                    added += 1
+                try:
+                    idea = self.add(
+                        title=(
+                            f"Ajuste umbral {rec.threshold_name} "
+                            f"{'↑' if rec.direction == 'up' else '↓'} "
+                            f"{rec.current_value:.2f}→{rec.recommended_value:.2f}"
+                        ),
+                        description=rec.reasoning[:500],
+                        source=IdeaSource.CONVERGENCE_LEARNER,
+                        priority=IdeaPriority.HIGH if rec.confidence >= 0.7 else IdeaPriority.MEDIUM,
+                        impact_score=min(0.95, rec.confidence),
+                        affected_component=f"presencia_observer.{rec.threshold_name}",
+                        evidence={
+                            "rec_id":         rec.rec_id,
+                            "motor":          rec.motor_name or "GLOBAL",
+                            "threshold":      rec.threshold_name,
+                            "current":        rec.current_value,
+                            "recommended":    rec.recommended_value,
+                            "direction":      rec.direction,
+                            "sample_size":    rec.sample_size,
+                            "confidence":     round(rec.confidence, 4),
+                        },
+                        source_id=f"conv_{rec.rec_id}",
+                    )
+                    if idea:
+                        added += 1
+                except ConstitutionalGuardUnavailable as _cu:
+                    # Avería del control. Se REGISTRA y se relanza.
+                    self._record_constitutional_unavailable(
+                        _cu, source='convergence_learner',
+                    )
+                    raise
+                except ConstitutionalBlock as _cb:
+                    # Veredicto sobre ESTA idea. Se registra con su título real y
+                    # el lote continúa: un bloqueo no debe silenciar a los demás.
+                    self._record_constitutional_block(
+                        _cb, source='convergence_learner', title=title,
+                    )
+                    continue
 
             if added:
                 logger.info(
@@ -689,6 +1043,12 @@ class IdeaStore:
                 )
             return added
 
+        except ConstitutionalGuardUnavailable as exc:
+            logger.warning(
+                "IdeaStore.ingest_from_convergence_learner: control no disponible: %s",
+                exc,
+            )
+            return 0
         except Exception as exc:
             logger.debug("IdeaStore.ingest_from_convergence_learner: %s", exc)
             return 0
@@ -728,47 +1088,110 @@ class IdeaStore:
                 )
 
                 source_id = f"router_err_{category}_{count}"
-                idea = self.add(
-                    title=f"Error recurrente: {category} ({count} casos)",
-                    description=suggestion,
-                    source=IdeaSource.ROUTER_LEARNING,
-                    priority=priority,
-                    impact_score=impact_score,
-                    affected_component="smart_router.classification",
-                    evidence={
-                        "category":         category,
-                        "count":            count,
-                        "impact_score_raw": round(impact_raw, 3),
-                        "top_intent":       err.get("top_intent", ""),
-                        "avg_confidence":   err.get("avg_confidence", 0),
-                    },
-                    source_id=source_id,
-                )
-                if idea:
-                    added += 1
+                try:
+                    idea = self.add(
+                        title=f"Error recurrente: {category} ({count} casos)",
+                        description=suggestion,
+                        source=IdeaSource.ROUTER_LEARNING,
+                        priority=priority,
+                        impact_score=impact_score,
+                        affected_component="smart_router.classification",
+                        evidence={
+                            "category":         category,
+                            "count":            count,
+                            "impact_score_raw": round(impact_raw, 3),
+                            "top_intent":       err.get("top_intent", ""),
+                            "avg_confidence":   err.get("avg_confidence", 0),
+                        },
+                        source_id=source_id,
+                    )
+                    if idea:
+                        added += 1
+                except ConstitutionalGuardUnavailable as _cu:
+                    # Avería del control. Se REGISTRA y se relanza.
+                    self._record_constitutional_unavailable(
+                        _cu, source='router_analysis',
+                    )
+                    raise
+                except ConstitutionalBlock as _cb:
+                    # Veredicto sobre ESTA idea. Se registra con su título real y
+                    # el lote continúa: un bloqueo no debe silenciar a los demás.
+                    self._record_constitutional_block(
+                        _cb, source='router_analysis', title=title,
+                    )
+                    continue
 
             return added
 
+        except ConstitutionalGuardUnavailable as exc:
+            logger.warning(
+                "IdeaStore.ingest_from_router_analysis: control no disponible: %s", exc,
+            )
+            return 0
         except Exception as exc:
             logger.debug("IdeaStore.ingest_from_router_analysis: %s", exc)
             return 0
 
     # ── Ciclo completo de ingesta ──────────────────────────────────────────
 
-    def refresh(self) -> Dict[str, int]:
+    def refresh(self) -> Dict[str, Any]:
         """
-        Ejecuta todas las ingestas y retorna cuántas ideas nuevas añadió
-        cada fuente. Idempotente — la deduplicación evita duplicados.
+        Ejecuta todas las ingestas. Idempotente — la deduplicación evita
+        duplicados.
+
+        RESULTADO ESTRUCTURADO
+        ----------------------
+        Devuelve::
+
+            {"added": {<fuente>: <int>, ...},
+             "added_total": <int>,
+             "constitutional_blocked": <int>,
+             "constitutional_unavailable": <int>}
+
+        Las cuentas por fuente viven ANIDADAS en `added`, y nunca al lado del
+        contador de bloqueos. Antes esto devolvía un `Dict[str, int]` plano y
+        los tres consumidores hacían `sum(added.values())`; meter ahí el
+        contador de bloqueos habría hecho que cada idea BLOQUEADA se contara
+        como idea NUEVA — exactamente al revés de lo que significa.
+
+        Con la forma anidada ese error no es posible: un `sum()` sobre el
+        resultado falla de inmediato con TypeError en lugar de devolver un
+        número equivocado en silencio. `added_total` ya viene calculado para
+        que ningún consumidor tenga que sumar nada.
         """
-        r = {
+        blocked_before = self.constitutional_block_count()
+        unavailable_before = self.constitutional_unavailable_count()
+        added = {
             "router_proposals": self.ingest_from_router_learning(),
             "router_analysis":  self.ingest_from_router_analysis(),
             "convergence":      self.ingest_from_convergence_learner(),
         }
-        total = sum(r.values())
+        total = sum(added.values())
+        blocked = self.constitutional_block_count() - blocked_before
+        unavailable = self.constitutional_unavailable_count() - unavailable_before
         if total:
-            logger.info("IdeaStore.refresh: +%d ideas totales — %s", total, r)
-        return r
+            logger.info("IdeaStore.refresh: +%d ideas totales — %s", total, added)
+        if blocked:
+            logger.warning(
+                "IdeaStore.refresh: %d idea(s) BLOQUEADA(S) por el filtro "
+                "constitucional — no se cuentan como añadidas", blocked,
+            )
+        if unavailable:
+            logger.error(
+                "IdeaStore.refresh: control constitucional NO DISPONIBLE en %d "
+                "ocasión(es) — la ingesta se detuvo, no es que no hubiera ideas",
+                unavailable,
+            )
+        return {
+            "added": added,
+            "added_total": total,
+            # Tres contadores SEPARADOS. Ninguno se suma a otro: una avería no
+            # es un veredicto y un veredicto no es una idea. Si se mezclaran,
+            # una caída del guard se leería como "no había nada que importar",
+            # que es exactamente lo que hay que evitar.
+            "constitutional_blocked": blocked,
+            "constitutional_unavailable": unavailable,
+        }
 
     # ── Panel texto para Telegram ──────────────────────────────────────────
 

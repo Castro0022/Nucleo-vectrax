@@ -88,9 +88,17 @@ async def refresh_ideas(
     try:
         from core.idea_store import get_idea_store
         store = get_idea_store()
-        added = store.refresh()
-        total_new = sum(added.values())
-        return {"added": added, "total_new": total_new}
+        result = store.refresh()
+        # `refresh()` devuelve las cuentas por fuente ANIDADAS en "added" y el
+        # contador de bloqueos aparte. Un `sum()` sobre el resultado sería un
+        # TypeError, no un número equivocado: las ideas bloqueadas no pueden
+        # contarse como añadidas.
+        return {
+            "added": result["added"],
+            "total_new": result["added_total"],
+            "constitutional_blocked": result["constitutional_blocked"],
+            "constitutional_unavailable": result["constitutional_unavailable"],
+        }
     except Exception as exc:
         logger.error("refresh_ideas error: %s", exc)
         raise HTTPException(500, str(exc))
