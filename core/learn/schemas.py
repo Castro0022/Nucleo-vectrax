@@ -66,7 +66,15 @@ class GravityRecord:
     # antes de que qualify_pattern() pudiera contarlo. Esta lista solo la
     # escribe `GravityIndex.record_verified_outcome()`, y solo con veredictos
     # graduables (OutcomeStatus.WIN/LOSS).
-    verified_outcomes: List[str] = field(default_factory=list)
+    #
+    # Cada entrada es {"status": "win"|"loss", "id": "<prediction_id>"}. El id
+    # NO es decorativo: hace que la propia escritura en gravedad sea
+    # IDEMPOTENTE. Sin el, una caida entre la escritura en gravedad y la
+    # confirmacion en SQLite dejaba el resultado anotado pero sin registrar,
+    # y el reintento lo anadia por segunda vez —inflando el win_rate y
+    # desplazando otro resultado fuera de la ventana de 20—. Con el id, el
+    # reintento reconoce lo ya anotado y no lo repite.
+    verified_outcomes: List[Dict[str, str]] = field(default_factory=list)
     activation_history: List[str] = field(default_factory=list)  # ISO timestamps of activation, bounded (see decimate_history)
     decay_factor: float = 1.0  # 1.0 normal, 3.0 for high-impact (anti-amnesia)
     summary: str = ""          # human-readable summary

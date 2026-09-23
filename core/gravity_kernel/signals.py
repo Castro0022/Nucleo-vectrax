@@ -171,7 +171,13 @@ def _gradable_history(rec) -> List[str]:
     """
     verified = list(getattr(rec, "verified_outcomes", []) or [])
     if verified:
-        return verified
+        # Cada entrada es {"status": ..., "id": ...}; al graduador solo le
+        # concierne el veredicto. Se tolera una entrada en texto plano por si
+        # quedara alguna de la forma anterior del campo.
+        return [
+            str(e.get("status", "")) if isinstance(e, dict) else str(e)
+            for e in verified
+        ]
     return list(getattr(rec, "outcome_history", []) or [])
 
 

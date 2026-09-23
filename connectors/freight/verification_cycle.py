@@ -199,7 +199,14 @@ def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
     - Resuelve vía el mismo ``FreightOutcomeAdapter`` (núcleo invariante detrás).
     - Persiste los decisivos en el ledger (si ``record``).
     - Devuelve el DomainScore de ESTE lote (el acumulado está en el ledger).
+
+    Empieza reintentando los resultados aparcados: los eventos del simulador no
+    se repiten entre ciclos, así que un resultado cuya estrella de reserva
+    todavía no existía solo puede recuperarse desde el almacén de aparcados, no
+    esperando a que el evento vuelva.
     """
+    outcome_gravity.retry_pending(_DOMAIN)
+
     outcomes: List[Outcome] = []
     to_gravity: List[tuple] = []
     for ev in events:

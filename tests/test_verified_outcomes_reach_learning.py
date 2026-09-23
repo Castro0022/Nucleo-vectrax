@@ -128,6 +128,16 @@ def index(tmp_path, monkeypatch) -> GravityIndex:
     return gi
 
 
+def _verdicts(index: GravityIndex, fingerprint: str) -> list:
+    """Solo los veredictos de la estrella, sin los `prediction_id`.
+
+    Cada entrada de `verified_outcomes` es {"status": ..., "id": ...}; el id
+    hace idempotente la escritura y aquí estorba.
+    """
+    rec = index.get(fingerprint)
+    return [e["status"] for e in rec.verified_outcomes] if rec else []
+
+
 def _make_star(index: GravityIndex, fingerprint: str, domain: str, intent: str = "") -> None:
     """Crea la estrella por la vía normal: una ingesta observada."""
     index.record_event(
@@ -149,8 +159,7 @@ class TestTheVerdictReachesTheStar:
         score = market_vc.verify_signals([_win_signal(1), _loss_signal(2)])
 
         assert score.n_decisive == 2
-        rec = index.get("market:AAPL")
-        assert rec.verified_outcomes == ["win", "loss"], rec.verified_outcomes
+        assert _verdicts(index, "market:AAPL") == ["win", "loss"]
 
     def test_the_fingerprint_is_the_one_the_real_feeder_creates(self, index):
         """Paridad COMPROBADA con `learning_engine._feed_gravity`.
@@ -169,7 +178,7 @@ class TestTheVerdictReachesTheStar:
         assert created == [market_vc.star_fingerprint_for("aapl")]
 
         market_vc.verify_signals([_win_signal(1)])
-        assert index.get(created[0]).verified_outcomes == ["win"]
+        assert _verdicts(index, created[0]) == ["win"]
 
     def test_freight_result_lands_on_the_booking_star(self, index):
         """La entrega acredita la estrella de la RESERVA de ese lane/carrier."""
@@ -180,9 +189,8 @@ class TestTheVerdictReachesTheStar:
 
         freight_vc.verify_events([_delivery(1, True), _delivery(2, False)])
 
-        rec = index.get(booking_fp)
-        assert rec is not None, "la entrega no encontró la estrella de la reserva"
-        assert rec.verified_outcomes == ["win", "loss"], rec.verified_outcomes
+        assert index.get(booking_fp) is not None, "no encontró la estrella de la reserva"
+        assert _verdicts(index, booking_fp) == ["win", "loss"]
 
     def test_the_freight_fingerprint_is_computed_with_the_ingester_function(self):
         """La identidad la calcula la MISMA función que creó la estrella."""
@@ -234,7 +242,7 @@ class TestTheCreditedIdentityIsNotCircular:
 
         freight_vc.verify_events([_delivery(1, True)])
 
-        assert index.get(own_fp).verified_outcomes == []
+        assert _verdicts(index, own_fp) == []
 
 
 # ===========================================================================
@@ -248,10 +256,10 @@ class TestNoDuplicates:
         batch = [_win_signal(1), _win_signal(2), _loss_signal(3)]
 
         market_vc.verify_signals(batch)
-        first = list(index.get("market:AAPL").verified_outcomes)
+        first = _verdicts(index, "market:AAPL")
         market_vc.verify_signals(batch)
 
-        assert index.get("market:AAPL").verified_outcomes == first
+        assert _verdicts(index, "market:AAPL") == first
 
     def test_the_second_pass_is_counted_as_duplicate(self, index):
         _make_star(index, "market:AAPL", "market")
@@ -275,7 +283,7 @@ class TestNoDuplicates:
         freight_vc.verify_events(batch)
         freight_vc.verify_events(batch)
 
-        assert index.get(fp).verified_outcomes == ["win", "loss"]
+        assert _verdicts(index, fp) == ["win", "loss"]
 
     def test_two_distinct_events_are_not_confused(self, index):
         from core.domain_ingester import star_fingerprint
@@ -286,7 +294,7 @@ class TestNoDuplicates:
         # Mismo lane/carrier y mismo desenlace, pero eventos distintos (ts).
         freight_vc.verify_events([_delivery(1, True), _delivery(2, True)])
 
-        assert index.get(fp).verified_outcomes == ["win", "win"]
+        assert _verdicts(index, fp) == ["win", "win"]
 
 
 # ===========================================================================
@@ -305,22 +313,25 @@ class TestNothingIsInvented:
 
         result = og.apply_verified_outcome("market:NOPE", outcome, source="test")
 
-        assert result == og.NO_STAR
+        assert result == og.DEFERRED
         assert index.get("market:NOPE") is None
 
-    def test_an_unapplied_result_stays_retryable(self, index):
-        """La reclamación se deshace: el próximo ciclo puede reintentarlo.
+    def test_an_unapplied_result_is_parked_not_discarded(self, index):
+        """La reclamación se deshace y el resultado queda aparcado.
 
         Si la fila de deduplicación quedara escrita, el resultado se habría
-        perdido para siempre en cuanto la estrella existiera.
+        dado por aplicado sin estarlo. Si se descartara sin más, se habría
+        perdido en cuanto la estrella existiera.
         """
         outcome = _resolved_market_outcome(_win_signal(1))
-        assert og.apply_verified_outcome("market:LATE", outcome, source="test") == og.NO_STAR
+        assert og.apply_verified_outcome("market:LATE", outcome, source="test") == og.DEFERRED
         assert og.applied_count(fingerprint="market:LATE") == 0
+        assert og.pending_count(domain="market") == 1
 
         _make_star(index, "market:LATE", "market")
-        assert og.apply_verified_outcome("market:LATE", outcome, source="test") == og.APPLIED
-        assert index.get("market:LATE").verified_outcomes == ["win"]
+        assert og.retry_pending("market")[og.RECOVERED] == 1
+        assert _verdicts(index, "market:LATE") == ["win"]
+        assert og.pending_count(domain="market") == 0
 
     def test_neutral_results_are_not_graded(self, index):
         """Un NEUTRAL no es acierto ni fallo: no ocupa plaza en la historia."""
@@ -328,7 +339,7 @@ class TestNothingIsInvented:
 
         market_vc.verify_signals([_neutral_signal(1), _win_signal(2)])
 
-        assert index.get("market:AAPL").verified_outcomes == ["win"]
+        assert _verdicts(index, "market:AAPL") == ["win"]
 
     def test_the_verdict_does_not_inflate_the_convergence_mass(self, index):
         """`hits` alimenta `combined_hits`: un resultado no puede moverlo.
@@ -372,10 +383,10 @@ class TestObservationDoesNotEvictResults:
         for _ in range(MAX_OUTCOME_HISTORY + 5):
             _make_star(index, "market:AAPL", "market")
 
-        rec = index.get("market:AAPL")
-        assert rec.verified_outcomes.count("win") == 16
-        assert rec.verified_outcomes.count("loss") == 4
-        assert "observed" not in rec.verified_outcomes
+        verdicts = _verdicts(index, "market:AAPL")
+        assert verdicts.count("win") == 16
+        assert verdicts.count("loss") == 4
+        assert "observed" not in verdicts
 
     def test_the_market_feeder_no_longer_writes_a_pattern_summary(self):
         """`_feed_gravity` escribía "WR=62% E=+0.450%" como si fuera un
@@ -444,7 +455,44 @@ class TestProvenance:
         monkeypatch.setenv("VECTRAX_VAULT_DIR", str(tmp_path / "empty"))
         assert og.provenance() == []
         assert og.applied_count() == 0
+        assert og.pending_outcomes() == []
+        assert og.pending_count() == 0
+        assert og.retry_pending("market") == {k: 0 for k in og.RESULTS}
         assert not Path(og.store_path()).exists()
+
+
+class TestTheStorePathIsNeverFrozen:
+    """La ruta se resuelve EN CADA LLAMADA, no al importar.
+
+    Es la misma clase de defecto que `tests/test_vault_write_isolation.py`
+    documenta para `learned_rules`: un valor por defecto evaluado al importar
+    congelaba la ruta y el aislamiento del conftest no tenía efecto, así que la
+    suite escribía en el vault de producción. Este almacén es nuevo y no puede
+    heredar ese fallo.
+    """
+
+    def test_the_env_var_is_honoured_at_call_time(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("VECTRAX_VAULT_DIR", str(tmp_path / "uno"))
+        assert og.store_path() == str(tmp_path / "uno" / og.STORE_FILENAME)
+
+        monkeypatch.setenv("VECTRAX_VAULT_DIR", str(tmp_path / "dos"))
+        assert og.store_path() == str(tmp_path / "dos" / og.STORE_FILENAME)
+
+    def test_no_override_preserves_the_production_path(self, monkeypatch):
+        monkeypatch.delenv("VECTRAX_VAULT_DIR", raising=False)
+        assert og.store_path() == str(
+            Path(og.PRODUCTION_VAULT_DIR) / og.STORE_FILENAME
+        )
+
+    def test_an_empty_override_falls_back_to_production(self, monkeypatch):
+        monkeypatch.setenv("VECTRAX_VAULT_DIR", "")
+        assert og.store_path() == str(
+            Path(og.PRODUCTION_VAULT_DIR) / og.STORE_FILENAME
+        )
+
+    def test_an_explicit_db_path_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("VECTRAX_VAULT_DIR", str(tmp_path / "ignorado"))
+        assert og.store_path(str(tmp_path / "x.db")) == str(tmp_path / "x.db")
 
 
 # ===========================================================================
@@ -501,9 +549,8 @@ class TestTheFullJourney:
         self._build_real_evidence(index)
 
         for fp in ("market:AAPL", "freight_logistics:LANE-7"):
-            rec = index.get(fp)
-            assert rec.verified_outcomes.count("win") == 16, fp
-            assert rec.verified_outcomes.count("loss") == 4, fp
+            assert _verdicts(index, fp).count("win") == 16, fp
+            assert _verdicts(index, fp).count("loss") == 4, fp
 
     def test_step_2_the_pattern_qualifies(self, index):
         self._build_real_evidence(index)
@@ -566,7 +613,7 @@ class TestTheFullJourney:
 
         # 1. Resultados verificados contra la verdad del dominio.
         self._build_real_evidence(index)
-        assert index.get("market:AAPL").verified_outcomes.count("win") == 16
+        assert _verdicts(index, "market:AAPL").count("win") == 16
 
         # 2. El patrón cualifica con métricas REALES.
         stats = cl.qualify_pattern("market:AAPL", cl.build_production_policy("market"))
@@ -608,3 +655,190 @@ class TestTheLedgerIsStillWritten:
         assert {o.prediction_id for o in outcomes} == {
             "sig-win-AAPL-1", "sig-loss-AAPL-2", "sig-flat-AAPL-3",
         }
+
+
+# ===========================================================================
+# 9. Los dos fallos bajo estrés encontrados en la revisión del PR #129
+# ===========================================================================
+
+class TestTheResultIsNeverLost:
+    """Fallo 1: Market marcaba la señal como verificada aunque el resultado no
+    hubiera llegado a ninguna estrella.
+
+    El marcador de `signal_id` vive FUERA de `outcome_gravity`
+    (`market_verified.json`): una vez marcada, `run_market_verification` no
+    vuelve a presentar esa señal jamás. Así que "el próximo ciclo lo
+    reintentará" era falso — el resultado quedaba perdido aunque la estrella
+    apareciera después. Se reproduce el caso exacto: verificar sin estrella,
+    crear la estrella, repetir el ciclo.
+    """
+
+    @staticmethod
+    def _install_recorder(monkeypatch, signals):
+        """Sustituye el cargador de señales para ejercitar el ciclo REAL
+        (`run_market_verification`), incluido su marcador de verificadas."""
+        import connectors.etoro.signal_recorder as rec
+
+        class _Status:
+            class PENDING:
+                value = "pending"
+
+        monkeypatch.setattr(rec, "load_signals", lambda *a, **k: list(signals),
+                            raising=False)
+        monkeypatch.setattr(rec, "SignalStatus", _Status, raising=False)
+
+    def test_a_result_verified_before_its_star_exists_is_not_lost(
+        self, index, monkeypatch,
+    ):
+        sig = _win_signal(1)
+        self._install_recorder(monkeypatch, [sig])
+
+        # Ciclo 1: la estrella NO existe todavía.
+        market_vc.run_market_verification()
+        assert index.get("market:AAPL") is None
+        assert og.pending_count(domain="market") == 1
+
+        # La señal ya quedó marcada: el ciclo no la volverá a presentar.
+        assert sig.signal_id in market_vc._load_verified_ids()
+
+        # La estrella aparece después.
+        _make_star(index, "market:AAPL", "market")
+
+        # Ciclo 2: sin señales nuevas que procesar, el resultado se recupera.
+        market_vc.run_market_verification()
+
+        assert _verdicts(index, "market:AAPL") == ["win"]
+        assert og.pending_count(domain="market") == 0
+        assert og.applied_count(fingerprint="market:AAPL") == 1
+
+    def test_the_recovered_result_qualifies_the_pattern(self, index, monkeypatch):
+        """Recuperar no es solo archivar: el patrón acaba cualificando."""
+        sigs = [_win_signal(i) for i in range(16)] + [_loss_signal(i) for i in range(4)]
+        self._install_recorder(monkeypatch, sigs)
+
+        market_vc.run_market_verification()          # sin estrella: 20 aparcados
+        assert og.pending_count(domain="market") == 20
+
+        _make_star(index, "market:AAPL", "market")
+        market_vc.run_market_verification()          # se recuperan
+
+        stats = cl.qualify_pattern("market:AAPL", cl.build_production_policy("market"))
+        assert stats.qualified, stats.reason
+        assert stats.sample_size == 20
+        assert stats.win_rate == pytest.approx(80.0)
+
+    def test_the_ledger_is_not_written_twice_by_the_retry(self, index, monkeypatch):
+        """El reintento toca la gravedad, no el verification_ledger.
+
+        Si el reintento re-resolviera la señal, el DomainScore acumulado se
+        inflaría. Por eso lo aparcado es el `Outcome` ya resuelto, no la señal.
+        """
+        self._install_recorder(monkeypatch, [_win_signal(1)])
+
+        market_vc.run_market_verification()
+        _make_star(index, "market:AAPL", "market")
+        market_vc.run_market_verification()
+        market_vc.run_market_verification()
+
+        assert len(vledger.load_outcomes("market")) == 1
+
+    def test_a_star_that_never_appears_keeps_the_result_waiting(self, index):
+        """No se descarta ni se da por bueno: sigue esperando, y se puede ver."""
+        outcome = _resolved_market_outcome(_win_signal(1))
+        og.apply_verified_outcome("market:GHOST", outcome, source="test")
+
+        for _ in range(5):
+            assert og.retry_pending("market")[og.RECOVERED] == 0
+
+        rows = og.pending_outcomes(domain="market")
+        assert len(rows) == 1
+        assert rows[0]["fingerprint"] == "market:GHOST"
+        assert rows[0]["status"] == "win"
+        assert rows[0]["attempts"] >= 5
+
+
+class TestACrashCannotDoubleCount:
+    """Fallo 2: una caída entre la escritura en gravedad y la confirmación en
+    SQLite permitía que el reintento añadiera el mismo resultado otra vez,
+    inflando el win_rate y desplazando otro resultado de la ventana de 20.
+
+    La escritura en gravedad es ahora idempotente por `prediction_id`: el
+    reintento reconoce lo ya anotado.
+    """
+
+    @staticmethod
+    def _crash_after_gravity(index):
+        """Escribe en gravedad y revienta antes de que el llamador confirme.
+
+        Devuelve la función que deshace SOLO esta sustitución. No se usa
+        `monkeypatch.undo()`: revertiría también el índice temporal que instala
+        la fixture `index`, y el reintento acabaría mirando al índice vivo.
+        """
+        real = index.record_verified_outcomes
+
+        def _boom(triples):
+            real(triples)
+            raise RuntimeError("caída simulada entre gravedad y commit")
+
+        index.record_verified_outcomes = _boom
+
+        def _restore():
+            index.record_verified_outcomes = real
+
+        return _restore
+
+    def test_the_retry_after_a_crash_does_not_add_it_twice(self, index):
+        _make_star(index, "market:AAPL", "market")
+        outcome = _resolved_market_outcome(_win_signal(1))
+
+        restore = self._crash_after_gravity(index)
+        og.apply_verified_outcome("market:AAPL", outcome, source="test")
+
+        # La gravedad SÍ quedó escrita; la procedencia no se confirmó.
+        assert _verdicts(index, "market:AAPL") == ["win"]
+        assert og.applied_count(fingerprint="market:AAPL") == 0
+
+        # El reintento no duplica y deja la procedencia coherente.
+        restore()
+        assert og.apply_verified_outcome("market:AAPL", outcome, source="test") == og.APPLIED
+
+        assert _verdicts(index, "market:AAPL") == ["win"]
+        assert og.applied_count(fingerprint="market:AAPL") == 1
+
+    def test_a_crash_does_not_evict_another_result_from_the_window(self, index):
+        """Lo que hacía grave al doble conteo: expulsaba evidencia real."""
+        from core.learn.gravity_engine import MAX_OUTCOME_HISTORY
+
+        _make_star(index, "market:AAPL", "market")
+        market_vc.verify_signals([_win_signal(i) for i in range(16)]
+                                 + [_loss_signal(i) for i in range(3)])
+        assert len(index.get("market:AAPL").verified_outcomes) == 19
+
+        last = _resolved_market_outcome(_loss_signal(99))
+        restore = self._crash_after_gravity(index)
+        og.apply_verified_outcome("market:AAPL", last, source="test")
+        restore()
+        og.apply_verified_outcome("market:AAPL", last, source="test")
+
+        verdicts = _verdicts(index, "market:AAPL")
+        assert len(verdicts) == MAX_OUTCOME_HISTORY
+        assert verdicts.count("win") == 16      # ninguno expulsado
+        assert verdicts.count("loss") == 4
+
+    def test_a_crashed_retry_is_idempotent_across_many_results(self, index):
+        """El mismo caso sobre un lote, no sobre un único resultado."""
+        _make_star(index, "market:AAPL", "market")
+        sigs = [_win_signal(i) for i in range(8)]
+        pairs = [("market:AAPL", _resolved_market_outcome(s)) for s in sigs]
+
+        restore = self._crash_after_gravity(index)
+        og.apply_verified_outcomes(pairs, source="test")
+        assert len(index.get("market:AAPL").verified_outcomes) == 8
+        assert og.applied_count(fingerprint="market:AAPL") == 0
+
+        restore()
+        counts = og.apply_verified_outcomes(pairs, source="test")
+
+        assert counts[og.APPLIED] == 8
+        assert len(index.get("market:AAPL").verified_outcomes) == 8
+        assert og.applied_count(fingerprint="market:AAPL") == 8

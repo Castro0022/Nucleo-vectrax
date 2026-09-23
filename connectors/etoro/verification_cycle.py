@@ -165,7 +165,18 @@ def run_market_verification(record: bool = True) -> DomainScore:
     verificadas (dedup por signal_id) y las resuelve vía ``verify_signals``.
     Marca las procesadas como verificadas para no doble-contar en el acumulado.
     Defensivo: nunca lanza (devuelve un DomainScore vacío ante cualquier error).
+
+    ANTES DE NADA se reintentan los resultados aparcados. Es obligatorio que
+    ocurra aquí y no dentro de ``verify_signals``: el marcador de `signal_id`
+    de abajo hace que una señal ya verificada NO se vuelva a presentar nunca.
+    Si el reintento dependiera de que esa señal reapareciera en un lote, un
+    resultado verificado antes de que existiera su estrella se perdería para
+    siempre aunque la estrella apareciera después. También tiene que estar por
+    delante de todas las salidas tempranas: un ciclo sin señales nuevas sigue
+    teniendo que recuperar lo aparcado.
     """
+    outcome_gravity.retry_pending(_DOMAIN)
+
     try:
         from connectors.etoro.signal_recorder import load_signals, SignalStatus
         pending_value = SignalStatus.PENDING.value

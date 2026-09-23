@@ -103,6 +103,18 @@ def _parse_iso_strict(s: str) -> datetime:
 # Gravity Index
 # ---------------------------------------------------------------------------
 
+def _verified_entry_id(entry: Any) -> str:
+    """El `prediction_id` de una entrada de `verified_outcomes`.
+
+    Tolera una entrada en texto plano —la forma que tuvo el campo entre su
+    introduccion y la adicion del id— devolviendo "": nunca coincide con un id
+    real, asi que una entrada antigua jamas suprime una escritura nueva.
+    """
+    if isinstance(entry, dict):
+        return str(entry.get("id", ""))
+    return ""
+
+
 class GravityIndex:
     """Persisted gravity index — one GravityRecord per fingerprint."""
 
@@ -512,23 +524,38 @@ class GravityIndex:
 
     # -- queries ------------------------------------------------------------
 
-    def record_verified_outcome(self, fingerprint: str, outcome: str) -> bool:
+    def record_verified_outcome(
+        self, fingerprint: str, outcome: str, outcome_id: str,
+    ) -> bool:
         """Anota UN resultado VERIFICADO en la historia graduable de una estrella.
 
-        Devuelve True si se anoto. Ver `record_verified_outcomes` para el
-        contrato completo; este es el caso de un solo elemento y delega en el
-        mismo cuerpo para que no puedan divergir.
+        Devuelve True si el resultado quedo anotado (o ya lo estaba). Ver
+        `record_verified_outcomes` para el contrato completo; este es el caso
+        de un solo elemento y delega en el mismo cuerpo para que no puedan
+        divergir.
         """
-        return self.record_verified_outcomes([(fingerprint, outcome)])[0]
+        return self.record_verified_outcomes([(fingerprint, outcome, outcome_id)])[0]
 
     def record_verified_outcomes(
-        self, pairs: Iterable[Tuple[str, str]],
+        self, triples: Iterable[Tuple[str, str, str]],
     ) -> List[bool]:
         """Anota resultados VERIFICADOS en `verified_outcomes`, en UNA sola
         transaccion (un lock, una lectura, una escritura para todo el lote).
 
-        Devuelve una lista de booleanos PARALELA a la entrada: True donde la
-        estrella existia y el resultado quedo anotado.
+        Cada elemento es ``(fingerprint, status, outcome_id)``. Devuelve una
+        lista de booleanos PARALELA a la entrada: True donde la estrella existe
+        y el resultado quedo anotado.
+
+        IDEMPOTENTE POR `outcome_id`
+        ----------------------------
+        Si la estrella ya tiene una entrada con ese id, NO se anade una segunda
+        y se devuelve True igualmente: el resultado ya esta donde tiene que
+        estar. Esto es lo que cierra la ventana entre esta escritura y la
+        confirmacion del registro de procedencia. Una caida justo en medio
+        dejaba antes el resultado anotado pero no registrado, y el reintento lo
+        contaba dos veces: inflaba el win_rate y ademas expulsaba otro
+        resultado del final de la ventana acotada. Ahora el reintento reconoce
+        su propia escritura anterior y solo confirma el registro.
 
         Es deliberadamente mas estrecho que `record_event()`:
 
@@ -545,7 +572,8 @@ class GravityIndex:
           Un resultado dice como salio, no cuanta masa tiene el patron.
         * NO crea la estrella si no existe. Un resultado sin patron al que
           pertenecer no puede inventarse uno: se devuelve False y el llamador
-          decide que decir.
+          decide que hacer (ver `core.learn.outcome_gravity`, que lo aparca
+          para reintentarlo cuando la estrella exista).
 
         La cota es `MAX_OUTCOME_HISTORY` (la MISMA que la historia de
         observacion, 20) a proposito: ampliarla ensancharia la ventana sobre la
@@ -553,22 +581,27 @@ class GravityIndex:
         que un patron cualifique. Los umbrales (MIN_SAMPLE, MIN_WIN_RATE,
         MIN_EXPECTANCY) y la ventana sobre la que se miden quedan como estaban.
         """
-        items = list(pairs)
+        items = list(triples)
         if not items:
             return []
         results = [False] * len(items)
         with self._locked(exclusive=True):
             records = self._read_from_disk()
             touched = False
-            for i, (fingerprint, outcome) in enumerate(items):
+            for i, (fingerprint, outcome, outcome_id) in enumerate(items):
                 rec = records.get(fingerprint)
                 if rec is None:
                     continue
-                rec.verified_outcomes.append(outcome)
+                results[i] = True
+                if any(_verified_entry_id(e) == outcome_id
+                       for e in rec.verified_outcomes):
+                    continue  # ya anotado (reintento tras una caida)
+                rec.verified_outcomes.append(
+                    {"status": str(outcome), "id": str(outcome_id)}
+                )
                 if len(rec.verified_outcomes) > MAX_OUTCOME_HISTORY:
                     rec.verified_outcomes = rec.verified_outcomes[-MAX_OUTCOME_HISTORY:]
                 records[fingerprint] = rec
-                results[i] = True
                 touched = True
             if touched:
                 self._write_to_disk(records)
