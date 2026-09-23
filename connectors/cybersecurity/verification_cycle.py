@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from core.learn.outcome_adapter import (
     DomainScore,
@@ -30,6 +30,7 @@ from core.learn.outcome_adapter import (
     Prediction,
     score_outcomes,
 )
+from core.learn import outcome_contract
 from core.learn import verification_ledger as vledger
 from connectors.cybersecurity import seen_ledger
 from connectors.cybersecurity.base import DOMAIN
@@ -58,6 +59,58 @@ def _parse_iso(s: Any) -> Optional[datetime]:
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except Exception:
         return None
+
+
+def _cve_identity(ev: Any) -> str:
+    """Identidad del resultado: el `cve_id`, que la fuente ya trae.
+
+    A nivel de subject la identidad completa es ``{cve_id}|{nivel}`` (ver
+    `verify_events`): una misma CVE produce un resultado por cada peldaño de la
+    escalera y cada uno es una fila distinta con su propia identidad.
+    """
+    data = getattr(ev, "data", None) or (ev if isinstance(ev, Mapping) else {})
+    return str(data.get("cve_id") or "").strip().upper()
+
+
+#: EL CONTRATO DE ESTE DOMINIO.
+#:
+#: `supersedes=True` es la razón por la que el contrato tiene ese campo. Una
+#: CVE vieja que entra en KEV pasa de LOSS a WIN, y este dominio ESCRIBE una
+#: fila que supersede a la anterior, deduplicando en la LECTURA
+#: (`_dedupe_latest`, que se queda con el `resolved_ts` más reciente). Eso no
+#: es un defecto: es cómo se corrige un veredicto cuando la verdad cambia.
+#: Forzarle la deduplicación de escritura del resto de dominios lo rompería, y
+#: un contrato que solo sirve si todos los dominios se parecen no es un
+#: contrato. Queda exento de esa regla y conserva las demás, empezando por la
+#: identidad.
+#:
+#: `replayable=True`: el backfill vuelve a leer las CVE, y `seen_ledger` decide
+#: por su cuenta qué es nuevo o cambió. `star_for=None`: la masa de estrellas
+#: la acumula la ingesta (`_accumulate_mass`), no los resultados verificados.
+def _origin_kind(origin: str) -> str:
+    """De qué tipo es esta procedencia de cybersecurity.
+
+    NVD y el catálogo KEV son registros reales de vulnerabilidades explotadas;
+    no hay simulador en este dominio.
+    """
+    name = str(origin or "").strip().lower()
+    if not name:
+        return outcome_contract.UNKNOWN
+    if "sim" in name or name in ("test", "fixture"):
+        return outcome_contract.SIMULATED
+    return outcome_contract.REAL
+
+
+CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
+    domain=DOMAIN,
+    source="cybersecurity.verification_cycle",
+    unit="CVE verificada contra su entrada en KEV",
+    identify=_cve_identity,
+    origin_kind=_origin_kind,
+    replayable=True,
+    supersedes=True,
+    confirms=True,
+))
 
 
 def resolve_cve(ev: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -109,6 +162,32 @@ def resolve_cve(ev: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
     }
 
 
+def _origin_of(ev: Any) -> str:
+    """De dónde vino ESTA CVE: el feed que la emitió."""
+    return str(getattr(ev, "source", "") or "nvd+kev")
+
+
+def _mark_seen(seen_by_cve: Mapping[str, Dict[str, Any]],
+               complete_items: Sequence[str]) -> bool:
+    """Marca las CVE cuya evidencia quedó COMPLETA, y solo esas.
+
+    `complete_items` son ya identidades de CVE: el contrato confirma por ÍTEM,
+    no por resultado, así que aquí no hay prefijo que deducir — y una CVE a la
+    que le falte un nivel no llega hasta aquí.
+    """
+    ok = True
+    for cve_id in {str(i) for i in complete_items}:
+        rec = seen_by_cve.get(cve_id)
+        if rec is None:
+            continue
+        try:
+            seen_ledger.upsert(rec)
+        except Exception as exc:
+            logger.warning("cyber: no se pudo marcar %s: %s", cve_id, exc)
+            ok = False
+    return ok
+
+
 def verify_events(events: Iterable[Any], record: bool = True,
                   now: Optional[datetime] = None,
                   gravity_records: Optional[Dict[str, Any]] = None) -> DomainScore:
@@ -120,23 +199,55 @@ def verify_events(events: Iterable[Any], record: bool = True,
     (backfill) persiste el dict una vez por ventana. La masa NO se re-incrementa
     en re-ejecuciones ni en flips (is_changed)."""
     cve_outcomes: List[Outcome] = []
+    evidences: List[outcome_contract.Evidence] = []
+    seen_by_cve: Dict[str, Dict[str, Any]] = {}
     for ev in events:
         r = resolve_cve(ev, now)
         if r["excluded"] or not r["cve_id"]:
             continue
-        is_new, is_changed = seen_ledger.upsert(r["seen_rec"])
+        # CLASIFICAR sin marcar: `seen_ledger` es el marcador de esta fuente
+        # y lo confirma el contrato al final, con lo que quedó escrito.
+        is_new, is_changed = seen_ledger.classify(r["seen_rec"])
+        seen_by_cve[r["cve_id"]] = r["seen_rec"]
         o = r["outcome"]
         cve_outcomes.append(o)  # nivel CVE (subject = nivel más fino o cve:id)
 
         if record and o.status in (OutcomeStatus.WIN, OutcomeStatus.LOSS) and (is_new or is_changed):
-            for level, subject_key in r["subjects"]:
-                vledger.record_outcome(Outcome(
-                    prediction_id=f"{r['cve_id']}|{level}",
-                    domain=DOMAIN, subject=subject_key,
-                    status=o.status, score=o.score, evidence=o.evidence,
-                ))
+            # UNA CVE produce VARIOS resultados, uno por peldaño de la
+            # escalera. Se entregan JUNTOS como una sola evidencia: el
+            # contrato solo confirma la CVE si TODOS quedan escritos.
+            # Entregarlos sueltos la marcaba en cuanto aterrizaba cualquiera
+            # de ellos, y lo que faltara se perdía para siempre.
+            evidences.append(outcome_contract.Evidence(
+                item_id=r["cve_id"],
+                origin=_origin_of(ev),
+                outcomes=tuple(
+                    Outcome(
+                        prediction_id=f"{r['cve_id']}|{level}",
+                        domain=DOMAIN, subject=subject_key,
+                        status=o.status, score=o.score, evidence=o.evidence,
+                    )
+                    for level, subject_key in r["subjects"]
+                ),
+            ))
         if gravity_records is not None and is_new:
             _accumulate_mass(gravity_records, r["dims"])
+    # La persistencia y el marcado pasan por el contrato COMÚN. Con
+    # `supersedes=True` no se deduplica la escritura, así que el
+    # comportamiento del ledger es el de siempre; lo que cambia es que el
+    # `seen_ledger` se confirma DESPUÉS de escribir, y solo de las CVE
+    # escritas (ver `outcome_contract._confirm`).
+    outcome_contract.commit(
+        CONTRACT, evidences, record=record,
+        confirm=lambda ids: _mark_seen(seen_by_cve, ids),
+    )
+    if record:
+        # Las CVE sin resultado decisivo que escribir no pasan por el lote,
+        # pero sí se han visto: se marcan aquí, donde no hay nada que perder.
+        submitted = {e.item_id for e in evidences}
+        for cve_id, seen_rec in seen_by_cve.items():
+            if cve_id not in submitted:
+                seen_ledger.upsert(seen_rec)
     score = score_outcomes(DOMAIN, cve_outcomes)
     logger.info(
         "cyber.verification | batch=%d | dec=%d | WR=%.0f%% | wins=%d losses=%d neutral=%d pending=%d",

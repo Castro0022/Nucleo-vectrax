@@ -146,6 +146,22 @@ def _conditions_signature(
     return sig or _hash_data(data)
 
 
+def star_fingerprint(domain: str, event_type: str, data: Dict[str, Any]) -> str:
+    """Identidad de la estrella gravitacional que produce este evento.
+
+    Extraida de `ingest_event` para que un consumidor de AGUAS ABAJO —en
+    particular `connectors/freight/verification_cycle`, que debe anotar un
+    resultado verificado en la MISMA estrella que creo la ingesta— pueda
+    calcular el fingerprint con ESTA funcion en vez de reconstruir la formula
+    por su cuenta. Dos copias de la formula divergen en cuanto una cambia, y
+    la consecuencia de divergir aqui no es un error visible: el resultado
+    verificado aterriza en una estrella que no existe, se descarta en
+    silencio, y ninguna convergencia llega nunca a LEARNED. Una sola funcion
+    hace imposible esa divergencia.
+    """
+    return f"{domain}:{event_type}:{_conditions_signature(event_type, data, _load_template(domain))}"
+
+
 def ingest_event(
     tenant_id: str,
     domain: str,
@@ -175,7 +191,7 @@ def ingest_event(
     """
     t0 = time.perf_counter()
     text = event_to_text(event_type, data, domain=domain)
-    fingerprint = f"{domain}:{event_type}:{_conditions_signature(event_type, data, _load_template(domain))}"
+    fingerprint = star_fingerprint(domain, event_type, data)
 
     result: Dict[str, Any] = {
         "success": False,

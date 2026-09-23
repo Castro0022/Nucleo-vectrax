@@ -256,3 +256,70 @@ def isolated_user_memory(tmp_path, monkeypatch):
         monkeypatch.setattr(_um, "_store", None, raising=False)
     except Exception:
         yield None
+
+
+# ---------------------------------------------------------------------------
+# Red de seguridad: la suite no crea el almacén de producción
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True, scope="session")
+def _production_outcome_store_is_never_touched():
+    """Falla la sesión si la suite CREA O MODIFICA
+    `<vault de producción>/outcome_gravity.db`.
+
+    `_hermetic_base` ya redirige `VECTRAX_VAULT_DIR` en cada prueba, y
+    `core/learn/outcome_gravity.py` resuelve la ruta en cada llamada (hay
+    pruebas que lo fijan). Aun así, durante el desarrollo de este almacén
+    apareció una vez ese fichero en el vault de producción con filas de
+    prueba, de forma INTERMITENTE: una traza sobre cada apertura de la base no
+    llegó a dispararse en dos pasadas completas de la suite, así que no se
+    identificó al responsable.
+
+    Dar por resuelto lo que no se ha reproducido sería peor que dejarlo
+    visible. Esta comprobación convierte esa fuga —venga de donde venga, de una
+    prueba, de un hilo que sobrevive a su `monkeypatch` o de un subproceso con
+    el entorno limpio— en un fallo ruidoso de la sesión.
+
+    Compara el CONTENIDO, no solo la existencia. Una primera versión solo
+    detectaba la creación del fichero: en una máquina donde el almacén ya
+    existiera —que es justo el caso de producción— una prueba podía escribir
+    dentro de él sin que nadie se enterara. Se comprueba el hash, así que
+    detecta por igual la creación, la escritura y el borrado.
+
+    Solo lee; no crea, no modifica y no borra nada.
+    """
+    import hashlib
+
+    def _fingerprint(path):
+        try:
+            if not os.path.exists(path):
+                return None
+            with open(path, "rb") as fh:
+                return hashlib.sha256(fh.read()).hexdigest()
+        except OSError:
+            return "<ilegible>"
+
+    try:
+        from core.learn.outcome_gravity import (
+            PRODUCTION_VAULT_DIR, STORE_FILENAME,
+        )
+    except Exception:
+        yield
+        return
+
+    path = os.path.join(PRODUCTION_VAULT_DIR, STORE_FILENAME)
+    before = _fingerprint(path)
+    yield
+    after = _fingerprint(path)
+    if before == after:
+        return
+    if before is None:
+        detail = "lo CREÓ"
+    elif after is None:
+        detail = "lo BORRÓ"
+    else:
+        detail = "ESCRIBIÓ en él"
+    pytest.fail(
+        f"La suite {detail}: almacén de PRODUCCIÓN {path}. Alguna prueba "
+        "escapa a VECTRAX_VAULT_DIR: localizarla antes de fusionar."
+    )
