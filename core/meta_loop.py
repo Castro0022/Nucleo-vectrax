@@ -136,6 +136,7 @@ def _run_idea_refresh() -> int:
         added = result["added"]
         new_total = result["added_total"]
         blocked = result["constitutional_blocked"]
+        unavailable = result["constitutional_unavailable"]
 
         if new_total:
             logger.info(
@@ -148,6 +149,15 @@ def _run_idea_refresh() -> int:
             logger.warning(
                 "meta_loop: %d idea(s) bloqueada(s) por el filtro constitucional",
                 blocked,
+            )
+        if unavailable:
+            # Distinto de un bloqueo: aquí el control está AVERIADO y la
+            # ingesta se detuvo. Verlo como "no había ideas" ocultaría la
+            # avería justo mientras detiene trabajo.
+            logger.error(
+                "meta_loop: control constitucional NO DISPONIBLE (%d) — "
+                "la ingesta de ideas está detenida",
+                unavailable,
             )
 
         # Identificar ideas HIGH/CRITICAL pendientes no alertadas

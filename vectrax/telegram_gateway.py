@@ -1969,6 +1969,12 @@ class TelegramGateway:
                             f"\n{result['constitutional_blocked']} idea(s) "
                             f"bloqueada(s) por el filtro constitucional."
                         )
+                    if result["constitutional_unavailable"]:
+                        panel += (
+                            f"\n⚠️ El control constitucional no está disponible "
+                            f"({result['constitutional_unavailable']}): la ingesta "
+                            f"de ideas está detenida, no es que no haya ideas."
+                        )
                     self._send(cid, panel)
                 except Exception as e:
                     self._send(cid, f"Error al cargar ideas: {e}")

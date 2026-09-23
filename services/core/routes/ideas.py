@@ -97,6 +97,7 @@ async def refresh_ideas(
             "added": result["added"],
             "total_new": result["added_total"],
             "constitutional_blocked": result["constitutional_blocked"],
+            "constitutional_unavailable": result["constitutional_unavailable"],
         }
     except Exception as exc:
         logger.error("refresh_ideas error: %s", exc)

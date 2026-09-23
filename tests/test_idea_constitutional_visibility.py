@@ -286,10 +286,14 @@ class TestTheStructuredResultReachesTheConsumer:
 
     def test_the_shape_separates_counts_from_blocks(self, store):
         result = store.refresh()
-        assert set(result) == {"added", "added_total", "constitutional_blocked"}
+        assert set(result) == {
+            "added", "added_total",
+            "constitutional_blocked", "constitutional_unavailable",
+        }
         assert isinstance(result["added"], dict)
-        assert isinstance(result["added_total"], int)
-        assert isinstance(result["constitutional_blocked"], int)
+        for key in ("added_total", "constitutional_blocked",
+                    "constitutional_unavailable"):
+            assert isinstance(result[key], int)
 
     def test_summing_the_result_is_impossible_not_wrong(self, store):
         """El error que la forma anterior permitía: contar bloqueos como altas.
@@ -539,3 +543,219 @@ class TestTheSixRequiredOutcomes:
             result = store.refresh()
         assert result["added_total"] == 0
         assert result["constitutional_blocked"] == 4
+
+# ===========================================================================
+# La INDISPONIBILIDAD del control es visible, y nunca se mezcla con un veredicto
+# ===========================================================================
+
+class TestGuardUnavailabilityIsVisible:
+    """Sin esto, una avería del guard se veía como "0 añadidas, 0 bloqueadas".
+
+    Es decir: idéntico a que no hubiera ideas que importar. Una avería que
+    está DETENIENDO trabajo no puede parecer silencio.
+    """
+
+    def _crashing_refresh(self, store, n=2):
+        _write_proposals(store, n)
+        with patch("core.operator.constitutional_guard.enforce_check",
+                   side_effect=RuntimeError("guard caído")):
+            return store.refresh()
+
+    def test_the_idea_is_not_persisted(self, store):
+        _write_proposals(store, 1)
+        with patch("core.operator.constitutional_guard.enforce_check",
+                   side_effect=RuntimeError("guard caído")):
+            store.ingest_from_router_learning()
+        assert store.all() == []
+        path = Path(store._path)
+        if path.exists():
+            assert not [l for l in path.read_text(encoding="utf-8").splitlines()
+                        if l.strip()]
+
+    def test_unavailable_counter_goes_up(self, store):
+        result = self._crashing_refresh(store)
+        assert result["constitutional_unavailable"] >= 1
+
+    def test_blocked_counter_stays_at_zero(self, store):
+        result = self._crashing_refresh(store)
+        assert result["constitutional_blocked"] == 0, (
+            "una avería se contó como veredicto constitucional"
+        )
+
+    def test_added_total_stays_correct(self, store):
+        result = self._crashing_refresh(store)
+        assert result["added_total"] == 0
+        assert result["added"]["router_proposals"] == 0
+
+    def test_the_three_counters_are_independent(self, store):
+        result = store.refresh()
+        assert set(result) == {
+            "added", "added_total",
+            "constitutional_blocked", "constitutional_unavailable",
+        }
+        with pytest.raises(TypeError):
+            sum(result.values())
+
+    @pytest.mark.parametrize("relpath", [
+        "services/core/routes/ideas.py",
+        "core/meta_loop.py",
+        "vectrax/telegram_gateway.py",
+    ])
+    def test_every_consumer_shows_the_unavailability(self, relpath):
+        text = (_ROOT / relpath).read_text(encoding="utf-8")
+        assert "constitutional_unavailable" in text, (
+            f"{relpath} no muestra la indisponibilidad del control"
+        )
+
+    def test_a_verdict_and_an_outage_never_mix(self, store):
+        """Los dos contadores miden cosas distintas y no se contaminan."""
+        # Un veredicto.
+        store._record_constitutional_block(
+            ConstitutionalBlock("Ley 7", _blocked_gate()),
+            source="router_learning", title="bloqueada",
+        )
+        assert store.constitutional_block_count() == 1
+        assert store.constitutional_unavailable_count() == 0
+
+        # Una avería.
+        store._record_constitutional_unavailable(
+            ConstitutionalGuardUnavailable(
+                "control caído", correlation_id="CID-AVERIA",
+                title="averiada", application_point="p",
+                technical_cause="RuntimeError: boom",
+            ),
+            source="router_learning",
+        )
+        assert store.constitutional_block_count() == 1, "la avería tocó los bloqueos"
+        assert store.constitutional_unavailable_count() == 1
+
+        # Y sus listas no se solapan.
+        assert store.constitutional_blocks()[0]["title"] == "bloqueada"
+        assert store.constitutional_unavailable()[0]["title"] == "averiada"
+        assert "rules" not in store.constitutional_unavailable()[0]
+        assert "technical_cause" not in store.constitutional_blocks()[0]
+
+
+class TestTheOutageAuditPersists:
+
+    def test_the_outage_lands_in_the_ledger_with_its_own_action(self, store):
+        from core import audit_ledger
+        store._record_constitutional_unavailable(
+            ConstitutionalGuardUnavailable(
+                "control caído", correlation_id="CID-AVERIA",
+                title="idea sin evaluar",
+                application_point="core.idea_store.IdeaStore.create",
+                technical_cause="RuntimeError: boom",
+            ),
+            source="router_learning",
+        )
+        rows = [
+            r for r in audit_ledger.query(limit=200)
+            if str(r.get("action", "")).startswith("constitutional_unavailable:")
+        ]
+        assert rows, "la avería no dejó asiento persistente"
+        import json
+        meta = rows[0]["metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        d = meta["details"]
+        for field in ("correlation_id", "title", "application_point",
+                      "technical_cause", "timestamp"):
+            assert field in d, f"el asiento no guarda {field!r}"
+        assert d["correlation_id"] == "CID-AVERIA"
+        assert d["application_point"] == "core.idea_store.IdeaStore.create"
+        assert d["kind"] == "guard_unavailable"
+
+    def test_the_outage_entry_is_distinguishable_from_a_verdict(self, store):
+        from core import audit_ledger
+        store._record_constitutional_block(
+            ConstitutionalBlock("Ley 7", _blocked_gate()),
+            source="router_learning", title="bloqueada",
+        )
+        store._record_constitutional_unavailable(
+            ConstitutionalGuardUnavailable(
+                "caído", correlation_id="CID-AVERIA", title="averiada",
+                application_point="p", technical_cause="RuntimeError: boom",
+            ),
+            source="router_learning",
+        )
+        # `audit_ledger.VAULT_DIR` se resuelve al IMPORTAR, así que el ledger
+        # es compartido por toda la sesión de pruebas. Se filtra por los ids de
+        # ESTA prueba en lugar de contar filas.
+        import json
+
+        def _by(prefix, cid):
+            out = []
+            for r in audit_ledger.query(limit=500):
+                if not str(r.get("action", "")).startswith(prefix):
+                    continue
+                meta = r.get("metadata")
+                if isinstance(meta, str):
+                    meta = json.loads(meta)
+                if (meta or {}).get("details", {}).get("correlation_id") == cid:
+                    out.append(r)
+            return out
+
+        blocks = _by("constitutional_block:", "CID-BLOQUEO")
+        outages = _by("constitutional_unavailable:", "CID-AVERIA")
+        assert blocks and outages, (
+            "no se pueden separar veredictos de averías al filtrar el ledger"
+        )
+        # Y ningún asiento cae en las dos categorías.
+        assert not _by("constitutional_unavailable:", "CID-BLOQUEO")
+        assert not _by("constitutional_block:", "CID-AVERIA")
+
+    def test_the_outage_audit_survives_a_new_process(self, store):
+        import json
+        import os
+        import subprocess
+        import sys
+
+        from core import audit_ledger
+
+        store._record_constitutional_unavailable(
+            ConstitutionalGuardUnavailable(
+                "control caído", correlation_id="CID-SOBREVIVE",
+                title="avería que sobrevive",
+                application_point="core.idea_store.IdeaStore.create",
+                technical_cause="RuntimeError: boom",
+            ),
+            source="router_learning",
+        )
+        db = audit_ledger.LEDGER_PATH
+        assert os.path.isfile(db)
+
+        code = (
+            "import json, sqlite3, sys\n"
+            "c = sqlite3.connect(sys.argv[1])\n"
+            "rows = c.execute("
+            "  \"SELECT metadata FROM audit_ledger \"\n"
+            "  \"WHERE action LIKE 'constitutional_unavailable:%'\").fetchall()\n"
+            "print(json.dumps([json.loads(m) for (m,) in rows]))\n"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", code, db],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert out.returncode == 0, out.stderr
+        rows = json.loads(out.stdout)
+        mine = [
+            r for r in rows
+            if r.get("details", {}).get("correlation_id") == "CID-SOBREVIVE"
+        ]
+        assert mine, "otro proceso no encontró el asiento de la avería"
+        d = mine[0]["details"]
+        assert d["title"] == "avería que sobrevive"
+        assert d["technical_cause"] == "RuntimeError: boom"
+        assert d["application_point"] == "core.idea_store.IdeaStore.create"
+
+    def test_the_technical_cause_is_sanitised(self):
+        """No puede arrastrar rutas absolutas del sistema al ledger."""
+        from core.idea_store import _sanitize_cause
+        out = _sanitize_cause(
+            RuntimeError("fallo abriendo /home/mario/.vectrax/secreto/vault.db")
+        )
+        assert "/home/mario/.vectrax" not in out
+        assert "vault.db" in out
+        assert out.startswith("RuntimeError:")
+        assert len(_sanitize_cause(ValueError("x" * 1000))) <= 300
