@@ -106,9 +106,25 @@ def _prediction_id(ev: Any) -> str:
 CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
     domain=_DOMAIN,
     source="real_estate.verification_cycle",
+    unit="desenlace de listado verificado contra su cierre",
     identify=_prediction_id,
     replayable=False,
 ))
+
+
+def _batch_origin(events) -> str:
+    """De dónde vino este lote: el proveedor que emitió los eventos.
+
+    Se lee de los propios eventos en vez de fijarlo, porque el dominio admite
+    varios proveedores (simulador, y feeds reales) y la evidencia de uno no
+    vale lo mismo que la del otro. Sellarlo como constante habría hecho
+    indistinguible lo simulado de lo real en el ledger.
+    """
+    origins = sorted({
+        str(getattr(ev, "source", "") or "").strip()
+        for ev in (events or [])
+    } - {""})
+    return "+".join(origins) if origins else ""
 
 
 def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
@@ -136,7 +152,9 @@ def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
         outcomes.append(_ADAPTER.resolve(pred, observation))
 
     decisive = [o for o in outcomes if o.status is not OutcomeStatus.PENDING]
-    report = outcome_contract.commit(CONTRACT, decisive, record=record)
+    report = outcome_contract.commit(
+        CONTRACT, decisive, record=record, origin=_batch_origin(events),
+    )
     score = score_outcomes(_DOMAIN, outcomes)
     logger.info(
         "real_estate.verification | batch=%d | decisive=%d | WR=%.0f%% | "

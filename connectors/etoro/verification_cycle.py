@@ -165,9 +165,11 @@ def _signal_identity(sig: Any) -> str:
 CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
     domain=_DOMAIN,
     source=_GRAVITY_SOURCE,
+    unit="señal de mercado resuelta contra el precio realizado",
     identify=_signal_identity,
     replayable=True,
     star_for=_fingerprint_from_outcome,
+    confirms=True,
 ))
 
 
@@ -189,7 +191,13 @@ def _verify(signals: Iterable[Any], record: bool):
         outcomes.append(_ADAPTER.resolve(pred, obs))
 
     decisive = [o for o in outcomes if o.status is not OutcomeStatus.PENDING]
-    report = outcome_contract.commit(CONTRACT, decisive, record=record)
+    # El marcador de esta fuente (`market_verified.json`) lo confirma el
+    # CONTRATO, al final y solo con lo que quedó escrito. Marcarlo desde el
+    # ciclo era lo que perdía una señal cuando alguna escritura fallaba.
+    report = outcome_contract.commit(
+        CONTRACT, decisive, record=record, confirm=_mark_verified,
+        origin="signal_recorder",
+    )
     score = score_outcomes(_DOMAIN, outcomes)
     logger.info(
         "market.verification | batch=%d | decisive=%d | WR=%.0f%% | acc=%.2f "
@@ -257,22 +265,9 @@ def run_market_verification(record: bool = True) -> DomainScore:
     if not fresh:
         return DomainScore(domain=_DOMAIN)
 
-    score, handled_ids = _verify(fresh, record=record)
-    if record:
-        # SOLO las que quedaron contabilizadas. Marcar el lote entero era el
-        # agujero: ante un bloqueo de la base o un resultado todavía PENDING,
-        # la señal quedaba marcada y no se volvía a presentar nunca, así que
-        # su resultado se perdía aunque el problema fuera transitorio.
-        if handled_ids and not _mark_verified(handled_ids):
-            # El ledger y la gravedad ya están escritos; lo único que falta es
-            # el marcador. El próximo ciclo repetirá estas señales y ninguna
-            # de las dos se duplicará: la gravedad por su clave, el ledger por
-            # `_already_in_ledger()`.
-            logger.warning(
-                "market.verification | %d señales quedaron sin marcar; se "
-                "repetirán sin duplicar nada", len(handled_ids),
-            )
-    return score
+    # El marcado lo hace `outcome_contract.commit()` dentro de `_verify`:
+    # después de escribir, y solo con lo que quedó escrito.
+    return _verify(fresh, record=record)[0]
 
 
 def verified_score() -> DomainScore:

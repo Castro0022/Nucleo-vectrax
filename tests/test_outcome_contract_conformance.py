@@ -93,6 +93,21 @@ class Sample:
     other: Any          # un ítem DISTINTO, para comprobar que no colisionan
     subject: str
     verify: Any         # Callable[[list], DomainScore]: el ciclo real
+    #: ¿Está el ítem marcado en la fuente como "no volver a presentar"?
+    #: Solo en dominios con `confirms=True`.
+    is_confirmed: Any = None
+
+
+def _market_marked(item) -> bool:
+    from connectors.etoro import verification_cycle as mvc
+
+    return item.signal_id in mvc._load_verified_ids()
+
+
+def _cve_marked(item) -> bool:
+    from connectors.cybersecurity import seen_ledger
+
+    return seen_ledger.get(item.data["cve_id"]) is not None
 
 
 def _verify(module_path: str, function: str):
@@ -100,7 +115,19 @@ def _verify(module_path: str, function: str):
     def _run(items):
         import importlib
 
-        return getattr(importlib.import_module(module_path), function)(items)
+        module = importlib.import_module(module_path)
+        if function == "run_market_verification":
+            # El ciclo de market carga las señales del recorder, no las recibe.
+            import connectors.etoro.signal_recorder as rec
+
+            class _Status:
+                class PENDING:
+                    value = "pending"
+
+            rec.load_signals = lambda *a, **k: list(items)
+            rec.SignalStatus = _Status
+            return module.run_market_verification()
+        return getattr(module, function)(items)
 
     return _run
 
@@ -116,7 +143,8 @@ _CVE = {
 SAMPLES = {
     "market": Sample(
         item=_Signal("sig-1"), other=_Signal("sig-2"), subject="AAPL",
-        verify=_verify("connectors.etoro.verification_cycle", "verify_signals"),
+        verify=_verify("connectors.etoro.verification_cycle", "run_market_verification"),
+        is_confirmed=lambda item: _market_marked(item),
     ),
     "freight_logistics": Sample(
         item=_Event("delivery_complete", {
@@ -145,6 +173,7 @@ SAMPLES = {
         subject="product_family=acme",
         verify=_verify("connectors.cybersecurity.verification_cycle",
                        "verify_events"),
+        is_confirmed=lambda item: _cve_marked(item),
     ),
 }
 
@@ -191,6 +220,7 @@ def _verdicts(index, fingerprint) -> list:
 
 
 def _break_the_store():
+    """Rompe el almacén de gravedad. Solo afecta a dominios que lo alimentan."""
     real = og._get_conn
 
     def _broken(*a, **k):
@@ -198,6 +228,18 @@ def _break_the_store():
 
     og._get_conn = _broken
     return lambda: setattr(og, "_get_conn", real)
+
+
+def _break_the_ledger():
+    """Rompe la escritura del ledger: el fallo que afecta a TODO dominio.
+
+    `record_outcome` no lanza, devuelve False. Es la inyección que sirve para
+    comprobar el marcador de la fuente en cualquier dominio, alimente o no la
+    gravedad.
+    """
+    real = oc.vledger.record_outcome
+    oc.vledger.record_outcome = lambda o: False
+    return lambda: setattr(oc.vledger, "record_outcome", real)
 
 
 ALL = pytest.mark.parametrize(
@@ -562,3 +604,275 @@ class TestGravityFedDomains:
         assert len(rows) == 1
         assert rows[0]["source"] == contract.source
         assert rows[0]["prediction_id"] == "a"
+
+
+# ===========================================================================
+# 6. El marcador de la fuente se confirma DESPUÉS de escribir, nunca antes
+# ===========================================================================
+
+CONFIRMING = pytest.mark.parametrize(
+    "contract", [c for c in CONTRACTS if c.confirms],
+    ids=[c.domain for c in CONTRACTS if c.confirms],
+)
+
+
+@CONFIRMING
+class TestTheSourceMarkerFollowsTheWrite:
+    """`market_verified.json` y el `seen_ledger` de cybersecurity son LA MISMA
+    COSA: un marcador que le dice a la fuente "no vuelvas a presentar esto".
+
+    Los dos tenían el mismo fallo y se encontró por separado: market marcaba el
+    lote entero, cybersecurity marcaba la CVE ANTES de escribir su resultado.
+    En ambos casos `replayable=True` se volvía mentira —la fuente podía
+    releerse, pero el marcador ya la había excluido— y el resultado se perdía
+    para siempre.
+
+    La regla la aplica ahora `outcome_contract.commit()` en un único punto, así
+    que estas pruebas valen para cualquier dominio con marcador, incluido uno
+    que todavía no exista.
+    """
+
+    def test_a_failed_write_confirms_nothing(self, contract, index):
+        sample = SAMPLES[contract.domain]
+        if contract.feeds_gravity:
+            _make_star(index, contract)
+
+        restore = _break_the_ledger()
+        try:
+            sample.verify([sample.item])
+        finally:
+            restore()
+
+        assert not sample.is_confirmed(sample.item), (
+            f"{contract.domain}: la fuente quedó marcada sin haber escrito el "
+            f"resultado; ese ítem no se volvería a presentar nunca"
+        )
+
+    def test_the_item_comes_back_and_lands_after_the_failure(
+        self, contract, index,
+    ):
+        """La prueba de la promesa de "sin pérdida": tras el fallo, el ítem
+        vuelve a presentarse y esta vez sí queda escrito."""
+        sample = SAMPLES[contract.domain]
+        if contract.feeds_gravity:
+            _make_star(index, contract)
+
+        restore = _break_the_ledger()
+        try:
+            sample.verify([sample.item])
+        finally:
+            restore()
+        assert vledger.load_outcomes(contract.domain) == []
+        assert not sample.is_confirmed(sample.item)
+
+        sample.verify([sample.item])
+
+        assert _ids(contract), f"{contract.domain}: el resultado se perdió"
+        assert sample.is_confirmed(sample.item)
+
+    def test_a_successful_write_confirms(self, contract, index):
+        sample = SAMPLES[contract.domain]
+        if contract.feeds_gravity:
+            _make_star(index, contract)
+
+        sample.verify([sample.item])
+
+        assert sample.is_confirmed(sample.item)
+
+    def test_a_failed_marker_does_not_duplicate_on_the_retry(
+        self, contract, index, monkeypatch,
+    ):
+        """Si el marcador falla DESPUÉS de escribir, el ítem vuelve — y la
+        deduplicación por identidad impide que se escriba dos veces."""
+        sample = SAMPLES[contract.domain]
+        if contract.feeds_gravity:
+            _make_star(index, contract)
+
+        real = oc._confirm
+        monkeypatch.setattr(oc, "_confirm", lambda c, f, h: False)
+        sample.verify([sample.item])
+        first = sorted(_ids(contract))
+        monkeypatch.setattr(oc, "_confirm", real)
+
+        sample.verify([sample.item])
+
+        if contract.supersedes:
+            pytest.skip("supersede a propósito: la reescritura es su regla")
+        assert sorted(_ids(contract)) == first, (
+            f"{contract.domain}: el reintento duplicó el ledger"
+        )
+
+
+# ===========================================================================
+# 7. La reconciliación barre el ledger ENTERO, no una ventana
+# ===========================================================================
+
+@GRAVITY
+class TestReconciliationSweepsTheWholeLedger:
+    """`reconcile_from_ledger` acotaba el trabajo por ciclo mirando solo la
+    COLA reciente. Si durante una caída prolongada entraban más resultados que
+    el límite, los anteriores quedaban detrás y no se examinaban nunca: ni
+    aplicados, ni aparcados, ni recuperables.
+
+    Ahora avanza desde una marca de agua persistida, así que el límite acota el
+    trabajo por ciclo pero no lo que se llega a mirar.
+    """
+
+    def test_results_older_than_the_window_are_still_recovered(
+        self, contract, index,
+    ):
+        fingerprint = _make_star(index, contract)
+
+        restore = _break_the_store()
+        try:
+            for i in range(12):
+                oc.commit(contract, [_outcome(contract, f"old-{i}", ts=1000.0 + i)])
+        finally:
+            restore()
+
+        if contract.replayable:
+            pytest.skip("una fuente reemitible repite el lote, no reconcilia")
+
+        assert len(vledger.load_outcomes(contract.domain)) == 12
+        assert _verdicts(index, fingerprint) == []
+
+        # Ventana de 3: hacen falta varios ciclos, y NINGUNO se queda fuera.
+        for _ in range(6):
+            og.reconcile_from_ledger(
+                contract.domain, contract.star_for, limit=3,
+                source=contract.source,
+            )
+
+        assert og.applied_count(domain=contract.domain) == 12, (
+            f"{contract.domain}: la reconciliación dejó resultados sin examinar"
+        )
+
+    def test_the_watermark_advances_and_persists(self, contract, index):
+        _make_star(index, contract)
+        for i in range(5):
+            oc.commit(contract, [_outcome(contract, f"a-{i}", ts=2000.0 + i)])
+
+        before = og.reconcile_position(contract.domain)
+        og.reconcile_from_ledger(
+            contract.domain, contract.star_for, limit=2, source=contract.source,
+        )
+        after = og.reconcile_position(contract.domain)
+
+        assert after > before
+        assert og.reconcile_position(contract.domain) == after  # persistida
+
+    def test_the_watermark_does_not_advance_over_an_unaccounted_batch(
+        self, contract, index,
+    ):
+        """Si el almacén no está, el tramo NO se da por examinado."""
+        _make_star(index, contract)
+        restore = _break_the_store()
+        try:
+            for i in range(3):
+                oc.commit(contract, [_outcome(contract, f"b-{i}", ts=3000.0 + i)])
+        finally:
+            restore()
+        if contract.replayable:
+            pytest.skip("una fuente reemitible repite el lote, no reconcilia")
+
+        before = og.reconcile_position(contract.domain)
+        restore = _break_the_store()
+        try:
+            og.reconcile_from_ledger(
+                contract.domain, contract.star_for, source=contract.source,
+            )
+        finally:
+            restore()
+
+        assert og.reconcile_position(contract.domain) == before
+
+
+# ===========================================================================
+# 8. Cada dominio declara QUÉ MIDE y DE DÓNDE VIENE; el núcleo lo registra
+# ===========================================================================
+
+@ALL
+class TestTheEvidenceSaysWhatItIsAndWhereItCameFrom:
+    """Un dominio entrega al núcleo de dónde viene el dato, qué mide, cómo se
+    cuenta y cuál fue el resultado. Freight cuenta entregas y market señales;
+    no tienen por qué parecerse. Lo común es que esté DICHO, porque decidir qué
+    significa lo observado es del núcleo, y no puede decidirlo sobre evidencia
+    que no dice qué es ni de dónde salió.
+    """
+
+    def test_the_contract_declares_its_unit(self, contract):
+        assert contract.unit.strip(), f"{contract.domain} no dice qué mide"
+
+    def test_the_persisted_evidence_carries_unit_and_origin(
+        self, contract, index,
+    ):
+        sample = SAMPLES[contract.domain]
+        if contract.feeds_gravity:
+            _make_star(index, contract)
+
+        sample.verify([sample.item])
+
+        rows = vledger.load_outcomes(contract.domain)
+        assert rows, f"{contract.domain}: no persistió evidencia"
+        for row in rows:
+            assert row.evidence.get("unit") == contract.unit, row.evidence
+            assert str(row.evidence.get("origin", "")).strip(), (
+                f"{contract.domain}: evidencia sin procedencia: {row.evidence}"
+            )
+
+    def test_the_core_stamps_the_origin_the_domain_supplies(self, contract):
+        """La procedencia es del LOTE, no una constante del módulo."""
+        report = oc.commit(contract, [_outcome(contract, "a")], origin="feed-X")
+
+        assert report.origin == "feed-X"
+        rows = vledger.load_outcomes(contract.domain)
+        assert rows[-1].evidence["origin"] == "feed-X"
+
+    def test_an_absent_origin_falls_back_to_the_cycle_never_to_nothing(
+        self, contract,
+    ):
+        report = oc.commit(contract, [_outcome(contract, "a")], origin="  ")
+
+        assert report.origin == contract.source
+        assert vledger.load_outcomes(contract.domain)[-1].evidence["origin"]
+
+
+def test_every_domain_measures_something_distinct():
+    """Dos dominios que digan medir lo mismo harían la unidad inútil."""
+    units = [c.unit for c in CONTRACTS]
+    assert len(set(units)) == len(units), f"unidades repetidas: {units}"
+
+
+class TestSimulatedEvidenceIsDistinguishableFromReal:
+    """El caso concreto que hacía falta cerrar.
+
+    Freight y real estate admiten varios proveedores. Si la procedencia fuera
+    una constante del ciclo, la evidencia de un simulador y la de un feed real
+    quedarían idénticas en el ledger y el núcleo aprendería de lo simulado como
+    si fuera real. La procedencia se lee de los propios eventos.
+    """
+
+    @pytest.mark.parametrize(
+        "domain,module",
+        [("freight_logistics", "connectors.freight.verification_cycle"),
+         ("florida_real_estate", "connectors.real_estate.verification_cycle")],
+    )
+    def test_two_providers_leave_different_provenance(
+        self, domain, module, index,
+    ):
+        import importlib
+
+        vc = importlib.import_module(module)
+        contract = oc.contract_for(domain)
+        if contract.feeds_gravity:
+            _make_star(index, contract)
+
+        simulated = SAMPLES[domain].item
+        real = SAMPLES[domain].other
+        real.source = "dat_feed"
+
+        vc.verify_events([simulated])
+        vc.verify_events([real])
+
+        origins = {r.evidence.get("origin") for r in vledger.load_outcomes(domain)}
+        assert origins == {"sim", "dat_feed"}, origins

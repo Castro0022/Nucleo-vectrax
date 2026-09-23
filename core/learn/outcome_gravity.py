@@ -215,6 +215,15 @@ CREATE TABLE IF NOT EXISTS pending_outcomes (
 );
 """
 
+#: Hasta dónde se ha reconciliado el ledger de cada dominio.
+_CREATE_CURSOR = """
+CREATE TABLE IF NOT EXISTS reconcile_cursor (
+    domain      TEXT PRIMARY KEY,
+    position    INTEGER NOT NULL DEFAULT 0,
+    updated_at  REAL NOT NULL DEFAULT 0.0
+);
+"""
+
 _CREATE_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_applied_outcomes_domain
     ON applied_outcomes (domain, subject);
@@ -271,6 +280,7 @@ def _get_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
     _apply_pragmas(conn)
     conn.execute(_CREATE_TABLE)
     conn.execute(_CREATE_PENDING)
+    conn.execute(_CREATE_CURSOR)
     _migrate_pending(conn)
     conn.execute(_CREATE_INDEX)
     conn.execute(_CREATE_PENDING_INDEX)
@@ -797,6 +807,54 @@ def _known_prediction_ids(conn, domain: str, ids: Sequence[str]) -> set:
     return known
 
 
+def _read_cursor(conn, domain: str) -> int:
+    row = conn.execute(
+        "SELECT position FROM reconcile_cursor WHERE domain = ?", (domain,),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _advance_cursor(position: int, domain: str,
+                    db_path: Optional[str] = None) -> None:
+    """Mueve la marca de agua. Nunca lanza: si no se puede guardar, el proximo
+    ciclo reexamina el tramo, que es inofensivo."""
+    try:
+        conn = _get_conn(db_path)
+    except Exception:
+        return
+    try:
+        conn.execute(
+            "INSERT INTO reconcile_cursor (domain, position, updated_at) "
+            "VALUES (?, ?, ?) ON CONFLICT(domain) DO UPDATE SET "
+            "position = excluded.position, updated_at = excluded.updated_at",
+            (domain, int(position), time.time()),
+        )
+        conn.commit()
+    except Exception as exc:
+        logger.debug("outcome_gravity: cursor no guardado (%s)", exc)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def reconcile_position(domain: str, db_path: Optional[str] = None) -> int:
+    """Hasta que fila del ledger se ha reconciliado este dominio."""
+    try:
+        conn = _open_for_read(db_path)
+    except Exception:
+        return 0
+    if conn is None:
+        return 0
+    try:
+        return _read_cursor(conn, domain)
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
 def reconcile_from_ledger(
     domain: str,
     fingerprint_for,
@@ -826,27 +884,37 @@ def reconcile_from_ledger(
     `fingerprint_for(outcome) -> Optional[str]` la aporta el dominio, porque
     solo el dominio sabe a que patron pertenece un resultado.
 
-    El limite es la COLA reciente a proposito: la historia graduable de una
-    estrella esta acotada (`MAX_OUTCOME_HISTORY`), asi que un resultado muy
-    antiguo no entraria en la ventana aunque se aplicara —el orden por instante
-    de resolucion lo dejaria fuera—. Recorrer el ledger entero cada ciclo
-    costaria sin cambiar nada.
+    RECORRIDO COMPLETO, NO UNA VENTANA
+    ----------------------------------
+    `limit` acota el TRABAJO POR CICLO, no lo que se llega a examinar. El
+    recorrido avanza desde una marca de agua persistida por dominio
+    (`reconcile_cursor`), asi que el ledger entero se barre hacia delante y
+    ningun resultado queda fuera por antiguedad.
+
+    La version anterior miraba solo la cola reciente, justificando el limite
+    con que un resultado muy antiguo no entraria en la ventana acotada de la
+    estrella. Ese razonamiento era falso donde importaba: si durante una caida
+    prolongada entraban mas resultados que el limite, los anteriores quedaban
+    detras de la cola y NO se examinaban nunca — ni aplicados, ni aparcados, ni
+    recuperables. Que ademas acabaran fuera de la ventana por antiguedad es
+    otra cuestion, y la decide el orden por instante de resolucion al
+    aplicarlos, no un recorrido que no llega a mirarlos.
+
+    La marca solo avanza sobre lo que quedo CONTABILIZADO: si el almacen no
+    esta disponible, el cursor se queda donde estaba y el proximo ciclo repite
+    ese tramo. Reexaminar es inofensivo —lo ya aplicado se reconoce y se
+    salta—, perder un tramo no lo es.
 
     Nunca lanza.
     """
     counts = _empty_counts()
     try:
         from core.learn import verification_ledger as vledger
-        recent = vledger.load_outcomes(domain, limit=limit)
+        everything = vledger.load_outcomes(domain)
     except Exception as exc:
         logger.warning("outcome_gravity: reconcile sin ledger (%s)", exc)
         return counts
-
-    candidates = [
-        o for o in recent
-        if o.prediction_id and o.status.is_decisive
-    ]
-    if not candidates:
+    if not everything:
         return counts
 
     try:
@@ -856,16 +924,41 @@ def reconcile_from_ledger(
         return counts
 
     known: set = set()
+    cursor = 0
     if conn is not None:
         try:
+            cursor = _read_cursor(conn, domain)
+            if cursor > len(everything):
+                # El ledger se truncó o rotó bajo nuestros pies. Reexaminarlo
+                # entero es inofensivo (lo aplicado se reconoce y se salta) y
+                # deja constancia en vez de saltarse el tramo en silencio.
+                logger.warning(
+                    "outcome_gravity: el ledger de %s encogió (%d filas, "
+                    "cursor %d); se reexamina desde el principio",
+                    domain, len(everything), cursor,
+                )
+                cursor = 0
+            window = everything[cursor:cursor + max(int(limit), 1)]
+            candidates = [
+                o for o in window if o.prediction_id and o.status.is_decisive
+            ]
             known = _known_prediction_ids(
                 conn, domain, [o.prediction_id for o in candidates],
-            )
+            ) if candidates else set()
         except Exception as exc:
             logger.warning("outcome_gravity: reconcile no pudo consultar (%s)", exc)
             return counts
         finally:
             conn.close()
+    else:
+        window = everything[:max(int(limit), 1)]
+        candidates = [
+            o for o in window if o.prediction_id and o.status.is_decisive
+        ]
+
+    if not window:
+        return counts
+    advanced = cursor + len(window)
 
     pairs: List[Tuple[str, Outcome]] = []
     for outcome in candidates:
@@ -879,11 +972,15 @@ def reconcile_from_ledger(
             pairs.append((fingerprint, outcome))
 
     if not pairs:
+        # No había nada que aplicar en este tramo: queda examinado igualmente.
+        _advance_cursor(advanced, domain, db_path)
         return counts
 
     result = apply_verified_outcomes(
         pairs, source=source, index=index, db_path=db_path,
     )
+    if accounted(result, len(pairs)):
+        _advance_cursor(advanced, domain, db_path)
     if result.get(APPLIED) or result.get(DEFERRED):
         logger.info(
             "outcome_gravity | reconcile %s | recuperados del ledger=%d "

@@ -77,7 +77,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from core.learn import outcome_gravity
@@ -133,7 +133,13 @@ class DomainContract:
     """
 
     domain: str
+    #: Quién APLICA la evidencia: el ciclo. Distinto de su procedencia.
     source: str
+    #: QUÉ MIDE este dominio: la unidad que cuenta una evidencia suya.
+    #: freight cuenta entregas, market señales, cybersecurity CVE. No tienen
+    #: por qué parecerse; lo que el núcleo exige es que esté DICHO, porque de
+    #: eso depende poder leer la evidencia sin suponer qué representa.
+    unit: str
     #: Identidad del resultado a partir del ítem de origen (evento o señal).
     identify: Callable[[Any], str]
     #: ¿Puede la fuente volver a presentar el ítem en un ciclo posterior?
@@ -142,6 +148,19 @@ class DomainContract:
     star_for: Optional[Callable[[Outcome], Optional[str]]] = None
     #: ¿Una escritura posterior supersede a la anterior? (cybersecurity)
     supersedes: bool = False
+    #: ¿La fuente tiene un MARCADOR que impide volver a presentar el ítem?
+    #:
+    #: market lo tiene (`market_verified.json`) y cybersecurity también
+    #: (`seen_ledger`, que al marcar una CVE hace que deje de figurar como
+    #: nueva o cambiada). Son la misma cosa con dos nombres, y la regla es
+    #: la misma: el marcador se confirma DESPUÉS de la escritura durable,
+    #: nunca antes. Confirmarlo antes convierte `replayable=True` en mentira
+    #: —la fuente puede releerse, pero el marcador ya la excluyó— y es
+    #: exactamente cómo se perdía un resultado en los dos dominios.
+    #:
+    #: Declararlo aquí permite exigir esa garantía en la conformidad, en vez
+    #: de confiar en que cada ciclo la escriba bien por su cuenta.
+    confirms: bool = False
 
     @property
     def feeds_gravity(self) -> bool:
@@ -202,7 +221,11 @@ class CommitReport:
     ledger_written: int = 0
     ledger_skipped: int = 0
     no_identity: int = 0
+    #: De dónde venía el dato de este lote.
+    origin: str = ""
     gravity: Mapping[str, int] = field(default_factory=dict)
+    #: `None` si el dominio no tiene marcador; si lo tiene, si quedó escrito.
+    confirmed: Optional[bool] = None
 
     @property
     def gravity_applied(self) -> int:
@@ -216,6 +239,8 @@ def commit(
     outcomes: Sequence[Outcome],
     *,
     record: bool = True,
+    origin: Optional[str] = None,
+    confirm: Optional[Callable[[Sequence[str]], bool]] = None,
 ) -> CommitReport:
     """Persiste un lote de resultados verificados cumpliendo el contrato.
 
@@ -224,11 +249,26 @@ def commit(
     1. Se apartan los resultados SIN identidad. No se escriben en ninguna
        parte y quedan en el log como WARNING: una fila sin identidad es
        indistinguible de otra y rompe toda deduplicación posterior.
+    1.b Se sella la PROCEDENCIA de cada evidencia (`origin`): de dónde venía
+       el dato. `origin` es del LOTE porque un ciclo lee de un proveedor por
+       vez. Sin esto, la evidencia de un simulador y la de un feed real son
+       indistinguibles en el ledger, y el núcleo no puede decidir qué
+       significa lo observado — aprendería de datos simulados como si fueran
+       reales. Es lo mismo que la identidad: el dominio lo declara, el núcleo
+       lo exige y lo registra.
     2. Se lleva el lote a la gravedad (si el dominio la alimenta) y se
        comprueba con `accounted()` que el recuento cubre el lote entero.
     3. El ledger se escribe según `replayable` (ver el encabezado del módulo).
        La deduplicación por identidad se aplica salvo en dominios con
        `supersedes=True`.
+    4. Y SOLO ENTONCES se confirma el marcador de la fuente, con los ítems
+       que quedaron escritos y con ninguno más. Esta es la razón de que
+       `confirm` se pase aquí en vez de llamarlo el ciclo: el orden es la
+       garantía, y un orden que cada dominio escribe a mano es un orden que
+       algún dominio escribirá al revés. Ya pasó dos veces —market marcaba el
+       lote entero, cybersecurity marcaba la CVE antes de escribir su
+       resultado— y en ambos casos el resultado se perdía para siempre pese a
+       que la fuente podía releerse.
 
     Devuelve un `CommitReport`. `handled_ids` son los que el dominio puede dar
     por cerrados —marcarlos, no volver a presentarlos—; en un dominio no
@@ -256,6 +296,14 @@ def commit(
     if not with_identity:
         return CommitReport(domain=contract.domain, total=total,
                             accounted=False, no_identity=no_identity)
+
+    where_from = str(origin or contract.source).strip() or contract.source
+    with_identity = [
+        replace(o, evidence={
+            **dict(o.evidence), "origin": where_from, "unit": contract.unit,
+        })
+        for o in with_identity
+    ]
 
     if not record:
         return CommitReport(
@@ -293,7 +341,7 @@ def commit(
         )
         return CommitReport(
             domain=contract.domain, total=total, accounted=False,
-            no_identity=no_identity, gravity=gravity_counts,
+            no_identity=no_identity, origin=where_from, gravity=gravity_counts,
         )
 
     already = (
@@ -331,12 +379,50 @@ def commit(
             gravity_counts.get(outcome_gravity.FAILED, 0),
         )
 
+    confirmed = _confirm(contract, confirm, handled)
     return CommitReport(
         domain=contract.domain, total=total, handled_ids=tuple(handled),
         accounted=gravity_ok and len(handled) == len(with_identity),
         ledger_written=written, ledger_skipped=skipped,
-        no_identity=no_identity, gravity=gravity_counts,
+        no_identity=no_identity, origin=where_from,
+        gravity=gravity_counts, confirmed=confirmed,
     )
+
+
+def _confirm(
+    contract: DomainContract,
+    confirm: Optional[Callable[[Sequence[str]], bool]],
+    handled: Sequence[str],
+) -> Optional[bool]:
+    """Marca en la fuente los ítems que YA quedaron escritos, y solo esos.
+
+    Se llama en un único punto, al final de `commit()`, para que ningún
+    dominio pueda adelantarlo. Si el marcador falla no se pierde nada: los
+    ítems se volverán a presentar y la deduplicación por identidad evita que
+    se escriban dos veces.
+    """
+    if confirm is None:
+        if contract.confirms:
+            logger.warning(
+                "%s | declara marcador de fuente pero no lo pasó a commit(): "
+                "sus ítems podrían volver a presentarse indefinidamente",
+                contract.domain,
+            )
+        return None
+    if not handled:
+        return True
+    try:
+        ok = bool(confirm(tuple(handled)))
+    except Exception as exc:
+        logger.warning("%s | el marcador de fuente falló: %s", contract.domain, exc)
+        ok = False
+    if not ok:
+        logger.warning(
+            "%s | %d ítems quedaron sin marcar: se volverán a presentar y la "
+            "deduplicación por identidad evitará que se escriban dos veces",
+            contract.domain, len(handled),
+        )
+    return ok
 
 
 def recover(contract: DomainContract) -> Dict[str, int]:

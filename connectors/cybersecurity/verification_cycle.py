@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from core.learn.outcome_adapter import (
     DomainScore,
@@ -90,9 +90,11 @@ def _cve_identity(ev: Any) -> str:
 CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
     domain=DOMAIN,
     source="cybersecurity.verification_cycle",
+    unit="CVE verificada contra su entrada en KEV",
     identify=_cve_identity,
     replayable=True,
     supersedes=True,
+    confirms=True,
 ))
 
 
@@ -145,6 +147,26 @@ def resolve_cve(ev: Any, now: Optional[datetime] = None) -> Dict[str, Any]:
     }
 
 
+def _mark_seen(seen_by_cve: Mapping[str, Dict[str, Any]],
+               handled_ids: Sequence[str]) -> bool:
+    """Marca como vistas las CVE cuyo resultado quedó escrito, y solo esas.
+
+    `handled_ids` son identidades a nivel de subject (``{cve_id}|{nivel}``);
+    la marca es por CVE, así que se toma el prefijo.
+    """
+    ok = True
+    for cve_id in {str(pid).split("|", 1)[0] for pid in handled_ids}:
+        rec = seen_by_cve.get(cve_id)
+        if rec is None:
+            continue
+        try:
+            seen_ledger.upsert(rec)
+        except Exception as exc:
+            logger.warning("cyber: no se pudo marcar %s: %s", cve_id, exc)
+            ok = False
+    return ok
+
+
 def verify_events(events: Iterable[Any], record: bool = True,
                   now: Optional[datetime] = None,
                   gravity_records: Optional[Dict[str, Any]] = None) -> DomainScore:
@@ -157,11 +179,15 @@ def verify_events(events: Iterable[Any], record: bool = True,
     en re-ejecuciones ni en flips (is_changed)."""
     cve_outcomes: List[Outcome] = []
     to_ledger: List[Outcome] = []
+    seen_by_cve: Dict[str, Dict[str, Any]] = {}
     for ev in events:
         r = resolve_cve(ev, now)
         if r["excluded"] or not r["cve_id"]:
             continue
-        is_new, is_changed = seen_ledger.upsert(r["seen_rec"])
+        # CLASIFICAR sin marcar: `seen_ledger` es el marcador de esta fuente
+        # y lo confirma el contrato al final, con lo que quedó escrito.
+        is_new, is_changed = seen_ledger.classify(r["seen_rec"])
+        seen_by_cve[r["cve_id"]] = r["seen_rec"]
         o = r["outcome"]
         cve_outcomes.append(o)  # nivel CVE (subject = nivel más fino o cve:id)
 
@@ -176,11 +202,23 @@ def verify_events(events: Iterable[Any], record: bool = True,
             )
         if gravity_records is not None and is_new:
             _accumulate_mass(gravity_records, r["dims"])
-    # La persistencia pasa por el contrato COMÚN, igual que los demás dominios.
-    # Con `supersedes=True` no se deduplica la escritura, así que el
-    # comportamiento es el mismo de siempre; lo que se gana es el control de
-    # identidad y un informe de lo que realmente quedó escrito.
-    outcome_contract.commit(CONTRACT, to_ledger, record=record)
+    # La persistencia y el marcado pasan por el contrato COMÚN. Con
+    # `supersedes=True` no se deduplica la escritura, así que el
+    # comportamiento del ledger es el de siempre; lo que cambia es que el
+    # `seen_ledger` se confirma DESPUÉS de escribir, y solo de las CVE
+    # escritas (ver `outcome_contract._confirm`).
+    outcome_contract.commit(
+        CONTRACT, to_ledger, record=record, origin="nvd+kev",
+        confirm=lambda ids: _mark_seen(seen_by_cve, ids),
+    )
+    if record:
+        # Las CVE sin resultado decisivo que escribir no pasan por el lote,
+        # pero sí se han visto: se marcan aquí, donde no hay nada que perder.
+        written = {pid.split("|", 1)[0] for o in to_ledger
+                   for pid in (o.prediction_id,)}
+        for cve_id, seen_rec in seen_by_cve.items():
+            if cve_id not in written:
+                seen_ledger.upsert(seen_rec)
     score = score_outcomes(DOMAIN, cve_outcomes)
     logger.info(
         "cyber.verification | batch=%d | dec=%d | WR=%.0f%% | wins=%d losses=%d neutral=%d pending=%d",
