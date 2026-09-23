@@ -707,3 +707,75 @@ com.vectrax.rotate-logs     agente activo                      ✓
 com.vectrax.worker-monitor  ELIMINADO (script inexistente,
                             status 127 en cada corrida) — cerrado ✓
 ```
+
+---
+
+## 16. Hallazgo Estructural — Puente Causal sin retroalimentación de outcomes reales (Sep 23, 2026)
+
+**Contexto:** PR #127 (`c559163`, merge de `claude/pr4-constitutional-enforcement`
+sobre `claude/pr2-causal-learning-bridge`) desplegó `core/learn/causal_learning.py`
+— el puente `convergencia → aprendizaje → criterio`, declarado **efectivo en
+producción directa, sin modo sombra** (ver `docs/INFORME_PR2_PUENTE_CAUSAL.md`).
+Verificación de solo lectura contra `vault/causal_learning.db` (creado
+2026-09-22 21:14, primer ciclo de `meta_loop` con el código nuevo).
+
+### Estado verificado del almacén causal
+```
+Políticas activas (v1): market, freight_logistics, florida_real_estate, cybersecurity
+learning_traces: 31 — el 100% en CONVERGED_CANDIDATE
+STATE_LEARNED: 0 (nunca, ni históricamente — 0 filas en learning_state_events
+                 con to_state='LEARNED'; los 31 nacieron y permanecen en
+                 CONVERGED_CANDIDATE)
+learning_applications: 0 (consistente: sin LEARNED no hay criterio que aplicar)
+```
+
+### Causa raíz — dos almacenes de "verdad" que nunca se cruzan
+`causal_learning.qualify_pattern()` exige métricas reales por patrón fuente vía
+`core/gravity_kernel/signals.py::derive_pattern_stats()`, que cuenta
+`wins`/`losses` **exclusivamente** sobre `GravityRecord.outcome_history`
+(literal `win|success|ok` vs `loss|fail|error`; cualquier otro string no
+cuenta ni como win ni como loss). Ningún productor real escribe esos tokens ahí:
+
+```
+market:{symbol}
+  Escritor de outcome_history: connectors/etoro/learning_engine.py::_feed_gravity()
+    outcome = "observed"  ó  f"WR={wr:.0f}% E={exp:+.3f}%"   ← nunca win/loss
+  Resultado REAL (PnL de cierre): connectors/etoro/position_manager.py::_close_paper_trade()
+    status = closed_win|closed_loss|closed_neutral (correcto, real)
+    → causal_learning.resolve_decision_outcome() → tabla learning_applications
+      (el ÚLTIMO eslabón de la cadena; NO escribe en GravityRecord.outcome_history)
+
+freight_logistics:{event_type}:{signature}
+  Escritor de outcome_history: core/domain_ingester.py::ingest_event()
+    outcome = text[:100]  (descripción del evento)                ← nunca win/loss
+  Resultado REAL verificado (on_time/delay): connectors/freight/verification_cycle.py::verify_events()
+    → core/learn/verification_ledger.py (ledger separado, nunca leído por
+      qualify_pattern()/derive_pattern_stats())
+```
+
+**Ejemplo real** (convergencia `eb9eebc917afd4a3f8cfdc09`, dominio `market`,
+patrones `market:TSLA` + `user_market_interest:LA`): `combined_cc=0.58` y
+`combined_hits=44` superan holgadamente los umbrales (`0.4` / `5`), pero
+`qualified_patterns=[]` — bloqueado únicamente porque ninguno de los dos
+patrones tiene un solo outcome graduado.
+
+### Impacto
+Con el cableado actual, **ningún dominio puede alcanzar `STATE_LEARNED`**,
+independientemente del volumen de convergencias o del tiempo transcurrido: el
+campo que el gate exige (`outcome_history` con tokens win/loss) no tiene
+ningún productor real que lo alimente para estos fingerprints. No es un
+problema de umbral, de configuración ni del `constitutional_mode` (corregido
+ese mismo día, ver §7) — es un vacío de integración entre dos módulos que ya
+existen y ya calculan resultados reales correctamente, pero en almacenes que
+el puente causal no consulta.
+
+### Siguiente paso (pendiente de decisión — no implementado)
+Dos rutas posibles, ninguna aplicada:
+1. Que `position_manager._close_paper_trade()` y `verification_cycle.verify_events()`
+   también llamen a `gravity_engine.record_event(outcome="win"|"loss", ...)`
+   sobre el mismo fingerprint que evalúa `causal_learning`.
+2. Que `derive_pattern_stats()`/`qualify_pattern()` lean directamente de
+   `learning_applications`/`verification_ledger` en vez de `outcome_history`.
+
+Investigación de solo lectura; sin cambios de código en este hallazgo.
+*Documentado: Sep 23, 2026 — sesión de despliegue PR #127 + verificación del puente causal.*
