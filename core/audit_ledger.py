@@ -14,11 +14,31 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
-VAULT_DIR = os.environ.get(
-    "VECTRAX_VAULT_DIR",
-    os.path.join(os.path.expanduser("~"), "Vectrax", "vault"),
-)
-LEDGER_PATH = os.path.join(VAULT_DIR, "audit_ledger.db")
+#: Ruta de PRODUCCIÓN cuando no hay override. Es exactamente la que este
+#: módulo usaba antes; no se cambia.
+PRODUCTION_VAULT_DIR = os.path.join(os.path.expanduser("~"), "Vectrax", "vault")
+
+LEDGER_FILENAME = "audit_ledger.db"
+
+
+def vault_dir() -> str:
+    """Directorio del vault, resuelto EN CADA LLAMADA.
+
+    Antes esto era `VAULT_DIR = os.environ.get(...)` a nivel de módulo: se
+    congelaba en el primer import y `VECTRAX_VAULT_DIR` dejaba de tener efecto
+    después. En las pruebas eso significaba que TODAS escribían en el vault que
+    estuviera activo cuando se importó el módulo por primera vez — el mismo
+    defecto de ruta congelada que PR #124 corrigió en `learned_rules`.
+
+    Importa más ahora que antes: las rutas constitucionales de este PR asientan
+    aquí sus bloqueos e indisponibilidades.
+    """
+    return os.environ.get("VECTRAX_VAULT_DIR") or PRODUCTION_VAULT_DIR
+
+
+def ledger_path(db_path: Optional[str] = None) -> str:
+    """Ruta del ledger. `db_path` explícito gana (para pruebas)."""
+    return db_path or os.path.join(vault_dir(), LEDGER_FILENAME)
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS audit_ledger (
@@ -35,12 +55,29 @@ CREATE TABLE IF NOT EXISTS audit_ledger (
 """
 
 
-def _get_conn() -> sqlite3.Connection:
-    os.makedirs(VAULT_DIR, exist_ok=True)
-    conn = sqlite3.connect(LEDGER_PATH)
+def _get_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
+    """Conexión de ESCRITURA: crea el directorio y la tabla si hacen falta."""
+    path = ledger_path(db_path)
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    conn = sqlite3.connect(path)
     conn.execute(_CREATE_TABLE)
     conn.commit()
     return conn
+
+
+def _open_for_read(db_path: Optional[str] = None) -> Optional[sqlite3.Connection]:
+    """Conexión de LECTURA. `None` si el ledger todavía no existe.
+
+    Un lector nunca crea el almacén: consultar el ledger no puede tener como
+    efecto secundario sembrar un `audit_ledger.db` vacío allí donde apunte
+    `VECTRAX_VAULT_DIR` en ese instante.
+    """
+    path = ledger_path(db_path)
+    if not os.path.exists(path):
+        return None
+    return _get_conn(path)
 
 
 def compute_diff_hash(diff_text: str) -> str:
@@ -57,6 +94,7 @@ def record(
     decision: str = "approved",
     reason: str = "",
     metadata: Optional[Dict[str, Any]] = None,
+    db_path: Optional[str] = None,
 ) -> int:
     """
     Append an entry to the audit ledger.
@@ -64,7 +102,7 @@ def record(
     """
     import json
 
-    conn = _get_conn()
+    conn = _get_conn(db_path)
     try:
         cur = conn.execute(
             """
@@ -91,12 +129,16 @@ def record(
 def query(
     limit: int = 100,
     action_filter: Optional[str] = None,
+    db_path: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Query the audit ledger.
-    Returns list of dicts (most recent first).
+    Returns list of dicts (most recent first). Lista vacía si aún no existe:
+    leer no crea el almacén.
     """
-    conn = _get_conn()
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return []
     try:
         if action_filter:
             rows = conn.execute(
@@ -115,9 +157,11 @@ def query(
         conn.close()
 
 
-def count() -> int:
-    """Return total entries in the ledger."""
-    conn = _get_conn()
+def count(db_path: Optional[str] = None) -> int:
+    """Total de entradas. 0 si el ledger aún no existe — leer no lo crea."""
+    conn = _open_for_read(db_path)
+    if conn is None:
+        return 0
     try:
         return conn.execute("SELECT COUNT(*) FROM audit_ledger").fetchone()[0]
     finally:

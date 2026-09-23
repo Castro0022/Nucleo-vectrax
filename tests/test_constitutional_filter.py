@@ -59,18 +59,14 @@ from core.operator.identity import FUNDAMENTAL_LAWS, verify_identity_integrity
 @pytest.fixture(autouse=True)
 def _isolated_audit_ledger(tmp_path, monkeypatch):
     """
-    audit_ledger.py calcula VAULT_DIR/LEDGER_PATH a nivel de módulo, así que
-    monkeypatch.setenv("VECTRAX_VAULT_DIR") por sí solo no basta si el módulo
-    ya fue importado en la sesión (mismo patrón que observation_ledger en
-    conftest.py). Redirigimos el atributo directamente para garantizar que
-    estos tests nunca toquen el ledger real del creador.
+    `audit_ledger` resuelve `VECTRAX_VAULT_DIR` EN CADA ACCESO, así que basta
+    con redirigir la variable de entorno. Antes calculaba la ruta al importar
+    y había que parchear el atributo: ese apaño dejó de hacer falta y, peor,
+    dejó de funcionar — parchear un atributo que ya nadie lee habría mandado
+    estos tests al ledger real del creador.
     """
-    import core.audit_ledger as _al
-
-    db_path = str(tmp_path / "audit_ledger_test.db")
-    monkeypatch.setattr(_al, "VAULT_DIR", str(tmp_path), raising=False)
-    monkeypatch.setattr(_al, "LEDGER_PATH", db_path, raising=False)
-    yield db_path
+    monkeypatch.setenv("VECTRAX_VAULT_DIR", str(tmp_path))
+    yield str(tmp_path / "audit_ledger.db")
 
 
 @pytest.fixture(autouse=True)

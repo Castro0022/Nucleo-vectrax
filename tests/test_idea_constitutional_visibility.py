@@ -28,6 +28,7 @@ No se cambia ninguna política: `create_idea` sigue siendo AUTO.
 """
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from pathlib import Path
@@ -420,7 +421,7 @@ class TestThePersistentAudit:
             ConstitutionalBlock("Ley 7 lo impide", _blocked_gate()),
             source="router_learning", title="idea que sobrevive",
         )
-        db = audit_ledger.LEDGER_PATH
+        db = audit_ledger.ledger_path()
         assert os.path.isfile(db), f"no existe el almacén persistente {db}"
 
         code = (
@@ -452,7 +453,7 @@ class TestThePersistentAudit:
 
     def test_the_store_is_named_and_is_sqlite(self):
         from core import audit_ledger
-        assert audit_ledger.LEDGER_PATH.endswith("audit_ledger.db")
+        assert audit_ledger.ledger_path().endswith("audit_ledger.db")
         assert "audit_ledger" in audit_ledger._CREATE_TABLE
 
     def test_a_ledger_failure_does_not_break_the_ingest(self, store, caplog):
@@ -722,7 +723,7 @@ class TestTheOutageAuditPersists:
             ),
             source="router_learning",
         )
-        db = audit_ledger.LEDGER_PATH
+        db = audit_ledger.ledger_path()
         assert os.path.isfile(db)
 
         code = (
@@ -759,3 +760,78 @@ class TestTheOutageAuditPersists:
         assert "vault.db" in out
         assert out.startswith("RuntimeError:")
         assert len(_sanitize_cause(ValueError("x" * 1000))) <= 300
+
+
+class TestTheCauseNeverLeaksSecrets:
+    """Pruebas NEGATIVAS con secretos ficticios.
+
+    El mensaje de una excepción puede arrastrar cualquier cosa: una cadena de
+    conexión con contraseña, una cabecera `Authorization`, una clave de API
+    que el cliente HTTP metió en el texto del error. Ese mensaje va a un
+    asiento que puede leer cualquiera con acceso al ledger.
+    """
+
+    @pytest.mark.parametrize("mensaje,secreto", [
+        ("conexion a postgres://admin:sup3rS3cret@db.local/vectrax",
+         "sup3rS3cret"),
+        ("mysql://root:P4ssw0rd!23@127.0.0.1:3306/db no responde",
+         "P4ssw0rd!23"),
+        ("HTTP 401 con Authorization: Bearer eyJhbGciOiJIUzI1NiJ9abcdefghij",
+         "eyJhbGciOiJIUzI1NiJ9abcdefghij"),
+        ("rechazado con Basic dXNlcjpwYXNzd29yZDEyMzQ1Ng==",
+         "dXNlcjpwYXNzd29yZDEyMzQ1Ng=="),
+        ("fallo con api_key=sk-live-9f8e7d6c5b4a3210zzzz",
+         "sk-live-9f8e7d6c5b4a3210zzzz"),
+        ("password: MiClaveSuperSecreta123", "MiClaveSuperSecreta123"),
+        ("client_secret=abc123def456ghi789jkl", "abc123def456ghi789jkl"),
+        ("cookie=session-abcdef0123456789abcdef0123456789",
+         "abcdef0123456789abcdef0123456789"),
+        ("token abcdef0123456789abcdef0123456789",
+         "abcdef0123456789abcdef0123456789"),
+    ])
+    def test_the_secret_never_survives(self, mensaje, secreto):
+        from core.idea_store import _sanitize_cause
+        out = _sanitize_cause(RuntimeError(mensaje))
+        assert secreto not in out, f"el secreto sobrevivió al saneado: {out!r}"
+        assert "REDACTADO" in out or secreto not in mensaje
+
+    def test_the_exception_type_is_still_useful(self):
+        """Sanear no puede dejar el asiento sin valor diagnóstico."""
+        from core.idea_store import _sanitize_cause
+        out = _sanitize_cause(
+            ConnectionRefusedError("postgres://u:p@host/db rechazó la conexión")
+        )
+        assert out.startswith("ConnectionRefusedError:")
+        assert "rechazó la conexión" in out
+
+    def test_redaction_happens_before_truncation(self):
+        """Truncar no puede dejar media credencial visible."""
+        from core.idea_store import _sanitize_cause
+        relleno = "y" * 260
+        out = _sanitize_cause(
+            RuntimeError(f"{relleno} password=ClaveSecretaQueNoDebeSalir")
+        )
+        assert "ClaveSecretaQueNoDebeSalir" not in out
+        assert "ClaveSecreta" not in out
+
+    def test_a_block_with_a_secret_in_the_ledger_is_clean(self, store):
+        """De extremo a extremo: lo que se ASIENTA no lleva el secreto."""
+        from core import audit_ledger
+        store._record_constitutional_unavailable(
+            ConstitutionalGuardUnavailable(
+                "control caído",
+                correlation_id="CID-SECRETO", title="idea",
+                application_point="p",
+                technical_cause=__import__(
+                    "core.idea_store", fromlist=["_sanitize_cause"]
+                )._sanitize_cause(
+                    RuntimeError("api_key=sk-live-NoDebeAparecerJamas1234")
+                ),
+            ),
+            source="router_learning",
+        )
+        blob = json.dumps([
+            r for r in audit_ledger.query(limit=200)
+            if str(r.get("action", "")).startswith("constitutional_unavailable:")
+        ], default=str)
+        assert "sk-live-NoDebeAparecerJamas1234" not in blob

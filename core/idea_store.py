@@ -367,17 +367,47 @@ class ConstitutionalBlock(RuntimeError):
         }
 
 
+#: Patrones de secreto que NUNCA pueden llegar al ledger. El orden importa:
+#: las URLs con credenciales se tratan antes que el `clave=valor` genérico.
+_SECRET_PATTERNS = (
+    # URL con autenticación embebida: esquema://usuario:contraseña@host
+    (re.compile(r"(\w+://)[^\s:/@]+:[^\s@]+@"), r"\1[REDACTADO]@"),
+    # Cabecera Bearer / Basic / Token
+    (re.compile(r"\b(Bearer|Basic|Token)\s+[A-Za-z0-9\-._~+/=]{6,}",
+                re.IGNORECASE), r"\1 [REDACTADO]"),
+    # clave=valor y clave: valor para nombres sensibles
+    # El prefijo opcional (`client_secret`, `x-api-key`, `db_password`) hace
+    # falta: el guion bajo es carácter de palabra, así que `\bsecret\b` no
+    # encuentra frontera dentro de `client_secret`.
+    (re.compile(
+        r"\b([\w.-]*?(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|"
+        r"auth|authorization|credential|private[_-]?key|access[_-]?key|"
+        r"session[_-]?id|cookie))\s*[:=]\s*[\"']?[^\s\"',;)]+",
+        re.IGNORECASE), r"\1=[REDACTADO]"),
+    # Cadenas largas que parecen claves (hex o base64 de 24+ caracteres)
+    (re.compile(r"\b[A-Fa-f0-9]{24,}\b"), "[REDACTADO]"),
+    (re.compile(r"\b[A-Za-z0-9+/]{32,}={0,2}\b"), "[REDACTADO]"),
+)
+
+
 def _sanitize_cause(exc: BaseException) -> str:
-    """Causa técnica legible SIN filtrar interioridades.
+    """Causa técnica legible SIN filtrar secretos ni interioridades.
 
     Va a un asiento de auditoría que puede leer cualquiera con acceso al
-    ledger, así que no puede arrastrar rutas absolutas del sistema de
-    archivos, credenciales ni trazas completas. Queda el tipo y un mensaje
-    acotado, que es lo que sirve para diagnosticar.
+    ledger, y el mensaje de una excepción puede arrastrar cualquier cosa: una
+    cadena de conexión con contraseña, una cabecera `Authorization`, una clave
+    de API que el cliente HTTP metió en el texto del error.
+
+    Se redacta antes de acotar, para que truncar no deje media credencial
+    visible. Queda el tipo de excepción y un mensaje saneado, que es lo que
+    sirve para diagnosticar.
     """
     text = f"{type(exc).__name__}: {exc}"
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
     # Rutas absolutas -> solo el nombre final.
-    text = re.sub(r"(/[\w.\-]+){2,}", lambda m: ".../" + m.group(0).rsplit("/", 1)[-1], text)
+    text = re.sub(r"(/[\w.\-]+){2,}",
+                  lambda m: ".../" + m.group(0).rsplit("/", 1)[-1], text)
     text = re.sub(r"[A-Za-z]:\\[^\s]+", "...", text)
     return text[:300]
 

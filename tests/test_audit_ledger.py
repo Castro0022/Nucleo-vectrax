@@ -14,8 +14,12 @@ import core.audit_ledger as ledger
 @pytest.fixture(autouse=True)
 def use_temp_ledger(tmp_path, monkeypatch):
     """Use a temporary directory for the audit ledger during tests."""
-    monkeypatch.setattr(ledger, "VAULT_DIR", str(tmp_path))
-    monkeypatch.setattr(ledger, "LEDGER_PATH", str(tmp_path / "test_ledger.db"))
+    # `audit_ledger` resuelve `VECTRAX_VAULT_DIR` EN CADA ACCESO, así que la
+    # variable de entorno basta. Antes había que parchear los atributos
+    # `VAULT_DIR`/`LEDGER_PATH` porque la ruta se congelaba al importar; ese
+    # apaño ya no existe, y parchear un atributo que nadie lee habría mandado
+    # estas pruebas al ledger real.
+    monkeypatch.setenv("VECTRAX_VAULT_DIR", str(tmp_path))
 
 
 def test_record_and_query():
