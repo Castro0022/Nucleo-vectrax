@@ -539,6 +539,11 @@ class TestTheFullJourney:
                                  + [_loss_signal(i) for i in range(4)])
 
         # El otro patrón de la convergencia, por la misma puerta pública.
+        #
+        # La evidencia declara su procedencia. Sin el sello sería `unknown`, y
+        # desde que la procedencia es consecuente eso NO gradúa: un dominio que
+        # no dice de dónde vienen sus datos no enseña al núcleo. Estas son
+        # entregas verificadas de un feed real, y así se dicen.
         from core.learn.outcome_adapter import Outcome, OutcomeStatus
         lane = [
             (
@@ -548,6 +553,7 @@ class TestTheFullJourney:
                     subject="LANE-7",
                     status=OutcomeStatus.WIN if i < 16 else OutcomeStatus.LOSS,
                     score=1.0 if i < 16 else -1.0,
+                    evidence={"origin": "dat_feed", "origin_kind": "real"},
                 ),
             )
             for i in range(20)

@@ -25,7 +25,9 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from core.learn import VAULT_DIR, RUNTIME_DIR
-from core.learn.schemas import GravityRecord, Tier, TIER_ORDER, decimate_history
+from core.learn.schemas import (
+    GravityRecord, Tier, TIER_ORDER, decimate_history, entry_origin_kind,
+)
 
 logger = logging.getLogger("vectrax.gravity")
 
@@ -102,6 +104,35 @@ def _parse_iso_strict(s: str) -> datetime:
 # ---------------------------------------------------------------------------
 # Gravity Index
 # ---------------------------------------------------------------------------
+
+def _trim_by_origin_kind(entries: List[Any]) -> List[Any]:
+    """Acota la historia CONSERVANDO LAS CLASES POR SEPARADO.
+
+    La ventana guarda los `MAX_OUTCOME_HISTORY` mas recientes DE CADA clase de
+    procedencia, no los mas recientes en total.
+
+    Recortar el conjunto entero tenia un fallo silencioso: los resultados
+    simulados o de procedencia desconocida ocupan plaza en la ventana ANTES de
+    que el graduador los excluya, asi que 20 simulados llegados despues de 20
+    reales expulsaban a los reales y el patron dejaba de cualificar sin que su
+    evidencia real hubiera cambiado. Un simulador podia apagar un criterio
+    aprendido de observaciones reales solo por llegar mas tarde.
+
+    Asi, toda procedencia se conserva para auditoria —acotada, tambien la no
+    admisible— y la ventana de aprendizaje son los N admisibles mas recientes,
+    que es exactamente lo que los umbrales suponen. No cambia ningun umbral:
+    corrige sobre que se miden.
+    """
+    by_kind: Dict[str, List[Any]] = {}
+    for entry in entries:
+        by_kind.setdefault(entry_origin_kind(entry), []).append(entry)
+    kept: List[Any] = []
+    for same_kind in by_kind.values():
+        same_kind.sort(key=_verified_entry_ts)
+        kept.extend(same_kind[-MAX_OUTCOME_HISTORY:])
+    kept.sort(key=_verified_entry_ts)
+    return kept
+
 
 def _verified_entry_id(entry: Any) -> str:
     """El `prediction_id` de una entrada de `verified_outcomes`.
@@ -644,9 +675,9 @@ class GravityIndex:
                 # La ventana son los N resultados MAS RECIENTES por el instante
                 # en que se resolvieron, no los N ultimos escritos. Ver el
                 # razonamiento en el docstring.
-                rec.verified_outcomes.sort(key=_verified_entry_ts)
-                if len(rec.verified_outcomes) > MAX_OUTCOME_HISTORY:
-                    rec.verified_outcomes = rec.verified_outcomes[-MAX_OUTCOME_HISTORY:]
+                rec.verified_outcomes = _trim_by_origin_kind(
+                    rec.verified_outcomes
+                )
                 records[fingerprint] = rec
                 touched = True
             if touched:

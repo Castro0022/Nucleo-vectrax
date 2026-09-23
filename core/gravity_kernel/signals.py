@@ -173,25 +173,27 @@ def _gradable_history(rec) -> List[str]:
     if verified:
         # LA DECISIÓN DEL NÚCLEO SOBRE QUÉ EVIDENCIA PUEDE ENSEÑAR.
         #
-        # Guardar la procedencia no es usarla. Un resultado marcado como
-        # SIMULADO se conserva en la estrella —es observable, y su exclusión
-        # tiene que poder auditarse— pero NO se gradúa: aprender de un
-        # simulador y aplicar ese criterio a decisiones reales es exactamente
-        # el error que la procedencia existe para impedir.
+        # Guardar la procedencia no es usarla. Lo admisible lo define
+        # `schemas.ADMISSIBLE_ORIGIN_KINDS`, en un solo sitio, porque el
+        # recorte de la ventana usa la MISMA regla: si discreparan, la ventana
+        # conservaría lo que el graduador descarta —o al revés— y nadie lo
+        # vería.
         #
-        # `unknown` sí gradúa, y se cuenta aparte (ver `derive_pattern_stats`):
-        # es un hueco que cerrar, no una contaminación demostrada. Dejar de
-        # graduarlo sería un cambio de comportamiento mayor que el que
-        # corresponde decidir aquí, y quedaría invisible.
-        out = []
-        for e in verified:
-            if not isinstance(e, dict):
-                out.append(str(e))       # forma antigua del campo
-                continue
-            if str(e.get("origin_kind", "")) == "simulated":
-                continue
-            out.append(str(e.get("status", "")))
-        return out
+        # `simulated` se conserva en la estrella —es observable, y su
+        # exclusión tiene que poder auditarse— pero no gradúa: aprender de un
+        # simulador y aplicar ese criterio a decisiones reales es el error que
+        # la procedencia existe para impedir.
+        #
+        # `unknown` TAMPOCO gradúa. Un dominio que no declare de dónde vienen
+        # sus datos no enseña al núcleo por defecto: al añadir un dominio
+        # nuevo, lo que falte por declarar se registra y se audita, pero no
+        # mueve el criterio hasta que su procedencia se conozca.
+        from core.learn.schemas import is_admissible
+
+        return [
+            str(e.get("status", "")) if isinstance(e, dict) else str(e)
+            for e in verified if is_admissible(e)
+        ]
     return list(getattr(rec, "outcome_history", []) or [])
 
 

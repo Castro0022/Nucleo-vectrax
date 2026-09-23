@@ -1224,3 +1224,162 @@ class TestFreightLearnsFromSimulatedDataToday:
         """El PAPER-shadow no observa el mundo: registra hipótesis."""
         contract = oc.contract_for("market")
         assert contract.origin_kind("paper_shadow") == oc.SIMULATED
+
+
+# ===========================================================================
+# 12. La ventana de aprendizaje se calcula SOLO con evidencia apta
+# ===========================================================================
+
+@GRAVITY
+class TestInadmissibleEvidenceNeverDisplacesAdmissible:
+    """La estrella conserva una ventana ACOTADA, y lo no admisible ocupaba
+    plaza en ella ANTES de que el graduador lo excluyera.
+
+    Consecuencia reproducida: 20 simulados llegados después de 20 reales
+    expulsaban a los reales, y el patrón dejaba de cualificar sin que su
+    evidencia real hubiera cambiado. Un simulador podía apagar un criterio
+    aprendido de observaciones reales solo por llegar más tarde.
+
+    La regla: conservar toda procedencia para auditoría, pero calcular la
+    ventana de aprendizaje únicamente con evidencia apta.
+    """
+
+    @staticmethod
+    def _feed(contract, n, origin, status=OutcomeStatus.WIN, t0=1000.0, tag="e"):
+        return oc.commit(contract, [
+            _ev(contract, f"{tag}-{i}", status, ts=t0 + i, origin=origin)
+            for i in range(n)
+        ])
+
+    def test_a_flood_of_simulated_does_not_evict_the_real(self, contract, index):
+        from core.gravity_kernel.signals import fetch_pattern_stats
+        from core.learn.gravity_engine import MAX_OUTCOME_HISTORY
+
+        fingerprint = _make_star(index, contract)
+        self._feed(contract, 16, "dat_feed", t0=1000.0, tag="r")
+        self._feed(contract, 4, "dat_feed", OutcomeStatus.LOSS, t0=2000.0, tag="rl")
+        before = cl.qualify_pattern(
+            fingerprint, cl.build_production_policy(contract.domain))
+        assert before.qualified, before.reason
+
+        # Llegan MÁS simulados que el tamaño de la ventana, y DESPUÉS.
+        self._feed(contract, MAX_OUTCOME_HISTORY + 10, "simulator",
+                   OutcomeStatus.LOSS, t0=9000.0, tag="s")
+
+        stats = fetch_pattern_stats(fingerprint)
+        assert stats["sample_size"] == 20, stats
+        assert stats["win_rate"] == pytest.approx(0.8), stats
+        after = cl.qualify_pattern(
+            fingerprint, cl.build_production_policy(contract.domain))
+        assert after.qualified, (
+            f"{contract.domain}: lo simulado apagó un criterio real: {after.reason}"
+        )
+
+    def test_the_simulated_evidence_is_still_retained_for_audit(
+        self, contract, index,
+    ):
+        from core.gravity_kernel.signals import provenance_breakdown
+        from core.learn.gravity_engine import MAX_OUTCOME_HISTORY
+
+        fingerprint = _make_star(index, contract)
+        self._feed(contract, 5, "dat_feed", t0=1000.0, tag="r")
+        self._feed(contract, 8, "simulator", t0=9000.0, tag="s")
+
+        breakdown = provenance_breakdown(index.get(fingerprint))
+        assert breakdown == {"real": 5, "simulated": 8}, breakdown
+        # Y acotada también: la auditoría no crece sin límite.
+        self._feed(contract, MAX_OUTCOME_HISTORY + 15, "simulator",
+                   t0=20000.0, tag="s2")
+        breakdown = provenance_breakdown(index.get(fingerprint))
+        assert breakdown["simulated"] == MAX_OUTCOME_HISTORY, breakdown
+        assert breakdown["real"] == 5, breakdown
+
+    def test_each_class_keeps_its_own_window(self, contract, index):
+        from core.gravity_kernel.signals import provenance_breakdown
+        from core.learn.gravity_engine import MAX_OUTCOME_HISTORY
+
+        fingerprint = _make_star(index, contract)
+        for origin, tag in (("dat_feed", "r"), ("simulator", "s"), ("", "u")):
+            self._feed(contract, MAX_OUTCOME_HISTORY + 5, origin,
+                       t0=1000.0, tag=tag)
+
+        breakdown = provenance_breakdown(index.get(fingerprint))
+        assert breakdown == {
+            "real": MAX_OUTCOME_HISTORY,
+            "simulated": MAX_OUTCOME_HISTORY,
+            "unknown": MAX_OUTCOME_HISTORY,
+        }, breakdown
+
+def test_the_grader_and_the_window_share_one_rule():
+    """Si discreparan, la ventana conservaría lo que el graduador descarta
+    —o al revés— y nadie lo vería. Es propiedad del núcleo, no de un dominio."""
+    import inspect
+
+    from core.learn import gravity_engine as ge
+    from core.gravity_kernel import signals
+    from core.learn.schemas import ADMISSIBLE_ORIGIN_KINDS
+
+    assert ADMISSIBLE_ORIGIN_KINDS == ("real",)
+    assert "entry_origin_kind" in inspect.getsource(ge._trim_by_origin_kind)
+    assert "is_admissible" in inspect.getsource(signals._gradable_history)
+
+
+@GRAVITY
+class TestUnknownProvenanceDoesNotTeach:
+    """Decisión del núcleo: un dominio nuevo no enseña por defecto.
+
+    `unknown` se registra y se audita, pero no gradúa hasta que se conozca su
+    procedencia. Protege el crecimiento —añadir un dominio no mueve el
+    criterio hasta que declare de dónde vienen sus datos— sin quitar
+    aprendizaje a los que ya la declaran.
+    """
+
+    def test_unknown_evidence_does_not_grade(self, contract, index):
+        from core.gravity_kernel.signals import fetch_pattern_stats
+
+        fingerprint = _make_star(index, contract)
+        oc.commit(contract, [
+            _ev(contract, f"u-{i}", ts=1000.0 + i, origin="")
+            for i in range(20)
+        ])
+
+        assert fetch_pattern_stats(fingerprint) is None
+
+    def test_unknown_evidence_never_qualifies_a_pattern(self, contract, index):
+        fingerprint = _make_star(index, contract)
+        oc.commit(contract, [
+            _ev(contract, f"u-{i}", ts=1000.0 + i, origin="")
+            for i in range(20)
+        ])
+
+        stats = cl.qualify_pattern(
+            fingerprint, cl.build_production_policy(contract.domain))
+
+        assert not stats.qualified, stats.reason
+
+    def test_unknown_evidence_is_recorded_and_visible(self, contract, index):
+        from core.gravity_kernel.signals import provenance_breakdown
+
+        fingerprint = _make_star(index, contract)
+        oc.commit(contract, [_ev(contract, "u-1", origin="")])
+
+        assert provenance_breakdown(index.get(fingerprint)) == {"unknown": 1}
+        assert len(vledger.load_outcomes(contract.domain)) == 1
+
+    def test_unknown_does_not_dilute_a_real_pattern(self, contract, index):
+        from core.gravity_kernel.signals import fetch_pattern_stats
+
+        fingerprint = _make_star(index, contract)
+        oc.commit(contract, [
+            _ev(contract, f"r-{i}", ts=1000.0 + i, origin="dat_feed")
+            for i in range(10)
+        ])
+        oc.commit(contract, [
+            _ev(contract, f"u-{i}", OutcomeStatus.LOSS, ts=9000.0 + i, origin="")
+            for i in range(10)
+        ])
+
+        stats = fetch_pattern_stats(fingerprint)
+        assert stats["sample_size"] == 10, stats
+        assert stats["win_rate"] == pytest.approx(1.0), stats
+        assert stats["unknown"] == 10

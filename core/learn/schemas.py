@@ -38,6 +38,49 @@ TIER_ORDER = [Tier.HOT, Tier.WARM, Tier.COLD, Tier.DEEP]
 
 
 # ---------------------------------------------------------------------------
+# Admisibilidad de la evidencia: QUE PUEDE ENSENAR
+# ---------------------------------------------------------------------------
+
+#: Clases de procedencia que el nucleo ADMITE para aprender.
+#:
+#: Vive aqui, y no en el graduador ni en el motor de gravedad, porque los dos
+#: la necesitan y por motivos distintos:
+#:
+#:   * el graduador (`core.gravity_kernel.signals`) la usa para decidir que
+#:     entradas cuentan al calcular win_rate y sample_size;
+#:   * el motor de gravedad la usa al RECORTAR la ventana acotada, para que una
+#:     entrada no admisible no pueda desalojar a una admisible.
+#:
+#: Si cada uno tuviera su propia copia, podrian discrepar, y la discrepancia
+#: seria invisible: la ventana conservaria lo que el graduador descarta, o al
+#: reves. Una sola definicion lo hace imposible.
+#:
+#: `unknown` NO esta admitida a proposito. Un dominio que no declare de donde
+#: vienen sus datos no ensena al nucleo por defecto; su evidencia se registra y
+#: se audita, pero no gradua hasta que su procedencia se conozca.
+ADMISSIBLE_ORIGIN_KINDS = ("real",)
+
+ORIGIN_KIND_UNKNOWN = "unknown"
+
+
+def entry_origin_kind(entry: Any) -> str:
+    """Clase de procedencia de una entrada de `verified_outcomes`.
+
+    Una entrada sin clase —texto plano de la forma antigua del campo, o un
+    dict sin el sello— es `unknown`: no se le supone una procedencia que nadie
+    registro.
+    """
+    if isinstance(entry, dict):
+        return str(entry.get("origin_kind") or ORIGIN_KIND_UNKNOWN)
+    return ORIGIN_KIND_UNKNOWN
+
+
+def is_admissible(entry: Any) -> bool:
+    """Puede esta entrada ENSENAR al nucleo?"""
+    return entry_origin_kind(entry) in ADMISSIBLE_ORIGIN_KINDS
+
+
+# ---------------------------------------------------------------------------
 # Gravity Record
 # ---------------------------------------------------------------------------
 
