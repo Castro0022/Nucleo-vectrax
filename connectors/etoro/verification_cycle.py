@@ -139,44 +139,23 @@ def star_fingerprint_for(symbol: str) -> str:
 
 
 def _already_in_ledger() -> set:
-    """`prediction_id` que el verification_ledger de market YA contiene.
+    """`prediction_id` que el ledger de market ya contiene.
 
-    EL ÚNICO ESLABÓN SIN LLAVE DE IDEMPOTENCIA
-    ------------------------------------------
-    La gravedad deduplica por `prediction_id` y la procedencia por su clave
-    primaria, pero el `verification_ledger` es un JSONL append-only y NO
-    deduplica: escribir dos veces el mismo resultado son dos líneas, y el
-    DomainScore acumulado cuenta las dos.
-
-    Eso importaba porque el marcador de señales verificadas puede fallar
-    DESPUÉS de que el ledger ya esté escrito (disco lleno, permisos). Al ciclo
-    siguiente la señal se vuelve a presentar —correcto, el marcador no se
-    escribió— y el resultado entraba en el ledger por segunda vez: 1 resultado,
-    2 filas, mientras la gravedad conservaba una sola. El desempeño acumulado
-    quedaba inflado por un fallo de escritura de un fichero auxiliar.
-
-    No se corrige en el ledger: `connectors/cybersecurity/verification_cycle`
-    depende de poder APPENDear una fila que supersede a otra (el flip
-    LOSS→WIN) y deduplica en la LECTURA. Cambiar el núcleo rompería ese
-    contrato. La comprobación vive aquí, en market, que sí exige una sola
-    escritura por señal.
-
-    Se apoya en la caché por mtime de `load_outcomes`, así que en un ciclo sin
-    escrituras nuevas no vuelve a leer el fichero.
+    La lógica vive en `outcome_gravity.ledger_prediction_ids()`, compartida con
+    freight: el mismo defecto apareció primero aquí y después, idéntico y peor,
+    allí. Dos copias de la misma protección divergen, y la que se quede atrás
+    vuelve a inflar el desempeño acumulado sin que nadie lo note.
     """
-    try:
-        return {
-            o.prediction_id for o in vledger.load_outcomes(_DOMAIN)
-            if o.prediction_id
-        }
-    except Exception as exc:
-        # Sin la lista no se puede garantizar el "una sola vez". Se devuelve
-        # vacío —el comportamiento anterior— y queda constancia.
-        logger.warning(
-            "market.verification | no se pudo leer el ledger para deduplicar "
-            "(%s): una reescritura podría duplicar una fila", exc,
-        )
-        return set()
+    return outcome_gravity.ledger_prediction_ids(_DOMAIN)
+
+
+def _fingerprint_from_outcome(outcome) -> str:
+    """La estrella de un resultado recuperado del ledger.
+
+    El `subject` de market ES el símbolo, así que la estrella se reconstruye
+    con la misma función que la creó.
+    """
+    return star_fingerprint_for(getattr(outcome, "subject", ""))
 
 
 def _verify(signals: Iterable[Any], record: bool):
@@ -286,6 +265,12 @@ def run_market_verification(record: bool = True) -> DomainScore:
     teniendo que recuperar lo aparcado.
     """
     outcome_gravity.retry_pending(_DOMAIN)
+    # Red adicional: market casi nunca la necesita —puede volver a presentar la
+    # señal— pero el paso es el MISMO que usa freight, y compartirlo evita que
+    # una de las dos rutas se quede atrás. Cuando todo fue bien, no hace nada.
+    outcome_gravity.reconcile_from_ledger(
+        _DOMAIN, _fingerprint_from_outcome, source=_GRAVITY_SOURCE,
+    )
 
     try:
         from connectors.etoro.signal_recorder import load_signals, SignalStatus

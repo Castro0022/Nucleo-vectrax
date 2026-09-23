@@ -741,6 +741,159 @@ def _outcome_from_row(row) -> Outcome:
     )
 
 
+def ledger_prediction_ids(domain: str) -> set:
+    """`prediction_id` que el verification_ledger de `domain` YA contiene.
+
+    EL UNICO ESLABON SIN LLAVE DE IDEMPOTENCIA
+    ------------------------------------------
+    La gravedad deduplica por `prediction_id` y la procedencia por su clave
+    primaria, pero el `verification_ledger` es un JSONL append-only y NO
+    deduplica: escribir dos veces el mismo resultado son dos lineas, y el
+    DomainScore acumulado cuenta las dos.
+
+    No se corrige en el ledger: `connectors/cybersecurity/verification_cycle`
+    depende de poder APPENDear una fila que supersede a otra (el flip
+    LOSS->WIN) y deduplica en la LECTURA. Cambiar el nucleo romperia ese
+    contrato. La comprobacion vive en los dominios que si exigen una sola
+    escritura por resultado.
+
+    Vive AQUI, y no en cada conector, porque el defecto aparecio primero en
+    market y despues, identico y peor, en freight: dos copias de la misma
+    proteccion divergen, y la que se quede atras vuelve a inflar el desempeno
+    acumulado sin que nadie lo note.
+
+    Se apoya en la cache por mtime de `load_outcomes`, asi que en un ciclo sin
+    escrituras nuevas no vuelve a leer el fichero. Ante un fallo de lectura
+    devuelve vacio —el comportamiento anterior— y deja constancia.
+    """
+    try:
+        from core.learn import verification_ledger as vledger
+        return {
+            o.prediction_id for o in vledger.load_outcomes(domain)
+            if o.prediction_id
+        }
+    except Exception as exc:
+        logger.warning(
+            "outcome_gravity: no se pudo leer el ledger de %s para deduplicar "
+            "(%s): una reescritura podria duplicar una fila", domain, exc,
+        )
+        return set()
+
+
+def _known_prediction_ids(conn, domain: str, ids: Sequence[str]) -> set:
+    """De `ids`, los que ya tienen fila de procedencia o estan aparcados."""
+    known: set = set()
+    chunk = 400  # muy por debajo del limite de variables de SQLite
+    for i in range(0, len(ids), chunk):
+        part = list(ids[i:i + chunk])
+        marks = ",".join("?" * len(part))
+        for table in ("applied_outcomes", "pending_outcomes"):
+            rows = conn.execute(
+                f"SELECT prediction_id FROM {table} "
+                f"WHERE domain = ? AND prediction_id IN ({marks})",
+                (domain, *part),
+            ).fetchall()
+            known.update(r[0] for r in rows)
+    return known
+
+
+def reconcile_from_ledger(
+    domain: str,
+    fingerprint_for,
+    *,
+    index: Any = None,
+    db_path: Optional[str] = None,
+    limit: int = 500,
+    source: str = "reconcile",
+) -> Dict[str, int]:
+    """Lleva a la gravedad resultados que YA estan en el verification_ledger
+    pero no tienen ni fila de procedencia ni aparcado.
+
+    POR QUE HACE FALTA, Y POR QUE SOLO PARA ALGUNOS DOMINIOS
+    --------------------------------------------------------
+    Cuando este almacen no esta disponible —disco lleno, permisos— no se puede
+    ni aplicar ni aparcar. Market resuelve eso no marcando la senal: el ciclo
+    siguiente la vuelve a presentar entera. Freight NO puede: sus eventos los
+    emite un proveedor en streaming y no se repiten, asi que retener el ledger
+    ahi no protegeria el resultado, lo perderia del todo.
+
+    La salida es que el ledger —que es durable, independiente de este almacen y
+    el registro de verdad del dominio— haga de fuente de recuperacion. Este
+    paso compara la cola reciente del ledger con lo que la gravedad ya conoce y
+    aplica la diferencia. No recalcula ni reinterpreta nada: el veredicto es el
+    que el `OutcomeAdapter` produjo en su momento y quedo escrito.
+
+    `fingerprint_for(outcome) -> Optional[str]` la aporta el dominio, porque
+    solo el dominio sabe a que patron pertenece un resultado.
+
+    El limite es la COLA reciente a proposito: la historia graduable de una
+    estrella esta acotada (`MAX_OUTCOME_HISTORY`), asi que un resultado muy
+    antiguo no entraria en la ventana aunque se aplicara —el orden por instante
+    de resolucion lo dejaria fuera—. Recorrer el ledger entero cada ciclo
+    costaria sin cambiar nada.
+
+    Nunca lanza.
+    """
+    counts = _empty_counts()
+    try:
+        from core.learn import verification_ledger as vledger
+        recent = vledger.load_outcomes(domain, limit=limit)
+    except Exception as exc:
+        logger.warning("outcome_gravity: reconcile sin ledger (%s)", exc)
+        return counts
+
+    candidates = [
+        o for o in recent
+        if o.prediction_id and o.status.is_decisive
+    ]
+    if not candidates:
+        return counts
+
+    try:
+        conn = _open_for_read(db_path)
+    except Exception as exc:
+        logger.warning("outcome_gravity: reconcile sin almacen (%s)", exc)
+        return counts
+
+    known: set = set()
+    if conn is not None:
+        try:
+            known = _known_prediction_ids(
+                conn, domain, [o.prediction_id for o in candidates],
+            )
+        except Exception as exc:
+            logger.warning("outcome_gravity: reconcile no pudo consultar (%s)", exc)
+            return counts
+        finally:
+            conn.close()
+
+    pairs: List[Tuple[str, Outcome]] = []
+    for outcome in candidates:
+        if outcome.prediction_id in known:
+            continue
+        try:
+            fingerprint = fingerprint_for(outcome)
+        except Exception:
+            fingerprint = None
+        if fingerprint:
+            pairs.append((fingerprint, outcome))
+
+    if not pairs:
+        return counts
+
+    result = apply_verified_outcomes(
+        pairs, source=source, index=index, db_path=db_path,
+    )
+    if result.get(APPLIED) or result.get(DEFERRED):
+        logger.info(
+            "outcome_gravity | reconcile %s | recuperados del ledger=%d "
+            "aparcados=%d fallidos=%d",
+            domain, result.get(APPLIED, 0), result.get(DEFERRED, 0),
+            result.get(FAILED, 0),
+        )
+    return result
+
+
 def pending_outcomes(
     *, domain: Optional[str] = None, limit: int = 200,
     db_path: Optional[str] = None,

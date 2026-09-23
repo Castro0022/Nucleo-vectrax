@@ -191,6 +191,30 @@ def star_fingerprint_for(data: Mapping[str, Any]) -> Optional[str]:
     return fp
 
 
+def star_fingerprint_for_subject(subject: str) -> Optional[str]:
+    """La MISMA estrella, partiendo del `subject` del ledger.
+
+    El `subject` de freight es ``region|carrier``, y la estrella de la reserva
+    se firma exactamente por esos dos campos (ver `star_fingerprint_for`). Por
+    eso un resultado recuperado del ledger —donde no está el `data` original,
+    solo el subject— puede volver a encontrar su estrella sin adivinar nada.
+
+    Que ambos caminos den el mismo fingerprint no es una coincidencia que
+    convenga dar por supuesta: hay una prueba que lo exige.
+    """
+    parts = str(subject or "").split("|")
+    if len(parts) != 2:
+        return None
+    region, carrier = parts[0].strip(), parts[1].strip()
+    if not region or not carrier:
+        return None
+    return star_fingerprint_for({"region": region, "carrier": carrier})
+
+
+def _fingerprint_from_outcome(outcome) -> Optional[str]:
+    return star_fingerprint_for_subject(getattr(outcome, "subject", ""))
+
+
 def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
     """Resuelve los eventos de resultado de freight en Outcomes verificados.
 
@@ -200,13 +224,32 @@ def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
     - Persiste los decisivos en el ledger (si ``record``).
     - Devuelve el DomainScore de ESTE lote (el acumulado está en el ledger).
 
-    Empieza reintentando los resultados aparcados: los eventos del simulador no
-    se repiten entre ciclos, así que un resultado cuya estrella de reserva
-    todavía no existía solo puede recuperarse desde el almacén de aparcados, no
+    Empieza recuperando lo que quedó atrás: los aparcados, y los resultados que
+    están en el ledger pero no llegaron a la gravedad. Los eventos del
+    proveedor no se repiten entre ciclos, así que un resultado que no se aplicó
+    en su momento solo puede recuperarse desde uno de esos dos sitios, nunca
     esperando a que el evento vuelva.
+
+    LA ASIMETRÍA CON MARKET, Y POR QUÉ AQUÍ SE RESUELVE AL REVÉS
+    ------------------------------------------------------------
+    Market, ante un fallo del almacén de gravedad, NO escribe el ledger y NO
+    marca la señal: el ciclo siguiente repite el lote entero. Puede permitírselo
+    porque la señal vive en `signal_recorder` y se vuelve a presentar.
+
+    Freight no tiene esa red: el evento lo emitió un proveedor en streaming y no
+    vuelve. Retener el ledger aquí no protegería el resultado, lo perdería del
+    todo. Por eso freight escribe SIEMPRE el ledger —que es durable e
+    independiente de este almacén— y deja que
+    `outcome_gravity.reconcile_from_ledger()` ponga la gravedad al día en un
+    ciclo posterior. El ledger pasa a ser la fuente de recuperación, que es el
+    papel que ya tenía como registro de verdad del dominio.
     """
     outcome_gravity.retry_pending(_DOMAIN)
+    outcome_gravity.reconcile_from_ledger(
+        _DOMAIN, _fingerprint_from_outcome, source=_GRAVITY_SOURCE,
+    )
 
+    already = outcome_gravity.ledger_prediction_ids(_DOMAIN) if record else set()
     outcomes: List[Outcome] = []
     to_gravity: List[tuple] = []
     for ev in events:
@@ -224,19 +267,36 @@ def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
         outcome = _ADAPTER.resolve(pred, observation)
         outcomes.append(outcome)
         if record and outcome.status is not OutcomeStatus.PENDING:
-            vledger.record_outcome(outcome)
+            # El ledger NO deduplica: re-verificar el mismo lote —un ciclo que
+            # se reintenta, un proveedor que reemite— escribía la misma línea
+            # otra vez e inflaba el DomainScore acumulado. Reproducido: 2
+            # resultados pasaban a 4 filas y n_decisive=4.
+            if outcome.prediction_id not in already:
+                vledger.record_outcome(outcome)
+                already.add(outcome.prediction_id)
             fp = star_fingerprint_for(data)
             if fp:
                 to_gravity.append((fp, outcome))
+
     fed = outcome_gravity.apply_verified_outcomes(
         to_gravity, source=_GRAVITY_SOURCE,
     ) if to_gravity else {}
+    if to_gravity and not outcome_gravity.accounted(fed, len(to_gravity)):
+        # No se puede reintentar el evento, pero el resultado ya está en el
+        # ledger: la reconciliación del próximo ciclo lo recupera desde ahí.
+        logger.warning(
+            "freight.verification | %d resultados no llegaron a la gravedad "
+            "(almacén no disponible); están en el ledger y se recuperarán en "
+            "el próximo ciclo", fed.get(outcome_gravity.FAILED, len(to_gravity)),
+        )
+
     score = score_outcomes(_DOMAIN, outcomes)
     logger.info(
         "freight.verification | batch=%d | decisive=%d | WR=%.0f%% | acc=%.2f "
-        "| gravity_applied=%d",
+        "| gravity_applied=%d | contabilizado=%s",
         score.n_total, score.n_decisive, score.win_rate, score.accuracy,
         fed.get(outcome_gravity.APPLIED, 0),
+        outcome_gravity.accounted(fed, len(to_gravity)),
     )
     return score
 

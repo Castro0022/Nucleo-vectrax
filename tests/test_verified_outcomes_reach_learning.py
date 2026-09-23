@@ -1668,3 +1668,199 @@ class TestAccountedRequiresTheExpectedTotal:
 
         src = inspect.getsource(market_vc._verify)
         assert "accounted(fed, len(to_gravity))" in src
+
+
+# ===========================================================================
+# 14. Los dos casos de FREIGHT (los mismos que se cerraron en market)
+# ===========================================================================
+
+def _booking_star(index) -> str:
+    from core.domain_ingester import star_fingerprint
+
+    fp = star_fingerprint("freight_logistics", "load_booking", BOOKING_DATA)
+    _make_star(index, fp, "freight_logistics", intent="load_booking")
+    return fp
+
+
+class TestFreightDoesNotDuplicateItsLedger:
+    """El mismo defecto que en market, y peor aquí: freight no tiene marcador,
+    así que CUALQUIER re-verificación del lote —un ciclo que se reintenta, un
+    proveedor que reemite— escribía la línea otra vez.
+
+    Reproducido antes de corregir: 2 resultados -> 4 filas, n_decisive=4.
+    """
+
+    def test_reverifying_the_same_batch_does_not_duplicate_the_ledger(self, index):
+        _booking_star(index)
+        batch = [_delivery(1, True), _delivery(2, False)]
+
+        freight_vc.verify_events(batch)
+        freight_vc.verify_events(batch)
+
+        assert len(vledger.load_outcomes("freight_logistics")) == 2
+
+    def test_the_accumulated_score_is_not_inflated(self, index):
+        fp = _booking_star(index)
+        batch = [_delivery(i, True) for i in range(3)] + [_delivery(9, False)]
+
+        freight_vc.verify_events(batch)
+        freight_vc.verify_events(batch)
+
+        score = freight_vc.verified_score()
+        assert score.n_decisive == 4, score
+        assert score.win_rate == pytest.approx(75.0)
+        assert _verdicts(index, fp).count("win") == 3
+
+    def test_many_repeats_stay_at_one_row_each(self, index):
+        _booking_star(index)
+        batch = [_delivery(1, True)]
+
+        for _ in range(6):
+            freight_vc.verify_events(batch)
+
+        assert len(vledger.load_outcomes("freight_logistics")) == 1
+
+    def test_both_domains_share_the_same_dedup_code(self):
+        """Dos copias de esta protección divergen: la que se quede atrás
+        vuelve a inflar el desempeño. El defecto apareció primero en market y
+        después, idéntico, en freight — por eso vive en un solo sitio.
+        """
+        import inspect
+
+        for module in (market_vc, freight_vc):
+            src = inspect.getsource(module)
+            assert "outcome_gravity.ledger_prediction_ids" in src, module.__name__
+
+
+class TestFreightRecoversFromTheLedger:
+    """Freight no puede reintentar un evento: el proveedor lo emitió una vez y
+    no vuelve. Por eso, ante un fallo del almacén de gravedad, escribe SIEMPRE
+    el ledger —durable e independiente— y la reconciliación pone la gravedad al
+    día después. Retener el ledger aquí, como hace market, no protegería el
+    resultado: lo perdería del todo.
+    """
+
+    @staticmethod
+    def _break_the_store():
+        import sqlite3
+
+        real = og._get_conn
+
+        def _broken(*a, **k):
+            raise sqlite3.OperationalError("database or disk is full")
+
+        og._get_conn = _broken
+        return lambda: setattr(og, "_get_conn", real)
+
+    def test_a_store_failure_does_not_lose_the_result(self, index):
+        fp = _booking_star(index)
+
+        restore = self._break_the_store()
+        try:
+            freight_vc.verify_events([_delivery(1, True)])
+        finally:
+            restore()
+
+        # El evento ya no existe, pero el ledger lo tiene.
+        assert len(vledger.load_outcomes("freight_logistics")) == 1
+        assert _verdicts(index, fp) == []
+
+        # El ciclo siguiente, SIN eventos nuevos, lo recupera del ledger.
+        freight_vc.verify_events([])
+
+        assert _verdicts(index, fp) == ["win"]
+        assert len(vledger.load_outcomes("freight_logistics")) == 1
+        assert og.applied_count(domain="freight_logistics") == 1
+
+    def test_the_reconciliation_is_idempotent(self, index):
+        fp = _booking_star(index)
+        freight_vc.verify_events([_delivery(1, True), _delivery(2, False)])
+
+        for _ in range(4):
+            freight_vc.verify_events([])
+
+        assert _verdicts(index, fp) == ["win", "loss"]
+        assert og.applied_count(domain="freight_logistics") == 2
+        assert len(vledger.load_outcomes("freight_logistics")) == 2
+
+    def test_the_recovered_result_qualifies_the_pattern(self, index):
+        """Recuperar no es archivar: el patrón acaba cualificando."""
+        fp = _booking_star(index)
+        batch = [_delivery(i, True) for i in range(16)] + \
+                [_delivery(100 + i, False) for i in range(4)]
+
+        restore = self._break_the_store()
+        try:
+            freight_vc.verify_events(batch)
+        finally:
+            restore()
+        assert _verdicts(index, fp) == []
+
+        freight_vc.verify_events([])
+
+        stats = cl.qualify_pattern(fp, cl.build_production_policy("freight_logistics"))
+        assert stats.qualified, stats.reason
+        assert stats.sample_size == 20
+        assert stats.win_rate == pytest.approx(80.0)
+
+    def test_the_subject_rebuilds_the_very_same_star(self):
+        """La reconciliación parte del `subject` del ledger, no del `data`.
+
+        Si los dos caminos no dieran el mismo fingerprint, el resultado
+        recuperado aterrizaría en una estrella distinta —o en ninguna— y la
+        recuperación sería silenciosamente inútil.
+        """
+        from_data = freight_vc.star_fingerprint_for(_delivery(1, True).data)
+        from_subject = freight_vc.star_fingerprint_for_subject("Southeast|FastHaul")
+
+        assert from_data == from_subject
+        assert from_subject.endswith("region=Southeast|carrier=FastHaul")
+
+    def test_a_malformed_subject_invents_nothing(self):
+        for bad in ("", "solo-region", "|", "Southeast|", "|FastHaul", "a|b|c"):
+            assert freight_vc.star_fingerprint_for_subject(bad) is None, bad
+
+
+class TestTheContractIsTheSameInBothDomains:
+    """El contrato común: identidad estable del resultado, confirmación de las
+    escrituras necesarias, y reintento sin pérdida ni duplicación.
+
+    Se comprueba sobre los dos dominios que este PR conecta a la gravedad. No
+    cubre `florida_real_estate`, que NO alimenta la gravedad y cuyos resultados
+    no llevan `prediction_id` — su duplicación en el ledger está reproducida y
+    documentada en la revisión del PR, pendiente de un cambio aparte.
+    """
+
+    def test_both_domains_give_every_outcome_a_stable_identity(self, index):
+        _make_star(index, "market:AAPL", "market")
+        _booking_star(index)
+
+        market_vc.verify_signals([_win_signal(1)])
+        freight_vc.verify_events([_delivery(1, True)])
+
+        for domain in ("market", "freight_logistics"):
+            ids = [o.prediction_id for o in vledger.load_outcomes(domain)]
+            assert ids and all(ids), f"{domain}: resultado sin identidad {ids}"
+
+    def test_the_identity_is_deterministic_in_both_domains(self, index):
+        _make_star(index, "market:AAPL", "market")
+        _booking_star(index)
+
+        market_vc.verify_signals([_win_signal(1)])
+        freight_vc.verify_events([_delivery(1, True)])
+        first = {o.prediction_id for o in vledger.load_outcomes("market")} | \
+                {o.prediction_id for o in vledger.load_outcomes("freight_logistics")}
+
+        market_vc.verify_signals([_win_signal(1)])
+        freight_vc.verify_events([_delivery(1, True)])
+        second = {o.prediction_id for o in vledger.load_outcomes("market")} | \
+                 {o.prediction_id for o in vledger.load_outcomes("freight_logistics")}
+
+        assert first == second, "la identidad cambió entre pasadas"
+
+    def test_both_domains_reconcile_from_the_ledger(self):
+        import inspect
+
+        for module in (market_vc, freight_vc):
+            src = inspect.getsource(module)
+            assert "reconcile_from_ledger" in src, module.__name__
