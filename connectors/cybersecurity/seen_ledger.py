@@ -83,6 +83,35 @@ def content_hash(rec: Dict[str, Any]) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def classify(rec: Dict[str, Any]) -> Tuple[bool, bool]:
+    """(is_new, is_changed) SIN escribir nada. Pura lectura.
+
+    `upsert()` responde la misma pregunta pero deja la CVE marcada como vista
+    en el mismo acto. Eso convertía la marca en algo que ocurría ANTES de que
+    el resultado quedara escrito: si la escritura del resultado fallaba, al
+    releer la CVE ya no figuraba ni nueva ni cambiada y su resultado no se
+    volvía a enviar nunca — aunque la fuente sí pudiera releerse.
+
+    Separar la pregunta de la marca permite el orden correcto: clasificar,
+    escribir el resultado, y marcar como vista SOLO lo que quedó escrito.
+    """
+    cve_id = str(rec.get("cve_id") or "").strip().upper()
+    if not cve_id:
+        raise ValueError("classify requiere cve_id")
+    h = rec.get("content_hash") or content_hash(rec)
+    with _lock:
+        conn = _conn()
+        try:
+            row = conn.execute(
+                "SELECT content_hash FROM cve WHERE cve_id=?", (cve_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+    if row is None:
+        return True, True
+    return False, (row[0] != h)
+
+
 def upsert(rec: Dict[str, Any]) -> Tuple[bool, bool]:
     """Inserta/actualiza una CVE. Devuelve (is_new, is_changed).
     Preserva first_seen_ts y materialized_levels en updates."""

@@ -147,6 +147,69 @@ def build_cause_effect_ctx(
     )
 
 
+def _gradable_history(rec) -> List[str]:
+    """De que lista se deriva el desempeno de una estrella.
+
+    `verified_outcomes` PRIMERO: lo escribe unicamente
+    `GravityIndex.record_verified_outcome()`, con el veredicto de un
+    `OutcomeAdapter` contra la verdad objetiva del dominio (precio realizado,
+    entrega a tiempo...). Es la unica lista cuyo contenido es, por
+    construccion, un resultado.
+
+    `outcome_history` como RESPALDO, solo si la primera esta vacia. Esa lista
+    es el registro de OBSERVACION que alimenta `record_event()`, y su contenido
+    depende del llamador: `core.learn.provider_stars` si escribe ahi veredictos
+    graduables ("success"/"error" de una llamada real a un proveedor), y esas
+    estrellas de dominio `ai_provider` ya cualificaban patrones antes de que
+    existiera `verified_outcomes`. Ignorarla les quitaria un desempeno que ya
+    era real. El resto de llamadores escriben texto no graduable (el texto del
+    evento, "observed", "queried") que no suma ni resta: `derive_pattern_stats`
+    solo cuenta las entradas que reconoce como win o como loss.
+
+    Nunca se mezclan las dos: una estrella con resultados verificados se juzga
+    por ellos, no por lo que el propio sistema dijo de si mismo.
+    """
+    verified = list(getattr(rec, "verified_outcomes", []) or [])
+    if verified:
+        # LA DECISIÓN DEL NÚCLEO SOBRE QUÉ EVIDENCIA PUEDE ENSEÑAR.
+        #
+        # Guardar la procedencia no es usarla. Lo admisible lo define
+        # `schemas.ADMISSIBLE_ORIGIN_KINDS`, en un solo sitio, porque el
+        # recorte de la ventana usa la MISMA regla: si discreparan, la ventana
+        # conservaría lo que el graduador descarta —o al revés— y nadie lo
+        # vería.
+        #
+        # `simulated` se conserva en la estrella —es observable, y su
+        # exclusión tiene que poder auditarse— pero no gradúa: aprender de un
+        # simulador y aplicar ese criterio a decisiones reales es el error que
+        # la procedencia existe para impedir.
+        #
+        # `unknown` TAMPOCO gradúa. Un dominio que no declare de dónde vienen
+        # sus datos no enseña al núcleo por defecto: al añadir un dominio
+        # nuevo, lo que falte por declarar se registra y se audita, pero no
+        # mueve el criterio hasta que su procedencia se conozca.
+        from core.learn.schemas import is_admissible
+
+        return [
+            str(e.get("status", "")) if isinstance(e, dict) else str(e)
+            for e in verified if is_admissible(e)
+        ]
+    return list(getattr(rec, "outcome_history", []) or [])
+
+
+def provenance_breakdown(rec) -> Dict[str, int]:
+    """Cuántos resultados verificados tiene la estrella de cada procedencia.
+
+    Permite responder "¿sobre qué está aprendiendo este patrón?" sin adivinar,
+    y hace visible lo que el graduador excluyó en vez de dejarlo en silencio.
+    """
+    counts: Dict[str, int] = {}
+    for e in list(getattr(rec, "verified_outcomes", []) or []):
+        kind = str(e.get("origin_kind", "unknown")) if isinstance(e, dict) else "unknown"
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
 def derive_pattern_stats(rec) -> Optional[Dict[str, float]]:
     """La DERIVACIÓN pura, sin ninguna E/S.
 
@@ -162,13 +225,14 @@ def derive_pattern_stats(rec) -> Optional[Dict[str, float]]:
     try:
         if rec is None:
             return None
-        history = list(getattr(rec, "outcome_history", []) or [])
+        history = _gradable_history(rec)
         wins = sum(1 for o in history if str(o).lower() in ("win", "success", "ok"))
         losses = sum(1 for o in history if str(o).lower() in ("loss", "fail", "error"))
         graded = wins + losses
         if graded == 0:
             return None
         win_rate = wins / graded
+        breakdown = provenance_breakdown(rec)
         return {
             "win_rate": win_rate,
             "expectancy": win_rate - (losses / graded),
@@ -177,6 +241,12 @@ def derive_pattern_stats(rec) -> Optional[Dict[str, float]]:
             # confirmaciones del escáner. El puente causal lo exige para poder
             # contrastar contra core.domain_knowledge.MIN_SAMPLE sin suponerlo.
             "sample_size": float(graded),
+            # Sobre QUÉ está aprendiendo este patrón. `simulated` son los que
+            # el núcleo excluyó del cálculo; `unknown`, los que cuentan pero
+            # cuya procedencia nadie declaró.
+            "real": float(breakdown.get("real", 0)),
+            "simulated": float(breakdown.get("simulated", 0)),
+            "unknown": float(breakdown.get("unknown", 0)),
         }
     except Exception:
         return None
@@ -184,13 +254,23 @@ def derive_pattern_stats(rec) -> Optional[Dict[str, float]]:
 
 def fetch_pattern_stats(fingerprint: str) -> Optional[Dict[str, float]]:
     """
-    Best-effort: deriva win_rate/expectancy desde el outcome_history del gravity
-    engine para un fingerprint dado. Devuelve None si no hay registro o historia.
-    Defensivo: nunca lanza. Lee el índice: para muchas consultas seguidas, usar
-    `derive_pattern_stats` sobre un snapshot único.
+    Best-effort: deriva win_rate/expectancy desde la historia graduable del
+    gravity engine para un fingerprint dado (ver `_gradable_history`). Devuelve
+    None si no hay registro o historia. Defensivo: nunca lanza. Lee el índice:
+    para muchas consultas seguidas, usar `derive_pattern_stats` sobre un
+    snapshot único (`causal_learning.cycle_stats_fetcher`).
+
+    Usa el índice VIVO (`get_gravity_index()`), no un `GravityIndex()` recién
+    construido. En producción ambos apuntan al mismo fichero, así que no
+    cambia lo que se lee; lo que evita es construir un índice nuevo —con su
+    migración y su limpieza de temporales— en cada consulta, y que esta ruta
+    mire a un sitio distinto del que mira `cycle_stats_fetcher()`, que ya
+    usaba el índice vivo. Dos rutas de lectura que no coinciden es la clase de
+    divergencia que deja un resultado aplicado fuera del alcance del
+    evaluador.
     """
     try:
-        from core.learn.gravity_engine import GravityIndex
-        return derive_pattern_stats(GravityIndex().get(fingerprint))
+        from core.learn.gravity_engine import get_gravity_index
+        return derive_pattern_stats(get_gravity_index().get(fingerprint))
     except Exception:
         return None

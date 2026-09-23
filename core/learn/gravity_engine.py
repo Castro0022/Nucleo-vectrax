@@ -22,10 +22,12 @@ import statistics
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from core.learn import VAULT_DIR, RUNTIME_DIR
-from core.learn.schemas import GravityRecord, Tier, TIER_ORDER, decimate_history
+from core.learn.schemas import (
+    GravityRecord, Tier, TIER_ORDER, decimate_history, entry_origin_kind,
+)
 
 logger = logging.getLogger("vectrax.gravity")
 
@@ -102,6 +104,60 @@ def _parse_iso_strict(s: str) -> datetime:
 # ---------------------------------------------------------------------------
 # Gravity Index
 # ---------------------------------------------------------------------------
+
+def _trim_by_origin_kind(entries: List[Any]) -> List[Any]:
+    """Acota la historia CONSERVANDO LAS CLASES POR SEPARADO.
+
+    La ventana guarda los `MAX_OUTCOME_HISTORY` mas recientes DE CADA clase de
+    procedencia, no los mas recientes en total.
+
+    Recortar el conjunto entero tenia un fallo silencioso: los resultados
+    simulados o de procedencia desconocida ocupan plaza en la ventana ANTES de
+    que el graduador los excluya, asi que 20 simulados llegados despues de 20
+    reales expulsaban a los reales y el patron dejaba de cualificar sin que su
+    evidencia real hubiera cambiado. Un simulador podia apagar un criterio
+    aprendido de observaciones reales solo por llegar mas tarde.
+
+    Asi, toda procedencia se conserva para auditoria —acotada, tambien la no
+    admisible— y la ventana de aprendizaje son los N admisibles mas recientes,
+    que es exactamente lo que los umbrales suponen. No cambia ningun umbral:
+    corrige sobre que se miden.
+    """
+    by_kind: Dict[str, List[Any]] = {}
+    for entry in entries:
+        by_kind.setdefault(entry_origin_kind(entry), []).append(entry)
+    kept: List[Any] = []
+    for same_kind in by_kind.values():
+        same_kind.sort(key=_verified_entry_ts)
+        kept.extend(same_kind[-MAX_OUTCOME_HISTORY:])
+    kept.sort(key=_verified_entry_ts)
+    return kept
+
+
+def _verified_entry_id(entry: Any) -> str:
+    """El `prediction_id` de una entrada de `verified_outcomes`.
+
+    Tolera una entrada en texto plano —la forma que tuvo el campo entre su
+    introduccion y la adicion del id— devolviendo "": nunca coincide con un id
+    real, asi que una entrada antigua jamas suprime una escritura nueva.
+    """
+    if isinstance(entry, dict):
+        return str(entry.get("id", ""))
+    return ""
+
+
+def _verified_entry_ts(entry: Any) -> float:
+    """El instante en que se RESOLVIO ese resultado contra la verdad del
+    dominio. Es lo que ordena la ventana; una entrada sin el se trata como la
+    mas antigua posible, que es el lugar seguro (nunca desplaza a una mas
+    reciente)."""
+    if isinstance(entry, dict):
+        try:
+            return float(entry.get("ts", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
 
 class GravityIndex:
     """Persisted gravity index — one GravityRecord per fingerprint."""
@@ -511,6 +567,122 @@ class GravityIndex:
         return None
 
     # -- queries ------------------------------------------------------------
+
+    def record_verified_outcome(
+        self, fingerprint: str, outcome: str, outcome_id: str, ts: float = 0.0,
+        origin_kind: str = "unknown",
+    ) -> bool:
+        """Anota UN resultado VERIFICADO en la historia graduable de una estrella.
+
+        Devuelve True si el resultado quedo anotado (o ya lo estaba). Ver
+        `record_verified_outcomes` para el contrato completo; este es el caso
+        de un solo elemento y delega en el mismo cuerpo para que no puedan
+        divergir.
+        """
+        return self.record_verified_outcomes(
+            [(fingerprint, outcome, outcome_id, ts, origin_kind)]
+        )[0]
+
+    def record_verified_outcomes(
+        self, entries: Iterable[Tuple[str, str, str, float, str]],
+    ) -> List[bool]:
+        """Anota resultados VERIFICADOS en `verified_outcomes`, en UNA sola
+        transaccion (un lock, una lectura, una escritura para todo el lote).
+
+        Cada elemento es ``(fingerprint, status, outcome_id, ts, origin_kind)``:
+        `ts` es el instante en que ese resultado se RESOLVIO contra la verdad
+        del dominio, y `origin_kind` de qué tipo de observacion viene (real,
+        simulada o desconocida), que es lo que permite al graduador decidir si
+        puede aprender de el. Devuelve una lista de booleanos PARALELA a la entrada: True
+        donde la estrella existe y el resultado quedo anotado.
+
+        IDEMPOTENTE POR `outcome_id`
+        ----------------------------
+        Si la estrella ya tiene una entrada con ese id, NO se anade una segunda
+        y se devuelve True igualmente: el resultado ya esta donde tiene que
+        estar. Esto cierra la ventana entre esta escritura y la confirmacion
+        del registro de procedencia: una caida justo en medio dejaba el
+        resultado anotado pero no registrado, y el reintento lo contaba dos
+        veces.
+
+        LA VENTANA SON LOS N MAS RECIENTES, NO LOS N ULTIMOS ESCRITOS
+        -------------------------------------------------------------
+        La comprobacion por id no basta por si sola, y creer que si bastaba fue
+        un error de razonamiento: solo puede reconocer lo que TODAVIA esta en
+        la ventana. Si entre la caida y el reintento llegan mas de
+        `MAX_OUTCOME_HISTORY` resultados nuevos, el id del interrumpido ya fue
+        desplazado, el reintento no lo reconoce y lo volvia a insertar COMO
+        RECIENTE: un resultado viejo resucitaba, expulsaba a uno genuinamente
+        nuevo del final de la ventana y alteraba el criterio.
+
+        Por eso la lista se mantiene ORDENADA por `ts` y se conservan los N
+        ultimos. Con ese invariante, reinsertar un resultado ya superado es
+        inofensivo: vuelve a caer fuera de la ventana inmediatamente, y nunca
+        puede desplazar a uno mas reciente. Ademas coloca en su sitio a un
+        resultado recuperado del aparcadero, cuya verdad se resolvio antes de
+        los que llegaron mientras esperaba — antes se anotaba como si fuera el
+        mas nuevo.
+
+        Es deliberadamente mas estrecho que `record_event()`:
+
+        * Escribe en `verified_outcomes`, NO en `outcome_history`. Esa
+          separacion es la correccion de fondo: `outcome_history` la alimenta
+          cada ingesta (un ciclo freight de 20 eventos la vacia entera), asi
+          que un resultado verificado guardado ahi se perdia antes de poder
+          cualificar el patron. Ver el comentario del campo en `schemas.py`.
+        * NO incrementa `hits`. `record_event()` si lo hace, y `hits` alimenta
+          `combined_hits` de las convergencias: enrutar resultados por ahi
+          inflaria la fuerza de la convergencia cada vez que se verifica algo,
+          confundiendo "se observo muchas veces" con "se acerto muchas veces".
+        * NO toca `cc_score`, `impact`, `freq`, `tier` ni `activation_history`.
+          Un resultado dice como salio, no cuanta masa tiene el patron.
+        * NO crea la estrella si no existe. Un resultado sin patron al que
+          pertenecer no puede inventarse uno: se devuelve False y el llamador
+          decide que hacer (ver `core.learn.outcome_gravity`, que lo aparca
+          para reintentarlo cuando la estrella exista).
+
+        La cota es `MAX_OUTCOME_HISTORY` (la MISMA que la historia de
+        observacion, 20) a proposito: ampliarla ensancharia la ventana sobre la
+        que se calculan win_rate y sample_size y facilitaria artificialmente
+        que un patron cualifique. Los umbrales (MIN_SAMPLE, MIN_WIN_RATE,
+        MIN_EXPECTANCY) y la ventana sobre la que se miden quedan como estaban.
+        """
+        items = list(entries)
+        if not items:
+            return []
+        results = [False] * len(items)
+        with self._locked(exclusive=True):
+            records = self._read_from_disk()
+            touched = False
+            for i, entry in enumerate(items):
+                fingerprint, outcome, outcome_id, ts = entry[:4]
+                origin_kind = str(entry[4]) if len(entry) > 4 else "unknown"
+                rec = records.get(fingerprint)
+                if rec is None:
+                    continue
+                results[i] = True
+                if any(_verified_entry_id(e) == outcome_id
+                       for e in rec.verified_outcomes):
+                    continue  # ya anotado (reintento inmediato tras una caida)
+                rec.verified_outcomes.append({
+                    "status": str(outcome), "id": str(outcome_id),
+                    "ts": float(ts),
+                    # QUÉ TIPO de observación es. El graduador decide con esto
+                    # si el resultado puede enseñar: ver
+                    # `core.gravity_kernel.signals._gradable_history`.
+                    "origin_kind": origin_kind,
+                })
+                # La ventana son los N resultados MAS RECIENTES por el instante
+                # en que se resolvieron, no los N ultimos escritos. Ver el
+                # razonamiento en el docstring.
+                rec.verified_outcomes = _trim_by_origin_kind(
+                    rec.verified_outcomes
+                )
+                records[fingerprint] = rec
+                touched = True
+            if touched:
+                self._write_to_disk(records)
+        return results
 
     def get(self, fingerprint: str) -> Optional[GravityRecord]:
         return self._load().get(fingerprint)

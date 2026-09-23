@@ -17,8 +17,10 @@ Creador: Mario Bravo Castro
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from typing import Any, Dict, Iterable, List, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from core.learn.outcome_adapter import (
     DomainScore,
@@ -27,6 +29,7 @@ from core.learn.outcome_adapter import (
     Prediction,
     score_outcomes,
 )
+from core.learn import outcome_contract
 from core.learn import verification_ledger as vledger
 from connectors.freight.freight_outcome_adapter import FreightOutcomeAdapter
 
@@ -34,6 +37,9 @@ logger = logging.getLogger("vectrax.freight.verification_cycle")
 
 _DOMAIN = "freight_logistics"
 _ADAPTER = FreightOutcomeAdapter()
+
+#: Quién aplicó el resultado, guardado en cada fila de procedencia.
+_GRAVITY_SOURCE = "freight.verification_cycle"
 
 # Solo estos eventos portan verdad objetiva de resultado.
 _OUTCOME_EVENTS = ("delivery_complete", "delay_reported")
@@ -62,35 +68,223 @@ def _subject(data: Mapping[str, Any]) -> str:
     return region or carrier or "unknown"
 
 
+def _event_source(ev: Any) -> str:
+    src = getattr(ev, "source", None)
+    if src is None and isinstance(ev, Mapping):
+        src = ev.get("source")
+    return str(src or "")
+
+
+def _event_ts(ev: Any) -> float:
+    ts = getattr(ev, "ts", None)
+    if ts is None and isinstance(ev, Mapping):
+        ts = ev.get("ts")
+    try:
+        return float(ts or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _prediction_id(ev: Any) -> str:
+    """Identidad estable de ESTE evento de resultado.
+
+    `FreightEvent` no trae identificador (sus slots son
+    event_type/data/source/ts), así que se deriva con la función COMPARTIDA
+    `outcome_contract.derive_identity`, la misma que usa real estate. Dos
+    copias de esa derivación divergen, y la que se quede atrás vuelve a
+    duplicar el ledger.
+    """
+    return outcome_contract.derive_identity(
+        _event_type(ev), _event_data(ev), _event_source(ev), _event_ts(ev),
+    )
+
+
+#: El evento cuya estrella describe la SITUACIÓN comprometida (la reserva de
+#: carga), firmada por ``region|carrier`` en el template del dominio — que es
+#: EXACTAMENTE el `subject` que verifica este ciclo.
+_SITUATION_EVENT = "load_booking"
+
+#: Campos que son el RESULTADO, no la situación. Nunca pueden formar parte de
+#: la identidad de la estrella a la que se acredita un veredicto (ver
+#: `star_fingerprint_for`).
+_OUTCOME_FIELDS = ("on_time", "delay_hours", "transit_days", "cause")
+
+
+def star_fingerprint_for(data: Mapping[str, Any]) -> Optional[str]:
+    """La estrella a la que pertenece este resultado — y por qué NO es la suya.
+
+    EL DESAJUSTE
+    ------------
+    El `subject` que verifica este ciclo es ``region|carrier``, mientras que la
+    estrella de freight se identifica como
+    ``{dominio}:{tipo}:{firma_de_condiciones}``. No son el mismo espacio de
+    identidad, así que anotar el resultado "en el subject" habría ido a una
+    estrella inexistente y se habría descartado en silencio.
+
+    POR QUÉ NO SE ACREDITA LA ESTRELLA DEL PROPIO EVENTO DE RESULTADO
+    ------------------------------------------------------------------
+    La respuesta aparentemente obvia —acreditar la estrella que la ingesta creó
+    para ESTE evento— es incorrecta, y de la peor manera: silenciosamente
+    productiva. El template del dominio firma ``delivery_complete`` por
+    ``region|on_time`` y ``delay_reported`` por ``region|cause``. Es decir, el
+    VEREDICTO ya forma parte de la identidad de esa estrella:
+
+        freight_logistics:delivery_complete:region=Southeast|on_time=True
+        freight_logistics:delivery_complete:region=Southeast|on_time=False
+
+    La primera solo puede recibir "win" y la segunda solo "loss". Acreditarlas
+    daría un win_rate del 100 % y del 0 % por construcción, y la del 100 %
+    cruzaría MIN_WIN_RATE (55 %) siempre, sin haber aprendido nada: sería una
+    tautología con aspecto de aprendizaje. Eso es fabricar resultados, que es
+    justo lo que no se puede hacer para conseguir que aparezcan aprendizajes.
+
+    LA ESTRELLA CORRECTA
+    --------------------
+    El resultado pertenece a la situación que lo PRECEDIÓ: la reserva de carga
+    de ese ``region|carrier``, cuya estrella el template firma exactamente por
+    ``region|carrier`` — la misma granularidad que ya usan
+    `verified_subjects()` y el ranking del criterio para decir qué lane/carrier
+    tiene criterio validado. Afirmar "las reservas de este tipo se entregaron a
+    tiempo el X % de las veces" sí es una afirmación falsable.
+
+    El fingerprint se calcula con LA MISMA función que creó la estrella
+    (`core.domain_ingester.star_fingerprint`), sobre los campos ``region`` y
+    ``carrier`` que el propio evento de resultado ya trae. Reimplementar la
+    fórmula aquí reintroduciría la divergencia silenciosa que rompía el ciclo.
+
+    Dos salvaguardas, ambas de fallo cerrado:
+
+    * Los campos de resultado se retiran de los datos ANTES de calcular la
+      identidad, de modo que un veredicto no pueda entrar en ella aunque el
+      template cambie; si aun así apareciera en la firma, se devuelve None.
+    * No se crea ninguna estrella. Si nunca hubo una reserva para ese
+      lane/carrier, `record_verified_outcomes` devuelve False y el resultado
+      queda sin aplicar (contado como ``no_star``), nunca inventado.
+    """
+    try:
+        from core.domain_ingester import star_fingerprint
+    except Exception as exc:  # pragma: no cover - import defensivo
+        logger.warning("freight: no se pudo calcular el fingerprint: %s", exc)
+        return None
+    situation = {k: v for k, v in dict(data).items() if k not in _OUTCOME_FIELDS}
+    if not situation.get("region") and not situation.get("carrier"):
+        return None
+    fp = star_fingerprint(_DOMAIN, _SITUATION_EVENT, situation)
+    signature = fp.split(":", 2)[-1]
+    if any(f"{field}=" in signature or f"{field}~" in signature
+           for field in _OUTCOME_FIELDS):
+        logger.warning(
+            "freight: la identidad de la estrella contiene el resultado (%s); "
+            "no se acredita", fp,
+        )
+        return None
+    return fp
+
+
+def star_fingerprint_for_subject(subject: str) -> Optional[str]:
+    """La MISMA estrella, partiendo del `subject` del ledger.
+
+    El `subject` de freight es ``region|carrier``, y la estrella de la reserva
+    se firma exactamente por esos dos campos (ver `star_fingerprint_for`). Por
+    eso un resultado recuperado del ledger —donde no está el `data` original,
+    solo el subject— puede volver a encontrar su estrella sin adivinar nada.
+
+    Que ambos caminos den el mismo fingerprint no es una coincidencia que
+    convenga dar por supuesta: hay una prueba que lo exige.
+    """
+    parts = str(subject or "").split("|")
+    if len(parts) != 2:
+        return None
+    region, carrier = parts[0].strip(), parts[1].strip()
+    if not region or not carrier:
+        return None
+    return star_fingerprint_for({"region": region, "carrier": carrier})
+
+
+def _fingerprint_from_outcome(outcome) -> Optional[str]:
+    return star_fingerprint_for_subject(getattr(outcome, "subject", ""))
+
+
+#: EL CONTRATO DE ESTE DOMINIO.
+#:
+#: `replayable=False`: el proveedor emite cada evento UNA vez y no vuelve, así
+#: que retener el ledger ante un fallo de la gravedad no protegería el
+#: resultado, lo perdería. El contrato escribe siempre el ledger y recupera la
+#: gravedad después desde ahí.
+def _origin_kind(origin: str) -> str:
+    """De qué tipo es esta procedencia de freight.
+
+    El proveedor por defecto es el SIMULADOR (`FREIGHT_FEED_PROVIDER`, default
+    "simulator"), así que hoy prácticamente toda la evidencia de este dominio
+    es simulada — y el núcleo no la gradúa. Es la respuesta honesta: un patrón
+    de freight no puede cualificar con entregas que nunca ocurrieron. Cuando
+    se conecte un feed real (DAT, Truckstop, el CRM de un bróker), esa
+    evidencia sí enseñará, sin tocar nada más.
+    """
+    name = str(origin or "").strip().lower()
+    if not name:
+        return outcome_contract.UNKNOWN
+    if "sim" in name or name in ("test", "fixture"):
+        return outcome_contract.SIMULATED
+    return outcome_contract.REAL
+
+
+CONTRACT = outcome_contract.register(outcome_contract.DomainContract(
+    domain=_DOMAIN,
+    source=_GRAVITY_SOURCE,
+    unit="entrega verificada contra su puntualidad",
+    identify=_prediction_id,
+    origin_kind=_origin_kind,
+    replayable=False,
+    star_for=_fingerprint_from_outcome,
+))
+
+
 def verify_events(events: Iterable[Any], record: bool = True) -> DomainScore:
     """Resuelve los eventos de resultado de freight en Outcomes verificados.
 
     - Filtra a ``delivery_complete`` / ``delay_reported`` (los que tienen verdad).
     - subject = region|carrier; predicción favorable = "on_time".
     - Resuelve vía el mismo ``FreightOutcomeAdapter`` (núcleo invariante detrás).
-    - Persiste los decisivos en el ledger (si ``record``).
+    - Persistencia y recuperación: `core.learn.outcome_contract`, COMÚN a todos
+      los dominios. Este ciclo no decide cuándo escribir el ledger ni cómo
+      deduplicar: declara su contrato y el contrato lo aplica.
     - Devuelve el DomainScore de ESTE lote (el acumulado está en el ledger).
     """
+    outcome_contract.recover(CONTRACT)
+
     outcomes: List[Outcome] = []
+    evidences: List[outcome_contract.Evidence] = []
+    # UNA sola pasada sobre `events`: puede ser un iterable consumible, y la
+    # procedencia se lee del evento que la produjo, no del lote.
     for ev in events:
         et = _event_type(ev)
         if et not in _OUTCOME_EVENTS:
             continue
         data = _event_data(ev)
         observation = {"event_type": et, **data}
+        item_id = _prediction_id(ev)
         pred = Prediction(
             domain=_DOMAIN,
             subject=_subject(data),
             predicted="on_time",
+            prediction_id=item_id,
         )
         outcome = _ADAPTER.resolve(pred, observation)
         outcomes.append(outcome)
-        if record and outcome.status is not OutcomeStatus.PENDING:
-            vledger.record_outcome(outcome)
+        if outcome.status is not OutcomeStatus.PENDING:
+            evidences.append(outcome_contract.evidence(
+                item_id, _event_source(ev), outcome,
+            ))
+
+    report = outcome_contract.commit(CONTRACT, evidences, record=record)
     score = score_outcomes(_DOMAIN, outcomes)
     logger.info(
-        "freight.verification | batch=%d | decisive=%d | WR=%.0f%% | acc=%.2f",
+        "freight.verification | batch=%d | decisive=%d | WR=%.0f%% | acc=%.2f "
+        "| ledger=%d (dup evitados=%d) | gravity=%d | contabilizado=%s",
         score.n_total, score.n_decisive, score.win_rate, score.accuracy,
+        report.ledger_written, report.ledger_skipped, report.gravity_applied,
+        report.accounted,
     )
     return score
 
