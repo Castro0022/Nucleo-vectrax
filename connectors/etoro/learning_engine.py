@@ -460,17 +460,27 @@ def _feed_gravity(symbols: List[str]) -> int:
                 "medium" if n_signals >= 5 else "low"
             )
 
-            # Record as gravity event — fingerprint per symbol
+            # Record as gravity event — fingerprint per symbol.
+            # `connectors/etoro/verification_cycle.star_fingerprint_for()`
+            # reproduce esta misma convención para anotar los resultados
+            # verificados en ESTA estrella.
             fingerprint = f"market:{sym}"
+
+            # `outcome` es el registro de OBSERVACIÓN, no un resultado. Antes
+            # aquí se escribía un resumen del patrón ("WR=62% E=+0.450%"), que
+            # describe lo que el propio sistema cree de sí mismo, no cómo salió
+            # nada. No es graduable —`signals.derive_pattern_stats` no lo cuenta
+            # ni como win ni como loss— y además consumía una plaza de una lista
+            # acotada. El desempeño real de esta estrella lo escribe ahora el
+            # ciclo de verificación en `verified_outcomes`, contra el precio
+            # realizado. El resumen del patrón se conserva donde corresponde:
+            # en `summary`, que es texto legible y no se gradúa.
             outcome = "observed"
+
+            summary = f"{sym}: {n_signals} signals, {len(sym_patterns)} patterns"
             if sym_patterns:
                 best = max(sym_patterns, key=lambda p: p.expectancy)
-                outcome = f"WR={best.win_rate:.0f}% E={best.expectancy:+.3f}%"
-
-            summary = (
-                f"{sym}: {n_signals} signals, "
-                f"{len(sym_patterns)} patterns"
-            )
+                summary += f" (best WR={best.win_rate:.0f}% E={best.expectancy:+.3f}%)"
 
             gi.record_event(
                 fingerprint=fingerprint,

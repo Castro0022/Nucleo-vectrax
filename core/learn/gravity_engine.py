@@ -22,7 +22,7 @@ import statistics
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from core.learn import VAULT_DIR, RUNTIME_DIR
 from core.learn.schemas import GravityRecord, Tier, TIER_ORDER, decimate_history
@@ -511,6 +511,68 @@ class GravityIndex:
         return None
 
     # -- queries ------------------------------------------------------------
+
+    def record_verified_outcome(self, fingerprint: str, outcome: str) -> bool:
+        """Anota UN resultado VERIFICADO en la historia graduable de una estrella.
+
+        Devuelve True si se anoto. Ver `record_verified_outcomes` para el
+        contrato completo; este es el caso de un solo elemento y delega en el
+        mismo cuerpo para que no puedan divergir.
+        """
+        return self.record_verified_outcomes([(fingerprint, outcome)])[0]
+
+    def record_verified_outcomes(
+        self, pairs: Iterable[Tuple[str, str]],
+    ) -> List[bool]:
+        """Anota resultados VERIFICADOS en `verified_outcomes`, en UNA sola
+        transaccion (un lock, una lectura, una escritura para todo el lote).
+
+        Devuelve una lista de booleanos PARALELA a la entrada: True donde la
+        estrella existia y el resultado quedo anotado.
+
+        Es deliberadamente mas estrecho que `record_event()`:
+
+        * Escribe en `verified_outcomes`, NO en `outcome_history`. Esa
+          separacion es la correccion de fondo: `outcome_history` la alimenta
+          cada ingesta (un ciclo freight de 20 eventos la vacia entera), asi
+          que un resultado verificado guardado ahi se perdia antes de poder
+          cualificar el patron. Ver el comentario del campo en `schemas.py`.
+        * NO incrementa `hits`. `record_event()` si lo hace, y `hits` alimenta
+          `combined_hits` de las convergencias: enrutar resultados por ahi
+          inflaria la fuerza de la convergencia cada vez que se verifica algo,
+          confundiendo "se observo muchas veces" con "se acerto muchas veces".
+        * NO toca `cc_score`, `impact`, `freq`, `tier` ni `activation_history`.
+          Un resultado dice como salio, no cuanta masa tiene el patron.
+        * NO crea la estrella si no existe. Un resultado sin patron al que
+          pertenecer no puede inventarse uno: se devuelve False y el llamador
+          decide que decir.
+
+        La cota es `MAX_OUTCOME_HISTORY` (la MISMA que la historia de
+        observacion, 20) a proposito: ampliarla ensancharia la ventana sobre la
+        que se calculan win_rate y sample_size y facilitaria artificialmente
+        que un patron cualifique. Los umbrales (MIN_SAMPLE, MIN_WIN_RATE,
+        MIN_EXPECTANCY) y la ventana sobre la que se miden quedan como estaban.
+        """
+        items = list(pairs)
+        if not items:
+            return []
+        results = [False] * len(items)
+        with self._locked(exclusive=True):
+            records = self._read_from_disk()
+            touched = False
+            for i, (fingerprint, outcome) in enumerate(items):
+                rec = records.get(fingerprint)
+                if rec is None:
+                    continue
+                rec.verified_outcomes.append(outcome)
+                if len(rec.verified_outcomes) > MAX_OUTCOME_HISTORY:
+                    rec.verified_outcomes = rec.verified_outcomes[-MAX_OUTCOME_HISTORY:]
+                records[fingerprint] = rec
+                results[i] = True
+                touched = True
+            if touched:
+                self._write_to_disk(records)
+        return results
 
     def get(self, fingerprint: str) -> Optional[GravityRecord]:
         return self._load().get(fingerprint)

@@ -55,6 +55,18 @@ class GravityRecord:
     domain: str = "unknown"
     intent: str = ""
     outcome_history: List[str] = field(default_factory=list)  # last N outcomes
+    # Resultados VERIFICADOS contra la verdad objetiva del dominio, separados
+    # de `outcome_history` A PROPOSITO. `outcome_history` es el registro de
+    # OBSERVACION: `record_event()` le anade una linea por cada evento
+    # ingerido (el texto del evento en freight, "observed" en market,
+    # "queried"/"approved"/"rejected" en otros). Como es una lista acotada,
+    # mezclar ahi los resultados verificados hacia que la propia ingesta los
+    # EXPULSARA: un ciclo freight de 20 eventos desplaza por completo una
+    # ventana de 20 entradas, de modo que un "win" verificado desaparecia
+    # antes de que qualify_pattern() pudiera contarlo. Esta lista solo la
+    # escribe `GravityIndex.record_verified_outcome()`, y solo con veredictos
+    # graduables (OutcomeStatus.WIN/LOSS).
+    verified_outcomes: List[str] = field(default_factory=list)
     activation_history: List[str] = field(default_factory=list)  # ISO timestamps of activation, bounded (see decimate_history)
     decay_factor: float = 1.0  # 1.0 normal, 3.0 for high-impact (anti-amnesia)
     summary: str = ""          # human-readable summary

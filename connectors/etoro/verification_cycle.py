@@ -27,6 +27,7 @@ from core.learn.outcome_adapter import (
     Prediction,
     score_outcomes,
 )
+from core.learn import outcome_gravity
 from core.learn import verification_ledger as vledger
 from connectors.etoro.trading_outcome_adapter import TradingOutcomeAdapter
 
@@ -34,6 +35,9 @@ logger = logging.getLogger("vectrax.etoro.verification_cycle")
 
 _DOMAIN = "market"
 _ADAPTER = TradingOutcomeAdapter()
+
+#: Quién aplicó el resultado, guardado en cada fila de procedencia.
+_GRAVITY_SOURCE = "etoro.verification_cycle"
 
 
 # ── Estado de deduplicación (señales ya verificadas) ───────────────────
@@ -89,6 +93,12 @@ def _signal_to_pair(sig: Any):
         domain=_DOMAIN,
         subject=symbol or "unknown",
         predicted=direction,
+        # Identidad REAL de la predicción. Antes quedaba en "" (el default),
+        # lo que dejaba cada Outcome sin forma de distinguirse de otro: ni el
+        # ledger ni la deduplicación de `outcome_gravity` podían decir si dos
+        # resultados eran el mismo verificado dos veces o dos señales
+        # distintas del mismo símbolo. `signal_id` ya es único por señal.
+        prediction_id=str(getattr(sig, "signal_id", "") or ""),
         context={
             "direction": direction,
             "entry_price": entry,
@@ -102,24 +112,48 @@ def _signal_to_pair(sig: Any):
     return pred, obs
 
 
+def star_fingerprint_for(symbol: str) -> str:
+    """Identidad de la estrella gravitacional del símbolo.
+
+    Es LITERALMENTE la convención que usa
+    `connectors/etoro/learning_engine._feed_gravity` al crear la estrella
+    (``f"market:{sym}"`` con el símbolo en mayúsculas), y el mismo espacio de
+    identidad que `star_a`/`star_b` de una convergencia. Aquí no hay
+    traducción posible ni necesaria: el `subject` de la verificación YA es el
+    símbolo. Existe como función, y no en línea, para que la prueba del
+    recorrido completo pueda afirmar la paridad entre quien crea la estrella y
+    quien le anota resultados.
+    """
+    return f"market:{str(symbol or '').upper()}"
+
+
 def verify_signals(signals: Iterable[Any], record: bool = True) -> DomainScore:
     """Resuelve las señales dadas en Outcomes verificados vía TradingOutcomeAdapter.
 
     Reusa el clasificador canónico dentro del adaptador (sin duplicar win/loss).
-    Persiste los no-PENDING en el ledger (si ``record``). Devuelve el DomainScore
-    de ESTE lote (el acumulado vive en el ledger).
+    Persiste los no-PENDING en el ledger (si ``record``) y lleva los DECISIVOS a
+    la estrella del símbolo, que es de donde `qualify_pattern()` lee el
+    desempeño real. Devuelve el DomainScore de ESTE lote (el acumulado vive en
+    el ledger).
     """
     outcomes: List[Outcome] = []
+    to_gravity: List[tuple] = []
     for sig in signals:
         pred, obs = _signal_to_pair(sig)
         outcome = _ADAPTER.resolve(pred, obs)
         outcomes.append(outcome)
         if record and outcome.status is not OutcomeStatus.PENDING:
             vledger.record_outcome(outcome)
+            to_gravity.append((star_fingerprint_for(outcome.subject), outcome))
+    fed = outcome_gravity.apply_verified_outcomes(
+        to_gravity, source=_GRAVITY_SOURCE,
+    ) if to_gravity else {}
     score = score_outcomes(_DOMAIN, outcomes)
     logger.info(
-        "market.verification | batch=%d | decisive=%d | WR=%.0f%% | acc=%.2f",
+        "market.verification | batch=%d | decisive=%d | WR=%.0f%% | acc=%.2f "
+        "| gravity_applied=%d",
         score.n_total, score.n_decisive, score.win_rate, score.accuracy,
+        fed.get(outcome_gravity.APPLIED, 0),
     )
     return score
 
