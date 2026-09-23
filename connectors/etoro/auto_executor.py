@@ -58,14 +58,16 @@ Any safety breach reverts the mode to PAPER and logs the reason.
 """
 from __future__ import annotations
 
+import contextlib
 import copy
+import fcntl
 import json
 import logging
 import os
 import time
 from dataclasses import dataclass, asdict
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 logger = logging.getLogger("vectrax.etoro.auto_executor")
 
@@ -159,6 +161,53 @@ def _save_config(cfg: Dict) -> None:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error("save_config error: %s", e)
+
+
+@contextlib.contextmanager
+def _locked_config() -> Iterator[None]:
+    """
+    Exclusive, inter-process (and inter-thread) lock guarding a
+    read-modify-write critical section over the persisted config.
+
+    Production runs 4 SEPARATE OS PROCESSES under supervisor — Telegram
+    Gateway, Pipeline Worker, Core API, Meta Loop (see Dockerfile) — any
+    of which can reach record_trade_result(): the Pipeline Worker's
+    periodic 30-minute learning cycle (core/transport/pipeline_worker.py,
+    via a ThreadPoolExecutor) and a creator-triggered
+    /vx etoro learn run / /vx market ... command handled by the Telegram
+    Gateway can both call check_open_positions() -> record_trade_result()
+    around the same time, from different processes. A plain
+    threading.Lock only serializes threads inside ONE process — it does
+    nothing across process boundaries — so it cannot make
+    record_trade_result()'s load -> check trade_id -> increment -> save
+    sequence atomic against that real scenario: two callers could both
+    load the config before either saves, both see the trade_id as unseen,
+    and both count it.
+
+    Same fcntl.flock() pattern already used for this identical class of
+    bug in core/learn/gravity_engine.py's GravityIndex._locked() (the
+    2026-09-20 production incident write-up there has the full history).
+    flock() attaches to the OPEN FILE DESCRIPTION, not the process or
+    thread, so a fresh os.open() + flock() on every call correctly
+    serializes both across processes and across threads of the same
+    process — unlike a threading.Lock, or reusing one shared fd, which
+    would only correctly serialize the threads of a single process and
+    give a false sense of safety against the real, multi-process
+    deployment. If the holder dies (SIGKILL/OOM/crash) the kernel
+    releases the flock when its file descriptors close — no orphaned
+    lock can survive a restart and wedge every process forever.
+    """
+    lock_path = f"{_CONFIG_FILE}.lock"
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        os.close(lock_fd)
 
 
 def get_config() -> Dict:
@@ -490,6 +539,13 @@ def record_trade_result(
     lands) from inflating paper_trades_total/paper_trades_wins and
     advancing the automatic LIVE promotion on a phantom extra trade. A
     trade_id already seen is a no-op: nothing is counted or re-evaluated.
+
+    The load -> check trade_id -> increment -> save sequence below runs
+    inside _locked_config(), an exclusive fcntl.flock() — see that
+    function's docstring for why two genuinely concurrent callers (real
+    production runs 4 separate OS processes under supervisor) cannot both
+    read the config before either writes, which a threading.Lock would
+    not have prevented.
     """
     if is_paper and not trade_id:
         raise ValueError(
@@ -497,70 +553,76 @@ def record_trade_result(
             "PAPER counters must never advance from an unidentified close"
         )
 
-    cfg = _reset_daily_loss_if_new_day(_load_config())
-    won = pnl_usd > 0
+    # The whole load -> check trade_id -> increment -> save sequence is one
+    # atomic critical section — see _locked_config() for why a plain
+    # threading.Lock cannot do this job across the real (multi-process)
+    # deployment.
+    with _locked_config():
+        cfg = _reset_daily_loss_if_new_day(_load_config())
+        won = pnl_usd > 0
 
-    if is_paper:
-        recorded = cfg.setdefault("recorded_paper_trade_ids", [])
-        if trade_id in recorded:
-            logger.warning(
-                "[AUTO] Resultado PAPER duplicado ignorado para %s "
-                "(ya contabilizado — paper_trades_total sin cambios)",
-                trade_id,
+        if is_paper:
+            recorded = cfg.setdefault("recorded_paper_trade_ids", [])
+            if trade_id in recorded:
+                logger.warning(
+                    "[AUTO] Resultado PAPER duplicado ignorado para %s "
+                    "(ya contabilizado — paper_trades_total sin cambios)",
+                    trade_id,
+                )
+                return
+            recorded.append(trade_id)
+            if len(recorded) > _MAX_RECORDED_TRADE_IDS:
+                del recorded[: len(recorded) - _MAX_RECORDED_TRADE_IDS]
+
+            cfg["paper_trades_total"] += 1
+            if won:
+                cfg["paper_trades_wins"] += 1
+            logger.info(
+                "[AUTO] PAPER trade result: %s | PnL=%.2f USD | won=%s",
+                trade_id, pnl_usd, won,
             )
-            return
-        recorded.append(trade_id)
-        if len(recorded) > _MAX_RECORDED_TRADE_IDS:
-            del recorded[: len(recorded) - _MAX_RECORDED_TRADE_IDS]
-
-        cfg["paper_trades_total"] += 1
-        if won:
-            cfg["paper_trades_wins"] += 1
-        logger.info(
-            "[AUTO] PAPER trade result: %s | PnL=%.2f USD | won=%s",
-            trade_id, pnl_usd, won,
-        )
-        # Evaluate automatic PAPER → LIVE promotion right on this close.
-        _maybe_auto_promote_to_live(cfg)
-    else:
-        if pnl_usd < 0:
-            cfg["daily_loss_usd"] += abs(pnl_usd)
-            cfg["consecutive_losses"] += 1
+            # Evaluate automatic PAPER → LIVE promotion right on this close.
+            _maybe_auto_promote_to_live(cfg)
         else:
-            cfg["consecutive_losses"] = 0  # reset on any win
+            if pnl_usd < 0:
+                cfg["daily_loss_usd"] += abs(pnl_usd)
+                cfg["consecutive_losses"] += 1
+            else:
+                cfg["consecutive_losses"] = 0  # reset on any win
 
-        logger.info(
-            "[AUTO] LIVE trade result: PnL=%.2f USD | consecutive_losses=%d | "
-            "daily_loss=%.2f",
-            pnl_usd, cfg["consecutive_losses"], cfg["daily_loss_usd"],
-        )
-
-        # Auto-shutdown check after recording. Mutates the same local `cfg`
-        # that the final _save_config(cfg) below persists — calling
-        # _set_mode() here would race with it: _set_mode() writes "paper" to
-        # disk via its OWN freshly-loaded copy, and the unconditional
-        # _save_config(cfg) at the end of this function would then overwrite
-        # that write with this function's local `cfg`, which never saw the
-        # mode change and still says "live" — silently undoing the
-        # circuit-breaker shutdown. Setting cfg["mode"] directly avoids that.
-        if cfg["consecutive_losses"] >= cfg["max_consecutive_losses"]:
-            cfg["mode"] = AutoMode.PAPER.value
-            cfg["last_shutdown_reason"] = (
-                f"auto-shutdown after {cfg['consecutive_losses']} consecutive losses"
-            )
-            logger.warning(
-                "[AUTO] 🛑 AUTO-SHUTDOWN: %d consecutive losses → reverting to PAPER",
-                cfg["consecutive_losses"],
+            logger.info(
+                "[AUTO] LIVE trade result: PnL=%.2f USD | consecutive_losses=%d | "
+                "daily_loss=%.2f",
+                pnl_usd, cfg["consecutive_losses"], cfg["daily_loss_usd"],
             )
 
-        if cfg["daily_loss_usd"] >= cfg["max_daily_loss_usd"]:
-            cfg["mode"] = AutoMode.PAPER.value
-            cfg["last_shutdown_reason"] = (
-                f"auto-shutdown: daily loss limit ${cfg['max_daily_loss_usd']:.0f} reached"
-            )
-            logger.warning("[AUTO] 🛑 DAILY LOSS LIMIT reached → reverting to PAPER")
+            # Auto-shutdown check after recording. Mutates the same local
+            # `cfg` that the final _save_config(cfg) below persists —
+            # calling _set_mode() here would race with it: _set_mode()
+            # writes "paper" to disk via its OWN freshly-loaded copy, and
+            # the unconditional _save_config(cfg) at the end of this
+            # function would then overwrite that write with this
+            # function's local `cfg`, which never saw the mode change and
+            # still says "live" — silently undoing the circuit-breaker
+            # shutdown. Setting cfg["mode"] directly avoids that.
+            if cfg["consecutive_losses"] >= cfg["max_consecutive_losses"]:
+                cfg["mode"] = AutoMode.PAPER.value
+                cfg["last_shutdown_reason"] = (
+                    f"auto-shutdown after {cfg['consecutive_losses']} consecutive losses"
+                )
+                logger.warning(
+                    "[AUTO] 🛑 AUTO-SHUTDOWN: %d consecutive losses → reverting to PAPER",
+                    cfg["consecutive_losses"],
+                )
 
-    _save_config(cfg)
+            if cfg["daily_loss_usd"] >= cfg["max_daily_loss_usd"]:
+                cfg["mode"] = AutoMode.PAPER.value
+                cfg["last_shutdown_reason"] = (
+                    f"auto-shutdown: daily loss limit ${cfg['max_daily_loss_usd']:.0f} reached"
+                )
+                logger.warning("[AUTO] 🛑 DAILY LOSS LIMIT reached → reverting to PAPER")
+
+        _save_config(cfg)
 
 
 # ── Paper trade log ───────────────────────────────────────────────────

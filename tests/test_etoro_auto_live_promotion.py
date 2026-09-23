@@ -22,7 +22,12 @@ corrección del 2026-09-23 sobre la revisión del PR #130):
   - record_trade_result(is_paper=True) EXIGE un trade_id y lo usa como clave
     de idempotencia: un mismo trade_id reenviado (p. ej. dos corridas
     solapadas de check_open_positions() sobre la misma operación aún "open")
-    no vuelve a sumar a paper_trades_total ni reevalúa la promoción.
+    no vuelve a sumar a paper_trades_total ni reevalúa la promoción. Esa
+    idempotencia es ATÓMICA de verdad: dos procesos del SO realmente
+    simultáneos (el modelo real de producción — 4 procesos bajo supervisor,
+    ver Dockerfile) cerrando la MISMA operación cuentan exactamente una vez,
+    verificado con multiprocessing.Process + Barrier, no solo con llamadas
+    secuenciales.
   - Nunca escribe ETORO_ENVIRONMENT ni coloca una orden real, ni siquiera
     cuando esta suite corre.
   - _load_config() nunca devuelve un contenedor mutable (approved_symbols,
@@ -110,6 +115,71 @@ def _close_paper(pnl: float, n: int = 1) -> list[str]:
         auto_executor.record_trade_result(pnl, is_paper=True, trade_id=tid)
         ids.append(tid)
     return ids
+
+
+def _mp_close_worker(
+    config_file: str, trade_id: str, pnl: float, barrier, result_queue,
+    widen_race: bool = False,
+) -> None:
+    """multiprocessing.Process target — must be module-level to be
+    picklable under the "spawn" start method (used with "fork" here, but
+    kept portable). Runs in a SEPARATE OS PROCESS, mirroring the real
+    production model: 4 separate processes under supervisor (Telegram
+    Gateway, Pipeline Worker, Core API, Meta Loop — see Dockerfile), where
+    e.g. the Pipeline Worker's periodic learning cycle and a
+    creator-triggered /vx etoro learn run from the Telegram Gateway can
+    both reach record_trade_result() around the same time. The barrier
+    holds every worker at the door and releases them together, so they
+    call record_trade_result() at essentially the same instant — the
+    actual race window a threading.Lock cannot close (it doesn't reach
+    across processes), and only an inter-process mechanism (here,
+    _locked_config()'s fcntl.flock()) can.
+
+    Reports back through `result_queue` whether THIS call logged the
+    "duplicado" warning (i.e. found trade_id already recorded). This is
+    the oracle that actually proves mutual exclusion — checking only the
+    final paper_trades_total is NOT enough when both workers use the same
+    trade_id and pnl: an UNSYNCHRONIZED lost-update race (both read
+    total=0 before either writes, both independently compute 0+1=1, the
+    second write just overwrites the first with the same number) lands on
+    the identical final total=1 as the correct, properly-serialized
+    outcome, by coincidence — so a naive "total == 1" assertion cannot
+    tell a real fix from a race that got lucky. Whether exactly one call
+    saw the other's committed write (and logged the duplicate warning)
+    can. `widen_race=True` adds a deliberate delay right after the
+    protected load, inside the critical section, to make two forked
+    processes released together overlap even on a fast machine where they
+    might otherwise happen to run back-to-back — it does not change what
+    is being tested, only makes the interleaving attempt reliable."""
+    import logging
+    import connectors.etoro.auto_executor as ae
+    ae._CONFIG_FILE = config_file
+
+    if widen_race:
+        _orig_load_config = ae._load_config
+
+        def _slow_load_config():
+            cfg = _orig_load_config()
+            import time as _t
+            _t.sleep(0.1)
+            return cfg
+        ae._load_config = _slow_load_config
+
+    saw_duplicate = {"flag": False}
+
+    class _DuplicateCapture(logging.Handler):
+        def emit(self, record):
+            if "duplicado" in record.getMessage():
+                saw_duplicate["flag"] = True
+
+    logging.getLogger("vectrax.etoro.auto_executor").addHandler(_DuplicateCapture())
+
+    try:
+        barrier.wait(timeout=10)
+    except Exception:
+        pass  # proceed anyway — a missed rendezvous still exercises the lock
+    ae.record_trade_result(pnl, is_paper=True, trade_id=trade_id)
+    result_queue.put(saw_duplicate["flag"])
 
 
 # ── 1. Transición 29 → 30 ────────────────────────────────────────────────
@@ -365,6 +435,118 @@ class TestDuplicateResultsDoNotInflateTheCounter:
         assert reason_1 == reason_2
         assert auto_executor.get_mode() == AutoMode.PAPER
         assert tg_calls == []
+
+
+# ── 5b. Concurrencia REAL entre procesos — no solo llamadas secuenciales ──
+
+class TestConcurrentIdempotencyAcrossProcesses:
+    """
+    The tests above call record_trade_result() sequentially, one call
+    fully returning before the next starts — they prove the trade_id
+    dedup logic is correct, but NOT that it is safe against two callers
+    genuinely overlapping in time. Production runs 4 separate OS
+    processes under supervisor (Telegram Gateway, Pipeline Worker, Core
+    API, Meta Loop — see Dockerfile): the Pipeline Worker's periodic
+    30-minute learning cycle and a creator-triggered /vx etoro learn run
+    handled by the Telegram Gateway can both reach
+    check_open_positions() -> record_trade_result() around the same
+    moment, from DIFFERENT processes. These tests force that with real
+    multiprocessing.Process workers released together by a
+    multiprocessing.Barrier, so both actually call record_trade_result()
+    at essentially the same instant — the only way to exercise
+    _locked_config()'s fcntl.flock() the way it is actually exercised in
+    production (a threading.Lock would never even be threatened by two
+    separate processes, so a thread-only test would not prove anything
+    here).
+    """
+
+    def test_two_simultaneous_processes_count_the_same_trade_id_exactly_once(
+        self, isolated_executor, real_env, tg_calls
+    ):
+        """
+        The real oracle here is NOT just the final total (see
+        _mp_close_worker's docstring for why total==1 alone can be a
+        coincidence, not proof): exactly ONE of the two processes must
+        have found the trade_id already recorded and logged the
+        "duplicado" warning. If mutual exclusion actually held, one
+        process's full read-modify-write happens entirely before the
+        other's; if it did not, both could read the not-yet-recorded
+        state and neither would ever see a duplicate — even though the
+        final total might still accidentally read 1.
+        """
+        import multiprocessing
+
+        auto_executor.activate_paper()
+        config_file = auto_executor._CONFIG_FILE
+        trade_id = "RACE-SAME-OPERATION"
+
+        ctx = multiprocessing.get_context("fork")
+        barrier = ctx.Barrier(2)
+        q = ctx.Queue()
+        procs = [
+            ctx.Process(
+                target=_mp_close_worker,
+                args=(config_file, trade_id, 1.0, barrier, q, True),
+            )
+            for _ in range(2)
+        ]
+        for p in procs:
+            p.start()
+        saw_duplicate = sorted(q.get(timeout=15) for _ in procs)
+        for p in procs:
+            p.join(timeout=15)
+            assert p.exitcode == 0, f"worker process crashed (exitcode={p.exitcode})"
+
+        assert saw_duplicate == [False, True], (
+            "exactly one of the two concurrent processes must detect the "
+            "trade_id as already recorded — both False means neither saw "
+            "the other's write (a lost-update race despite the lock), "
+            "both True is impossible unless neither ever counted it"
+        )
+
+        cfg = auto_executor.get_config()
+        assert cfg["paper_trades_total"] == 1, (
+            "two genuinely concurrent processes closing the SAME trade_id "
+            "must count it exactly once, not once per process"
+        )
+        assert cfg["paper_trades_wins"] == 1
+        assert cfg["recorded_paper_trade_ids"].count(trade_id) == 1
+
+    def test_two_simultaneous_processes_with_different_trade_ids_both_count(
+        self, isolated_executor, real_env, tg_calls
+    ):
+        """Guards against an over-broad fix (e.g. a lock held so long, or
+        scoped so wide, that it drops or merges legitimate distinct closes
+        that happen to race) — two DIFFERENT real operations closing at
+        the same instant must both be counted, and neither should have
+        logged a spurious duplicate warning."""
+        import multiprocessing
+
+        auto_executor.activate_paper()
+        config_file = auto_executor._CONFIG_FILE
+
+        ctx = multiprocessing.get_context("fork")
+        barrier = ctx.Barrier(2)
+        q = ctx.Queue()
+        procs = [
+            ctx.Process(
+                target=_mp_close_worker,
+                args=(config_file, f"RACE-DISTINCT-{i}", 1.0, barrier, q, True),
+            )
+            for i in range(2)
+        ]
+        for p in procs:
+            p.start()
+        saw_duplicate = [q.get(timeout=15) for _ in procs]
+        for p in procs:
+            p.join(timeout=15)
+            assert p.exitcode == 0, f"worker process crashed (exitcode={p.exitcode})"
+
+        assert saw_duplicate == [False, False]
+
+        cfg = auto_executor.get_config()
+        assert cfg["paper_trades_total"] == 2
+        assert cfg["paper_trades_wins"] == 2
 
 
 # ── 6. Disparo único tras un corte de seguridad ───────────────────────────
