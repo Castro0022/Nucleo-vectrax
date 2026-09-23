@@ -116,8 +116,8 @@ RESULTS = (APPLIED, DUPLICATE, NOT_DECISIVE, DEFERRED, RECOVERED,
 ACCOUNTED = (APPLIED, DUPLICATE, NOT_DECISIVE, DEFERRED, RECOVERED, NO_IDENTITY)
 
 
-def accounted(counts: Dict[str, int]) -> bool:
-    """¿Puede el llamador dar este lote por atendido?
+def accounted(counts: Dict[str, int], expected: int) -> bool:
+    """¿Puede el llamador dar por atendidos los `expected` resultados del lote?
 
     Existe como función —y no como un `counts["failed"] == 0` suelto en cada
     llamador— porque de esta pregunta depende que market marque una señal como
@@ -129,8 +129,19 @@ def accounted(counts: Dict[str, int]) -> bool:
     causa que no fuera un bloqueo —disco lleno, permisos, corrupción—. Market
     lo leía como un estado terminal normal y marcaba la señal igual. Ese estado
     ya no existe: lo que no queda atendido es `FAILED`, sin excepciones.
+
+    `expected` es OBLIGATORIO, y esa es la segunda mitad de la protección. Sin
+    él, la comprobación era solo "no hay fallos declarados", y un recuento
+    VACÍO la pasaba: cero fallos porque cero de todo. Un recuento que no cubre
+    el lote entero no es un éxito, es un recuento que no sabe lo que pasó —y
+    esa distinción es justo la que este módulo lleva cinco revisiones
+    aprendiendo a no perder. Se exige que la suma cubra exactamente el lote.
     """
-    return int(counts.get(FAILED, 0)) == 0
+    if expected < 0:
+        return False
+    if int(counts.get(FAILED, 0)) != 0:
+        return False
+    return sum(int(v) for v in counts.values()) == expected
 
 #: Espera máxima a que otro escritor suelte la base, en milisegundos. SQLite
 #: reintenta internamente durante este tiempo en vez de devolver

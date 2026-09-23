@@ -1385,7 +1385,7 @@ class TestAnyStoreFailureIsReportedAsFailed:
             restore()
 
         assert counts[og.FAILED] == 1, counts
-        assert not og.accounted(counts)
+        assert not og.accounted(counts, 1)
 
     def test_the_signal_is_not_marked_when_the_disk_is_full(
         self, index, monkeypatch,
@@ -1419,7 +1419,7 @@ class TestAnyStoreFailureIsReportedAsFailed:
         )
 
         assert counts[og.FAILED] == 1, counts
-        assert not og.accounted(counts)
+        assert not og.accounted(counts, 1)
 
     def test_no_status_can_be_mistaken_for_success(self):
         """`no_star` era el estado trampa: fallo disfrazado de terminal."""
@@ -1445,7 +1445,7 @@ class TestAnyStoreFailureIsReportedAsFailed:
         )
 
         assert counts[og.FAILED] == 3, counts
-        assert not og.accounted(counts)
+        assert not og.accounted(counts, 3)
 
 
 class _ExplodingIndex:
@@ -1520,3 +1520,151 @@ class TestALedgerFailureDoesNotMarkTheSignal:
         marked = market_vc._load_verified_ids()
         assert rejected not in marked
         assert all(s.signal_id in marked for s in sigs if s.signal_id != rejected)
+
+
+# ===========================================================================
+# 13. Los dos fallos de la revisión de 35a52f8
+# ===========================================================================
+
+class TestAFailedMarkerDoesNotDuplicateTheLedger:
+    """Fallo 9: si fallaba la escritura del marcador, el resultado ya estaba en
+    el ledger. Al ciclo siguiente la señal se volvía a presentar —correcto, el
+    marcador no se escribió— y el resultado entraba por SEGUNDA vez: 1
+    resultado, 2 filas, mientras la gravedad conservaba una sola.
+
+    El `verification_ledger` es el único eslabón sin llave de idempotencia: es
+    un JSONL append-only y el DomainScore acumulado cuenta las dos filas. No se
+    corrige en el núcleo —cybersecurity depende de poder appendear una fila que
+    supersede a otra— sino en market, que sí exige una escritura por señal.
+    """
+
+    @staticmethod
+    def _install_recorder(monkeypatch, signals):
+        import connectors.etoro.signal_recorder as rec
+
+        class _Status:
+            class PENDING:
+                value = "pending"
+
+        monkeypatch.setattr(rec, "load_signals", lambda *a, **k: list(signals),
+                            raising=False)
+        monkeypatch.setattr(rec, "SignalStatus", _Status, raising=False)
+
+    @staticmethod
+    def _break_the_marker():
+        real = market_vc._mark_verified
+        market_vc._mark_verified = lambda ids: False
+        return lambda: setattr(market_vc, "_mark_verified", real)
+
+    def test_one_result_does_not_become_two_ledger_rows(self, index, monkeypatch):
+        sig = _win_signal(1)
+        self._install_recorder(monkeypatch, [sig])
+        _make_star(index, "market:AAPL", "market")
+
+        restore = self._break_the_marker()
+        try:
+            market_vc.run_market_verification()
+        finally:
+            restore()
+
+        assert len(vledger.load_outcomes("market")) == 1
+        assert sig.signal_id not in market_vc._load_verified_ids()
+
+        # El ciclo siguiente vuelve a presentarla: no debe duplicar el ledger.
+        market_vc.run_market_verification()
+
+        assert len(vledger.load_outcomes("market")) == 1, "el ledger se duplicó"
+        assert _verdicts(index, "market:AAPL") == ["win"]
+        assert og.applied_count(fingerprint="market:AAPL") == 1
+        assert sig.signal_id in market_vc._load_verified_ids()
+
+    def test_the_accumulated_score_is_not_inflated(self, index, monkeypatch):
+        """Lo que hacía grave al duplicado: falseaba el desempeño real."""
+        sigs = [_win_signal(i) for i in range(3)] + [_loss_signal(i) for i in range(1)]
+        self._install_recorder(monkeypatch, sigs)
+        _make_star(index, "market:AAPL", "market")
+
+        restore = self._break_the_marker()
+        try:
+            market_vc.run_market_verification()
+        finally:
+            restore()
+        self._install_recorder(monkeypatch, sigs)
+        market_vc.run_market_verification()
+
+        score = market_vc.verified_score()
+        assert score.n_decisive == 4, score
+        assert score.win_rate == pytest.approx(75.0)
+
+    def test_a_repeated_cycle_never_duplicates_even_if_the_marker_never_works(
+        self, index, monkeypatch,
+    ):
+        sig = _win_signal(1)
+        self._install_recorder(monkeypatch, [sig])
+        _make_star(index, "market:AAPL", "market")
+
+        restore = self._break_the_marker()
+        try:
+            for _ in range(5):
+                self._install_recorder(monkeypatch, [sig])
+                market_vc.run_market_verification()
+        finally:
+            restore()
+
+        assert len(vledger.load_outcomes("market")) == 1
+        assert _verdicts(index, "market:AAPL") == ["win"]
+
+    def test_the_marker_failure_is_not_silent(self, index, monkeypatch, caplog):
+        sig = _win_signal(1)
+        self._install_recorder(monkeypatch, [sig])
+        _make_star(index, "market:AAPL", "market")
+        monkeypatch.setattr(market_vc, "_verified_path",
+                            lambda: "/proc/imposible/market_verified.json")
+
+        with caplog.at_level("WARNING", logger="vectrax.etoro.verification_cycle"):
+            market_vc.run_market_verification()
+
+        assert any("marcador" in r.message for r in caplog.records), [
+            r.message for r in caplog.records
+        ]
+
+
+class TestAccountedRequiresTheExpectedTotal:
+    """Fallo 10: `accounted()` aceptaba un recuento VACÍO como éxito.
+
+    La comprobación era solo "no hay fallos declarados", y cero de todo pasa
+    esa prueba. Un recuento que no cubre el lote entero no es un éxito: es un
+    recuento que no sabe lo que pasó.
+    """
+
+    def test_an_empty_count_is_not_success(self):
+        assert not og.accounted({}, 1)
+        assert not og.accounted({k: 0 for k in og.RESULTS}, 1)
+
+    def test_a_partial_count_is_not_success(self):
+        counts = {k: 0 for k in og.RESULTS}
+        counts[og.APPLIED] = 2
+        assert not og.accounted(counts, 3)
+        assert og.accounted(counts, 2)
+
+    def test_a_declared_failure_is_never_success(self):
+        counts = {k: 0 for k in og.RESULTS}
+        counts[og.APPLIED] = 2
+        counts[og.FAILED] = 1
+        assert not og.accounted(counts, 3)
+
+    def test_every_accounted_state_covers_the_batch(self):
+        for state in og.ACCOUNTED:
+            counts = {k: 0 for k in og.RESULTS}
+            counts[state] = 4
+            assert og.accounted(counts, 4), state
+
+    def test_an_empty_batch_is_accounted(self):
+        assert og.accounted({k: 0 for k in og.RESULTS}, 0)
+
+    def test_the_caller_passes_the_real_batch_size(self, index, monkeypatch):
+        """Market pasa el tamaño del lote, no un valor cómodo."""
+        import inspect
+
+        src = inspect.getsource(market_vc._verify)
+        assert "accounted(fed, len(to_gravity))" in src
