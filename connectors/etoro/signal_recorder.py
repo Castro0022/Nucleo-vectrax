@@ -77,6 +77,12 @@ class MarketSignal:
     sl_touched:         bool = False
     outcome_window_h:   float = 4.0   # hours to evaluate outcome
 
+    # NOTA: el conocimiento técnico formal (TA-Lib) de esta señal NO vive
+    # aquí — vive en connectors.etoro.knowledge_ledger, en su propio archivo
+    # append-only, unido por `signal_id` en tiempo de lectura. Se decidió
+    # así para no inflar ni forzar la reescritura completa de este JSONL en
+    # cada backfill (ver knowledge_ledger.py, docstring).
+
     def to_dict(self) -> Dict:
         return asdict(self)
 
