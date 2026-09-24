@@ -1,126 +1,136 @@
 """
-connectors/etoro/knowledge_gravity_seed.py — Siembra de conocimiento (masa cero).
+connectors/etoro/knowledge_gravity_seed.py — Incorporar el conocimiento
+TA-Lib al universo cognitivo por su puerta YA EXISTENTE.
 
-"La escuela crea el conocimiento; la experiencia posterior lo enriquece."
+CORRECCIÓN (2026-09-24): la versión anterior de este módulo creaba 196
+`GravityRecord` directamente en `gravity_index.json`, vía
+`GravityIndex.update_records()`. Esa NO es la ruta que el creador definió
+para "estrella normal de conocimiento" — `gravity_index.json` es la capa
+de aprendizaje de PATRONES por dominio (`market:{symbol}`,
+`freight:{lane}`, ...), no el universo cognitivo visual
+(`vectrax.db.stars`, capas Core/Mid/Outer).
 
-Crea, UNA vez, una estrella gravitacional por cada concepto de TA-Lib que
-`connectors.market.ta_knowledge` sabe calcular — no por cada símbolo, no por
-cada timeframe, no por cada salida numérica de una función con múltiples
-salidas (MACD, BBANDS, AROON, ... siguen siendo UN concepto cada una).
+La ruta correcta, ya existente y ya usada en producción para conocimiento
+de sistema (no conversacional): `vectrax.engine.ingest()`. Hay precedente
+exacto: `core/gravity_sync.py::_promote_mature_patterns()` ya usa esta
+misma función, con la misma convención `channel="user",
+owner="vectrax_system"`, para llevar patrones maduros de dominio al
+universo — la diferencia es que aquí el conocimiento entra ANTES de tener
+experiencia (masa cero real, no artificial), y ese patrón lo hace después.
 
-Convención de identidad:
-    fingerprint = f"market_knowledge:{nombre_funcion}"
-    domain      = "market"
-    intent       = "ta_indicator"
-    hits         = 0       — existe, no se ha activado todavía
-    cc_score     = 0.0
-    outcome_history / activation_history = []  — sin experiencia todavía
-    last_seen    = first_seen  — ver nota abajo
+Esta corrección REUTILIZA `ingest()`, no reproduce su comportamiento:
+  - No se crea ningún `GravityRecord` — cero import de `gravity_engine`.
+  - No se asigna capa manualmente: resulta de `compute_star_gravity()` +
+    `assign_layer()` dentro de `ingest()` (`vectrax/engine.py`,
+    `vectrax/gravity.py`) — ninguno de los dos se toca aquí.
+  - No se asigna masa artificial: una estrella nueva nace en `MIN_MASS`
+    (`vectrax/models.py`), igual que cualquier otro contenido ingerido.
+  - No se crean conexiones/convergencias/constelaciones en este archivo:
+    las ejecuta `_post_ingest()` (dentro de `ingest()`), el mismo camino
+    que sigue cualquier otro contenido del sistema.
+  - La identidad/deduplicación es la que YA tiene `ingest()`
+    (near-duplicate por similitud de embedding, dentro de
+    `channel`+`owner`) — este módulo no añade una capa de identidad propia
+    ni fuerza que sean 196 estrellas nuevas si alguna ya existe.
 
-Nota sobre `last_seen` (corrección 2026-09-24): NO se siembra como cadena
-vacía. `_record_event_locked()` decide si actualizar `last_seen` con
-`_parse_iso(effective) > _parse_iso(rec.last_seen)`, y `_parse_iso("")` no
-devuelve "nunca" — devuelve `datetime.now()` reevaluado en ESE instante de
-la comparación, que cae microsegundos DESPUÉS del `effective` capturado al
-inicio de la misma llamada. Resultado: la comparación nunca es cierta y
-`last_seen` queda atascado en "" para siempre, incluso tras activarse.
-Sembrar `last_seen = first_seen` (un ISO real y fijo, el instante de la
-siembra) lo resuelve sin tocar `_parse_iso` ni `gravity_engine.py`:
-`hits=0`/`outcome_history=[]` siguen siendo la señal honesta de "sin
-activar todavía" — `last_seen` es solo un timestamp de referencia que
-cualquier activación real, al ser cronológicamente posterior, supera de
-forma natural.
-
-Mecanismo: el MISMO `GravityIndex` que ya existe. `record_event()` no sirve
-para esto (siempre crea con hits=1 -- implica que algo ocurrió); se usa
-`GravityIndex.update_records()`, el método de escritura cruda que
-`core/learn/constellation.py` ya usa para persistir cambios de estado que no
-son un evento. Cuando Market reconozca después alguno de estos conceptos en
-una observación real, `record_event(fingerprint=ese_mismo_fingerprint, ...)`
-encontrará el registro YA EXISTENTE y lo activará (hits += 1) — esa conexión
-es una etapa futura, deliberadamente NO implementada aquí.
-
-CRÍTICO: `update_records()` hace `_write_to_disk(records)` con EXACTAMENTE
-el dict que se le pasa — sustituye el índice completo, no lo fusiona. Por
-eso esta siembra SIEMPRE parte de `load_raw()` (el estado real actual) y le
-añade las que falten, nunca escribe un dict que contenga solo los 196
-nuevos — perder una sola estrella existente por esto sería inaceptable.
-
-Idempotente: una identidad ya presente (de una siembra anterior, o de
-cualquier otro origen) NUNCA se sobrescribe ni se cuenta dos veces.
+Texto de cada estrella: nombre + nombre largo oficial + categoría, tal
+como los expone TA-Lib mismo (`talib.abstract.Function(name).info`) — dato
+factual de la propia librería, no una relación inventada entre
+indicadores ni ninguna implicación de trading.
 
 Creador: Mario Bravo Castro
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 logger = logging.getLogger("vectrax.etoro.knowledge_gravity_seed")
 
-FINGERPRINT_PREFIX = "market_knowledge:"
-SEED_DOMAIN = "market"
-SEED_INTENT = "ta_indicator"
+# Misma convención que ya usa core/gravity_sync.py para conocimiento
+# propio del sistema (no conversacional, no de un usuario real) — ya
+# reconocida aparte por core/universe_census.py.
+SEED_CHANNEL = "user"
+SEED_OWNER = "vectrax_system"
 
 
-def knowledge_fingerprint(function_name: str) -> str:
-    """Identidad gravitacional de un concepto de conocimiento técnico."""
-    return f"{FINGERPRINT_PREFIX}{function_name}"
+def _knowledge_text(function_name: str) -> str:
+    """Texto factual de UNA función de TA-Lib, tomado de sus propios
+    metadatos (`display_name`/`group`) — nunca describe relaciones con
+    otras funciones ni implicaciones de trading. Defensivo: si TA-Lib no
+    está disponible o la función no resuelve metadatos, cae al nombre
+    escueto en vez de lanzar."""
+    try:
+        from talib import abstract
+        info = abstract.Function(function_name).info
+        display_name = info.get("display_name") or function_name
+        group = info.get("group") or ""
+        if group:
+            return f"{display_name} ({function_name}) — {group}"
+        return f"{display_name} ({function_name})"
+    except Exception:
+        return function_name
 
 
 def seed_knowledge_stars() -> Dict[str, Any]:
-    """Crea (si no existen ya) una estrella de masa cero por cada función
-    del catálogo de `ta_knowledge`. Nunca reactiva ni modifica una estrella
-    que ya existía — ni la sembrada antes, ni ninguna de otro origen.
+    """Incorpora el catálogo de `connectors.market.ta_knowledge` al
+    universo cognitivo llamando a `vectrax.engine.ingest()` una vez por
+    función — la puerta que Vectrax ya tenía para "esto es conocimiento
+    nuevo", no una ruta construida para este propósito.
 
-    Returns: {"created": [...], "already_present": [...], "total_before",
-              "total_after"} — nunca lanza.
+    Returns: {"total_candidates", "created", "already_present", "errors",
+              "stars": [{"function", "star_id", "layer", "mass",
+                         "gravity_score", "channel", "owner",
+                         "repetition_count", "new"}, ...]}
+    Nunca lanza — un fallo puntual por función se cuenta y se continúa.
     """
-    from core.learn.gravity_engine import get_gravity_index, GravityRecord, Tier, _now_iso
+    from vectrax.engine import ingest
+    from vectrax.db import get_all_stars
     from connectors.market.ta_knowledge import known_function_names
 
-    gi = get_gravity_index()
-    records = gi.load_raw()  # estado REAL completo — nunca se parte de {}
-    total_before = len(records)
+    names = known_function_names()
+    # Identidad ANTES de tocar nada: qué estrellas de este canal/owner ya
+    # existían. `ingest()` decide por sí mismo si una función es "nueva" o
+    # "ya vista" (near-duplicate de embedding) — esto solo OBSERVA su
+    # decisión para reportarla, no la sustituye.
+    existing_ids_before = {
+        s.id for s in get_all_stars(channel=SEED_CHANNEL, owner=SEED_OWNER)
+    }
 
-    now = _now_iso()
-    created = []
-    already_present = []
+    created: List[str] = []
+    already_present: List[str] = []
+    stars_report: List[Dict[str, Any]] = []
+    errors = 0
 
-    for name in known_function_names():
-        fp = knowledge_fingerprint(name)
-        if fp in records:
-            already_present.append(fp)
-            continue
-        records[fp] = GravityRecord(
-            fingerprint=fp,
-            tier=Tier.HOT.value,
-            hits=0,
-            first_seen=now,
-            last_seen=now,  # ver nota del módulo — nunca "" (rompe el avance en record_event)
-            cc_score=0.0,
-            impact="low",
-            domain=SEED_DOMAIN,
-            intent=SEED_INTENT,
-            outcome_history=[],
-            verified_outcomes=[],
-            activation_history=[],
-            decay_factor=1.0,
-            summary=f"Conocimiento técnico formal: {name} (TA-Lib) — sin activar todavía",
-        )
-        created.append(fp)
+    for name in names:
+        try:
+            text = _knowledge_text(name)
+            star = ingest(text=text, success=False, channel=SEED_CHANNEL, owner=SEED_OWNER)
+            is_new = star.id not in existing_ids_before
+            (created if is_new else already_present).append(name)
+            stars_report.append({
+                "function": name,
+                "star_id": star.id,
+                "layer": star.layer,
+                "mass": star.mass,
+                "gravity_score": star.gravity_score,
+                "channel": star.channel,
+                "owner": star.owner,
+                "repetition_count": star.repetition_count,
+                "new": is_new,
+            })
+        except Exception as exc:
+            errors += 1
+            logger.warning("[KNOWLEDGE_SEED] fallo en %s: %s", name, exc)
 
-    if created:
-        gi.update_records(records)  # UNA sola escritura, con TODO el índice
-
-    total_after = total_before + len(created)
     logger.info(
-        "[KNOWLEDGE_SEED] creadas=%d ya_presentes=%d total_antes=%d total_despues=%d",
-        len(created), len(already_present), total_before, total_after,
+        "[KNOWLEDGE_SEED] candidatas=%d creadas=%d ya_presentes=%d errores=%d",
+        len(names), len(created), len(already_present), errors,
     )
     return {
+        "total_candidates": len(names),
         "created": created,
         "already_present": already_present,
-        "total_before": total_before,
-        "total_after": total_after,
+        "errors": errors,
+        "stars": stars_report,
     }

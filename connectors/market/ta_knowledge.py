@@ -86,27 +86,6 @@ def _function_names() -> list:
     return [n for n in names if n not in _NON_COMPUTABLE_ON_REAL_PRICE]
 
 
-def output_keys_for(function_name: str) -> list:
-    """Claves que `compute_knowledge` produce para UNA función, sin volver a
-    calcular nada — solo metadatos de nombres (barato). Para una función de
-    salida única es `[function_name]`; para una de salidas múltiples (p.ej.
-    MACD → macd/macdsignal/macdhist) son `[f"{function_name}_{salida}", ...]`.
-
-    Existe para que el reconocimiento/activación (Punto A) pueda preguntar
-    "¿esta función produjo algún valor real en esta observación?" sin
-    duplicar en otro archivo la misma convención de nombres que ya usa
-    `compute_knowledge` — una sola fuente para la relación función↔claves."""
-    if not TALIB_AVAILABLE:
-        return [function_name]
-    try:
-        output_names = talib_abstract.Function(function_name).output_names
-    except Exception:
-        return [function_name]
-    if len(output_names) > 1:
-        return [f"{function_name}_{oname}" for oname in output_names]
-    return [function_name]
-
-
 def known_function_names() -> list:
     """Catálogo completo (196 funciones: las 201 de TA-Lib menos las 5 no
     computables sobre precio real) que `compute_knowledge` intenta

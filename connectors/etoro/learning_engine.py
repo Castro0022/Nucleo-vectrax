@@ -498,72 +498,6 @@ def _feed_gravity(symbols: List[str]) -> int:
     return fed
 
 
-def _feed_knowledge_activation() -> int:
-    """
-    Step 5.5: Punto A — Vectrax reconoce, en observaciones YA hechas, el
-    conocimiento técnico formal que estudió (196 estrellas `market_knowledge:*`
-    sembradas por `knowledge_gravity_seed`, masa cero) y activa la estrella
-    correspondiente cuando ese conocimiento aparece en una observación real.
-
-    Regla fijada: SIN preselección de relevancia y SIN umbral añadido. Las
-    196 funciones participan por igual en cada observación; un valor `None`
-    en `knowledge_ledger` significa únicamente que esa función no tuvo
-    observación válida en ESE instante (histórico insuficiente) — no es una
-    exclusión decidida aquí. Es la propia gravedad (repetición, cc_score,
-    convergencias — sin cambios en ninguna de las tres) la que después
-    diferencia qué conocimiento acumula peso.
-
-    Fuente de la observación: `connectors.etoro.knowledge_ledger`, unido por
-    `signal_id` — el mismo conocimiento que adjuntó la Etapa 1
-    (`knowledge_backfill`). No recalcula nada nuevo, no toca pattern_memory,
-    no cambia `record_event` ni `GravityRecord`.
-    """
-    activated = 0
-    try:
-        from core.learn.gravity_engine import get_gravity_index
-        from connectors.etoro import knowledge_ledger
-        from connectors.etoro.knowledge_gravity_seed import knowledge_fingerprint
-        from connectors.etoro.signal_recorder import load_signals
-        from connectors.market.ta_knowledge import known_function_names, output_keys_for
-
-        gi = get_gravity_index()
-        function_names = known_function_names()
-        signals = load_signals(limit=500)
-
-        for sig in signals:
-            entry = knowledge_ledger.get_features(sig.signal_id)
-            if not entry:
-                continue
-            by_timeframe = entry.get("features") or {}
-
-            for timeframe, tf_data in by_timeframe.items():
-                features = (tf_data or {}).get("features") or {}
-                if not features:
-                    continue
-
-                for fn_name in function_names:
-                    keys = output_keys_for(fn_name)
-                    # La función "participó" en esta observación si CUALQUIERA
-                    # de sus salidas produjo un valor real — no se exige que
-                    # todas lo hagan (una función de 3 salidas con 1 real ya
-                    # es una observación de ese concepto, no un tercio de una).
-                    if not any(features.get(k) is not None for k in keys):
-                        continue
-                    gi.record_event(
-                        fingerprint=knowledge_fingerprint(fn_name),
-                        cc_score=0.0,
-                        impact="low",
-                        domain="market",
-                        intent="ta_indicator",
-                        outcome="observed",
-                        summary=f"{fn_name} reconocido en {sig.symbol} ({timeframe})",
-                    )
-                    activated += 1
-    except Exception as e:
-        logger.debug("feed_knowledge_activation error: %s", e)
-    return activated
-
-
 def _record_causal_decision(causal, proposal, mode, *, applied, abstained_reason=""):
     """Persiste la influencia del aprendizaje en ESTA decisión de trading.
 
@@ -827,7 +761,6 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
       3. Update patterns
       4. Generate proposals
       5. Feed observations into gravitational universe
-      5.5. Activate market_knowledge:* stars from observed technical readings
 
     Returns a summary dict.
     """
@@ -915,12 +848,6 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     # Step 5: Only feed gravity for open markets
     gravity_fed = _feed_gravity(open_syms) if open_syms else 0
 
-    # Step 5.5: Punto A — reconocer/activar conocimiento técnico (196
-    # estrellas market_knowledge:*) sobre observaciones ya adjuntadas por
-    # knowledge_backfill. Independiente de open_syms: activa sobre CUALQUIER
-    # señal con conocimiento adjunto, no solo mercados abiertos ahora mismo.
-    knowledge_activated = _feed_knowledge_activation()
-
     # Step 6: check for critical convergences and alert
     alerts_sent = 0
     try:
@@ -961,7 +888,6 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         "patterns_usable":  r3.get("usable", 0),
         "proposals_new":    len(proposals),
         "gravity_fed":     gravity_fed,
-        "knowledge_activated": knowledge_activated,
         "alerts_sent":     alerts_sent,
         "auto_executed":   auto_executed,
         "positions_closed": positions_closed,
