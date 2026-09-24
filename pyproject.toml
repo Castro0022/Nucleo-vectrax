@@ -17,6 +17,7 @@ dependencies = [
     "sentence-transformers>=2.7",
     "networkx>=2.8",
     "numpy>=1.24",
+    "TA-Lib>=0.8.0",  # conocimiento técnico de mercado — connectors/market/ta_knowledge.py
     # API framework
     "fastapi>=0.100",
     "uvicorn>=0.22",

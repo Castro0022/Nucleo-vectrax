@@ -18,6 +18,11 @@ python-dotenv>=1.0.0
 numpy>=2.0.0
 sentence-transformers>=5.1.0
 
+# Conocimiento técnico de mercado (velas/tendencia/momentum/volatilidad/
+# volumen) — connectors/market/ta_knowledge.py. Wheel precompilado
+# manylinux, sin dependencia de libta-lib del sistema.
+TA-Lib>=0.8.0
+
 # Filesystem monitoring
 watchdog>=6.0.0
 
