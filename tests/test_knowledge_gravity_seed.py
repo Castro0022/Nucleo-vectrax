@@ -60,7 +60,11 @@ class TestSeedKnowledgeStars:
         assert rec.domain == "market"
         assert rec.intent == "ta_indicator"
         assert rec.first_seen  # tiene timestamp de siembra
-        assert rec.last_seen == ""  # nunca activada
+        # last_seen nace IGUAL a first_seen (nunca "") -- ver nota del
+        # módulo: "" hace que _parse_iso lo trate como "ahora" reevaluado
+        # en cada comparación, y entonces la primera activación real nunca
+        # logra avanzarlo. Sembrado como first_seen, sí puede avanzar.
+        assert rec.last_seen == rec.first_seen
 
     def test_multi_output_function_is_still_one_star(self, isolated_index):
         """MACD produce 3 salidas numéricas (macd/macdsignal/macdhist) —
@@ -118,6 +122,52 @@ class TestSeedKnowledgeStars:
         # La activación simulada sigue intacta -- la siembra no la tocó.
         records_after = isolated_index.load_raw()
         assert records_after["market_knowledge:RSI"].hits == 5
+
+    def test_seed_then_two_real_activations_advance_last_seen_keep_first_seen(self, isolated_index):
+        """Demuestra el ciclo completo pedido:
+        siembra -> hits=0 -> 1ra activación real -> hits=1, last_seen
+        actualizado -> 2da activación -> hits=2, last_seen avanza -- y
+        first_seen permanece siendo el momento de ADQUISICIÓN del
+        conocimiento (la siembra), no el de ninguna activación."""
+        from types import SimpleNamespace
+        from connectors.etoro import learning_engine as LE
+
+        seed_summary = SEED.seed_knowledge_stars()
+        assert "market_knowledge:RSI" in seed_summary["created"]
+
+        seeded = isolated_index.load_raw()["market_knowledge:RSI"]
+        assert seeded.hits == 0
+        seed_first_seen = seeded.first_seen
+        seed_last_seen = seeded.last_seen
+        assert seed_last_seen == seed_first_seen  # nace sin activación real
+
+        sig = SimpleNamespace(signal_id="SIG-1", symbol="BTC")
+        entry = {
+            "signal_id": "SIG-1", "computed_at": 0.0,
+            "features": {"OneHour": {"available": True, "insufficient_depth": False,
+                                      "features": {"RSI": 55.2}}},
+        }
+
+        # ── 1ra activación real ──────────────────────────────────────
+        with patch("connectors.etoro.signal_recorder.load_signals", return_value=[sig]), \
+             patch("connectors.etoro.knowledge_ledger.get_features", return_value=entry):
+            LE._feed_knowledge_activation()
+
+        after_1 = isolated_index.load_raw()["market_knowledge:RSI"]
+        assert after_1.hits == 1
+        assert after_1.first_seen == seed_first_seen  # NUNCA cambia
+        assert after_1.last_seen > seed_last_seen      # avanzó de verdad
+        assert after_1.last_seen != ""                 # nunca atascado
+
+        # ── 2da activación real ──────────────────────────────────────
+        with patch("connectors.etoro.signal_recorder.load_signals", return_value=[sig]), \
+             patch("connectors.etoro.knowledge_ledger.get_features", return_value=entry):
+            LE._feed_knowledge_activation()
+
+        after_2 = isolated_index.load_raw()["market_knowledge:RSI"]
+        assert after_2.hits == 2
+        assert after_2.first_seen == seed_first_seen   # sigue sin cambiar
+        assert after_2.last_seen >= after_1.last_seen  # avanza de nuevo
 
     def test_no_multiplication_by_symbol_or_timeframe(self, isolated_index):
         """El fingerprint nunca lleva símbolo ni timeframe -- es el mismo

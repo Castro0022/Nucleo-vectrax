@@ -15,6 +15,21 @@ Convención de identidad:
     hits         = 0       — existe, no se ha activado todavía
     cc_score     = 0.0
     outcome_history / activation_history = []  — sin experiencia todavía
+    last_seen    = first_seen  — ver nota abajo
+
+Nota sobre `last_seen` (corrección 2026-09-24): NO se siembra como cadena
+vacía. `_record_event_locked()` decide si actualizar `last_seen` con
+`_parse_iso(effective) > _parse_iso(rec.last_seen)`, y `_parse_iso("")` no
+devuelve "nunca" — devuelve `datetime.now()` reevaluado en ESE instante de
+la comparación, que cae microsegundos DESPUÉS del `effective` capturado al
+inicio de la misma llamada. Resultado: la comparación nunca es cierta y
+`last_seen` queda atascado en "" para siempre, incluso tras activarse.
+Sembrar `last_seen = first_seen` (un ISO real y fijo, el instante de la
+siembra) lo resuelve sin tocar `_parse_iso` ni `gravity_engine.py`:
+`hits=0`/`outcome_history=[]` siguen siendo la señal honesta de "sin
+activar todavía" — `last_seen` es solo un timestamp de referencia que
+cualquier activación real, al ser cronológicamente posterior, supera de
+forma natural.
 
 Mecanismo: el MISMO `GravityIndex` que ya existe. `record_event()` no sirve
 para esto (siempre crea con hits=1 -- implica que algo ocurrió); se usa
@@ -82,7 +97,7 @@ def seed_knowledge_stars() -> Dict[str, Any]:
             tier=Tier.HOT.value,
             hits=0,
             first_seen=now,
-            last_seen="",
+            last_seen=now,  # ver nota del módulo — nunca "" (rompe el avance en record_event)
             cc_score=0.0,
             impact="low",
             domain=SEED_DOMAIN,
