@@ -49,14 +49,21 @@ Cada posición abierta se evalúa así, en orden:
 `check_open_live_positions()` sigue exactamente el mismo orden para
 posiciones LIVE (`live_position_store.py`), pero el fill viene de
 `execution_adapter.py` (broker real vía `trade_executor.py`), nunca
-simulado. Limitación conocida: no hay reconciliación ACTIVA contra el
-broker todavía — eToro no expone un endpoint de "consultar orden por
-id" en `etoro_client.py`, solo `get_portfolio()` (lista posiciones, no
-órdenes). Una posición en `RECONCILING` se reintenta cada ciclo vía el
-mismo `intent_id` — el guard de idempotencia impide que eso reenvíe al
-broker mientras siga sin resolverse, pero sin una consulta real puede
-quedarse en `RECONCILING` indefinidamente. Cerrar ese hueco (comparar
-contra `get_portfolio()`) queda fuera de este paso.
+simulado. Una posición LIVE en `RECONCILING` (una `OrderExecution`
+quedó en `UNKNOWN`) se reconcilia activamente cada ciclo contra
+`get_portfolio()` (`portfolio_reconciler.py`) — NUNCA reenviando la
+orden: como el `position_id` del broker ya se conoce de antemano para
+un CLOSE, comparar es inequívoco (¿la posición sigue existiendo?, ¿con
+qué tamaño?). Ver ese módulo para la matriz completa
+(CONFIRMED_CLOSED/STILL_OPEN_FULL/STILL_OPEN_REDUCED/PORTFOLIO_UNAVAILABLE).
+
+Limitación que SIGUE sin resolver, deliberadamente: la reconciliación
+de un OPEN en `UNKNOWN` NO existe — sin un identificador que el broker
+devuelva antes del timeout, no hay forma de correlacionar
+inequívocamente una posición nueva del portfolio con ESE `intent_id`
+(`portfolio_reconciler.reconcile_open()` por eso siempre responde
+`CANNOT_CONFIRM`, nunca infiere). No es relevante todavía porque ENTER
+sigue sin conectarse a este archivo — ver más abajo.
 
 API pública:
     check_open_positions() -> List[Dict]        (PAPER, acciones tomadas)
@@ -72,7 +79,12 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from connectors.etoro import execution_adapter, live_position_store, trade_decision_engine
+from connectors.etoro import (
+    execution_adapter,
+    live_position_store,
+    portfolio_reconciler,
+    trade_decision_engine,
+)
 from core.trading import risk_gate
 from core.trading.contracts import (
     AccountRiskSnapshot,
@@ -581,13 +593,48 @@ def _advance_in_flight_live_close(
     record: PositionRecord, entry: "live_position_store.LivePositionEntry",
     user_id: Any, now_dt: datetime,
 ) -> PositionRecord:
-    """Reintenta el MISMO intent_id de un CLOSE ya en curso. Nunca mina
-    uno nuevo — `execution_adapter.submit_close` ya se niega a llamar al
-    broker de nuevo mientras el anterior siga sin resolverse; esto solo
-    le da la oportunidad de devolver un desenlace más reciente si ya se
-    resolvió."""
+    """Avanza un CLOSE ya en curso. NUNCA reenvía la orden — dos caminos
+    distintos, ninguno de los dos manda un POST:
+
+      RECONCILING (última ejecución conocida = UNKNOWN): se reconcilia
+      contra el estado REAL del broker (`portfolio_reconciler.py`,
+      `get_portfolio()`), nunca reintentando el envío. `position_id` ya
+      se conoce de antemano — comparar es inequívoco.
+
+      CLOSING sin UNKNOWN todavía (no debería ocurrir en la práctica —
+      dentro de un mismo ciclo, `check_open_live_positions()` ya
+      resuelve CLOSING a RECONCILING/CLOSED/HOLDING antes de terminar;
+      solo queda aquí como resguardo): se reintenta el MISMO intent_id
+      vía `execution_adapter.submit_close`, que por su propio guard de
+      idempotencia no vuelve a llamar al broker si sigue sin resolverse.
+    """
     if record.current_intent is None:
         return record
+
+    if record.status == PositionStatus.RECONCILING:
+        outcome, observed_amount = portfolio_reconciler.reconcile_close(
+            entry.broker_position_id, record.current_intent.quantity,
+        )
+        if outcome == portfolio_reconciler.ReconciliationOutcome.CONFIRMED_CLOSED:
+            execution = execution_adapter.record_reconciled_execution(
+                record.current_intent.intent_id, ExecutionStatus.FILLED,
+                filled_quantity=record.current_intent.quantity,
+            )
+            return apply_execution_update(record, execution, now_dt)
+        if outcome == portfolio_reconciler.ReconciliationOutcome.STILL_OPEN_REDUCED:
+            reduced_by = max(record.current_intent.quantity - (observed_amount or 0.0), 0.0)
+            execution = execution_adapter.record_reconciled_execution(
+                record.current_intent.intent_id, ExecutionStatus.PARTIAL,
+                filled_quantity=reduced_by,
+            )
+            # PARTIAL nunca fuerza una transición de estado por sí solo
+            # (ver position_state.py) — solo deja constancia de la
+            # evidencia observada mientras se sigue esperando.
+            return apply_execution_update(record, execution, now_dt)
+        # STILL_OPEN_FULL o PORTFOLIO_UNAVAILABLE: nada cambia — se
+        # sigue esperando, sin reenviar nada.
+        return record
+
     execution = execution_adapter.submit_close(
         record.current_intent, user_id=user_id,
         broker_position_id=entry.broker_position_id,

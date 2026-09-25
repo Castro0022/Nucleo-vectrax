@@ -21,9 +21,11 @@ import pytest
 from connectors.etoro import (
     execution_adapter,
     live_position_store,
+    portfolio_reconciler,
     position_manager,
     trade_decision_engine,
 )
+from connectors.etoro.portfolio_reconciler import ReconciliationOutcome
 from connectors.etoro.trade_executor import ExecutionResult
 from core.trading.contracts import EntryThesis, PositionRecord, PositionStatus
 
@@ -183,6 +185,10 @@ class TestTimeoutNeverProducesASecondCloseAcrossCycles:
             return _timeout_result()
 
         monkeypatch.setattr(execution_adapter, "execute_close", _spy_execute_close)
+        monkeypatch.setattr(
+            portfolio_reconciler, "reconcile_close",
+            lambda broker_position_id, expected_quantity: (ReconciliationOutcome.STILL_OPEN_FULL, expected_quantity),
+        )
 
         live_position_store.save(_open_entry())
         wired["price"] = 48_000.0  # dispara EXIT por stop duro
@@ -195,12 +201,97 @@ class TestTimeoutNeverProducesASecondCloseAcrossCycles:
         assert entry_after_1.record.status == PositionStatus.RECONCILING
 
         # Ciclo 2 (como si el loop de 1-5min volviera a correr): NO debe
-        # volver a llamar al broker — el intent anterior sigue sin resolver.
+        # volver a llamar al broker — reconcilia contra get_portfolio(),
+        # nunca reenvía la orden. STILL_OPEN_FULL -> sigue esperando.
         actions_2 = position_manager.check_open_live_positions(user_id="creator")
         assert actions_2 == []
-        assert len(broker_calls) == 1, "un segundo ciclo con la misma UNKNOWN nunca reenvía"
+        assert len(broker_calls) == 1, "un segundo ciclo jamás vuelve a llamar a execute_close"
         entry_after_2 = live_position_store.get("pos-1")
         assert entry_after_2.record.status == PositionStatus.RECONCILING
         assert entry_after_2.record.current_intent.intent_id == entry_after_1.record.current_intent.intent_id
 
         assert wired["results"] == []  # nunca se contó ningún resultado — no cerró de verdad
+
+
+class TestReconciliationResolvesTheDeadEnd:
+    """El estado sin salida que quedaba tras el paso anterior:
+    LIVE -> CLOSE -> timeout -> RECONCILING -> se queda ahí para
+    siempre. Estos tests prueban que ahora SÍ avanza, sin reenviar
+    nunca la orden."""
+
+    def _reconciling_entry(self):
+        entry = _open_entry()
+        thesis = entry.record.entry_thesis
+        intent = None
+        from core.trading.contracts import OrderAction, OrderIntent, OrderExecution, ExecutionStatus
+        intent = OrderIntent(
+            intent_id="pos-1-close-123", position_id="pos-1", action=OrderAction.CLOSE,
+            quantity=100.0, created_at=thesis.created_at,
+        )
+        unknown_execution = OrderExecution(
+            intent_id="pos-1-close-123", broker_order_id=None, status=ExecutionStatus.UNKNOWN,
+            filled_quantity=0.0, avg_fill_price=None, last_update_at=thesis.created_at,
+        )
+        record = PositionRecord(
+            position_id="pos-1", entry_thesis=thesis, status=PositionStatus.RECONCILING,
+            remaining_quantity=100.0, current_intent=intent, last_execution=unknown_execution,
+            updated_at=thesis.created_at,
+        )
+        from dataclasses import replace
+        return replace(entry, record=record)
+
+    def test_confirmed_closed_resolves_without_ever_calling_execute_close(self, wired, monkeypatch):
+        broker_calls = []
+        monkeypatch.setattr(execution_adapter, "execute_close", lambda **kw: broker_calls.append(kw))
+        monkeypatch.setattr(
+            portfolio_reconciler, "reconcile_close",
+            lambda broker_position_id, expected_quantity: (ReconciliationOutcome.CONFIRMED_CLOSED, None),
+        )
+        live_position_store.save(self._reconciling_entry())
+
+        actions = position_manager.check_open_live_positions(user_id="creator")
+
+        assert broker_calls == [], "la reconciliación NUNCA reenvía la orden"
+        assert len(actions) == 1
+        assert actions[0]["status"] in ("closed_win", "closed_loss", "closed_neutral")
+        assert live_position_store.get("pos-1").record.status == PositionStatus.CLOSED
+        assert wired["results"] == [{"pnl_usd": actions[0]["pnl_usd"], "is_paper": False}]
+
+    def test_still_open_full_keeps_waiting_without_closing(self, wired, monkeypatch):
+        monkeypatch.setattr(
+            portfolio_reconciler, "reconcile_close",
+            lambda broker_position_id, expected_quantity: (ReconciliationOutcome.STILL_OPEN_FULL, expected_quantity),
+        )
+        live_position_store.save(self._reconciling_entry())
+
+        actions = position_manager.check_open_live_positions(user_id="creator")
+
+        assert actions == []
+        assert live_position_store.get("pos-1").record.status == PositionStatus.RECONCILING
+
+    def test_still_open_reduced_records_partial_without_forcing_closed(self, wired, monkeypatch):
+        monkeypatch.setattr(
+            portfolio_reconciler, "reconcile_close",
+            lambda broker_position_id, expected_quantity: (ReconciliationOutcome.STILL_OPEN_REDUCED, 40.0),
+        )
+        live_position_store.save(self._reconciling_entry())
+
+        actions = position_manager.check_open_live_positions(user_id="creator")
+
+        assert actions == []  # PARTIAL nunca cierra por sí solo
+        entry = live_position_store.get("pos-1")
+        assert entry.record.status == PositionStatus.RECONCILING
+        assert entry.record.last_execution.status.value == "PARTIAL"
+        assert entry.record.last_execution.filled_quantity == 60.0  # 100 esperado - 40 observado
+
+    def test_portfolio_unavailable_keeps_waiting(self, wired, monkeypatch):
+        monkeypatch.setattr(
+            portfolio_reconciler, "reconcile_close",
+            lambda broker_position_id, expected_quantity: (ReconciliationOutcome.PORTFOLIO_UNAVAILABLE, None),
+        )
+        live_position_store.save(self._reconciling_entry())
+
+        actions = position_manager.check_open_live_positions(user_id="creator")
+
+        assert actions == []
+        assert live_position_store.get("pos-1").record.status == PositionStatus.RECONCILING

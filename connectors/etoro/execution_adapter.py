@@ -203,3 +203,26 @@ def submit_close(
     execution = _translate(intent, result, now)
     _persist(execution)
     return execution
+
+
+def record_reconciled_execution(
+    intent_id: str,
+    status: ExecutionStatus,
+    filled_quantity: float = 0.0,
+    avg_fill_price: Optional[float] = None,
+) -> OrderExecution:
+    """Persiste una `OrderExecution` que viene de reconciliar contra el
+    estado REAL del broker (`portfolio_reconciler.py`), no de una
+    llamada nueva a `trade_executor`. Es la única otra manera legítima
+    de que un `intent_id` en `UNKNOWN` avance: nunca reenviando la
+    orden, siempre observando qué pasó de verdad."""
+    execution = OrderExecution(
+        intent_id=intent_id,
+        broker_order_id=None,
+        status=status,
+        filled_quantity=filled_quantity,
+        avg_fill_price=avg_fill_price,
+        last_update_at=datetime.now(timezone.utc),
+    )
+    _persist(execution)
+    return execution
