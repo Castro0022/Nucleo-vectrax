@@ -61,6 +61,7 @@ class ExecutionResult:
     environment:  str
     order_id:     Optional[Any] = None
     position_id:  Optional[Any] = None
+    instrument_id: Optional[int] = None
     amount:       float = 0.0
     is_buy:       Optional[bool] = None
     error:        Optional[str] = None
@@ -237,6 +238,7 @@ def execute_open(
             environment=env,
             order_id=result.get("order_id"),
             position_id=result.get("position_id"),
+            instrument_id=instrument_id,
             amount=amount,
             is_buy=is_buy,
             latency_ms=result.get("latency_ms", 0),

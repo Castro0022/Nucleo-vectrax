@@ -785,6 +785,7 @@ def execute_proposal(
 
     if result.success:
         update_proposal_status(proposal_id, "executed")
+        _persist_live_position_opened(proposal, result, trade_amount, stop_loss)
         return {
             "success":     True,
             "mode":        "live",
@@ -796,8 +797,114 @@ def execute_proposal(
             "stop_loss":   stop_loss,
             "take_profit": take_profit,
         }
-    else:
-        return {"success": False, "mode": "live", "error": result.error}
+
+    if result.indeterminate:
+        # El OPEN dio timeout/excepción ambigua — no se sabe si el
+        # broker lo procesó. A propósito, NO se crea ningún
+        # PositionRecord: correlacionar una posición nueva del
+        # portfolio con ESTA propuesta sin un identificador que el
+        # broker haya devuelto sería inventar una atribución (mismo
+        # principio que portfolio_reconciler.reconcile_open(), que por
+        # eso mismo siempre responde CANNOT_CONFIRM). Requiere
+        # verificación manual del creador contra el portfolio real
+        # antes de reintentar esta propuesta — reintentarla a ciegas
+        # podría abrir una segunda posición si la primera sí entró.
+        logger.error(
+            "[AUTO][LIVE] OPEN indeterminado para proposal=%s %s — no se sabe "
+            "si el broker la ejecutó. NO se crea PositionRecord automáticamente; "
+            "requiere verificación manual contra el portfolio antes de "
+            "reintentar esta propuesta.",
+            proposal_id, proposal.symbol,
+        )
+        return {"success": False, "mode": "live", "error": result.error, "indeterminate": True}
+
+    return {"success": False, "mode": "live", "error": result.error}
+
+
+def _persist_live_position_opened(
+    proposal: Any,
+    result: Any,
+    trade_amount: float,
+    stop_loss: float,
+) -> None:
+    """Al confirmarse un OPEN LIVE real (result.success — desenlace
+    CONOCIDO, nunca indeterminado), crea el PositionRecord persistido
+    que pone la posición bajo supervisión autónoma
+    (position_manager.check_open_live_positions()).
+
+    Usa el `positionID` que devuelve eToro como `position_id` interno
+    directamente — ya es un identificador único real, no hace falta
+    inventar uno propio."""
+    if not result.position_id:
+        # No debería pasar con success=True, pero si ocurre no se
+        # inventa un position_id — sin él no hay con qué reconciliar
+        # después. Se deja constancia para verificación manual.
+        logger.error(
+            "[AUTO][LIVE] execute_open devolvió success=True sin position_id "
+            "para proposal=%s %s — no se puede crear PositionRecord sin un "
+            "identificador real del broker. Verificar manualmente.",
+            proposal.proposal_id, proposal.symbol,
+        )
+        return
+
+    from datetime import datetime, timezone
+
+    from connectors.etoro import live_position_store
+    from core.trading.contracts import EntryThesis, PositionRecord, PositionStatus
+
+    now = datetime.now(timezone.utc)
+    position_id = str(result.position_id)
+
+    confidence_map = {"LOW": 0.3, "MEDIUM": 0.6, "HIGH": 0.85}
+    confidence_at_entry = confidence_map.get(proposal.confidence, 0.5)
+
+    thesis = EntryThesis(
+        position_id=position_id,
+        symbol=proposal.symbol,
+        side=proposal.direction,
+        created_at=now,
+        thesis=proposal.reasoning or (
+            f"propuesta {proposal.confidence} — win_rate={proposal.win_rate:.0f}% "
+            f"n={proposal.pattern_n} escenario={proposal.scenario_state}"
+        ),
+        invalidation_conditions=(
+            f"cc_score de market:{proposal.symbol} cae bajo 0.1",
+            "señal contraria OPERABLE detectada en las últimas 2h",
+        ),
+        confidence_at_entry=confidence_at_entry,
+        evidence_snapshot={
+            "win_rate": proposal.win_rate,
+            "expectancy": proposal.expectancy,
+            "pattern_n": proposal.pattern_n,
+            "scenario_state": proposal.scenario_state,
+            "conditions_met": proposal.conditions_met,
+        },
+        evidence_snapshot_id=f"proposal:{proposal.proposal_id}",
+        evidence_refs=(f"proposal:{proposal.proposal_id}",),
+    )
+    record = PositionRecord(
+        position_id=position_id,
+        entry_thesis=thesis,
+        status=PositionStatus.HOLDING,
+        remaining_quantity=trade_amount,
+        current_intent=None,
+        last_execution=None,
+        updated_at=now,
+    )
+    live_position_store.save(
+        live_position_store.LivePositionEntry(
+            record=record,
+            broker_position_id=position_id,
+            instrument_id=result.instrument_id,
+            entry_price=proposal.entry_price,
+            hard_stop_price=stop_loss,
+        )
+    )
+    logger.info(
+        "[AUTO][LIVE] Posición %s (%s) bajo supervisión autónoma — "
+        "position_manager.check_open_live_positions() la gestiona desde aquí",
+        position_id, proposal.symbol,
+    )
 
 
 # ── Status panel ──────────────────────────────────────────────────────
