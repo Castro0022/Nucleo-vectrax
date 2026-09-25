@@ -367,3 +367,55 @@ class OrderExecution:
             "avg_fill_price": self.avg_fill_price,
             "last_update_at": self.last_update_at.isoformat(),
         }
+
+
+# ---------------------------------------------------------------------------
+# PositionRecord — el estado que administra PositionManager. No decide
+# nada: solo estado + transición + persistencia (ver
+# core/trading/position_state.py para las transiciones puras).
+# ---------------------------------------------------------------------------
+
+class PositionStatus(str, Enum):
+    """
+    OPEN         — el intent de apertura fue enviado, todavía sin
+                    confirmación de fill.
+    HOLDING      — posición viva, sin ninguna orden en curso. El único
+                    estado en el que `TradeDecisionEngine` tiene algo que
+                    decidir.
+    REDUCING     — un intent REDUCE está en curso.
+    CLOSING      — un intent CLOSE está en curso.
+    RECONCILING  — la última `OrderExecution` conocida quedó en UNKNOWN.
+                    No se emite ningún intent nuevo mientras se está
+                    aquí — hay que preguntarle al broker qué pasó con el
+                    intent anterior (ver `order_idempotency`).
+    CLOSED       — terminal. Ninguna transición sale de aquí.
+    """
+    OPEN = "OPEN"
+    HOLDING = "HOLDING"
+    REDUCING = "REDUCING"
+    CLOSING = "CLOSING"
+    RECONCILING = "RECONCILING"
+    CLOSED = "CLOSED"
+
+
+@dataclass(frozen=True)
+class PositionRecord:
+    """Estado completo de una posición. Inmutable: cada transición
+    devuelve un `PositionRecord` NUEVO (`dataclasses.replace`), nunca
+    muta uno existente — mismo espíritu que `EntryThesis` congelada.
+
+    `entry_thesis` nunca cambia entre transiciones: es la referencia fija
+    contra la que se audita cada `HOLD`/`EXIT` posterior.
+    `current_intent` es `None` únicamente en `HOLDING` (no hay ninguna
+    orden en curso). `remaining_quantity` es lo que queda de la posición
+    original — un REDUCE la reduce; solo llega a 0 cuando la posición
+    está efectivamente cerrada.
+    """
+
+    position_id: str
+    entry_thesis: EntryThesis
+    status: PositionStatus
+    remaining_quantity: float
+    current_intent: Optional[OrderIntent]
+    last_execution: Optional[OrderExecution]
+    updated_at: datetime
