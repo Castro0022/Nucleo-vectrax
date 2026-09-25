@@ -22,6 +22,7 @@ import logging
 import os
 import time
 import uuid
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -33,6 +34,30 @@ logger = logging.getLogger("vectrax.etoro.client")
 REQUEST_TIMEOUT = 6   # 6s — normal calls are ~200-300ms; 10s was too generous
 MAX_RETRIES     = 2   # 2 attempts max — prevents 30s blocking on dead API
 _HOST           = "public-api.etoro.com"
+
+
+class RetryMode(str, Enum):
+    """Cómo se comporta `_request()` ante un fallo AMBIGUO (timeout u otra
+    excepción durante el envío — no una respuesta HTTP de error, que
+    siempre es un desenlace conocido).
+
+    SAFE_READ — la llamada es idempotente (GET de solo lectura): un
+        reintento con una petición nueva no puede tener efectos
+        secundarios. Comportamiento sin cambios respecto a antes de
+        esta distinción.
+
+    NON_IDEMPOTENT_WRITE — la llamada muta estado real en el broker
+        (abrir/cerrar una posición). Si la primera petición SÍ llegó y
+        solo se perdió la respuesta, reintentar con un `x-request-id`
+        nuevo puede duplicar la acción — abrir una segunda posición o
+        mandar un segundo cierre. Por eso: CERO reintentos automáticos
+        ante timeout/excepción; el resultado se marca `indeterminate`
+        (no se sabe qué pasó) en vez de tratarse como un fallo
+        cualquiera. El código de arriba (execution_adapter.py) es quien
+        decide qué hacer con eso — nunca reenvía a ciegas.
+    """
+    SAFE_READ = "safe_read"
+    NON_IDEMPOTENT_WRITE = "non_idempotent_write"
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +146,7 @@ def _request(
     endpoint: str,
     body: Optional[Dict] = None,
     params: Optional[Dict] = None,
+    retry_mode: RetryMode = RetryMode.SAFE_READ,
 ) -> Dict[str, Any]:
     """
     Execute an authenticated request to the eToro API.
@@ -130,6 +156,10 @@ def _request(
 
     Returns: {"success": True, "data": ..., "latency_ms": ..., "phases": {...}}
           or {"success": False, "error": ..., "status": ...}
+          or, solo bajo retry_mode=NON_IDEMPOTENT_WRITE ante timeout/excepción
+          durante el envío: {"success": False, "error": ..., "latency_ms": ...,
+          "indeterminate": True} — no se sabe si el broker recibió la
+          petición. Nunca se reintenta ese caso automáticamente aquí.
     """
     if not validate_host(_HOST):
         return {"success": False, "error": "Host not in allowlist"}
@@ -233,10 +263,21 @@ def _request(
                 _record_failure("etoro", f"Timeout: {exc}", is_timeout=True)
             except Exception:
                 pass
-            if attempt < MAX_RETRIES:
+            if retry_mode == RetryMode.SAFE_READ and attempt < MAX_RETRIES:
                 time.sleep(delay)
                 delay *= 2
                 continue
+            if retry_mode == RetryMode.NON_IDEMPOTENT_WRITE:
+                logger.warning(
+                    "[LEDGER] etoro %s %s — timeout AMBIGUO en escritura no "
+                    "idempotente — NO se reintenta (podría duplicar la "
+                    "acción); resultado marcado indeterminate",
+                    method, endpoint,
+                )
+                return {
+                    "success": False, "error": f"Timeout: {exc}",
+                    "latency_ms": total_ms, "indeterminate": True,
+                }
             return {"success": False, "error": f"Timeout: {exc}", "latency_ms": total_ms}
 
         except Exception as exc:
@@ -249,10 +290,20 @@ def _request(
                 _record_failure("etoro", str(exc))
             except Exception:
                 pass
-            if attempt < MAX_RETRIES:
+            if retry_mode == RetryMode.SAFE_READ and attempt < MAX_RETRIES:
                 time.sleep(delay)
                 delay *= 2
                 continue
+            if retry_mode == RetryMode.NON_IDEMPOTENT_WRITE:
+                logger.warning(
+                    "[LEDGER] etoro %s %s — excepción AMBIGUA en escritura no "
+                    "idempotente — NO se reintenta; resultado marcado indeterminate",
+                    method, endpoint,
+                )
+                return {
+                    "success": False, "error": str(exc),
+                    "latency_ms": total_ms, "indeterminate": True,
+                }
             return {"success": False, "error": str(exc), "latency_ms": total_ms}
 
     return {"success": False, "error": "Max retries exceeded"}
@@ -492,7 +543,7 @@ def open_position(
     if take_profit_rate is not None:
         body["TakeProfitRate"] = take_profit_rate
 
-    result = _request("POST", path, body=body)
+    result = _request("POST", path, body=body, retry_mode=RetryMode.NON_IDEMPOTENT_WRITE)
 
     if result["success"]:
         order = result["data"].get("orderForOpen", result["data"])
@@ -529,7 +580,10 @@ def close_position(position_id: str, instrument_id: int) -> Dict[str, Any]:
         f"market-close-orders/positions/{position_id}"
     )
 
-    result = _request("POST", path, body={"InstrumentId": instrument_id})
+    result = _request(
+        "POST", path, body={"InstrumentId": instrument_id},
+        retry_mode=RetryMode.NON_IDEMPOTENT_WRITE,
+    )
 
     if result["success"]:
         logger.info(

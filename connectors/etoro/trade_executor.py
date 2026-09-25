@@ -67,6 +67,14 @@ class ExecutionResult:
     latency_ms:   float = 0.0
     timestamp:    float = field(default_factory=time.time)
     audit_id:     str = ""
+    # True únicamente cuando success=False Y no se sabe si el broker
+    # llegó a recibir/procesar la petición (timeout/excepción durante el
+    # envío de open_position()/close_position() — ver
+    # etoro_client.RetryMode.NON_IDEMPOTENT_WRITE). Nunca True junto a
+    # success=True, ni para un rechazo HTTP explícito (eso es un
+    # desenlace CONOCIDO, no indeterminado). El caller (execution_adapter.py)
+    # lo mapea a ExecutionStatus.UNKNOWN — nunca a un reintento ciego.
+    indeterminate: bool = False
 
     def to_telegram(self) -> str:
         env_icon = "🔴 REAL" if self.environment == "real" else "🟢 DEMO"
@@ -241,6 +249,7 @@ def execute_open(
         symbol=symbol,
         environment=env,
         error=result.get("error", "Error desconocido"),
+        indeterminate=result.get("indeterminate", False),
         audit_id=audit_id,
     )
 
@@ -325,6 +334,7 @@ def execute_close(
         symbol=symbol or str(iid),
         environment=env,
         error=result.get("error", "Error cerrando posición"),
+        indeterminate=result.get("indeterminate", False),
         audit_id=audit_id,
     )
 
