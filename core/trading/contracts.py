@@ -281,3 +281,89 @@ class PositionRiskSnapshot:
     current_price: Optional[float]
     hard_stop_price: float
     size_usd: float
+
+
+# ---------------------------------------------------------------------------
+# Idempotencia de órdenes — contrato mínimo entre PositionManager y
+# AutoExecutor. Regla inviolable: el mismo `intent_id` NUNCA puede crear
+# una segunda orden real (ver core/trading/order_idempotency.py).
+# ---------------------------------------------------------------------------
+
+class OrderAction(str, Enum):
+    """Lo que un `OrderIntent` le pide al broker — vocabulario propio,
+    distinto de `TradeAction`: un ENTER del motor de decisión se traduce
+    en un OrderIntent(OPEN); un EXIT, en un OrderIntent(CLOSE)."""
+    OPEN = "OPEN"
+    REDUCE = "REDUCE"
+    CLOSE = "CLOSE"
+
+
+class ExecutionStatus(str, Enum):
+    """Estado conocido de una orden enviada al broker.
+
+    PENDING  — creada localmente, todavía no confirmada por el broker.
+    ACKED    — el broker la reconoció (recibida), aún sin fill.
+    PARTIAL  — fill parcial.
+    FILLED   — fill completo (estado terminal).
+    REJECTED — el broker la rechazó (estado terminal).
+    UNKNOWN  — se perdió la confirmación (timeout, desconexión): no se
+               sabe si la orden llegó, se ejecutó o no existe. NUNCA se
+               trata como "falló, reenviar" — exige reconciliar contra
+               el broker antes de cualquier otra acción sobre el mismo
+               `intent_id` (ver `RiskMode.RECONCILE`).
+    """
+    PENDING = "PENDING"
+    ACKED = "ACKED"
+    PARTIAL = "PARTIAL"
+    FILLED = "FILLED"
+    REJECTED = "REJECTED"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True)
+class OrderIntent:
+    """La intención de orden que `PositionManager` genera. `intent_id`
+    es la idempotency key estable: el mismo intent_id identifica el
+    mismo pedido a través de reintentos/reconexiones — nunca se genera
+    uno nuevo para "la misma" acción mientras la anterior siga sin
+    resolverse (ver `order_idempotency.can_send_new_intent`)."""
+
+    intent_id: str
+    position_id: str
+    action: OrderAction
+    quantity: float
+    created_at: datetime
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "intent_id": self.intent_id,
+            "position_id": self.position_id,
+            "action": self.action.value,
+            "quantity": self.quantity,
+            "created_at": self.created_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True)
+class OrderExecution:
+    """Lo último que se sabe sobre un `OrderIntent`, tal como lo reporta
+    (o deja de reportar) el broker. `broker_order_id` es `None` mientras
+    el intent sigue en `PENDING` (todavía no hay confirmación de que el
+    broker lo recibió)."""
+
+    intent_id: str
+    broker_order_id: Optional[str]
+    status: ExecutionStatus
+    filled_quantity: float
+    avg_fill_price: Optional[float]
+    last_update_at: datetime
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "intent_id": self.intent_id,
+            "broker_order_id": self.broker_order_id,
+            "status": self.status.value,
+            "filled_quantity": self.filled_quantity,
+            "avg_fill_price": self.avg_fill_price,
+            "last_update_at": self.last_update_at.isoformat(),
+        }

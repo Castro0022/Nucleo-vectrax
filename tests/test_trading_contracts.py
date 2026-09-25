@@ -16,6 +16,10 @@ import pytest
 
 from core.trading.contracts import (
     EntryThesis,
+    ExecutionStatus,
+    OrderAction,
+    OrderExecution,
+    OrderIntent,
     RiskAction,
     RiskVerdict,
     TradeAction,
@@ -137,3 +141,48 @@ class TestRiskVerdictIsNotABoolean:
         )
         with pytest.raises(FrozenInstanceError):
             verdict.rule_id = "x"  # type: ignore[misc]
+
+
+def _sample_intent() -> OrderIntent:
+    return OrderIntent(
+        intent_id="intent-1",
+        position_id="pos-1",
+        action=OrderAction.CLOSE,
+        quantity=0.01,
+        created_at=datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc),
+    )
+
+
+def _sample_execution(status: ExecutionStatus) -> OrderExecution:
+    return OrderExecution(
+        intent_id="intent-1",
+        broker_order_id="broker-order-1" if status != ExecutionStatus.PENDING else None,
+        status=status,
+        filled_quantity=0.01 if status == ExecutionStatus.FILLED else 0.0,
+        avg_fill_price=50_000.0 if status == ExecutionStatus.FILLED else None,
+        last_update_at=datetime(2026, 9, 25, 12, 5, tzinfo=timezone.utc),
+    )
+
+
+class TestOrderIntentIsFrozen:
+    def test_cannot_mutate_quantity(self):
+        intent = _sample_intent()
+        with pytest.raises(FrozenInstanceError):
+            intent.quantity = 1.0  # type: ignore[misc]
+
+    def test_to_dict_serializes_action_and_datetime(self):
+        d = _sample_intent().to_dict()
+        assert d["action"] == "CLOSE"
+        assert d["created_at"] == "2026-09-25T12:00:00+00:00"
+
+
+class TestOrderExecutionIsFrozen:
+    def test_cannot_mutate_status(self):
+        execution = _sample_execution(ExecutionStatus.FILLED)
+        with pytest.raises(FrozenInstanceError):
+            execution.status = ExecutionStatus.REJECTED  # type: ignore[misc]
+
+    def test_to_dict_serializes_status(self):
+        d = _sample_execution(ExecutionStatus.UNKNOWN).to_dict()
+        assert d["status"] == "UNKNOWN"
+        assert d["broker_order_id"] == "broker-order-1"
