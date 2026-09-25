@@ -64,19 +64,31 @@ class RiskAction(str, Enum):
 class RiskMode(str, Enum):
     """Estado global de la jaula de seguridad.
 
-    NORMAL           — ningún límite global activado.
-    HALT_NEW_RISK     — no se abre nada nuevo (kill switch en modo halt, o
-                         pérdida diaria máxima alcanzada). NO toca
-                         posiciones ya abiertas: siguen bajo su propio
-                         stop duro y bajo `TradeDecisionEngine`.
-    EMERGENCY_FLATTEN — liquidar todo. Reservado para condiciones
-                         verdaderamente excepcionales: kill switch manual
-                         en modo flatten, broker inconsistente, o pérdida
-                         de sincronización de posiciones (el sistema ya
-                         no puede confiar en su propio estado de riesgo).
+    NORMAL             — ningún límite global activado.
+    HALT_NEW_RISK       — no se abre nada nuevo (kill switch manual en modo
+                           halt, o pérdida diaria máxima alcanzada). NO
+                           toca posiciones ya abiertas: siguen bajo su
+                           propio stop duro y bajo `TradeDecisionEngine`.
+    RECONCILE           — el sistema NO sabe con certeza qué posiciones
+                           existen realmente, o no puede confiar en que una
+                           orden se ejecute como se espera (positions_sync
+                           roto o broker_execution_ok=False). No abre nada
+                           nuevo Y no fuerza ninguna acción sobre
+                           posiciones existentes — forzar un cierre sobre
+                           datos que no son de fiar puede producir un
+                           duplicado o una posición contraria accidental,
+                           que es peor que no actuar. Primero se reconstruye
+                           el estado real; solo entonces cabe evaluar
+                           EMERGENCY_FLATTEN.
+    EMERGENCY_FLATTEN   — liquidar todo. Requiere estado CONOCIDO (nunca se
+                           entra aquí solo por incertidumbre): kill switch
+                           manual en modo flatten, con el operador
+                           afirmando que sabe exactamente qué hay y quiere
+                           cerrarlo.
     """
     NORMAL = "NORMAL"
     HALT_NEW_RISK = "HALT_NEW_RISK"
+    RECONCILE = "RECONCILE"
     EMERGENCY_FLATTEN = "EMERGENCY_FLATTEN"
 
 
@@ -224,10 +236,16 @@ class AccountRiskSnapshot:
     """Estado de cuenta/sistema al momento de evaluar riesgo.
 
     `kill_switch` es un estado fijado manualmente por el operador/creador
-    (nunca calculado por el gate): NORMAL, HALT_NEW_RISK o
-    EMERGENCY_FLATTEN. `broker_state_ok` / `positions_sync_ok` en False
-    significa que el sistema no puede confiar en sus propios números —
-    ver `RiskMode.EMERGENCY_FLATTEN`.
+    (nunca calculado por el gate): NORMAL, HALT_NEW_RISK, RECONCILE o
+    EMERGENCY_FLATTEN.
+
+    `positions_sync_ok=False` — el conteo/estado local de posiciones no
+    coincide con lo que reporta el broker (o no se pudo verificar).
+    `broker_execution_ok=False` — el sistema no puede confiar en que una
+    orden enviada al broker se ejecute como se espera (caído, latencia
+    anómala, rechazos inexplicados). Cualquiera de las dos, en False,
+    fuerza `RiskMode.RECONCILE` — NUNCA `EMERGENCY_FLATTEN` directamente:
+    no se manda "cierra todo" a ciegas sobre un estado que no es de fiar.
     """
 
     equity_usd: float
@@ -235,8 +253,8 @@ class AccountRiskSnapshot:
     open_positions_count: int
     total_exposure_usd: float
     kill_switch: RiskMode = RiskMode.NORMAL
-    broker_state_ok: bool = True
     positions_sync_ok: bool = True
+    broker_execution_ok: bool = True
 
 
 @dataclass(frozen=True)

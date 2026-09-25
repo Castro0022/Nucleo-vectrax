@@ -19,28 +19,41 @@ Lo que SÍ pertenece aquí (y nada más):
 compute_risk_mode() — precedencia (la primera regla que aplica, gana):
 
   1. EMERGENCY_FLATTEN
-     — `account.kill_switch == EMERGENCY_FLATTEN` (kill switch manual en
-       modo liquidar), O
-     — `account.broker_state_ok is False` o `positions_sync_ok is False`:
-       si el sistema no puede confiar en su propio estado, ningún otro
-       límite (exposición, nº de posiciones) es evaluable con certeza —
-       liquidar es la única respuesta fail-safe.
+     — `account.kill_switch == EMERGENCY_FLATTEN` únicamente. Requiere
+       estado CONOCIDO: el operador afirma que sabe exactamente qué hay
+       y quiere cerrarlo. Nunca se entra aquí por incertidumbre — ver
+       RECONCILE.
 
-  2. HALT_NEW_RISK
-     — `account.kill_switch == HALT_NEW_RISK` (kill switch manual en modo
-       halt), O
+  2. RECONCILE
+     — `account.kill_switch == RECONCILE` (manual), O
+     — `account.positions_sync_ok is False` (el estado local de
+       posiciones no coincide con el broker, o no se pudo verificar), O
+     — `account.broker_execution_ok is False` (no se puede confiar en
+       que una orden se ejecute como se espera — ni siquiera un
+       flatten).
+     El sistema no sabe con certeza qué tiene. No abre nada nuevo Y NO
+     fuerza ninguna acción sobre posiciones existentes: forzar un cierre
+     sobre datos que no son de fiar puede producir un duplicado o una
+     posición contraria accidental — más peligroso que no actuar. Ver
+     nota en `check_open_position()`.
+
+  3. HALT_NEW_RISK
+     — `account.kill_switch == HALT_NEW_RISK` (manual), O
      — `account.realized_pnl_today_usd <= -limits.max_daily_loss_usd`
        (pérdida diaria máxima alcanzada).
      Esto NUNCA cierra ni reduce posiciones abiertas por sí solo — ver
      nota en `check_open_position()`.
 
-  3. NORMAL — ningún límite global activado.
+  4. NORMAL — ningún límite global activado.
 
 -----------------------------------------------------------------------
 check_entry() — precedencia (la primera regla que aplica, gana):
 
   1. risk_mode != NORMAL                        -> BLOCK_ENTRY
-  2. datos de mercado inválidos/stale/no operable -> BLOCK_ENTRY (fail-safe)
+     (cubre EMERGENCY_FLATTEN, RECONCILE y HALT_NEW_RISK por igual: en
+     los tres casos no se abre nada nuevo)
+  2. datos de mercado inválidos/stale/no operable -> BLOCK_ENTRY (fail-safe,
+     solo para ESE símbolo — un dato malo de BTC no detiene TSLA)
   3. `account.open_positions_count >= limits.max_open_positions`
                                                   -> BLOCK_ENTRY
   4. `account.total_exposure_usd >= limits.max_total_exposure_usd`
@@ -51,17 +64,22 @@ check_entry() — precedencia (la primera regla que aplica, gana):
 check_open_position() — precedencia (la primera regla que aplica, gana):
 
   1. risk_mode == EMERGENCY_FLATTEN              -> OVERRIDE_EXIT
-  2. stop duro cruzado (side-aware)               -> OVERRIDE_EXIT
-  3. `account.total_exposure_usd > limits.max_total_exposure_usd`
+  2. risk_mode == RECONCILE                       -> PASS (explícito)
+     Estado desconocido: no se fuerza NINGUNA acción, ni siquiera el
+     stop duro de la regla 3 — porque el propio snapshot de la posición
+     puede no ser de fiar mientras el estado no está reconciliado.
+  3. stop duro cruzado (side-aware)               -> OVERRIDE_EXIT
+  4. `account.total_exposure_usd > limits.max_total_exposure_usd`
      (el límite ya está excedido, no solo alcanzado)
                                                   -> OVERRIDE_REDUCE
-  4. -> PASS
+  5. -> PASS
 
-  Nota deliberada: `HALT_NEW_RISK` NO aparece en esta lista. Alcanzar la
-  pérdida diaria máxima impide abrir riesgo nuevo, pero nunca cierra ni
-  reduce una posición ya abierta por sí solo — eso sigue bajo su propio
-  stop duro (regla 2 arriba) y bajo el criterio de `TradeDecisionEngine`.
-  Mezclar ambas cosas es precisamente el error que esta separación evita.
+  Nota deliberada: `HALT_NEW_RISK` NO aparece en esta lista (cae directo
+  a la regla 3). Alcanzar la pérdida diaria máxima impide abrir riesgo
+  nuevo, pero nunca cierra ni reduce una posición ya abierta por sí
+  solo — eso sigue bajo su propio stop duro y bajo el criterio de
+  `TradeDecisionEngine`. Mezclar ambas cosas es precisamente el error
+  que esta separación evita.
 
 Creado: 2026-09-25
 Creador: Mario Bravo Castro
@@ -86,7 +104,9 @@ from core.trading.contracts import (
 # ---------------------------------------------------------------------------
 
 RULE_KILL_SWITCH_FLATTEN = "kill_switch_flatten"
-RULE_BROKER_STATE_INVALID = "broker_state_invalid"
+RULE_KILL_SWITCH_RECONCILE = "kill_switch_reconcile"
+RULE_POSITIONS_SYNC_INVALID = "positions_sync_invalid"
+RULE_BROKER_EXECUTION_INVALID = "broker_execution_invalid"
 RULE_KILL_SWITCH_HALT = "kill_switch_halt"
 RULE_MAX_DAILY_LOSS = "max_daily_loss"
 RULE_INVALID_MARKET_DATA = "invalid_market_data"
@@ -108,8 +128,13 @@ def compute_risk_mode(
 
     if account.kill_switch == RiskMode.EMERGENCY_FLATTEN:
         return RiskMode.EMERGENCY_FLATTEN, RULE_KILL_SWITCH_FLATTEN
-    if not account.broker_state_ok or not account.positions_sync_ok:
-        return RiskMode.EMERGENCY_FLATTEN, RULE_BROKER_STATE_INVALID
+
+    if account.kill_switch == RiskMode.RECONCILE:
+        return RiskMode.RECONCILE, RULE_KILL_SWITCH_RECONCILE
+    if not account.positions_sync_ok:
+        return RiskMode.RECONCILE, RULE_POSITIONS_SYNC_INVALID
+    if not account.broker_execution_ok:
+        return RiskMode.RECONCILE, RULE_BROKER_EXECUTION_INVALID
 
     if account.kill_switch == RiskMode.HALT_NEW_RISK:
         return RiskMode.HALT_NEW_RISK, RULE_KILL_SWITCH_HALT
@@ -189,13 +214,22 @@ def check_open_position(
 ) -> RiskVerdict:
     """Evalúa una posición ya abierta. `HALT_NEW_RISK` deliberadamente no
     produce ningún override aquí — ver nota de precedencia en el docstring
-    del módulo."""
+    del módulo. `RECONCILE` tampoco: el estado es desconocido, así que ni
+    siquiera se evalúa el stop duro sobre un snapshot que puede no ser de
+    fiar."""
 
     mode, mode_rule_id = compute_risk_mode(account, limits)
     if mode == RiskMode.EMERGENCY_FLATTEN:
         return RiskVerdict(
             forced_action=RiskAction.OVERRIDE_EXIT,
             reason=f"risk_mode={mode.value}",
+            rule_id=mode_rule_id,
+        )
+
+    if mode == RiskMode.RECONCILE:
+        return RiskVerdict(
+            forced_action=RiskAction.PASS,
+            reason=f"risk_mode={mode.value} — no se fuerzan acciones sobre estado sin reconciliar",
             rule_id=mode_rule_id,
         )
 

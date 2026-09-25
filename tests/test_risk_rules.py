@@ -25,15 +25,17 @@ from core.trading.contracts import (
     TradeDecision,
 )
 from core.trading.risk_rules import (
-    RULE_BROKER_STATE_INVALID,
+    RULE_BROKER_EXECUTION_INVALID,
     RULE_EXPOSURE_BREACHED,
     RULE_HARD_STOP,
     RULE_INVALID_MARKET_DATA,
     RULE_KILL_SWITCH_FLATTEN,
     RULE_KILL_SWITCH_HALT,
+    RULE_KILL_SWITCH_RECONCILE,
     RULE_MAX_DAILY_LOSS,
     RULE_MAX_OPEN_POSITIONS,
     RULE_MAX_TOTAL_EXPOSURE,
+    RULE_POSITIONS_SYNC_INVALID,
     check_entry,
     check_open_position,
     compute_risk_mode,
@@ -54,8 +56,8 @@ def _account(**overrides) -> AccountRiskSnapshot:
         open_positions_count=0,
         total_exposure_usd=0.0,
         kill_switch=RiskMode.NORMAL,
-        broker_state_ok=True,
         positions_sync_ok=True,
+        broker_execution_ok=True,
     )
     base.update(overrides)
     return AccountRiskSnapshot(**base)
@@ -101,29 +103,47 @@ class TestComputeRiskModePrecedence:
     def test_kill_switch_flatten_wins_over_everything(self):
         account = _account(
             kill_switch=RiskMode.EMERGENCY_FLATTEN,
-            broker_state_ok=False,
+            positions_sync_ok=False,
+            broker_execution_ok=False,
             realized_pnl_today_usd=-1000.0,
         )
         mode, rule_id = compute_risk_mode(account, LIMITS)
         assert mode == RiskMode.EMERGENCY_FLATTEN
         assert rule_id == RULE_KILL_SWITCH_FLATTEN
 
-    def test_broker_state_invalid_forces_flatten_even_without_manual_kill_switch(self):
-        mode, rule_id = compute_risk_mode(_account(broker_state_ok=False), LIMITS)
-        assert mode == RiskMode.EMERGENCY_FLATTEN
-        assert rule_id == RULE_BROKER_STATE_INVALID
-
-    def test_positions_sync_invalid_forces_flatten(self):
+    def test_positions_sync_invalid_forces_reconcile_never_flatten(self):
+        """No liquidar a ciegas: un estado de posiciones no confiable
+        fuerza RECONCILE, no EMERGENCY_FLATTEN."""
         mode, rule_id = compute_risk_mode(_account(positions_sync_ok=False), LIMITS)
-        assert mode == RiskMode.EMERGENCY_FLATTEN
+        assert mode == RiskMode.RECONCILE
+        assert rule_id == RULE_POSITIONS_SYNC_INVALID
 
-    def test_broker_invalid_wins_over_halt_conditions(self):
+    def test_broker_execution_invalid_forces_reconcile_never_flatten(self):
+        mode, rule_id = compute_risk_mode(_account(broker_execution_ok=False), LIMITS)
+        assert mode == RiskMode.RECONCILE
+        assert rule_id == RULE_BROKER_EXECUTION_INVALID
+
+    def test_manual_kill_switch_reconcile(self):
+        mode, rule_id = compute_risk_mode(
+            _account(kill_switch=RiskMode.RECONCILE), LIMITS
+        )
+        assert mode == RiskMode.RECONCILE
+        assert rule_id == RULE_KILL_SWITCH_RECONCILE
+
+    def test_reconcile_wins_over_halt_conditions(self):
         account = _account(
-            broker_state_ok=False, realized_pnl_today_usd=-1000.0,
+            positions_sync_ok=False, realized_pnl_today_usd=-1000.0,
         )
         mode, rule_id = compute_risk_mode(account, LIMITS)
-        assert mode == RiskMode.EMERGENCY_FLATTEN
-        assert rule_id == RULE_BROKER_STATE_INVALID
+        assert mode == RiskMode.RECONCILE
+        assert rule_id == RULE_POSITIONS_SYNC_INVALID
+
+    def test_flatten_only_from_explicit_manual_kill_switch(self):
+        """EMERGENCY_FLATTEN nunca se deriva de incertidumbre — solo del
+        kill switch manual explícito."""
+        account = _account(positions_sync_ok=False, broker_execution_ok=False)
+        mode, _ = compute_risk_mode(account, LIMITS)
+        assert mode != RiskMode.EMERGENCY_FLATTEN
 
     def test_kill_switch_halt(self):
         mode, rule_id = compute_risk_mode(
@@ -168,6 +188,12 @@ class TestCheckEntry:
         account = _account(kill_switch=RiskMode.EMERGENCY_FLATTEN)
         verdict = check_entry(_proposal(), account, _market(), LIMITS)
         assert verdict.forced_action == RiskAction.BLOCK_ENTRY
+
+    def test_reconcile_blocks_entry(self):
+        account = _account(positions_sync_ok=False)
+        verdict = check_entry(_proposal(), account, _market(), LIMITS)
+        assert verdict.forced_action == RiskAction.BLOCK_ENTRY
+        assert verdict.rule_id == RULE_POSITIONS_SYNC_INVALID
 
     @pytest.mark.parametrize(
         "market_overrides",
@@ -231,6 +257,25 @@ class TestCheckOpenPosition:
         account = _account(kill_switch=RiskMode.HALT_NEW_RISK)
         verdict = check_open_position(_position(), account, LIMITS)
         assert verdict.forced_action == RiskAction.PASS
+
+    def test_reconcile_does_not_force_exit_even_with_hard_stop_crossed(self):
+        """El caso crítico que motivó separar RECONCILE de
+        EMERGENCY_FLATTEN: con el estado sin reconciliar, ni siquiera el
+        stop duro se fuerza — el snapshot de la posición puede no ser de
+        fiar, y forzar un cierre a ciegas puede producir un duplicado o
+        una posición contraria accidental."""
+        account = _account(positions_sync_ok=False)
+        losing_position = _position(side="buy", hard_stop_price=49_000.0, current_price=48_000.0)
+        verdict = check_open_position(losing_position, account, LIMITS)
+        assert verdict.forced_action == RiskAction.PASS
+        assert verdict.rule_id == RULE_POSITIONS_SYNC_INVALID
+
+    def test_reconcile_from_broker_execution_invalid_does_not_force_exit(self):
+        account = _account(broker_execution_ok=False)
+        losing_position = _position(side="buy", hard_stop_price=49_000.0, current_price=48_000.0)
+        verdict = check_open_position(losing_position, account, LIMITS)
+        assert verdict.forced_action == RiskAction.PASS
+        assert verdict.rule_id == RULE_BROKER_EXECUTION_INVALID
 
     def test_emergency_flatten_overrides_exit_even_on_a_winning_position(self):
         account = _account(kill_switch=RiskMode.EMERGENCY_FLATTEN)
