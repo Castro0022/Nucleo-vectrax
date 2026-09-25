@@ -269,20 +269,31 @@ class TestReconciliationResolvesTheDeadEnd:
         assert actions == []
         assert live_position_store.get("pos-1").record.status == PositionStatus.RECONCILING
 
-    def test_still_open_reduced_records_partial_without_forcing_closed(self, wired, monkeypatch):
+    def test_reduced_unattributed_updates_quantity_without_forcing_closed_or_attributing_a_fill(
+        self, wired, monkeypatch,
+    ):
+        """Estado físico != causalidad: se actualiza remaining_quantity al
+        valor real observado, pero NUNCA se sintetiza una
+        OrderExecution(PARTIAL) atada al intent — eso sería atribuirle al
+        CLOSE un efecto que el broker no demostró que causó."""
         monkeypatch.setattr(
             portfolio_reconciler, "reconcile_close",
-            lambda broker_position_id, expected_quantity: (ReconciliationOutcome.STILL_OPEN_REDUCED, 40.0),
+            lambda broker_position_id, expected_quantity: (ReconciliationOutcome.REDUCED_UNATTRIBUTED, 40.0),
         )
-        live_position_store.save(self._reconciling_entry())
+        entry = self._reconciling_entry()
+        original_last_execution = entry.record.last_execution
+        live_position_store.save(entry)
 
         actions = position_manager.check_open_live_positions(user_id="creator")
 
-        assert actions == []  # PARTIAL nunca cierra por sí solo
-        entry = live_position_store.get("pos-1")
-        assert entry.record.status == PositionStatus.RECONCILING
-        assert entry.record.last_execution.status.value == "PARTIAL"
-        assert entry.record.last_execution.filled_quantity == 60.0  # 100 esperado - 40 observado
+        assert actions == []  # nunca cierra por sí solo
+        updated = live_position_store.get("pos-1")
+        assert updated.record.status == PositionStatus.RECONCILING
+        assert updated.record.remaining_quantity == 40.0
+        # last_execution NO cambia — sigue siendo la UNKNOWN original, no
+        # se inventa un PARTIAL: la causa del cambio sigue sin demostrarse.
+        assert updated.record.last_execution == original_last_execution
+        assert updated.record.last_execution.status.value == "UNKNOWN"
 
     def test_portfolio_unavailable_keeps_waiting(self, wired, monkeypatch):
         monkeypatch.setattr(

@@ -241,3 +241,48 @@ def apply_execution_update(
         last_execution=execution,
         updated_at=now,
     )
+
+
+def apply_observed_quantity(
+    record: PositionRecord,
+    observed_quantity: float,
+    now: datetime,
+) -> PositionRecord:
+    """Tercera clase de transición, distinta de `apply_decision`
+    (criterio) y `apply_execution_update` (una `OrderExecution` atada a
+    un `intent_id` concreto): una OBSERVACIÓN directa del estado físico
+    del broker (p.ej. `portfolio_reconciler.py` comparando contra
+    `get_portfolio()`), sin atribuir la causa a ningún intent.
+
+    Estado físico != causalidad. Que el broker muestre una cantidad
+    menor a la esperada demuestra "la posición tiene esto ahora" — NUNCA
+    demuestra "mi CLOSE/REDUCE produjo ese cambio" (pudo ser un stop del
+    broker, una reducción manual, u otro evento externo). Por eso esta
+    función:
+      - SÍ actualiza `remaining_quantity` al valor observado (la verdad
+        física gana).
+      - NUNCA toca `current_intent` ni `last_execution` — no se inventa
+        ninguna ejecución para el intent en curso.
+      - NUNCA cambia `status` — si la posición seguía `RECONCILING`
+        (causa del CLOSE original todavía sin resolver), sigue
+        `RECONCILING` exactamente igual después de esto.
+
+    Solo válida sobre posiciones con algo en curso (mismos estados que
+    `apply_execution_update`) — no tiene sentido "observar" una
+    HOLDING/CLOSED sin ningún intent que estuviera generando la
+    incertidumbre en primer lugar.
+    """
+    if record.status not in _STATUSES_WITH_IN_FLIGHT_INTENT:
+        raise ValueError(
+            f"apply_observed_quantity inválido en status={record.status.value} "
+            "— no hay ninguna incertidumbre en curso que esta observación resuelva"
+        )
+    if observed_quantity < 0:
+        raise ValueError(f"observed_quantity={observed_quantity} no puede ser negativo")
+    if observed_quantity > record.remaining_quantity:
+        raise ValueError(
+            f"observed_quantity={observed_quantity} > remaining_quantity="
+            f"{record.remaining_quantity} — una observación no puede ampliar "
+            "una posición que nadie decidió aumentar aquí"
+        )
+    return replace(record, remaining_quantity=observed_quantity, updated_at=now)

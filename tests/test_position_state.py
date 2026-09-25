@@ -35,7 +35,12 @@ from core.trading.contracts import (
     TradeAction,
     TradeDecision,
 )
-from core.trading.position_state import apply_decision, apply_execution_update, open_position
+from core.trading.position_state import (
+    apply_decision,
+    apply_execution_update,
+    apply_observed_quantity,
+    open_position,
+)
 
 T0 = datetime(2026, 9, 25, 12, 0, tzinfo=timezone.utc)
 T1 = T0 + timedelta(minutes=1)
@@ -351,3 +356,57 @@ class TestPositionStateHasNoForbiddenDependencies:
         for forbidden in forbidden_io:
             offending = [m for m in modules if m == forbidden or m.startswith(forbidden + ".")]
             assert not offending, f"{path} importa {offending} — no debe hacer I/O"
+
+
+# ---------------------------------------------------------------------------
+# apply_observed_quantity — estado físico != causalidad
+# ---------------------------------------------------------------------------
+
+class TestApplyObservedQuantity:
+    def test_updates_remaining_quantity_to_the_observed_value(self):
+        closing = apply_decision(_holding_record(), _decision(TradeAction.EXIT), _close_intent(), T2)
+        reconciling = apply_execution_update(closing, _execution("intent-close", ExecutionStatus.UNKNOWN), T3)
+        observed = apply_observed_quantity(reconciling, 0.4, T3 + timedelta(minutes=1))
+        assert observed.remaining_quantity == 0.4
+
+    def test_never_touches_current_intent_or_last_execution(self):
+        closing = apply_decision(_holding_record(), _decision(TradeAction.EXIT), _close_intent(), T2)
+        reconciling = apply_execution_update(closing, _execution("intent-close", ExecutionStatus.UNKNOWN), T3)
+        observed = apply_observed_quantity(reconciling, 0.4, T3 + timedelta(minutes=1))
+        assert observed.current_intent == reconciling.current_intent
+        assert observed.last_execution == reconciling.last_execution
+
+    def test_never_changes_status_stays_reconciling(self):
+        closing = apply_decision(_holding_record(), _decision(TradeAction.EXIT), _close_intent(), T2)
+        reconciling = apply_execution_update(closing, _execution("intent-close", ExecutionStatus.UNKNOWN), T3)
+        observed = apply_observed_quantity(reconciling, 0.4, T3 + timedelta(minutes=1))
+        assert observed.status == PositionStatus.RECONCILING
+
+    def test_full_amount_still_present_is_a_no_op_on_quantity(self):
+        closing = apply_decision(_holding_record(), _decision(TradeAction.EXIT), _close_intent(), T2)
+        reconciling = apply_execution_update(closing, _execution("intent-close", ExecutionStatus.UNKNOWN), T3)
+        observed = apply_observed_quantity(reconciling, reconciling.remaining_quantity, T3)
+        assert observed.remaining_quantity == reconciling.remaining_quantity
+
+    def test_rejects_negative_observed_quantity(self):
+        closing = apply_decision(_holding_record(), _decision(TradeAction.EXIT), _close_intent(), T2)
+        reconciling = apply_execution_update(closing, _execution("intent-close", ExecutionStatus.UNKNOWN), T3)
+        with pytest.raises(ValueError):
+            apply_observed_quantity(reconciling, -1.0, T3)
+
+    def test_rejects_an_amount_larger_than_current_remaining(self):
+        """No se infiere una ampliación de posición que nadie decidió aquí."""
+        closing = apply_decision(_holding_record(), _decision(TradeAction.EXIT), _close_intent(), T2)
+        reconciling = apply_execution_update(closing, _execution("intent-close", ExecutionStatus.UNKNOWN), T3)
+        with pytest.raises(ValueError):
+            apply_observed_quantity(reconciling, reconciling.remaining_quantity + 1.0, T3)
+
+    def test_invalid_on_holding_no_in_flight_intent(self):
+        with pytest.raises(ValueError):
+            apply_observed_quantity(_holding_record(), 50.0, T3)
+
+    def test_invalid_on_closed_terminal(self):
+        closing = apply_decision(_holding_record(), _decision(TradeAction.EXIT), _close_intent(), T2)
+        closed = apply_execution_update(closing, _execution("intent-close", ExecutionStatus.FILLED, 1.0), T3)
+        with pytest.raises(ValueError):
+            apply_observed_quantity(closed, 0.5, T3)

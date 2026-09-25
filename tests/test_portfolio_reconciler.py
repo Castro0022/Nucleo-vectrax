@@ -59,7 +59,7 @@ class TestReconcileCloseFromPortfolioPure:
             "P123", expected_quantity=100.0,
             portfolio_positions=[_portfolio_position("P123", 40.0)],
         )
-        assert outcome == ReconciliationOutcome.STILL_OPEN_REDUCED
+        assert outcome == ReconciliationOutcome.REDUCED_UNATTRIBUTED
         assert amount == 40.0
 
     def test_float_noise_within_epsilon_counts_as_full(self):
@@ -109,7 +109,7 @@ class TestReconcileCloseWrapper:
             lambda: {"success": True, "positions": [_portfolio_position("P123", 30.0)]},
         )
         outcome, amount = reconcile_close("P123", expected_quantity=100.0)
-        assert outcome == ReconciliationOutcome.STILL_OPEN_REDUCED
+        assert outcome == ReconciliationOutcome.REDUCED_UNATTRIBUTED
         assert amount == 30.0
 
 

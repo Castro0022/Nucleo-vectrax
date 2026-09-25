@@ -55,7 +55,7 @@ quedó en `UNKNOWN`) se reconcilia activamente cada ciclo contra
 orden: como el `position_id` del broker ya se conoce de antemano para
 un CLOSE, comparar es inequívoco (¿la posición sigue existiendo?, ¿con
 qué tamaño?). Ver ese módulo para la matriz completa
-(CONFIRMED_CLOSED/STILL_OPEN_FULL/STILL_OPEN_REDUCED/PORTFOLIO_UNAVAILABLE).
+(CONFIRMED_CLOSED/STILL_OPEN_FULL/REDUCED_UNATTRIBUTED/PORTFOLIO_UNAVAILABLE).
 
 Limitación que SIGUE sin resolver, deliberadamente: la reconciliación
 de un OPEN en `UNKNOWN` NO existe — sin un identificador que el broker
@@ -103,7 +103,7 @@ from core.trading.contracts import (
     TradeAction,
     TradeDecision,
 )
-from core.trading.position_state import apply_decision, apply_execution_update
+from core.trading.position_state import apply_decision, apply_execution_update, apply_observed_quantity
 
 logger = logging.getLogger("vectrax.etoro.position_manager")
 
@@ -621,16 +621,18 @@ def _advance_in_flight_live_close(
                 filled_quantity=record.current_intent.quantity,
             )
             return apply_execution_update(record, execution, now_dt)
-        if outcome == portfolio_reconciler.ReconciliationOutcome.STILL_OPEN_REDUCED:
-            reduced_by = max(record.current_intent.quantity - (observed_amount or 0.0), 0.0)
-            execution = execution_adapter.record_reconciled_execution(
-                record.current_intent.intent_id, ExecutionStatus.PARTIAL,
-                filled_quantity=reduced_by,
-            )
-            # PARTIAL nunca fuerza una transición de estado por sí solo
-            # (ver position_state.py) — solo deja constancia de la
-            # evidencia observada mientras se sigue esperando.
-            return apply_execution_update(record, execution, now_dt)
+        if outcome == portfolio_reconciler.ReconciliationOutcome.REDUCED_UNATTRIBUTED:
+            # Estado físico != causalidad: el broker demuestra "esto es
+            # lo que hay ahora", nunca "mi CLOSE lo produjo" (pudo ser un
+            # stop del broker, una reducción manual, u otro evento
+            # externo). Por eso NO se sintetiza una OrderExecution(PARTIAL)
+            # atada al intent_id — eso inventaría una atribución que no
+            # se puede demostrar. Solo se actualiza remaining_quantity al
+            # valor real observado; current_intent, last_execution y
+            # status (sigue RECONCILING) quedan intactos.
+            if observed_amount is not None:
+                return apply_observed_quantity(record, observed_amount, now_dt)
+            return record
         # STILL_OPEN_FULL o PORTFOLIO_UNAVAILABLE: nada cambia — se
         # sigue esperando, sin reenviar nada.
         return record

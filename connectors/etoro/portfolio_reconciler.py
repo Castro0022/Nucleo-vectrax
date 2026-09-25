@@ -14,8 +14,20 @@ del broker ANTES de mandar la orden — comparar es inequívoco:
 
     P123 ya no existe en el portfolio        -> CONFIRMED_CLOSED
     P123 sigue con la cantidad completa       -> STILL_OPEN_FULL (esperar)
-    P123 existe con una cantidad MENOR        -> STILL_OPEN_REDUCED (parcial)
+    P123 existe con una cantidad MENOR        -> REDUCED_UNATTRIBUTED
     get_portfolio() no responde               -> PORTFOLIO_UNAVAILABLE (esperar)
+
+Estado físico != causalidad — el matiz que separa `REDUCED_UNATTRIBUTED`
+de "confirmo que mi CLOSE hizo un fill parcial": que el broker muestre
+una cantidad menor a la esperada demuestra "la posición tiene esto
+ahora", NUNCA demuestra "mi orden produjo ese cambio" — pudo ser un
+stop del broker, una reducción manual, u otro evento externo. Por eso
+este resultado nunca se traduce en una `OrderExecution(PARTIAL)` atada
+al `intent_id` (eso sería inventar una atribución que no se puede
+demostrar) — se traduce en `position_state.apply_observed_quantity()`,
+que solo actualiza `remaining_quantity` al valor real observado, sin
+tocar `current_intent`/`last_execution` ni el `status` (la posición
+sigue `RECONCILING`: la causa del `CLOSE` original sigue sin resolver).
 
 OPEN es deliberadamente DISTINTO y mucho más delicado: si el broker no
 devolvió `position_id` antes del timeout, no hay forma de correlacionar
@@ -47,7 +59,7 @@ _AMOUNT_EPSILON = 0.01
 class ReconciliationOutcome(str, Enum):
     CONFIRMED_CLOSED = "confirmed_closed"       # ya no existe en el portfolio
     STILL_OPEN_FULL = "still_open_full"         # sigue con la cantidad completa
-    STILL_OPEN_REDUCED = "still_open_reduced"   # existe con una cantidad MENOR
+    REDUCED_UNATTRIBUTED = "reduced_unattributed"  # existe con una cantidad MENOR — causa desconocida
     PORTFOLIO_UNAVAILABLE = "portfolio_unavailable"  # no se pudo leer el portfolio
     CANNOT_CONFIRM = "cannot_confirm"           # solo para OPEN — nunca se infiere
 
@@ -82,7 +94,7 @@ def reconcile_close_from_portfolio(
     current_amount = float(current_amount)
     if current_amount >= expected_quantity - _AMOUNT_EPSILON:
         return ReconciliationOutcome.STILL_OPEN_FULL, current_amount
-    return ReconciliationOutcome.STILL_OPEN_REDUCED, current_amount
+    return ReconciliationOutcome.REDUCED_UNATTRIBUTED, current_amount
 
 
 def reconcile_close(
