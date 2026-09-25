@@ -23,11 +23,13 @@ Cada posición abierta se evalúa así, en orden:
      criterio (`RiskGate` puede anular a la capa de criterio; la capa de
      criterio nunca puede anular a `RiskGate`).
   2. Si `RiskGate` dio `PASS`, se consulta
-     `legacy_criterion_engine.propose_decision(...)` — un sustituto
-     TEMPORAL de `TradeDecisionEngine` (que todavía no existe). Este
-     archivo ya no contiene ese criterio directamente — ver
-     `legacy_criterion_engine.py` para dónde vive ahora
-     `_check_coherence_loss`/`_check_contrary_signal`.
+     `trade_decision_engine.propose_decision(...)` (TradeDecisionEngine
+     real — reemplaza a `legacy_criterion_engine.py`, retirado). Este
+     archivo no contiene ese criterio directamente — ver
+     `trade_decision_engine.py` para dónde vive ahora
+     `_check_coherence_loss`/`_check_contrary_signal`, ahora conectadas
+     a `EntryThesis.invalidation_conditions` en vez de a un booleano
+     hardcodeado.
   3. La `TradeDecision` resultante entra en
      `core.trading.position_state.apply_decision(...)`.
   4. Para PAPER, el fill se simula al instante (no hay broker real que
@@ -54,7 +56,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from connectors.etoro import legacy_criterion_engine
+from connectors.etoro import trade_decision_engine
 from core.trading import risk_gate
 from core.trading.contracts import (
     AccountRiskSnapshot,
@@ -104,11 +106,13 @@ def check_open_positions() -> List[Dict[str, Any]]:
         position_snapshot = _build_position_risk_snapshot(trade, current_price)
         risk_verdict = risk_gate.check_open_position(position_snapshot, account, limits)
 
+        thesis = _legacy_entry_thesis(trade)
+
         if risk_verdict.forced_action != RiskAction.PASS:
             decision = _decision_from_risk_verdict(trade, risk_verdict)
         else:
-            decision = legacy_criterion_engine.propose_decision(
-                trade, current_price, max_hold_h, now_ts,
+            decision = trade_decision_engine.propose_decision(
+                thesis, current_price, now_ts, max_hold_h,
             )
 
         if decision.action == TradeAction.HOLD:
@@ -127,7 +131,7 @@ def check_open_positions() -> List[Dict[str, Any]]:
             continue
 
         # EXIT: recorre el pipeline completo de position_state.py.
-        record = _synthesize_holding_record(trade, now_dt)
+        record = _synthesize_holding_record(trade, now_dt, thesis)
         intent = OrderIntent(
             intent_id=f"{trade.trade_id}-close-{int(now_ts)}",
             position_id=trade.trade_id,
@@ -256,10 +260,10 @@ def _legacy_entry_thesis(trade) -> EntryThesis:
     )
 
 
-def _synthesize_holding_record(trade, now: datetime) -> PositionRecord:
+def _synthesize_holding_record(trade, now: datetime, thesis: Optional[EntryThesis] = None) -> PositionRecord:
     return PositionRecord(
         position_id=trade.trade_id,
-        entry_thesis=_legacy_entry_thesis(trade),
+        entry_thesis=thesis if thesis is not None else _legacy_entry_thesis(trade),
         status=PositionStatus.HOLDING,
         remaining_quantity=trade.amount_usd,
         current_intent=None,

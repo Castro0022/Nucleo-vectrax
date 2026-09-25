@@ -7,8 +7,9 @@ Dos garantías, además del comportamiento funcional:
 
   1. AST estática: `_check_coherence_loss`/`_check_contrary_signal` ya
      NO existen en position_manager.py — salieron por completo (viven
-     en legacy_criterion_engine.py), y position_manager.py no importa
-     gravity_engine ni signal_recorder directamente.
+     en trade_decision_engine.py, el TradeDecisionEngine real), y
+     position_manager.py no importa gravity_engine ni signal_recorder
+     directamente.
 
   2. Invariante de migración: ningún camino cierra una posición por
      fuera de `position_state.py`. Se verifica interceptando
@@ -25,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from connectors.etoro import position_manager
+from connectors.etoro import position_manager, trade_decision_engine
 from connectors.etoro.auto_executor import PaperTrade
 from core.trading.contracts import PositionStatus
 from core.trading import position_state as _position_state_module
@@ -147,14 +148,27 @@ class TestCheckOpenPositionsBehavior:
         assert actions == []
         assert wired["results"] == []
 
-    def test_take_profit_via_legacy_criterion_closes(self, wired):
+    def test_thesis_invalidation_via_trade_decision_engine_closes(self, wired, monkeypatch):
+        """El take-profit de precio fijo se retiró del criterio — la
+        salida por ganancia ahora depende de evidencia (aquí, pérdida de
+        coherencia), no de cruzar un precio fijado al entrar."""
+        monkeypatch.setattr(trade_decision_engine, "_coherence_lost", lambda symbol: True)
         wired["seed"]([_trade()])
-        wired["price"] = 61_000.0  # >= take_profit=60000
+        wired["price"] = 61_000.0  # posición ganadora; igual sale por invalidación
         actions = position_manager.check_open_positions()
         assert len(actions) == 1
-        assert "take_profit" in actions[0]["reason"]
+        assert "cc_score" in actions[0]["reason"]
         assert actions[0]["status"] == "closed_win"
         assert wired["results"] == [{"pnl": actions[0]["pnl_usd"], "trade_id": "PAPER-1"}]
+
+    def test_large_favorable_move_alone_does_not_close_the_position(self, wired):
+        """Sin invalidación de tesis ni límite de tiempo, una posición
+        muy ganadora simplemente se mantiene — ya no hay take-profit
+        fijo que la cierre por sí solo."""
+        wired["seed"]([_trade()])
+        wired["price"] = 61_000.0  # muy por encima de la entrada
+        actions = position_manager.check_open_positions()
+        assert actions == []
 
     def test_hard_stop_via_risk_gate_closes_even_if_criterion_never_runs(self, wired):
         wired["seed"]([_trade()])
@@ -164,14 +178,14 @@ class TestCheckOpenPositionsBehavior:
         assert "hard_stop" in actions[0]["reason"]
         assert actions[0]["status"] == "closed_loss"
 
-    def test_risk_gate_override_wins_over_take_profit(self, wired):
-        """Precio que a la vez cruzaría take_profit sería imposible junto
-        a stop_loss (son extremos opuestos), pero el punto es que
-        RiskGate se consulta SIEMPRE primero — este test confirma que su
-        veredicto llega con el rule_id correcto y sin pasar por
-        legacy_criterion_engine."""
+    def test_risk_gate_is_always_consulted_before_criterion(self, wired, monkeypatch):
+        """RiskGate se consulta SIEMPRE primero — este test confirma que
+        su veredicto llega con el rule_id correcto y sin pasar por
+        trade_decision_engine, aunque el criterio también habría
+        disparado un EXIT por su cuenta."""
+        monkeypatch.setattr(trade_decision_engine, "_coherence_lost", lambda symbol: True)
         wired["seed"]([_trade()])
-        wired["price"] = 48_000.0
+        wired["price"] = 48_000.0  # cruza el stop duro
         actions = position_manager.check_open_positions()
         assert actions[0]["reason"].startswith("RiskGate:")
 
@@ -183,11 +197,12 @@ class TestCheckOpenPositionsBehavior:
         assert actions == []  # nunca cierra por un REDUCE
         assert wired["results"] == []
 
-    def test_multiple_open_trades_are_each_evaluated_independently(self, wired):
-        a = _trade(trade_id="PAPER-A", symbol="BTCUSD", take_profit=60_000.0)
+    def test_multiple_open_trades_are_each_evaluated_independently(self, wired, monkeypatch):
+        monkeypatch.setattr(trade_decision_engine, "_coherence_lost", lambda symbol: True)
+        a = _trade(trade_id="PAPER-A", symbol="BTCUSD")
         b = _trade(trade_id="PAPER-B", symbol="ETHUSD", entry_price=3_000.0, stop_loss=2_900.0, take_profit=3_500.0)
         wired["seed"]([a, b])
-        wired["price"] = 61_000.0  # dispara take_profit para AMBAS por el stub de precio único
+        wired["price"] = 61_000.0  # muy por encima de ambos stops; ambas salen por invalidación
         actions = position_manager.check_open_positions()
         assert {a["trade_id"] for a in actions} == {"PAPER-A", "PAPER-B"}
 
@@ -200,6 +215,7 @@ class TestNothingClosesOutsidePositionState:
     def test_close_paper_trade_only_called_when_apply_execution_update_says_closed(
         self, wired, monkeypatch
     ):
+        monkeypatch.setattr(trade_decision_engine, "_coherence_lost", lambda symbol: True)
         calls = {"apply_execution_update": [], "close_paper_trade": []}
 
         real_apply_execution_update = _position_state_module.apply_execution_update
@@ -219,7 +235,7 @@ class TestNothingClosesOutsidePositionState:
         monkeypatch.setattr(position_manager, "_close_paper_trade", _spy_close_paper_trade)
 
         wired["seed"]([_trade()])
-        wired["price"] = 61_000.0  # take_profit -> EXIT -> debería cerrar
+        wired["price"] = 61_000.0  # invalidación de tesis -> EXIT -> debería cerrar
         position_manager.check_open_positions()
 
         assert calls["apply_execution_update"] == [PositionStatus.CLOSED]
