@@ -8,9 +8,14 @@ transición + persistencia:
                ├──> position_manager.py ──> core/trading/position_state.py
     criterio ──┘         │
                           v
-                   OrderIntent (simulado para PAPER; LIVE lo consume
-                   auto_executor.py — pendiente de adaptar)
+                   OrderIntent
                           │
+              ┌───────────┴───────────┐
+              v                       v
+      _simulate_paper_fill    execution_adapter.submit_close
+      (PAPER, instantáneo)    (LIVE, trade_executor real)
+              │                       │
+              └───────────┬───────────┘
                           v
                    OrderExecution
                           │
@@ -41,10 +46,21 @@ Cada posición abierta se evalúa así, en orden:
      `position_state.py`, nunca por este archivo) se persiste el cierre
      en el ledger PAPER.
 
-No cierra posiciones LIVE automáticamente — solo propone.
+`check_open_live_positions()` sigue exactamente el mismo orden para
+posiciones LIVE (`live_position_store.py`), pero el fill viene de
+`execution_adapter.py` (broker real vía `trade_executor.py`), nunca
+simulado. Limitación conocida: no hay reconciliación ACTIVA contra el
+broker todavía — eToro no expone un endpoint de "consultar orden por
+id" en `etoro_client.py`, solo `get_portfolio()` (lista posiciones, no
+órdenes). Una posición en `RECONCILING` se reintenta cada ciclo vía el
+mismo `intent_id` — el guard de idempotencia impide que eso reenvíe al
+broker mientras siga sin resolverse, pero sin una consulta real puede
+quedarse en `RECONCILING` indefinidamente. Cerrar ese hueco (comparar
+contra `get_portfolio()`) queda fuera de este paso.
 
 API pública:
-    check_open_positions() -> List[Dict]   (acciones tomadas)
+    check_open_positions() -> List[Dict]        (PAPER, acciones tomadas)
+    check_open_live_positions(user_id) -> List[Dict]  (LIVE, ídem)
 """
 
 from __future__ import annotations
@@ -56,7 +72,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from connectors.etoro import trade_decision_engine
+from connectors.etoro import execution_adapter, live_position_store, trade_decision_engine
 from core.trading import risk_gate
 from core.trading.contracts import (
     AccountRiskSnapshot,
@@ -66,6 +82,7 @@ from core.trading.contracts import (
     OrderExecution,
     OrderIntent,
     PositionRecord,
+    PositionRiskSnapshot,
     PositionStatus,
     RiskAction,
     RiskLimits,
@@ -96,7 +113,9 @@ def check_open_positions() -> List[Dict[str, Any]]:
     if not open_trades:
         return actions
 
-    account = _build_account_snapshot(cfg, open_trades)
+    account = _build_account_snapshot(
+        cfg, len(open_trades), sum(t.amount_usd for t in open_trades),
+    )
     limits = _build_risk_limits(cfg)
     now_ts = time.time()
     now_dt = datetime.now(timezone.utc)
@@ -109,7 +128,7 @@ def check_open_positions() -> List[Dict[str, Any]]:
         thesis = _legacy_entry_thesis(trade)
 
         if risk_verdict.forced_action != RiskAction.PASS:
-            decision = _decision_from_risk_verdict(trade, risk_verdict)
+            decision = _decision_from_risk_verdict(trade.trade_id, risk_verdict)
         else:
             decision = trade_decision_engine.propose_decision(
                 thesis, current_price, now_ts, max_hold_h,
@@ -172,10 +191,20 @@ def check_open_positions() -> List[Dict[str, Any]]:
 # exige de quien lo llama.
 # ---------------------------------------------------------------------------
 
-def _build_account_snapshot(cfg: Dict[str, Any], open_trades: list) -> AccountRiskSnapshot:
+def _build_account_snapshot(
+    cfg: Dict[str, Any],
+    open_positions_count: int,
+    total_exposure_usd: float,
+    *,
+    positions_sync_ok: bool = True,
+    broker_execution_ok: bool = True,
+) -> AccountRiskSnapshot:
     # PAPER no tiene broker real: no hay desconexión ni desincronización
-    # posible — ambas quedan en True. LIVE, al adaptar auto_executor.py,
-    # las alimentará con el estado real de la conexión/reconciliación.
+    # posible — ambas quedan en True por defecto. LIVE (check_open_live_
+    # positions) puede pasar estado real de conexión el día que exista
+    # una fuente para eso; hoy también queda en True (ver limitación
+    # documentada ahí: no hay reconciliación activa contra el broker
+    # todavía, solo el guard de idempotencia).
     #
     # cfg["halt"] es el kill switch manual existente ("emergency stop
     # flag"). Se interpreta como HALT_NEW_RISK, no EMERGENCY_FLATTEN: es
@@ -186,11 +215,11 @@ def _build_account_snapshot(cfg: Dict[str, Any], open_trades: list) -> AccountRi
     return AccountRiskSnapshot(
         equity_usd=cfg.get("equity_usd", 10_000.0),
         realized_pnl_today_usd=-float(cfg.get("daily_loss_usd", 0.0)),
-        open_positions_count=len(open_trades),
-        total_exposure_usd=sum(t.amount_usd for t in open_trades),
+        open_positions_count=open_positions_count,
+        total_exposure_usd=total_exposure_usd,
         kill_switch=kill_switch,
-        positions_sync_ok=True,
-        broker_execution_ok=True,
+        positions_sync_ok=positions_sync_ok,
+        broker_execution_ok=broker_execution_ok,
     )
 
 
@@ -208,8 +237,7 @@ def _build_risk_limits(cfg: Dict[str, Any]) -> RiskLimits:
     )
 
 
-def _build_position_risk_snapshot(trade, current_price: Optional[float]):
-    from core.trading.contracts import PositionRiskSnapshot
+def _build_position_risk_snapshot(trade, current_price: Optional[float]) -> PositionRiskSnapshot:
     return PositionRiskSnapshot(
         position_id=trade.trade_id,
         symbol=trade.symbol,
@@ -221,14 +249,14 @@ def _build_position_risk_snapshot(trade, current_price: Optional[float]):
     )
 
 
-def _decision_from_risk_verdict(trade, verdict: RiskVerdict) -> TradeDecision:
+def _decision_from_risk_verdict(position_id: str, verdict: RiskVerdict) -> TradeDecision:
     action = (
         TradeAction.EXIT if verdict.forced_action == RiskAction.OVERRIDE_EXIT
         else TradeAction.REDUCE
     )
     return TradeDecision(
         action=action,
-        position_id=trade.trade_id,
+        position_id=position_id,
         reason=f"RiskGate: {verdict.reason} [{verdict.rule_id}]",
         confidence=1.0,
         evidence_refs=(verdict.rule_id,),
@@ -440,3 +468,218 @@ def get_open_positions_summary() -> str:
             f"    Tiempo: {elapsed_h:.1f}h{pnl_str}"
         )
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# LIVE — mismo orden (RiskGate -> criterio -> position_state) que PAPER,
+# pero el fill viene de execution_adapter.py (broker real), nunca
+# simulado. ENTER (abrir la posición) sigue siendo el pipeline de
+# propuestas existente (auto_executor.execute_proposal) — este archivo
+# solo administra lo que ya está abierto, igual que con PAPER.
+# ---------------------------------------------------------------------------
+
+def check_open_live_positions(user_id: Any = None) -> List[Dict[str, Any]]:
+    """Equivalente LIVE de `check_open_positions()`. Ver limitación de
+    reconciliación activa en el docstring del módulo."""
+    from connectors.etoro.auto_executor import get_config, record_trade_result
+
+    cfg = get_config()
+    max_hold_h = cfg.get("max_hold_hours", 24)
+    if user_id is None:
+        creator_id = os.environ.get("TELEGRAM_CREATOR_CHAT_ID", "2030762343")
+        user_id = f"tg:{creator_id}"
+
+    actions: List[Dict[str, Any]] = []
+    open_entries = live_position_store.open_positions()
+    if not open_entries:
+        return actions
+
+    account = _build_account_snapshot(
+        cfg, len(open_entries),
+        sum(e.record.remaining_quantity for e in open_entries),
+    )
+    limits = _build_risk_limits(cfg)
+    now_ts = time.time()
+    now_dt = datetime.now(timezone.utc)
+
+    for entry in open_entries:
+        record = entry.record
+        current_price = _get_current_price(record.entry_thesis.symbol)
+
+        if record.status in (PositionStatus.CLOSING, PositionStatus.RECONCILING):
+            # Ya hay un CLOSE en curso — nunca se decide de nuevo. Solo se
+            # reintenta avanzar el mismo intent_id (idempotente: no
+            # reenvía al broker si sigue sin resolverse).
+            new_record = _advance_in_flight_live_close(record, entry, user_id, now_dt)
+            _persist_live_update(entry, new_record)
+            if new_record.status == PositionStatus.CLOSED:
+                result = _finalize_live_close(entry, new_record, "reconciliación", current_price)
+                if result:
+                    actions.append(result)
+                    record_trade_result(result["pnl_usd"], is_paper=False)
+            continue
+
+        position_snapshot = PositionRiskSnapshot(
+            position_id=record.position_id,
+            symbol=record.entry_thesis.symbol,
+            side=record.entry_thesis.side,
+            entry_price=entry.entry_price,
+            current_price=current_price,
+            hard_stop_price=entry.hard_stop_price,
+            size_usd=record.remaining_quantity,
+        )
+        risk_verdict = risk_gate.check_open_position(position_snapshot, account, limits)
+
+        if risk_verdict.forced_action != RiskAction.PASS:
+            decision = _decision_from_risk_verdict(record.position_id, risk_verdict)
+        else:
+            decision = trade_decision_engine.propose_decision(
+                record.entry_thesis, current_price, now_ts, max_hold_h,
+            )
+
+        if decision.action == TradeAction.HOLD:
+            continue
+
+        if decision.action == TradeAction.REDUCE:
+            # etoro_client.close_position() cierra la posición COMPLETA —
+            # no hay endpoint de cierre parcial que adaptar. No se inventa
+            # esa semántica aquí, igual que en PAPER.
+            logger.warning(
+                "[POSITION_MGR][LIVE] %s (%s): decisión REDUCE (%s) — eToro "
+                "no expone cierre parcial, no se actúa",
+                record.position_id, record.entry_thesis.symbol, decision.reason,
+            )
+            continue
+
+        # EXIT: intent_id NUEVO (la posición no tenía ninguno en curso —
+        # venía de HOLDING), CLOSING, primer intento de submit_close.
+        intent = OrderIntent(
+            intent_id=f"{record.position_id}-close-{int(now_ts)}",
+            position_id=record.position_id,
+            action=OrderAction.CLOSE,
+            quantity=record.remaining_quantity,
+            created_at=now_dt,
+        )
+        new_record = apply_decision(record, decision, intent, now_dt)
+        execution = execution_adapter.submit_close(
+            intent, user_id=user_id, broker_position_id=entry.broker_position_id,
+            instrument_id=entry.instrument_id, symbol=record.entry_thesis.symbol,
+        )
+        new_record = apply_execution_update(new_record, execution, now_dt)
+        _persist_live_update(entry, new_record)
+
+        if new_record.status == PositionStatus.CLOSED:
+            result = _finalize_live_close(entry, new_record, decision.reason, current_price)
+            if result:
+                actions.append(result)
+                record_trade_result(result["pnl_usd"], is_paper=False)
+
+    return actions
+
+
+def _advance_in_flight_live_close(
+    record: PositionRecord, entry: "live_position_store.LivePositionEntry",
+    user_id: Any, now_dt: datetime,
+) -> PositionRecord:
+    """Reintenta el MISMO intent_id de un CLOSE ya en curso. Nunca mina
+    uno nuevo — `execution_adapter.submit_close` ya se niega a llamar al
+    broker de nuevo mientras el anterior siga sin resolverse; esto solo
+    le da la oportunidad de devolver un desenlace más reciente si ya se
+    resolvió."""
+    if record.current_intent is None:
+        return record
+    execution = execution_adapter.submit_close(
+        record.current_intent, user_id=user_id,
+        broker_position_id=entry.broker_position_id,
+        instrument_id=entry.instrument_id, symbol=record.entry_thesis.symbol,
+    )
+    if execution.intent_id != record.current_intent.intent_id:
+        return record
+    return apply_execution_update(record, execution, now_dt)
+
+
+def _persist_live_update(entry: "live_position_store.LivePositionEntry", new_record: PositionRecord) -> None:
+    live_position_store.save(
+        live_position_store.LivePositionEntry(
+            record=new_record,
+            broker_position_id=entry.broker_position_id,
+            instrument_id=entry.instrument_id,
+            entry_price=entry.entry_price,
+            hard_stop_price=entry.hard_stop_price,
+        )
+    )
+
+
+def _finalize_live_close(
+    entry: "live_position_store.LivePositionEntry",
+    closed_record: PositionRecord,
+    reason: str,
+    current_price: Optional[float],
+) -> Optional[Dict[str, Any]]:
+    """Registra el desenlace de un cierre LIVE ya confirmado por
+    `position_state.py` (`status == CLOSED`). Nunca decide el cierre —
+    solo lo audita, igual que `_close_paper_trade` para PAPER."""
+    try:
+        thesis = closed_record.entry_thesis
+        symbol, side = thesis.symbol, thesis.side
+        entry_price = entry.entry_price
+        if current_price is None:
+            current_price = entry_price
+
+        if side == "buy":
+            pnl_pct = (current_price - entry_price) / entry_price * 100
+        else:
+            pnl_pct = (entry_price - current_price) / entry_price * 100
+
+        # remaining_quantity ya quedó en 0 tras el CLOSE — el tamaño
+        # cerrado es el que llevaba el intent de cierre.
+        size_usd = closed_record.current_intent.quantity if closed_record.current_intent else 0.0
+        pnl_usd = size_usd * (pnl_pct / 100)
+        status = "closed_win" if pnl_usd > 0 else "closed_loss" if pnl_usd < 0 else "closed_neutral"
+
+        try:
+            from core.learn.causal_learning import resolve_decision_outcome
+            resolve_decision_outcome(
+                thesis.evidence_snapshot_id, outcome_status=status, outcome_value=pnl_usd,
+            )
+        except Exception as exc:
+            logger.debug("causal outcome trace error (LIVE): %s", exc)
+
+        logger.info(
+            "[LIVE_CLOSE] %s | %s %s | PnL=$%.2f (%.2f%%) | reason=%s",
+            closed_record.position_id, side.upper(), symbol, pnl_usd, pnl_pct, reason,
+        )
+
+        try:
+            from core.self_observation.observation_ledger import record
+            icon = "✅" if pnl_usd > 0 else "❌" if pnl_usd < 0 else "➖"
+            record(
+                domain="market",
+                obs_type="position_closed",
+                summary=(
+                    f"{icon} Posición LIVE cerrada: {side.upper()} {symbol} "
+                    f"PnL=${pnl_usd:.2f} | Razón: {reason[:60]}"
+                ),
+                star_id=f"market:{symbol}",
+                evidence={
+                    "position_id": closed_record.position_id,
+                    "pnl_usd": pnl_usd, "reason": reason, "status": status,
+                },
+            )
+        except Exception:
+            pass
+
+        return {
+            "position_id": closed_record.position_id,
+            "symbol": symbol,
+            "direction": side,
+            "entry_price": entry_price,
+            "exit_price": current_price,
+            "pnl_usd": round(pnl_usd, 2),
+            "pnl_pct": round(pnl_pct, 3),
+            "status": status,
+            "reason": reason,
+        }
+    except Exception as exc:
+        logger.error("_finalize_live_close error: %s", exc)
+        return None

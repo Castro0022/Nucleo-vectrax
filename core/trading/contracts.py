@@ -419,3 +419,43 @@ class PositionRecord:
     current_intent: Optional[OrderIntent]
     last_execution: Optional[OrderExecution]
     updated_at: datetime
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "position_id": self.position_id,
+            "entry_thesis": self.entry_thesis.to_dict(),
+            "status": self.status.value,
+            "remaining_quantity": self.remaining_quantity,
+            "current_intent": self.current_intent.to_dict() if self.current_intent else None,
+            "last_execution": self.last_execution.to_dict() if self.last_execution else None,
+            "updated_at": self.updated_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "PositionRecord":
+        return cls(
+            position_id=d["position_id"],
+            entry_thesis=EntryThesis.from_dict(d["entry_thesis"]),
+            status=PositionStatus(d["status"]),
+            remaining_quantity=float(d["remaining_quantity"]),
+            current_intent=(
+                OrderIntent(
+                    intent_id=d["current_intent"]["intent_id"],
+                    position_id=d["current_intent"]["position_id"],
+                    action=OrderAction(d["current_intent"]["action"]),
+                    quantity=float(d["current_intent"]["quantity"]),
+                    created_at=datetime.fromisoformat(d["current_intent"]["created_at"]),
+                ) if d.get("current_intent") else None
+            ),
+            last_execution=(
+                OrderExecution(
+                    intent_id=d["last_execution"]["intent_id"],
+                    broker_order_id=d["last_execution"]["broker_order_id"],
+                    status=ExecutionStatus(d["last_execution"]["status"]),
+                    filled_quantity=float(d["last_execution"]["filled_quantity"]),
+                    avg_fill_price=d["last_execution"]["avg_fill_price"],
+                    last_update_at=datetime.fromisoformat(d["last_execution"]["last_update_at"]),
+                ) if d.get("last_execution") else None
+            ),
+            updated_at=datetime.fromisoformat(d["updated_at"]),
+        )
