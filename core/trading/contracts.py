@@ -61,6 +61,25 @@ class RiskAction(str, Enum):
     BLOCK_ENTRY = "BLOCK_ENTRY"
 
 
+class RiskMode(str, Enum):
+    """Estado global de la jaula de seguridad.
+
+    NORMAL           — ningún límite global activado.
+    HALT_NEW_RISK     — no se abre nada nuevo (kill switch en modo halt, o
+                         pérdida diaria máxima alcanzada). NO toca
+                         posiciones ya abiertas: siguen bajo su propio
+                         stop duro y bajo `TradeDecisionEngine`.
+    EMERGENCY_FLATTEN — liquidar todo. Reservado para condiciones
+                         verdaderamente excepcionales: kill switch manual
+                         en modo flatten, broker inconsistente, o pérdida
+                         de sincronización de posiciones (el sistema ya
+                         no puede confiar en su propio estado de riesgo).
+    """
+    NORMAL = "NORMAL"
+    HALT_NEW_RISK = "HALT_NEW_RISK"
+    EMERGENCY_FLATTEN = "EMERGENCY_FLATTEN"
+
+
 # ---------------------------------------------------------------------------
 # EntryThesis
 # ---------------------------------------------------------------------------
@@ -183,3 +202,64 @@ class RiskVerdict:
             "reason": self.reason,
             "rule_id": self.rule_id,
         }
+
+
+# ---------------------------------------------------------------------------
+# Snapshots — lo único que RiskGate lee. Nunca consulta servicios él mismo.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RiskLimits:
+    """Los límites duros que el creador autoriza. RiskGate nunca los
+    deriva ni los ajusta — solo los aplica."""
+
+    max_loss_per_trade_usd: float
+    max_daily_loss_usd: float
+    max_open_positions: int
+    max_total_exposure_usd: float
+
+
+@dataclass(frozen=True)
+class AccountRiskSnapshot:
+    """Estado de cuenta/sistema al momento de evaluar riesgo.
+
+    `kill_switch` es un estado fijado manualmente por el operador/creador
+    (nunca calculado por el gate): NORMAL, HALT_NEW_RISK o
+    EMERGENCY_FLATTEN. `broker_state_ok` / `positions_sync_ok` en False
+    significa que el sistema no puede confiar en sus propios números —
+    ver `RiskMode.EMERGENCY_FLATTEN`.
+    """
+
+    equity_usd: float
+    realized_pnl_today_usd: float  # negativo = pérdida
+    open_positions_count: int
+    total_exposure_usd: float
+    kill_switch: RiskMode = RiskMode.NORMAL
+    broker_state_ok: bool = True
+    positions_sync_ok: bool = True
+
+
+@dataclass(frozen=True)
+class MarketExecutionSnapshot:
+    """Condiciones de mercado/broker para el símbolo de una entrada
+    propuesta. `price=None` o `price_is_stale=True` o
+    `broker_tradable=False` son todas condiciones fail-safe: si el gate
+    no sabe con certeza qué está pasando, no abre una operación nueva."""
+
+    symbol: str
+    price: Optional[float]
+    price_is_stale: bool
+    broker_tradable: bool
+
+
+@dataclass(frozen=True)
+class PositionRiskSnapshot:
+    """Estado de una posición ya abierta, para `check_open_position`."""
+
+    position_id: str
+    symbol: str
+    side: str
+    entry_price: float
+    current_price: Optional[float]
+    hard_stop_price: float
+    size_usd: float
