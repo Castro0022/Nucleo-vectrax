@@ -1,14 +1,44 @@
 """
 connectors/etoro/position_manager.py — Gestor de posiciones abiertas.
 
-Evalúa condiciones de salida para posiciones PAPER abiertas:
-  - Stop loss alcanzado
-  - Take profit alcanzado
-  - Pérdida de coherencia (gravity engine cc_score cae)
-  - Señal contraria detectada
-  - Tiempo máximo de posición expirado
+`position_manager.py` no decide por qué salir. Solo administra estado +
+transición + persistencia:
 
-Se ejecuta como parte del learning cycle.
+    RiskGate ──┐
+               ├──> position_manager.py ──> core/trading/position_state.py
+    criterio ──┘         │
+                          v
+                   OrderIntent (simulado para PAPER; LIVE lo consume
+                   auto_executor.py — pendiente de adaptar)
+                          │
+                          v
+                   OrderExecution
+                          │
+                          v
+                   apply_execution_update() ──> PositionRecord persistido
+
+Cada posición abierta se evalúa así, en orden:
+  1. `risk_gate.check_open_position(...)` — límites duros, ciego a
+     criterio. Si no es `PASS`, su veredicto SUSTITUYE cualquier
+     criterio (`RiskGate` puede anular a la capa de criterio; la capa de
+     criterio nunca puede anular a `RiskGate`).
+  2. Si `RiskGate` dio `PASS`, se consulta
+     `legacy_criterion_engine.propose_decision(...)` — un sustituto
+     TEMPORAL de `TradeDecisionEngine` (que todavía no existe). Este
+     archivo ya no contiene ese criterio directamente — ver
+     `legacy_criterion_engine.py` para dónde vive ahora
+     `_check_coherence_loss`/`_check_contrary_signal`.
+  3. La `TradeDecision` resultante entra en
+     `core.trading.position_state.apply_decision(...)`.
+  4. Para PAPER, el fill se simula al instante (no hay broker real que
+     confirmar) y entra por
+     `core.trading.position_state.apply_execution_update(...)` —
+     exactamente el mismo camino que usará LIVE cuando
+     `auto_executor.py` se adapte para producir `OrderExecution` reales.
+  5. Solo cuando `PositionRecord.status == CLOSED` (decidido por
+     `position_state.py`, nunca por este archivo) se persiste el cierre
+     en el ledger PAPER.
+
 No cierra posiciones LIVE automáticamente — solo propone.
 
 API pública:
@@ -21,7 +51,28 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from connectors.etoro import legacy_criterion_engine
+from core.trading import risk_gate
+from core.trading.contracts import (
+    AccountRiskSnapshot,
+    EntryThesis,
+    ExecutionStatus,
+    OrderAction,
+    OrderExecution,
+    OrderIntent,
+    PositionRecord,
+    PositionStatus,
+    RiskAction,
+    RiskLimits,
+    RiskMode,
+    RiskVerdict,
+    TradeAction,
+    TradeDecision,
+)
+from core.trading.position_state import apply_decision, apply_execution_update
 
 logger = logging.getLogger("vectrax.etoro.position_manager")
 
@@ -37,26 +88,69 @@ def check_open_positions() -> List[Dict[str, Any]]:
 
     cfg = get_config()
     max_hold_h = cfg.get("max_hold_hours", 24)
-    actions = []
+    actions: List[Dict[str, Any]] = []
 
     open_trades = [t for t in get_paper_trades(limit=100) if t.status == "open"]
     if not open_trades:
         return actions
 
+    account = _build_account_snapshot(cfg, open_trades)
+    limits = _build_risk_limits(cfg)
+    now_ts = time.time()
+    now_dt = datetime.now(timezone.utc)
+
     for trade in open_trades:
-        close_reason = _evaluate_exit(trade, max_hold_h)
-        if close_reason:
-            result = _close_paper_trade(trade, close_reason)
-            if result:
-                actions.append(result)
-                # Record PnL — trade_id is the idempotency key that stops a
-                # retried close (e.g. two overlapping check_open_positions()
-                # runs racing on the same still-"open" trade) from double-
-                # counting toward paper_trades_total.
-                pnl = result.get("pnl_usd", 0)
-                record_trade_result(pnl, is_paper=True, trade_id=trade.trade_id)
-                # Log to observation ledger
-                _log_exit_observation(trade, close_reason, result)
+        current_price = _get_current_price(trade.symbol)
+        position_snapshot = _build_position_risk_snapshot(trade, current_price)
+        risk_verdict = risk_gate.check_open_position(position_snapshot, account, limits)
+
+        if risk_verdict.forced_action != RiskAction.PASS:
+            decision = _decision_from_risk_verdict(trade, risk_verdict)
+        else:
+            decision = legacy_criterion_engine.propose_decision(
+                trade, current_price, max_hold_h, now_ts,
+            )
+
+        if decision.action == TradeAction.HOLD:
+            continue
+
+        if decision.action == TradeAction.REDUCE:
+            # El ledger PAPER (PaperTrade/record_trade_result) no modela
+            # cierres parciales todavía — no se inventa esa semántica
+            # aquí. Se deja constancia y se sigue vigilando; la posición
+            # sigue abierta con su tamaño completo.
+            logger.warning(
+                "[POSITION_MGR] %s (%s): decisión REDUCE (%s) — el ledger "
+                "PAPER no soporta reducción parcial todavía, no se actúa",
+                trade.trade_id, trade.symbol, decision.reason,
+            )
+            continue
+
+        # EXIT: recorre el pipeline completo de position_state.py.
+        record = _synthesize_holding_record(trade, now_dt)
+        intent = OrderIntent(
+            intent_id=f"{trade.trade_id}-close-{int(now_ts)}",
+            position_id=trade.trade_id,
+            action=OrderAction.CLOSE,
+            quantity=trade.amount_usd,
+            created_at=now_dt,
+        )
+        record = apply_decision(record, decision, intent, now_dt)
+        execution = _simulate_paper_fill(intent, current_price, now_dt)
+        record = apply_execution_update(record, execution, now_dt)
+
+        if record.status != PositionStatus.CLOSED:
+            # No debería ocurrir para un CLOSE simulado (siempre FILLED),
+            # pero si algún día el fill no es instantáneo, no se cierra
+            # nada por fuera de este chequeo.
+            continue
+
+        result = _close_paper_trade(trade, decision.reason, current_price)
+        if result:
+            actions.append(result)
+            pnl = result.get("pnl_usd", 0)
+            record_trade_result(pnl, is_paper=True, trade_id=trade.trade_id)
+            _log_exit_observation(trade, decision.reason, result)
 
     if actions:
         logger.info(
@@ -68,46 +162,131 @@ def check_open_positions() -> List[Dict[str, Any]]:
     return actions
 
 
-def _evaluate_exit(trade, max_hold_h: float) -> str:
-    """
-    Evaluate exit conditions for a single trade.
-    Returns reason string if should close, empty string if keep open.
-    """
-    now = time.time()
-    elapsed_h = (now - trade.timestamp) / 3600
+# ---------------------------------------------------------------------------
+# RiskGate wiring — snapshots construidos desde config/estado real. Cero
+# criterio aquí: solo aritmética y lectura de config, igual que RiskGate
+# exige de quien lo llama.
+# ---------------------------------------------------------------------------
 
-    # 1. Time expiry
-    if elapsed_h >= max_hold_h:
-        return f"tiempo_expirado ({elapsed_h:.1f}h >= {max_hold_h}h)"
+def _build_account_snapshot(cfg: Dict[str, Any], open_trades: list) -> AccountRiskSnapshot:
+    # PAPER no tiene broker real: no hay desconexión ni desincronización
+    # posible — ambas quedan en True. LIVE, al adaptar auto_executor.py,
+    # las alimentará con el estado real de la conexión/reconciliación.
+    #
+    # cfg["halt"] es el kill switch manual existente ("emergency stop
+    # flag"). Se interpreta como HALT_NEW_RISK, no EMERGENCY_FLATTEN: es
+    # coherente con el resto de la arquitectura — nada liquida
+    # posiciones abiertas automáticamente sin una decisión explícita de
+    # ese nivel.
+    kill_switch = RiskMode.HALT_NEW_RISK if cfg.get("halt") else RiskMode.NORMAL
+    return AccountRiskSnapshot(
+        equity_usd=cfg.get("equity_usd", 10_000.0),
+        realized_pnl_today_usd=-float(cfg.get("daily_loss_usd", 0.0)),
+        open_positions_count=len(open_trades),
+        total_exposure_usd=sum(t.amount_usd for t in open_trades),
+        kill_switch=kill_switch,
+        positions_sync_ok=True,
+        broker_execution_ok=True,
+    )
 
-    # 2. Get current price
-    current_price = _get_current_price(trade.symbol)
-    if current_price is None:
-        return ""  # Can't evaluate without price
 
-    # 3. Stop loss
-    if trade.direction == "buy":
-        if current_price <= trade.stop_loss:
-            return f"stop_loss ({current_price:.5g} <= SL {trade.stop_loss:.5g})"
-        if current_price >= trade.take_profit:
-            return f"take_profit ({current_price:.5g} >= TP {trade.take_profit:.5g})"
-    else:  # sell
-        if current_price >= trade.stop_loss:
-            return f"stop_loss ({current_price:.5g} >= SL {trade.stop_loss:.5g})"
-        if current_price <= trade.take_profit:
-            return f"take_profit ({current_price:.5g} <= TP {trade.take_profit:.5g})"
+def _build_risk_limits(cfg: Dict[str, Any]) -> RiskLimits:
+    max_position_usd = float(cfg.get("max_position_usd", 50.0))
+    max_positions_open = int(cfg.get("max_positions_open", 2))
+    stop_loss_pct = float(cfg.get("stop_loss_pct", 1.5))
+    return RiskLimits(
+        max_loss_per_trade_usd=max_position_usd * stop_loss_pct / 100,
+        max_daily_loss_usd=float(cfg.get("max_daily_loss_usd", 10.0)),
+        max_open_positions=max_positions_open,
+        # Exposición total = límite por posición × nº máximo de posiciones.
+        # No hay un tercer número independiente configurado todavía.
+        max_total_exposure_usd=max_position_usd * max_positions_open,
+    )
 
-    # 4. Coherence loss (gravity engine cc_score dropped)
-    if _check_coherence_loss(trade.symbol):
-        return "coherencia_perdida (cc_score cayó en gravity engine)"
 
-    # 5. Contrary signal
-    if _check_contrary_signal(trade.symbol, trade.direction):
-        opposite = "sell" if trade.direction == "buy" else "buy"
-        return f"señal_contraria (nueva señal {opposite} detectada)"
+def _build_position_risk_snapshot(trade, current_price: Optional[float]):
+    from core.trading.contracts import PositionRiskSnapshot
+    return PositionRiskSnapshot(
+        position_id=trade.trade_id,
+        symbol=trade.symbol,
+        side=trade.direction,
+        entry_price=trade.entry_price,
+        current_price=current_price,
+        hard_stop_price=trade.stop_loss,
+        size_usd=trade.amount_usd,
+    )
 
-    return ""
 
+def _decision_from_risk_verdict(trade, verdict: RiskVerdict) -> TradeDecision:
+    action = (
+        TradeAction.EXIT if verdict.forced_action == RiskAction.OVERRIDE_EXIT
+        else TradeAction.REDUCE
+    )
+    return TradeDecision(
+        action=action,
+        position_id=trade.trade_id,
+        reason=f"RiskGate: {verdict.reason} [{verdict.rule_id}]",
+        confidence=1.0,
+        evidence_refs=(verdict.rule_id,),
+    )
+
+
+# ---------------------------------------------------------------------------
+# position_state.py wiring
+# ---------------------------------------------------------------------------
+
+def _legacy_entry_thesis(trade) -> EntryThesis:
+    """Sintética: los PaperTrade existentes no fueron creados por
+    TradeDecisionEngine (que todavía no existe), así que no hay una
+    EntryThesis real que recuperar. Se reemplaza por completo el día que
+    el ENTER pase por TradeDecisionEngine de verdad."""
+    return EntryThesis(
+        position_id=trade.trade_id,
+        symbol=trade.symbol,
+        side=trade.direction,
+        created_at=datetime.fromtimestamp(trade.timestamp, tz=timezone.utc),
+        thesis=f"(legacy, sin TradeDecisionEngine) entrada por proposal {trade.proposal_id}",
+        invalidation_conditions=(
+            f"cc_score de market:{trade.symbol} cae bajo 0.1",
+            "señal contraria OPERABLE detectada en las últimas 2h",
+        ),
+        confidence_at_entry=0.5,
+        evidence_snapshot={},
+        evidence_snapshot_id=f"legacy:{trade.proposal_id}",
+    )
+
+
+def _synthesize_holding_record(trade, now: datetime) -> PositionRecord:
+    return PositionRecord(
+        position_id=trade.trade_id,
+        entry_thesis=_legacy_entry_thesis(trade),
+        status=PositionStatus.HOLDING,
+        remaining_quantity=trade.amount_usd,
+        current_intent=None,
+        last_execution=None,
+        updated_at=now,
+    )
+
+
+def _simulate_paper_fill(intent: OrderIntent, current_price: Optional[float], now: datetime) -> OrderExecution:
+    """PAPER no tiene broker real que confirmar: el fill se simula al
+    instante. Cuando `auto_executor.py` se adapte para LIVE, esta
+    función deja de usarse — LIVE construye su `OrderExecution` a partir
+    de la respuesta real del broker, por el mismo
+    `apply_execution_update()`."""
+    return OrderExecution(
+        intent_id=intent.intent_id,
+        broker_order_id=f"paper-{intent.intent_id}",
+        status=ExecutionStatus.FILLED,
+        filled_quantity=intent.quantity,
+        avg_fill_price=current_price,
+        last_update_at=now,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Mercado / persistencia — I/O, no criterio.
+# ---------------------------------------------------------------------------
 
 def _get_current_price(symbol: str) -> float | None:
     """Get current price for symbol."""
@@ -129,42 +308,13 @@ def _get_current_price(symbol: str) -> float | None:
     return None
 
 
-def _check_coherence_loss(symbol: str) -> bool:
-    """Check if gravity engine coherence score dropped significantly."""
-    try:
-        from core.learn.gravity_engine import get_gravity_index
-        gi = get_gravity_index()
-        rec = gi.get(f"market:{symbol.upper()}")
-        if rec and rec.cc_score < 0.1:
-            return True
-    except Exception:
-        pass
-    return False
-
-
-def _check_contrary_signal(symbol: str, direction: str) -> bool:
-    """Check if a contrary signal was recorded in last 2 hours."""
-    try:
-        from connectors.etoro.signal_recorder import load_signals
-        opposite = "sell" if direction == "buy" else "buy"
-        cutoff = time.time() - 7200  # 2h
-        signals = load_signals()
-        return any(
-            s.symbol == symbol.upper()
-            and s.direction == opposite
-            and s.timestamp > cutoff
-            and s.scenario == "OPERABLE"
-            for s in signals
-        )
-    except Exception:
-        return False
-
-
-def _close_paper_trade(trade, reason: str) -> Dict[str, Any] | None:
-    """Close a paper trade by updating its status in the JSONL file."""
+def _close_paper_trade(trade, reason: str, current_price: Optional[float]) -> Dict[str, Any] | None:
+    """Persiste el cierre. Se llama EXCLUSIVAMENTE después de que
+    `position_state.apply_execution_update()` ya resolvió el
+    `PositionRecord` a CLOSED — esta función nunca decide por sí misma
+    que una posición está cerrada, solo registra el desenlace."""
     try:
         from connectors.etoro.auto_executor import _PAPER_LOG_FILE
-        current_price = _get_current_price(trade.symbol)
         if current_price is None:
             current_price = trade.entry_price  # fallback
 
