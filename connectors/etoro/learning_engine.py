@@ -829,6 +829,9 @@ def run_learning_cycle(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     # Step 3.4: Verificación de mercado (cierre del ciclo verificado) — aditivo,
     # gated (MARKET_VERIFY_ENABLED) y defensivo. Convierte señales resueltas en
     # outcomes reales por símbolo y los persiste en el verification_ledger común.
+    # Desde la corrección 2026-09-26, el mismo paso alimenta TAMBIÉN las
+    # estrellas de condición TA-Lib de cada señal verificada — ver el
+    # docstring de connectors.etoro.verification_cycle.
     _verified = _verify_market()
 
     # Step 3.5: Alert creator when a pattern becomes usable for the first time

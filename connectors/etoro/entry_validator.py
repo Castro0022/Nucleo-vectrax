@@ -13,7 +13,18 @@ TODAS estas condiciones deben cumplirse simultáneamente:
   7. Sin alerta crítica del sistema
   8. Símbolo no operado hoy (max_ops_per_symbol_day)
   9. Símbolo aprobado (solo en modo LIVE)
- 10. Evidencia registrada en observation ledger
+ 10. Sin veredicto TA-Lib graduado desfavorable (ver nota)
+ 11. Evidencia registrada en observation ledger
+
+Nota sobre la condición 10 (`connectors.etoro.ta_feature_gravity`): consulta
+candidatos de conocimiento técnico (TA-Lib) YA GRADUADOS con evidencia REAL
+suficiente para el símbolo, en el instante actual. Mientras el sistema no
+alcance LIVE (o no acumule suficiente evidencia real después), NINGÚN
+candidato gradúa -- `derive_pattern_stats()` devuelve `None` para todos, y
+esta condición nunca bloquea por eso. Ausencia de evidencia real es
+"sin opinión", nunca "rechazado": solo evidencia real graduada MOSTRANDO
+mal desempeño bloquea. Ver el diseño completo en
+`ta_feature_gravity.graduated_verdict`.
 
 Retorna (allowed: bool, reasons: list[str]) donde reasons explica
 cada condición no cumplida.
@@ -23,7 +34,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("vectrax.etoro.entry_validator")
 
@@ -124,7 +135,20 @@ def validate_entry(
                 f"Usa /vx market approve {sym}."
             )
 
-    # 9. Evidencia registrada
+    # 9. Veredicto TA-Lib graduado (etapa 2 -- ver nota en el docstring del
+    #    módulo). Solo bloquea con evidencia REAL suficiente y desfavorable;
+    #    hoy (sin evidencia real todavía) nunca aporta un reason.
+    ta_price = getattr(proposal, "entry_price", None) or 0.0
+    ta_verdict = _check_ta_gravity(sym, float(ta_price))
+    evidence["ta_gravity_verdict"] = ta_verdict
+    if ta_verdict is not None:
+        reasons.append(
+            f"Condición TA-Lib graduada desfavorable para {sym}: "
+            f"{ta_verdict['condition_id']} "
+            f"WR={ta_verdict['win_rate_pct']:.0f}% N={ta_verdict['sample_size']}."
+        )
+
+    # 10. Evidencia registrada
     _log_validation(sym, direction, mode, reasons, evidence)
 
     allowed = len(reasons) == 0
@@ -262,6 +286,23 @@ def _check_market_active(symbol: str) -> bool:
     if 14 <= hour < 21:
         return True
     return False
+
+
+def _check_ta_gravity(symbol: str, price: float) -> Optional[Dict[str, Any]]:
+    """Veredicto TA-Lib graduado desfavorable para `symbol` AHORA MISMO, o
+    `None` si no hay ninguno (incluye: sin evidencia real todavía -- ver
+    docstring del módulo). Nunca lanza: cualquier fallo se trata como "sin
+    opinión", igual que la ausencia de evidencia -- un chequeo adicional que
+    falla no puede volverse un bloqueo que antes no existía."""
+    try:
+        from connectors.etoro.ta_feature_gravity import (
+            current_conditions_for_proposal, graduated_verdict,
+        )
+        conditions = current_conditions_for_proposal(symbol, price)
+        return graduated_verdict(symbol, conditions)
+    except Exception as exc:
+        logger.debug("ta gravity check failed for %s: %s", symbol, exc)
+        return None
 
 
 def _check_critical_alerts() -> str:
