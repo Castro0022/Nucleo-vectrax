@@ -11,8 +11,10 @@ Evalúa condiciones de salida para posiciones PAPER abiertas:
 Se ejecuta como parte del learning cycle. No cierra posiciones LIVE
 directamente (SL/TP los ejecuta el propio bróker) — pero SÍ detecta
 cuándo una posición LIVE registrada ya se cerró del lado del bróker y lo
-refleja en el registro propio (ver check_live_positions_closed(),
-corrección de seguridad 2026-09-26).
+refleja en el registro propio, primero como estimación de peor caso y
+luego confirmándola contra el historial real de eToro en cuanto aparece
+ahí (ver check_live_positions_closed() y _resolve_pending_estimates(),
+correcciones de seguridad 2026-09-26).
 
 API pública:
     check_open_positions() -> List[Dict]           (acciones PAPER + LIVE)
@@ -94,28 +96,40 @@ def check_live_positions_closed() -> List[Dict[str, Any]]:
     record_trade_result()).
 
     `get_portfolio()` solo da PnL NO realizado de posiciones ABIERTAS —
-    este cliente de eToro todavía no tiene un endpoint de historial de
-    posiciones cerradas que funcione (investigado 2026-09-26: el único
-    candidato en el código, `portfolio.get_trade_history()`, devuelve 404
-    contra la API real -- no existe en esa ruta). Corrección 2026-09-26
-    (segunda vuelta del PR #134): en vez de "closed_pnl_pending sin
-    registrar nada", ahora se registra de inmediato una ESTIMACIÓN de
-    peor caso (`auto_executor.worst_case_pnl_estimate`, asumiendo que se
-    tocó el propio stop-loss de la posición) vía
+    no sirve para saber cómo cerró una que ya desapareció. Corrección
+    2026-09-26 (segunda vuelta del PR #134): en cuanto se detecta que
+    desapareció, se registra de inmediato una ESTIMACIÓN de peor caso
+    (`auto_executor.worst_case_pnl_estimate`, asumiendo que se tocó el
+    propio stop-loss de la posición) vía
     `record_live_trade_result(..., source="estimated")` -- eso SÍ cuenta
     para daily_loss_usd/consecutive_losses (recalculados, nunca
     inventados como un número fijo) y puede activar la pausa de 24h. Se
-    avisa por Telegram. Cuando llegue el PnL real (bróker o
-    `/vx etoro live_pnl`, corrección manual del creador), reemplaza la
-    estimación -- nunca se suma sobre ella. Mientras el resultado siga
-    siendo `pnl_source="estimated"`, `check_risk_before_trade()` bloquea
-    toda entrada nueva (fail-closed) hasta que se confirme.
+    avisa por Telegram. Mientras el resultado siga siendo
+    `pnl_source="estimated"`, `check_risk_before_trade()` bloquea toda
+    entrada nueva (fail-closed) hasta que se confirme.
+
+    Corrección 2026-09-26 (cuarta vuelta del PR #134): investigado el
+    404 anterior más a fondo -- el endpoint correcto de historial de
+    cierres SÍ existe, pero es otro: GET /trading/info/trade/history
+    (cuenta real, ver `etoro_client.get_trade_history`), no
+    `portfolio.get_trade_history()` (ese sigue devolviendo 404). Cada
+    vez que corre esta función, ANTES de buscar cierres nuevos, intenta
+    resolver las estimaciones pendientes contra ese historial real
+    (`_resolve_pending_estimates`): si el `positionId` ya aparece ahí,
+    su `netProfit` reemplaza la estimación como PnL "real" (nunca se
+    suma). Si todavía no aparece, se reintenta en el próximo ciclo --
+    la estimación se deja intacta y sigue bloqueando entradas nuevas.
     """
     from connectors.etoro.auto_executor import (
         get_live_trades, record_live_trade_result, worst_case_pnl_estimate,
     )
 
     actions: List[Dict[str, Any]] = []
+
+    pending = [t for t in get_live_trades(limit=200) if t.pnl_source == "estimated"]
+    if pending:
+        actions.extend(_resolve_pending_estimates(pending))
+
     open_live = [t for t in get_live_trades(limit=200) if t.status == "open"]
     if not open_live:
         return actions
@@ -169,6 +183,79 @@ def check_live_positions_closed() -> List[Dict[str, Any]]:
                 f"Estimación de peor caso registrada: ${estimate:.2f}\n\n"
                 f"Entradas nuevas BLOQUEADAS hasta confirmar el PnL real "
                 f"con /vx etoro live_pnl {trade.trade_id} <pnl>."
+            )
+        except Exception:
+            pass
+
+    return actions
+
+
+def _resolve_pending_estimates(pending) -> List[Dict[str, Any]]:
+    """Intenta reemplazar cada estimación de peor caso pendiente
+    (`pnl_source == "estimated"`) por el PnL real desde el historial de
+    eToro. Corrección 2026-09-26 (cuarta vuelta del PR #134).
+
+    Una sola llamada a `get_trade_history()` cubre TODAS las pendientes:
+    `minDate` se fija en la apertura de la más antigua -- un minDate más
+    temprano solo trae más filas, nunca menos, así que es seguro y evita
+    una llamada por posición (respeta el límite de 60/min sin esfuerzo
+    extra). Lo que no aparece todavía se deja tal cual -- se reintenta en
+    el próximo ciclo, sin tocar la estimación existente.
+    """
+    from connectors.etoro.auto_executor import record_live_trade_result
+    from connectors.etoro.etoro_client import get_trade_history, parse_etoro_timestamp
+
+    actions: List[Dict[str, Any]] = []
+
+    min_date = time.strftime("%Y-%m-%d", time.gmtime(min(t.timestamp for t in pending)))
+    try:
+        result = get_trade_history(min_date=min_date)
+    except Exception as exc:
+        logger.warning("[LIVE_POS] no se pudo consultar el historial real: %s", exc)
+        return actions
+    if not result.get("success"):
+        logger.warning(
+            "[LIVE_POS] historial real falló: %s -- estimaciones pendientes "
+            "se reintentan en el próximo ciclo.", result.get("error"),
+        )
+        return actions
+
+    by_position_id = {
+        str(h.get("positionId")): h for h in result.get("trades", [])
+        if h.get("positionId") is not None
+    }
+
+    for trade in pending:
+        hist = by_position_id.get(trade.position_id)
+        if hist is None:
+            continue  # todavía no aparece en el historial -- reintenta después
+
+        net_profit = hist.get("netProfit")
+        closed_at = parse_etoro_timestamp(hist.get("closeTimestamp"))
+        if net_profit is None or closed_at is None:
+            continue  # fila incompleta -- reintenta después en vez de registrar a medias
+
+        recorded = record_live_trade_result(
+            trade.trade_id, net_profit, source="real", closed_at=closed_at,
+        )
+        actions.append({
+            "trade_id": trade.trade_id,
+            "position_id": trade.position_id,
+            "symbol": trade.symbol,
+            "status": "closed_confirmed",
+            "reason": "real_pnl_from_broker_history",
+            "pnl_real_usd": round(net_profit, 2),
+        })
+        logger.info(
+            "[LIVE_POS] %s | PnL real confirmado desde historial eToro: "
+            "%.2f USD (reemplazó la estimación, recorded=%s)",
+            trade.trade_id, net_profit, recorded,
+        )
+        try:
+            from connectors.etoro.learning_engine import _tg_notify
+            _tg_notify(
+                f"✅ PnL real confirmado para {trade.symbol} ({trade.trade_id}): "
+                f"${net_profit:.2f} (historial eToro, reemplazó la estimación)."
             )
         except Exception:
             pass

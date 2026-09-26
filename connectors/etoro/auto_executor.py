@@ -102,9 +102,18 @@ change above):
   - `_maybe_lift_expired_pause()` (called lazily from
     `check_risk_before_trade()`, no separate scheduled job) lifts an
     expired pause with no creator action: it clears `paused_until` /
-    `pause_reason` and resets `consecutive_losses` / `daily_loss_usd` to
-    0. Telegram is notified both when a pause is activated (reason +
-    resume time) and when it lifts.
+    `pause_reason`, resets `consecutive_losses` / `daily_loss_usd` to 0,
+    and stamps `pause_lifted_at = now`. Telegram is notified both when a
+    pause is activated (reason + resume time) and when it lifts.
+  - `pause_lifted_at` (corrección 2026-09-26, fourth change in this PR)
+    is the cutoff `_recompute_live_risk_counters()` uses for
+    `consecutive_losses`: a close from before the last resume never
+    contributes to the streak, so lifting a pause actually breaks the
+    streak that caused it — without this, a recompute right after resume
+    (with no intervening win) would see the same full historical streak
+    and immediately re-arm the pause before any new entry could even be
+    attempted. `daily_loss_usd` is untouched by this cutoff — it stays
+    purely per-calendar-day, same as before.
   - `paused_until` / `pause_reason` live in the same persisted config
     JSON as everything else — a process restart cannot shorten, lose, or
     silently extend an active pause.
@@ -191,6 +200,7 @@ DEFAULTS = {
     "recorded_live_trade_ids": [],      # mismo dedup horizon, para cierres LIVE
     "paused_until":            0.0,     # corte de circuito 2026-09-26 — ver _activate_pause
     "pause_reason":            "",
+    "pause_lifted_at":         0.0,     # cuarta vuelta PR #134 — ver _recompute_live_risk_counters
 }
 
 
@@ -690,6 +700,7 @@ def _maybe_lift_expired_pause() -> None:
         reason = cfg.get("pause_reason", "")
         cfg["paused_until"] = 0.0
         cfg["pause_reason"] = ""
+        cfg["pause_lifted_at"] = now
         cfg["daily_loss_usd"] = 0.0
         cfg["consecutive_losses"] = 0
         _save_config(cfg)
@@ -1202,7 +1213,9 @@ def worst_case_pnl_estimate(trade: "LiveTrade") -> float:
     return -abs(trade.amount_usd * stop_pct)
 
 
-def _recompute_live_risk_counters(live_trades: "List[LiveTrade]") -> "tuple[float, int]":
+def _recompute_live_risk_counters(
+    live_trades: "List[LiveTrade]", pause_lifted_at: float = 0.0,
+) -> "tuple[float, int]":
     """`daily_loss_usd` (de HOY) y `consecutive_losses` (racha), RECALCULADOS
     desde cero a partir de los registros de resultado LIVE -- nunca
     acumulados. Corrección 2026-09-26 (segunda vuelta del PR #134): esto es
@@ -1213,12 +1226,20 @@ def _recompute_live_risk_counters(live_trades: "List[LiveTrade]") -> "tuple[floa
       cuyo `closed_at` cae en el día de HOY (hora local, mismo criterio que
       `_reset_daily_loss_if_new_day`). Un cierre de otro día nunca contribuye,
       así que corregir el PnL de una operación de ayer no mueve el número de
-      hoy.
+      hoy. `pause_lifted_at` NO afecta este número -- sigue siendo por día,
+      sin excepción (pedido explícito del creador, cuarta vuelta del PR #134).
     - `consecutive_losses`: la racha reconstruida recorriendo los cierres
       resueltos en orden cronológico por `closed_at`, contando hacia atrás
       desde el más reciente hasta el primer resultado que NO sea pérdida
       (pnl_usd >= 0 rompe la racha, mismo criterio que ya usaba
-      record_trade_result).
+      record_trade_result) -- PERO nunca cruzando `pause_lifted_at` hacia
+      atrás. Corrección 2026-09-26 (cuarta vuelta): sin este corte, levantar
+      una pausa de 24h no rompía la racha que la causó -- si nadie ganó
+      entretanto, el primer recálculo posterior a la reanudación volvía a
+      ver la misma racha completa y reactivaba la pausa de inmediato, sin
+      que las entradas nuevas llegaran siquiera a intentarse. `0.0` (sin
+      pausa levantada todavía, o nunca) no filtra nada -- se comporta como
+      antes.
 
     Solo considera cierres con `pnl_usd is not None` -- una posición sin
     resultado todavía (imposible en la práctica, pero defensivo) no cuenta
@@ -1236,6 +1257,8 @@ def _recompute_live_risk_counters(live_trades: "List[LiveTrade]") -> "tuple[floa
 
     consecutive = 0
     for t in reversed(resolved):
+        if t.closed_at <= pause_lifted_at:
+            break  # la racha no cruza hacia antes de la última reanudación
         if t.pnl_usd < 0:
             consecutive += 1
         else:
@@ -1263,7 +1286,9 @@ def record_live_trade_result(
         nada lo puede pisar -- ni siquiera otro "real").
 
     Tras escribir, SIEMPRE recalcula y persiste daily_loss_usd/
-    consecutive_losses desde el log completo, y evalúa los cortacircuitos:
+    consecutive_losses desde el log completo (consecutive_losses acotado
+    a cierres posteriores a `cfg["pause_lifted_at"]`, ver
+    `_recompute_live_risk_counters`), y evalúa los cortacircuitos:
       - Si el recálculo cruza un límite, activa la pausa de 24h
         (`_activate_pause`, idempotente -- no la extiende si ya estaba
         activa ni pisa su motivo).
@@ -1319,9 +1344,11 @@ def record_live_trade_result(
         )
 
         fresh_trades = get_live_trades(limit=0)
-        daily_loss, consecutive = _recompute_live_risk_counters(fresh_trades)
-
         cfg = _load_config()
+        daily_loss, consecutive = _recompute_live_risk_counters(
+            fresh_trades, pause_lifted_at=cfg.get("pause_lifted_at", 0.0),
+        )
+
         cfg["daily_loss_usd"] = daily_loss
         cfg["consecutive_losses"] = consecutive
 
@@ -1342,11 +1369,14 @@ def record_live_trade_result(
 
 def record_live_trade_real_pnl(trade_id: str, pnl_usd: float) -> bool:
     """Atajo para que el creador registre manualmente el PnL REAL de una
-    posición LIVE (p. ej. leyéndolo del historial en la app de eToro,
-    mientras este cliente no tenga un endpoint de historial de posiciones
-    cerradas que funcione -- ver la investigación en el PR). Reemplaza
-    cualquier estimación previa de ESE trade_id; nunca se suma. Expuesto
-    por Telegram vía `/vx etoro live_pnl <trade_id> <pnl>`."""
+    posición LIVE. `check_live_positions_closed()` ya intenta resolver
+    esto solo, contra el historial real de eToro (ver
+    `etoro_client.get_trade_history` y
+    `position_manager._resolve_pending_estimates`, cuarta vuelta del PR
+    #134) -- este comando manual queda como respaldo, para cuando el
+    historial tarda en reflejar el cierre o para corregir un valor a
+    mano. Reemplaza cualquier estimación previa de ESE trade_id; nunca se
+    suma. Expuesto por Telegram vía `/vx etoro live_pnl <trade_id> <pnl>`."""
     return record_live_trade_result(trade_id, pnl_usd, source="real", closed_at=time.time())
 
 
@@ -1494,7 +1524,11 @@ def format_auto_status() -> str:
         "",
         "🛡 Límites de riesgo:",
         f"  Max/operación:    ${cfg['max_position_usd']:.0f}",
-        f"  Max pérdida/día:  ${cfg['max_daily_loss_usd']:.0f}",
+        # Corrección 2026-09-26 (quinta vuelta del PR #134): antes esta línea
+        # solo mostraba el TECHO configurado, nunca cuánto se lleva perdido
+        # HOY -- el mismo hueco que "Pérdidas consec" ya no tiene (esa sí
+        # mostraba actual/límite). Ahora ambas usan el mismo formato.
+        f"  Pérdida hoy:      ${cfg['daily_loss_usd']:.2f} / ${cfg['max_daily_loss_usd']:.0f}",
         f"  Stop-loss:        {cfg['stop_loss_pct']:.1f}%",
         f"  Pérdidas consec:  {cfg['consecutive_losses']}/{cfg['max_consecutive_losses']}",
         f"  Max posiciones:   {cfg['max_positions_open']}",
