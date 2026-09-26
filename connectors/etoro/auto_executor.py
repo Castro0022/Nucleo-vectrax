@@ -40,21 +40,87 @@ Automatic PAPER → LIVE promotion:
   re-evaluated fresh (idempotently) on every such close.
   One-shot: it only fires the very first time LIVE is reached
   (cfg["live_activated_at"] still unset). Once LIVE has been reached —
-  automatically or manually — any later return to PAPER (a deliberate
-  pause, or a risk circuit-breaker: consecutive losses / daily loss limit)
-  always requires the creator's manual /vx market live on to go LIVE
-  again; the automatic path never re-fires, so a safety shutdown can never
-  be silently undone.
+  automatically or manually — any later DELIBERATE return to PAPER (the
+  creator's own choice, e.g. /vx market ... off/paper) always requires the
+  creator's manual /vx market live on to go LIVE again; the automatic path
+  never re-fires. The risk circuit-breakers (consecutive losses / daily
+  loss limit) do NOT return to PAPER at all anymore — see "Circuit
+  breakers" below — so this one-shot gate simply never engages for them.
 
-Hard risk limits (enforced on every LIVE trade):
-  MAX_POSITION_USD      = 100    per trade max exposure
-  MAX_DAILY_LOSS_USD    = 50     cumulative daily loss before shutdown
-  STOP_LOSS_PCT         = 1.5    mandatory stop-loss distance (%)
-  MAX_CONSECUTIVE_LOSSES = 3     consecutive losses → auto-shutdown to PAPER
-  MAX_POSITIONS_OPEN    = 2      max simultaneous open positions
+Risk limits — default values (DEFAULTS, above the Enums section) are
+configurable by the creator via `/vx etoro auto config <key> <value>`
+(telegram_gateway.py), but every value it sends is validated by
+`validate_risk_limit()` against the HARD CEILINGS below FIRST — those
+ceilings are module-level constants, not config, and Telegram can never
+raise them (corrección 2026-09-26; before this, the command accepted any
+number that parsed, with no range at all):
+  max_position_usd       default $50   — hard ceiling $MAX_POSITION_USD_CEILING (200)
+  max_daily_loss_usd     default $10   — hard ceiling $MAX_DAILY_LOSS_USD_CEILING (50)
+  stop_loss_pct          default 1.5   — range STOP_LOSS_PCT_RANGE (0.1–10)
+  max_consecutive_losses default 3     — range MAX_CONSECUTIVE_LOSSES_RANGE (1–10)
+  max_positions_open     default 2     — range MAX_POSITIONS_OPEN_RANGE (1–5)
+  min_paper_signals      default 30    — floor MIN_PAPER_SIGNALS_MIN (10)
 
-All limits are configurable by the creator via Telegram.
-Any safety breach reverts the mode to PAPER and logs the reason.
+What is actually enforced, and since when (corrección 2026-09-26 —
+before it, several of these existed only as config fields that nothing
+ever read):
+  - max_position_usd, max_daily_loss_usd, max_consecutive_losses:
+    checked in `check_risk_before_trade()`. Daily loss and consecutive
+    losses only ever ADVANCE via `record_trade_result()` — which, for
+    LIVE, requires the close to actually have been recorded (see below).
+  - max_positions_open: checked in `check_risk_before_trade()`. In LIVE
+    it counts the BROKER's real open positions (`get_portfolio()`), not
+    this module's own log — a failed broker query blocks the trade
+    (fail closed), it never lets one through uncounted.
+  - LIVE trade lifecycle now has its own log, mirroring the PAPER one:
+    `record_live_trade_open()` writes ~/.vectrax/etoro_live_trades.jsonl
+    the instant `execute_proposal()` opens a LIVE position;
+    `position_manager.check_live_positions_closed()` (same periodic
+    cycle as PAPER's `check_open_positions()`) detects when a registered
+    LIVE position is no longer in the broker's open list and marks it
+    `closed_pnl_pending` — it never invents a PnL, so
+    `record_trade_result(is_paper=False, ...)` (and therefore
+    consecutive_losses / daily_loss_usd / the PAPER-vs-LIVE risk
+    counters) only advances for a LIVE close whose realized PnL is
+    actually known. `record_trade_result()` requires `trade_id` and
+    deduplicates by it for BOTH is_paper=True and is_paper=False — a
+    retried/overlapping close is a no-op in either mode.
+
+Circuit breakers — 24h pause, NOT a return to PAPER (corrección
+2026-09-26, second change in this PR: the creator explicitly asked for
+this instead of the original "revert to PAPER" behavior of the first
+change above):
+  - Consecutive losses (≥ max_consecutive_losses) and the daily loss
+    limit (daily_loss_usd ≥ max_daily_loss_usd) each activate a 24h pause
+    via `_activate_pause()` — `mode` is NEVER touched by either breaker;
+    LIVE stays LIVE the entire time.
+  - While `cfg["paused_until"] > now`, `check_risk_before_trade()` blocks
+    every new entry (existing open positions are never touched — their
+    own stop-loss/take-profit still live at the broker). If both breakers
+    fire on the same close, the second one is a no-op — it never extends
+    the pause or overwrites the first one's `pause_reason`.
+  - `_maybe_lift_expired_pause()` (called lazily from
+    `check_risk_before_trade()`, no separate scheduled job) lifts an
+    expired pause with no creator action: it clears `paused_until` /
+    `pause_reason`, resets `consecutive_losses` / `daily_loss_usd` to 0,
+    and stamps `pause_lifted_at = now`. Telegram is notified both when a
+    pause is activated (reason + resume time) and when it lifts.
+  - `pause_lifted_at` (corrección 2026-09-26, fourth change in this PR)
+    is the cutoff `_recompute_live_risk_counters()` uses for
+    `consecutive_losses`: a close from before the last resume never
+    contributes to the streak, so lifting a pause actually breaks the
+    streak that caused it — without this, a recompute right after resume
+    (with no intervening win) would see the same full historical streak
+    and immediately re-arm the pause before any new entry could even be
+    attempted. `daily_loss_usd` is untouched by this cutoff — it stays
+    purely per-calendar-day, same as before.
+  - `paused_until` / `pause_reason` live in the same persisted config
+    JSON as everything else — a process restart cannot shorten, lose, or
+    silently extend an active pause.
+  - Completely independent of the manual HALT (`cfg["halt"]`): HALT is
+    only ever set/cleared by the creator's own /vx market halt / unhalt
+    commands; an expiring pause never touches it, and HALT blocks trades
+    regardless of any pause state.
 """
 from __future__ import annotations
 
@@ -78,12 +144,28 @@ _CONFIG_FILE = os.path.join(
 _PAPER_LOG_FILE = os.path.join(
     os.path.expanduser("~"), ".vectrax", "etoro_paper_trades.jsonl"
 )
+_LIVE_LOG_FILE = os.path.join(
+    os.path.expanduser("~"), ".vectrax", "etoro_live_trades.jsonl"
+)
 
-# How many recent PAPER trade_ids record_trade_result() remembers for
+# How many recent PAPER/LIVE trade_ids record_trade_result() remembers for
 # duplicate-close detection. Bounded so the config file cannot grow forever;
 # far larger than any realistic double-delivery window (a retried close
 # lands within seconds/minutes, not hundreds of trades later).
 _MAX_RECORDED_TRADE_IDS = 500
+
+# ── Hard ceilings — NOT configurable via Telegram ───────────────────────
+# `/vx etoro auto config` (telegram_gateway.py) validates every value
+# against these before writing it. Changing them requires editing this
+# file and redeploying — never something a Telegram message can do, by
+# design: a fat-fingered or hijacked chat message must not be able to
+# raise the money the system is allowed to risk.
+MAX_POSITION_USD_CEILING     = 200.0   # techo confirmado por el creador 2026-09-26
+MAX_DAILY_LOSS_USD_CEILING   = 50.0    # techo confirmado por el creador 2026-09-26
+STOP_LOSS_PCT_RANGE          = (0.1, 10.0)
+MAX_CONSECUTIVE_LOSSES_RANGE = (1, 10)
+MAX_POSITIONS_OPEN_RANGE     = (1, 5)
+MIN_PAPER_SIGNALS_MIN        = 10
 
 # ── Default risk limits ───────────────────────────────────────────────
 DEFAULTS = {
@@ -115,6 +197,10 @@ DEFAULTS = {
     "last_shutdown_reason":    "",
     "last_auto_promotion_reason": "",   # visible reason auto-LIVE stayed blocked
     "recorded_paper_trade_ids": [],     # dedup horizon — see record_trade_result
+    "recorded_live_trade_ids": [],      # mismo dedup horizon, para cierres LIVE
+    "paused_until":            0.0,     # corte de circuito 2026-09-26 — ver _activate_pause
+    "pause_reason":            "",
+    "pause_lifted_at":         0.0,     # cuarta vuelta PR #134 — ver _recompute_live_risk_counters
 }
 
 
@@ -219,6 +305,71 @@ def update_config(updates: Dict) -> Dict:
     cfg.update(updates)
     _save_config(cfg)
     return cfg
+
+
+def validate_risk_limit(key: str, value: float) -> "tuple[bool, Any, str]":
+    """Valida un valor propuesto para una clave de límite de riesgo contra
+    los techos duros del módulo (MAX_POSITION_USD_CEILING y compañía,
+    arriba) — NUNCA valores que el propio Telegram pudiera proponer.
+    Corrección 2026-09-26: antes, `/vx etoro auto config <clave> <valor>`
+    (telegram_gateway.py) solo comprobaba que la clave existiera y que el
+    valor parseara como número — sin rango. Devuelve
+    `(válido, valor_coercido_al_tipo_correcto, error_si_inválido)`.
+
+    Los techos son constantes de ESTE módulo a propósito: cambiarlos
+    exige editar el código y redesplegar, nunca un mensaje de chat — un
+    mensaje mal tipeado o de una cuenta comprometida no puede subir
+    cuánto dinero o cuántas posiciones el sistema puede arriesgar.
+
+    Una clave sin techo definido aquí (p.ej. `min_paper_win_rate`, que es
+    solo informativa, no un límite de ejecución) se acepta tal cual.
+    """
+    try:
+        if key == "max_position_usd":
+            if value <= 0 or value > MAX_POSITION_USD_CEILING:
+                return False, None, (
+                    f"max_position_usd debe ser >0 y ≤ ${MAX_POSITION_USD_CEILING:.0f} "
+                    f"(techo fijo, no configurable por Telegram)."
+                )
+            return True, float(value), ""
+
+        if key == "max_daily_loss_usd":
+            if value <= 0 or value > MAX_DAILY_LOSS_USD_CEILING:
+                return False, None, (
+                    f"max_daily_loss_usd debe ser >0 y ≤ ${MAX_DAILY_LOSS_USD_CEILING:.0f} "
+                    f"(techo fijo, no configurable por Telegram)."
+                )
+            return True, float(value), ""
+
+        if key == "stop_loss_pct":
+            lo, hi = STOP_LOSS_PCT_RANGE
+            if not (lo <= value <= hi):
+                return False, None, f"stop_loss_pct debe estar entre {lo} y {hi}."
+            return True, float(value), ""
+
+        if key == "max_consecutive_losses":
+            lo, hi = MAX_CONSECUTIVE_LOSSES_RANGE
+            ivalue = int(value)
+            if not (lo <= ivalue <= hi):
+                return False, None, f"max_consecutive_losses debe estar entre {lo} y {hi}."
+            return True, ivalue, ""
+
+        if key == "max_positions_open":
+            lo, hi = MAX_POSITIONS_OPEN_RANGE
+            ivalue = int(value)
+            if not (lo <= ivalue <= hi):
+                return False, None, f"max_positions_open debe estar entre {lo} y {hi}."
+            return True, ivalue, ""
+
+        if key == "min_paper_signals":
+            ivalue = int(value)
+            if ivalue < MIN_PAPER_SIGNALS_MIN:
+                return False, None, f"min_paper_signals debe ser ≥ {MIN_PAPER_SIGNALS_MIN}."
+            return True, ivalue, ""
+    except (TypeError, ValueError) as exc:
+        return False, None, f"Valor inválido para {key}: {exc}"
+
+    return True, value, ""
 
 
 # ── Phase management ──────────────────────────────────────────────────
@@ -481,6 +632,94 @@ def _reset_daily_loss_if_new_day(cfg: Dict) -> Dict:
     return cfg
 
 
+# ── Pausa automática de 24h (cortacircuitos) ────────────────────────────
+# Corrección 2026-09-26: antes, un cortacircuito (pérdidas consecutivas o
+# límite de pérdida diaria) revertía `mode` a PAPER. El creador pidió lo
+# contrario: el modo se queda en LIVE todo el tiempo -- lo que se bloquea
+# es la ENTRADA de operaciones nuevas, por 24h, con reanudación automática
+# sin intervención manual. El HALT manual (`cfg["halt"]`) es un mecanismo
+# completamente aparte y esta pausa nunca lo toca ni lo levanta.
+
+def _activate_pause(cfg: Dict, reason: str) -> None:
+    """Activa (o mantiene) la pausa de 24h. Muta `cfg` EN EL LUGAR -- se
+    llama SIEMPRE desde dentro del `with _locked_config():` de
+    record_trade_result(), nunca adquiere su propio lock (haría deadlock:
+    flock() en un fd nuevo del mismo proceso se bloquearía esperando al
+    fd que ya sostiene record_trade_result). El caller persiste `cfg`.
+
+    Si ya hay una pausa vigente, NO reinicia el reloj ni pisa el motivo
+    original -- dos cortacircuitos pueden dispararse en el mismo cierre
+    (una pérdida grande puede agotar el límite diario Y el de pérdidas
+    consecutivas a la vez); el primero en activarla manda.
+    """
+    now = time.time()
+    if cfg.get("paused_until", 0) > now:
+        return  # pausa ya vigente -- no se extiende ni se pisa el motivo
+    cfg["paused_until"] = now + 24 * 3600
+    cfg["pause_reason"] = reason
+    logger.warning(
+        "[AUTO] ⏸️ PAUSA 24h activada (modo permanece LIVE): %s", reason,
+    )
+    try:
+        from connectors.etoro.learning_engine import _tg_notify
+        resume_at = time.strftime(
+            "%Y-%m-%d %H:%M UTC", time.gmtime(cfg["paused_until"])
+        )
+        _tg_notify(
+            f"⏸️ Entradas LIVE pausadas 24h\n\n"
+            f"Motivo: {reason}\n"
+            f"Reanuda automáticamente: {resume_at}\n\n"
+            f"El modo sigue en LIVE — las posiciones ya abiertas no se "
+            f"tocan, siguen con su SL/TP en el bróker. Solo se bloquean "
+            f"entradas nuevas."
+        )
+    except Exception:
+        pass
+
+
+def _maybe_lift_expired_pause() -> None:
+    """Levanta una pausa vencida y reinicia los contadores que la
+    dispararon. A diferencia de `_activate_pause`, ESTA función adquiere
+    su propio `_locked_config()` -- se llama desde `check_risk_before_trade()`,
+    que no sostiene ningún lock al entrar. El doble chequeo (una vez
+    afuera en el caller antes de decidir llamar, y otra vez adentro bajo
+    el lock) evita que dos llamadas casi simultáneas (el mismo escenario
+    multi-proceso de siempre) reanuden y avisen dos veces.
+
+    Sobrevive un reinicio de procesos sin más esfuerzo: `paused_until` y
+    `pause_reason` viven en el mismo JSON persistido que el resto de la
+    config -- un proceso nuevo los lee del disco tal cual quedaron, nunca
+    de un estado en memoria que un reinicio pudiera perder.
+    """
+    now = time.time()
+    with _locked_config():
+        cfg = _load_config()
+        paused_until = cfg.get("paused_until", 0) or 0
+        if not paused_until or paused_until > now:
+            return  # sin pausa activa, o todavía vigente
+        reason = cfg.get("pause_reason", "")
+        cfg["paused_until"] = 0.0
+        cfg["pause_reason"] = ""
+        cfg["pause_lifted_at"] = now
+        cfg["daily_loss_usd"] = 0.0
+        cfg["consecutive_losses"] = 0
+        _save_config(cfg)
+
+    logger.warning(
+        "[AUTO] ▶️ Pausa levantada automáticamente (motivo original: %s)",
+        reason,
+    )
+    try:
+        from connectors.etoro.learning_engine import _tg_notify
+        _tg_notify(
+            f"▶️ Pausa levantada — entradas LIVE reanudadas\n\n"
+            f"Motivo original: {reason}\n"
+            f"Contadores de pérdida reiniciados."
+        )
+    except Exception:
+        pass
+
+
 def check_risk_before_trade(
     amount_usd: float,
 ) -> tuple[bool, str]:
@@ -488,11 +727,48 @@ def check_risk_before_trade(
     Check all risk limits before placing a trade.
     Returns (allowed, reason_if_blocked).
     """
+    # Levanta una pausa vencida ANTES de leer cfg para esta decisión --
+    # así una llamada justo después de las 24h ya ve daily_loss_usd/
+    # consecutive_losses reiniciados y paused_until en 0.
+    _maybe_lift_expired_pause()
     cfg = _reset_daily_loss_if_new_day(_load_config())
 
-    # 0. Halt check
+    # 0. Halt check (manual, aparte de la pausa automática -- ver abajo)
     if cfg.get("halt"):
         return False, "🛑 Sistema en HALT. Ejecución bloqueada."
+
+    # 0.5 Pausa automática de 24h (corrección 2026-09-26: el modo YA NO
+    #     vuelve a PAPER cuando dispara un cortacircuito -- ver
+    #     _activate_pause/_maybe_lift_expired_pause arriba). Se chequea
+    #     antes que nada más porque, mientras esté vigente, ninguna otra
+    #     condición importa: no se deja entrar nada.
+    if cfg.get("paused_until", 0) > time.time():
+        remaining_h = (cfg["paused_until"] - time.time()) / 3600
+        return False, (
+            f"⏸️ Pausado por seguridad ({cfg.get('pause_reason', '')}). "
+            f"Reanuda en {remaining_h:.1f}h (automático, sin intervención manual)."
+        )
+
+    # 0.6 Fail-closed: mientras exista una posición LIVE con PnL solo
+    #     ESTIMADO (pnl_source == "estimated", ver check_live_positions_closed
+    #     y worst_case_pnl_estimate) -- no confirmado por el bróker ni por
+    #     el creador -- no se abre nada nuevo. Una estimación de peor caso
+    #     es una medida de seguridad para los contadores de riesgo, no una
+    #     confirmación en la que apoyarse para seguir operando. Corrección
+    #     2026-09-26 (tercera vuelta del PR #134). No tiene su propio
+    #     aviso por Telegram aquí a propósito -- ya se avisó UNA vez cuando
+    #     se detectó y estimó el cierre; repetirlo en cada chequeo de
+    #     riesgo sería spam.
+    pending_estimates = [
+        t for t in get_live_trades(limit=200) if t.pnl_source == "estimated"
+    ]
+    if pending_estimates:
+        ids = ", ".join(t.trade_id for t in pending_estimates)
+        return False, (
+            f"⏸️ {len(pending_estimates)} posición(es) LIVE con PnL "
+            f"estimado, sin confirmar ({ids}). Bloqueado hasta resolver "
+            f"con /vx etoro live_pnl <trade_id> <pnl>."
+        )
 
     # 1. Mode must be PAPER or LIVE
     mode = AutoMode(cfg["mode"])
@@ -506,19 +782,67 @@ def check_risk_before_trade(
             f"${cfg['max_position_usd']:.0f}."
         )
 
-    # 3. Daily loss limit
+    # 3. Daily loss limit. En el camino normal esto ya está cubierto por
+    #    la pausa de arriba (record_trade_result activa la pausa en el
+    #    mismo instante en que daily_loss_usd cruza el límite) -- queda
+    #    como red de seguridad adicional, no como mecanismo principal.
     if cfg["daily_loss_usd"] >= cfg["max_daily_loss_usd"]:
         return False, (
             f"Límite de pérdida diaria alcanzado "
             f"(${cfg['daily_loss_usd']:.2f} / ${cfg['max_daily_loss_usd']:.2f})."
         )
 
-    # 4. Consecutive losses
+    # 4. Consecutive losses. Chequeo defensivo aparte del de
+    #    record_trade_result -- cubre el caso de que el umbral se baje por
+    #    Telegram por debajo de un consecutive_losses ya alcanzado, sin
+    #    que medie un cierre nuevo. Mismo mecanismo de pausa (corrección
+    #    2026-09-26): activa la pausa de 24h en vez de revertir a PAPER.
     if cfg["consecutive_losses"] >= cfg["max_consecutive_losses"]:
-        _set_mode(AutoMode.PAPER, reason="auto-shutdown: consecutive losses limit")
+        with _locked_config():
+            fresh_cfg = _load_config()
+            _activate_pause(
+                fresh_cfg,
+                reason=(
+                    f"{fresh_cfg['consecutive_losses']} pérdidas consecutivas "
+                    f"(límite {fresh_cfg['max_consecutive_losses']})"
+                ),
+            )
+            _save_config(fresh_cfg)
         return False, (
-            f"🛑 AUTO-SHUTDOWN: {cfg['consecutive_losses']} pérdidas consecutivas. "
-            f"Revertido a PAPER."
+            f"⏸️ Pausado por seguridad: {cfg['consecutive_losses']} pérdidas "
+            f"consecutivas. Reanuda en 24h (automático)."
+        )
+
+    # 5. Max positions open. Antes, `max_positions_open` solo aparecía en
+    #    texto de estado -- nunca se aplicaba (corrección 2026-09-26). En
+    #    LIVE se cuenta contra el bróker real (get_portfolio()), no contra
+    #    lo que el propio sistema CREE que tiene abierto: si la consulta
+    #    al bróker falla, se bloquea (fail closed) -- abrir una posición
+    #    nueva sin saber cuántas hay ya abiertas es exactamente el riesgo
+    #    que este límite existe para evitar.
+    if mode == AutoMode.LIVE:
+        try:
+            from connectors.etoro.etoro_client import get_portfolio
+            portfolio = get_portfolio()
+        except Exception as exc:
+            return False, (
+                f"No se pudo consultar el bróker para contar posiciones "
+                f"abiertas: {exc}"
+            )
+        if not portfolio.get("success"):
+            return False, (
+                "No se pudo confirmar cuántas posiciones LIVE hay abiertas "
+                f"(bróker: {portfolio.get('error', 'error desconocido')}) "
+                "— bloqueado por seguridad."
+            )
+        n_open = portfolio.get("n_positions", 0)
+    else:
+        n_open = sum(1 for t in get_paper_trades(limit=200) if t.status == "open")
+
+    if n_open >= cfg["max_positions_open"]:
+        return False, (
+            f"Máximo de posiciones simultáneas alcanzado "
+            f"({n_open}/{cfg['max_positions_open']})."
         )
 
     return True, ""
@@ -532,13 +856,16 @@ def record_trade_result(
     """
     Record the result of an executed trade and update risk counters.
 
-    `trade_id` is REQUIRED when is_paper=True: it is the idempotency key
-    that stops a duplicated/retried close event for the SAME operation
-    (e.g. two overlapping position_manager.check_open_positions() runs
-    both reading the trade as still "open" before either one's file write
-    lands) from inflating paper_trades_total/paper_trades_wins and
-    advancing the automatic LIVE promotion on a phantom extra trade. A
-    trade_id already seen is a no-op: nothing is counted or re-evaluated.
+    `trade_id` is REQUIRED regardless of `is_paper` (corrección
+    2026-09-26: antes solo era obligatorio en PAPER, y la rama LIVE no
+    deduplicaba en absoluto). Es la clave de idempotencia que evita que un
+    cierre duplicado/reintentado de LA MISMA operación (e.g. dos corridas
+    superpuestas de position_manager.check_open_positions(), o el chequeo
+    de 5 min y el ciclo de 30 min solapándose) infle
+    paper_trades_total/paper_trades_wins, o -- en LIVE -- cuente la misma
+    pérdida dos veces contra consecutive_losses/daily_loss_usd y dispare
+    un auto-shutdown por un evento fantasma. Un trade_id ya visto es un
+    no-op: nada se cuenta ni se reevalúa, en ninguno de los dos modos.
 
     The load -> check trade_id -> increment -> save sequence below runs
     inside _locked_config(), an exclusive fcntl.flock() — see that
@@ -547,10 +874,11 @@ def record_trade_result(
     read the config before either writes, which a threading.Lock would
     not have prevented.
     """
-    if is_paper and not trade_id:
+    if not trade_id:
         raise ValueError(
-            "record_trade_result(is_paper=True) requires trade_id — the "
-            "PAPER counters must never advance from an unidentified close"
+            "record_trade_result() requires trade_id — ni los contadores "
+            "PAPER ni los de LIVE (consecutive_losses/daily_loss_usd) "
+            "deben avanzar desde un cierre sin identificar"
         )
 
     # The whole load -> check trade_id -> increment -> save sequence is one
@@ -584,6 +912,21 @@ def record_trade_result(
             # Evaluate automatic PAPER → LIVE promotion right on this close.
             _maybe_auto_promote_to_live(cfg)
         else:
+            # Mismo dedupe que la rama PAPER arriba, mismo motivo — ver
+            # docstring: antes de esta corrección esta rama no tenía
+            # ninguna protección contra un cierre LIVE contado dos veces.
+            recorded_live = cfg.setdefault("recorded_live_trade_ids", [])
+            if trade_id in recorded_live:
+                logger.warning(
+                    "[AUTO] Resultado LIVE duplicado ignorado para %s "
+                    "(ya contabilizado — contadores de riesgo sin cambios)",
+                    trade_id,
+                )
+                return
+            recorded_live.append(trade_id)
+            if len(recorded_live) > _MAX_RECORDED_TRADE_IDS:
+                del recorded_live[: len(recorded_live) - _MAX_RECORDED_TRADE_IDS]
+
             if pnl_usd < 0:
                 cfg["daily_loss_usd"] += abs(pnl_usd)
                 cfg["consecutive_losses"] += 1
@@ -596,31 +939,32 @@ def record_trade_result(
                 pnl_usd, cfg["consecutive_losses"], cfg["daily_loss_usd"],
             )
 
-            # Auto-shutdown check after recording. Mutates the same local
-            # `cfg` that the final _save_config(cfg) below persists —
-            # calling _set_mode() here would race with it: _set_mode()
-            # writes "paper" to disk via its OWN freshly-loaded copy, and
-            # the unconditional _save_config(cfg) at the end of this
-            # function would then overwrite that write with this
-            # function's local `cfg`, which never saw the mode change and
-            # still says "live" — silently undoing the circuit-breaker
-            # shutdown. Setting cfg["mode"] directly avoids that.
+            # Cortacircuito. Corrección 2026-09-26: el creador pidió que el
+            # modo YA NO vuelva a PAPER -- se queda en LIVE, pero
+            # _activate_pause() bloquea entradas nuevas por 24h (ver esa
+            # función arriba). Mutates the same local `cfg` that the final
+            # _save_config(cfg) below persists — _activate_pause() nunca
+            # adquiere su propio lock a propósito, por la misma razón que
+            # antes hacía falta mutar cfg["mode"] directamente en vez de
+            # pasar por _set_mode(): una segunda adquisición del lock
+            # DENTRO de este bloque (que ya lo sostiene) sería un deadlock.
             if cfg["consecutive_losses"] >= cfg["max_consecutive_losses"]:
-                cfg["mode"] = AutoMode.PAPER.value
-                cfg["last_shutdown_reason"] = (
-                    f"auto-shutdown after {cfg['consecutive_losses']} consecutive losses"
-                )
-                logger.warning(
-                    "[AUTO] 🛑 AUTO-SHUTDOWN: %d consecutive losses → reverting to PAPER",
-                    cfg["consecutive_losses"],
+                _activate_pause(
+                    cfg,
+                    reason=(
+                        f"{cfg['consecutive_losses']} pérdidas consecutivas "
+                        f"(límite {cfg['max_consecutive_losses']})"
+                    ),
                 )
 
             if cfg["daily_loss_usd"] >= cfg["max_daily_loss_usd"]:
-                cfg["mode"] = AutoMode.PAPER.value
-                cfg["last_shutdown_reason"] = (
-                    f"auto-shutdown: daily loss limit ${cfg['max_daily_loss_usd']:.0f} reached"
+                _activate_pause(
+                    cfg,
+                    reason=(
+                        f"límite de pérdida diaria alcanzado "
+                        f"(${cfg['daily_loss_usd']:.2f} / ${cfg['max_daily_loss_usd']:.2f})"
+                    ),
                 )
-                logger.warning("[AUTO] 🛑 DAILY LOSS LIMIT reached → reverting to PAPER")
 
         _save_config(cfg)
 
@@ -705,6 +1049,337 @@ def get_paper_trades(limit: int = 20) -> List[PaperTrade]:
     return trades[-limit:]
 
 
+# ── Live trade log ───────────────────────────────────────────────────
+# Mismo patrón exacto que PaperTrade/record_paper_trade/get_paper_trades
+# arriba, con dos campos propios de una orden real: `position_id` (con lo
+# que el bróker identifica la posición — es lo que se compara contra
+# get_portfolio() para detectar un cierre) y `order_id` (referencia de la
+# orden de apertura). Antes de esta corrección, una apertura LIVE exitosa
+# no se registraba en ningún lado propio del auto-executor -- solo vivía
+# en el ExecutionResult de esa llamada y en el audit log de
+# trade_executor.py, así que nada podía después preguntar "¿sigue abierta
+# esta posición?" ni cerrar el círculo hacia record_trade_result().
+
+@dataclass
+class LiveTrade:
+    trade_id:    str            # mismo espacio de id que dedupe record_trade_result
+    position_id: str            # id del bróker -- clave de comparación contra el portfolio real
+    order_id:    Optional[str]
+    timestamp:   float
+    symbol:      str
+    direction:   str
+    amount_usd:  float
+    entry_price: float
+    stop_loss:   float
+    take_profit: float
+    proposal_id: str
+    status:      str = "open"   # open / closed_win / closed_loss / closed_neutral
+    exit_price:  Optional[float] = None
+    pnl_usd:     Optional[float] = None
+    pnl_pct:     Optional[float] = None
+    # Corrección 2026-09-26 (segunda y tercera vuelta del PR #134):
+    # `pnl_source` reemplaza el status "closed_pnl_pending" que existía
+    # antes -- ahora SIEMPRE hay un pnl_usd en cuanto se detecta el cierre
+    # (al menos una estimación de peor caso), y lo que distingue si es
+    # confiable es este campo, no un status aparte.
+    #   None        -> todavía abierta.
+    #   "estimated" -> pnl_usd es una estimación de peor caso, NO
+    #                  confirmada por el bróker. check_risk_before_trade()
+    #                  bloquea toda entrada nueva mientras exista al
+    #                  menos una posición en este estado (fail-closed).
+    #   "real"      -> pnl_usd confirmado (bróker o corrección manual del
+    #                  creador). Definitivo: nada lo puede reemplazar.
+    pnl_source:  Optional[str] = None
+    closed_at:   Optional[float] = None
+
+    def to_dict(self) -> Dict:
+        return asdict(self)
+
+
+def record_live_trade_open(
+    position_id: str,
+    order_id: Optional[str],
+    symbol: str,
+    direction: str,
+    amount_usd: float,
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    proposal_id: str,
+) -> LiveTrade:
+    """Registra la apertura de una operación LIVE real.
+
+    `trade_id` usa el MISMO prefijo/formato que `record_paper_trade` (para
+    que el dedupe de `record_trade_result` trate ambos espacios de forma
+    uniforme), pero con `position_id` embebido -- es lo único que el
+    bróker devuelve de forma estable para volver a identificar esta
+    posición después, así que `trade_id` y `position_id` deben poder
+    reconstruirse el uno del otro sin ambigüedad.
+    """
+    tid = f"LIVE-{position_id}"
+    trade = LiveTrade(
+        trade_id=tid,
+        position_id=str(position_id),
+        order_id=str(order_id) if order_id is not None else None,
+        timestamp=time.time(),
+        symbol=symbol,
+        direction=direction,
+        amount_usd=amount_usd,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        proposal_id=proposal_id,
+    )
+    try:
+        os.makedirs(os.path.dirname(_LIVE_LOG_FILE), exist_ok=True)
+        with open(_LIVE_LOG_FILE, "a") as f:
+            f.write(json.dumps(trade.to_dict(), ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.error("record_live_trade_open error: %s", e)
+    logger.warning(
+        "[LIVE] %s | %s %s $%.0f @ %.5g | SL=%.5g TP=%.5g | position_id=%s",
+        tid, direction.upper(), symbol, amount_usd, entry_price, stop_loss,
+        take_profit, position_id,
+    )
+    return trade
+
+
+def get_live_trades(limit: int = 20, status_filter: Optional[str] = None) -> List[LiveTrade]:
+    if not os.path.exists(_LIVE_LOG_FILE):
+        return []
+    trades = []
+    try:
+        with open(_LIVE_LOG_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    if status_filter and d.get("status") != status_filter:
+                        continue
+                    trades.append(LiveTrade(**{
+                        k: v for k, v in d.items()
+                        if k in LiveTrade.__dataclass_fields__
+                    }))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return trades[-limit:] if limit else trades
+
+
+def _update_live_trade(position_id: str, updates: Dict) -> bool:
+    """Reescribe la entrada de `position_id` en el log LIVE (mismo patrón
+    de reescritura-en-lugar que `signal_recorder.update_signal`). Devuelve
+    True si encontró y actualizó la posición."""
+    if not os.path.exists(_LIVE_LOG_FILE):
+        return False
+    lines = []
+    found = False
+    try:
+        with open(_LIVE_LOG_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    if d.get("position_id") == position_id:
+                        d.update(updates)
+                        found = True
+                    lines.append(json.dumps(d, ensure_ascii=False))
+                except Exception:
+                    lines.append(line)
+        with open(_LIVE_LOG_FILE, "w") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception as e:
+        logger.error("_update_live_trade error: %s", e)
+        return False
+    return found
+
+
+def worst_case_pnl_estimate(trade: "LiveTrade") -> float:
+    """Estimación de PnL de peor caso para una posición LIVE que
+    desapareció del bróker sin PnL realizado disponible: asume que se
+    tocó el propio stop-loss registrado de ESTA operación (no el
+    `stop_loss_pct` global de la config, que pudo cambiar desde que se
+    abrió). `entry_price`/`stop_loss` ya son niveles de precio absolutos
+    guardados en la propia LiveTrade -- más preciso que releer un
+    porcentaje genérico."""
+    if not trade.entry_price:
+        return 0.0
+    stop_pct = abs(trade.entry_price - trade.stop_loss) / trade.entry_price
+    return -abs(trade.amount_usd * stop_pct)
+
+
+def _recompute_live_risk_counters(
+    live_trades: "List[LiveTrade]", pause_lifted_at: float = 0.0,
+) -> "tuple[float, int]":
+    """`daily_loss_usd` (de HOY) y `consecutive_losses` (racha), RECALCULADOS
+    desde cero a partir de los registros de resultado LIVE -- nunca
+    acumulados. Corrección 2026-09-26 (segunda vuelta del PR #134): esto es
+    lo que permite que una corrección posterior (estimado -> real) reescriba
+    el pasado sin duplicar ni arrastrar un número viejo que ya no es cierto.
+
+    - `daily_loss_usd`: suma de pérdidas (`pnl_usd < 0`) de cierres LIVE
+      cuyo `closed_at` cae en el día de HOY (hora local, mismo criterio que
+      `_reset_daily_loss_if_new_day`). Un cierre de otro día nunca contribuye,
+      así que corregir el PnL de una operación de ayer no mueve el número de
+      hoy. `pause_lifted_at` NO afecta este número -- sigue siendo por día,
+      sin excepción (pedido explícito del creador, cuarta vuelta del PR #134).
+    - `consecutive_losses`: la racha reconstruida recorriendo los cierres
+      resueltos en orden cronológico por `closed_at`, contando hacia atrás
+      desde el más reciente hasta el primer resultado que NO sea pérdida
+      (pnl_usd >= 0 rompe la racha, mismo criterio que ya usaba
+      record_trade_result) -- PERO nunca cruzando `pause_lifted_at` hacia
+      atrás. Corrección 2026-09-26 (cuarta vuelta): sin este corte, levantar
+      una pausa de 24h no rompía la racha que la causó -- si nadie ganó
+      entretanto, el primer recálculo posterior a la reanudación volvía a
+      ver la misma racha completa y reactivaba la pausa de inmediato, sin
+      que las entradas nuevas llegaran siquiera a intentarse. `0.0` (sin
+      pausa levantada todavía, o nunca) no filtra nada -- se comporta como
+      antes.
+
+    Solo considera cierres con `pnl_usd is not None` -- una posición sin
+    resultado todavía (imposible en la práctica, pero defensivo) no cuenta
+    como nada.
+    """
+    resolved = sorted(
+        (t for t in live_trades if t.pnl_usd is not None and t.closed_at),
+        key=lambda t: t.closed_at,
+    )
+    today = time.strftime("%Y-%m-%d")
+    daily_loss = 0.0
+    for t in resolved:
+        if t.pnl_usd < 0 and time.strftime("%Y-%m-%d", time.localtime(t.closed_at)) == today:
+            daily_loss += abs(t.pnl_usd)
+
+    consecutive = 0
+    for t in reversed(resolved):
+        if t.closed_at <= pause_lifted_at:
+            break  # la racha no cruza hacia antes de la última reanudación
+        if t.pnl_usd < 0:
+            consecutive += 1
+        else:
+            break
+
+    return round(daily_loss, 2), consecutive
+
+
+def record_live_trade_result(
+    trade_id: str, pnl_usd: float, source: str, closed_at: Optional[float] = None,
+) -> bool:
+    """Registra (o corrige) el resultado de UN cierre LIVE ya detectado por
+    `record_live_trade_open()`. Corrección 2026-09-26 (segunda vuelta del
+    PR #134): reemplaza el diseño anterior de "closed_pnl_pending sin
+    registrar nada en absoluto" -- ahora SIEMPRE hay un resultado (al menos
+    una estimación de peor caso, ver `worst_case_pnl_estimate`), y
+    `daily_loss_usd`/`consecutive_losses` se recalculan desde cero cada vez
+    (`_recompute_live_risk_counters`) en vez de acumularse en el momento.
+
+    Precedencia -- NUNCA se suma, siempre se reemplaza o se ignora:
+      - sin registro previo de resultado (`pnl_source is None`)  -> se escribe.
+      - previo 'estimated', nuevo 'estimated'  -> no-op (estimación duplicada).
+      - previo 'estimated', nuevo 'real'        -> reemplaza (nunca suma).
+      - previo 'real' (cualquier fuente nueva)  -> no-op (ya es definitivo,
+        nada lo puede pisar -- ni siquiera otro "real").
+
+    Tras escribir, SIEMPRE recalcula y persiste daily_loss_usd/
+    consecutive_losses desde el log completo (consecutive_losses acotado
+    a cierres posteriores a `cfg["pause_lifted_at"]`, ver
+    `_recompute_live_risk_counters`), y evalúa los cortacircuitos:
+      - Si el recálculo cruza un límite, activa la pausa de 24h
+        (`_activate_pause`, idempotente -- no la extiende si ya estaba
+        activa ni pisa su motivo).
+      - Si el recálculo MEJORA (ya no cruza el límite), NO se toca ninguna
+        pausa ya activa -- este código nunca "levanta" una pausa por
+        mejorar; solo `_maybe_lift_expired_pause()` la levanta, por tiempo.
+
+    Todo bajo el mismo `_locked_config()` -- lectura, escritura del log LIVE,
+    recálculo y evaluación del cortacircuito son una sola sección crítica.
+
+    Devuelve True si el registro cambió (nuevo o reemplazado por uno real),
+    False si fue un no-op (duplicado, ya definitivo, o trade_id desconocido).
+    """
+    if source not in ("estimated", "real"):
+        raise ValueError(f"source debe ser 'estimated' o 'real', no {source!r}")
+    closed_at = closed_at if closed_at is not None else time.time()
+
+    changed = False
+    with _locked_config():
+        trades = get_live_trades(limit=0)
+        existing = next((t for t in trades if t.trade_id == trade_id), None)
+        if existing is None:
+            logger.warning(
+                "[LIVE] record_live_trade_result: trade_id %s no existe en "
+                "el log -- no se puede registrar su resultado.", trade_id,
+            )
+            return False
+
+        if existing.pnl_source == "real":
+            logger.debug(
+                "[LIVE] %s ya tiene PnL real definitivo -- ignorado (%s)",
+                trade_id, source,
+            )
+            return False
+        if existing.pnl_source == "estimated" and source == "estimated":
+            logger.debug("[LIVE] %s: estimación duplicada ignorada", trade_id)
+            return False
+
+        status = (
+            "closed_win" if pnl_usd > 0 else
+            "closed_loss" if pnl_usd < 0 else "closed_neutral"
+        )
+        _update_live_trade(existing.position_id, {
+            "status": status,
+            "pnl_usd": round(pnl_usd, 2),
+            "pnl_source": source,
+            "closed_at": closed_at,
+        })
+        changed = True
+        logger.warning(
+            "[LIVE] %s | resultado %s registrado: PnL=%.2f USD (%s)",
+            trade_id, source, pnl_usd, status,
+        )
+
+        fresh_trades = get_live_trades(limit=0)
+        cfg = _load_config()
+        daily_loss, consecutive = _recompute_live_risk_counters(
+            fresh_trades, pause_lifted_at=cfg.get("pause_lifted_at", 0.0),
+        )
+
+        cfg["daily_loss_usd"] = daily_loss
+        cfg["consecutive_losses"] = consecutive
+
+        if consecutive >= cfg["max_consecutive_losses"]:
+            _activate_pause(cfg, reason=(
+                f"{consecutive} pérdidas consecutivas LIVE "
+                f"(límite {cfg['max_consecutive_losses']})"
+            ))
+        if daily_loss >= cfg["max_daily_loss_usd"]:
+            _activate_pause(cfg, reason=(
+                f"límite de pérdida diaria LIVE alcanzado "
+                f"(${daily_loss:.2f} / ${cfg['max_daily_loss_usd']:.2f})"
+            ))
+        _save_config(cfg)
+
+    return changed
+
+
+def record_live_trade_real_pnl(trade_id: str, pnl_usd: float) -> bool:
+    """Atajo para que el creador registre manualmente el PnL REAL de una
+    posición LIVE. `check_live_positions_closed()` ya intenta resolver
+    esto solo, contra el historial real de eToro (ver
+    `etoro_client.get_trade_history` y
+    `position_manager._resolve_pending_estimates`, cuarta vuelta del PR
+    #134) -- este comando manual queda como respaldo, para cuando el
+    historial tarda en reflejar el cierre o para corregir un valor a
+    mano. Reemplaza cualquier estimación previa de ESE trade_id; nunca se
+    suma. Expuesto por Telegram vía `/vx etoro live_pnl <trade_id> <pnl>`."""
+    return record_live_trade_result(trade_id, pnl_usd, source="real", closed_at=time.time())
+
+
 # ── Execute proposal ──────────────────────────────────────────────────
 
 def execute_proposal(
@@ -785,6 +1460,33 @@ def execute_proposal(
 
     if result.success:
         update_proposal_status(proposal_id, "executed")
+        # Registro de apertura LIVE (item 1 de la corrección de seguridad
+        # 2026-09-26): sin esto, una orden real abierta con éxito no
+        # quedaba en ningún lado propio del auto-executor, y por lo tanto
+        # nunca podía cerrarse el círculo hacia record_trade_result() --
+        # ver LiveTrade / record_live_trade_open arriba. Si el bróker no
+        # devolvió position_id (no debería pasar en un success=True, pero
+        # nunca se asume), no se puede rastrear esta posición después: se
+        # registra el fallo y se avisa por log, sin romper la ejecución ya
+        # ocurrida (el dinero ya se movió; ocultar eso sería peor).
+        if result.position_id:
+            record_live_trade_open(
+                position_id=str(result.position_id),
+                order_id=result.order_id,
+                symbol=proposal.symbol,
+                direction=proposal.direction,
+                amount_usd=trade_amount,
+                entry_price=proposal.entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                proposal_id=proposal_id,
+            )
+        else:
+            logger.error(
+                "[LIVE] Orden ejecutada con éxito pero SIN position_id — "
+                "no se puede rastrear para cierre/PnL. proposal=%s order_id=%s",
+                proposal_id, result.order_id,
+            )
         return {
             "success":     True,
             "mode":        "live",
@@ -822,11 +1524,25 @@ def format_auto_status() -> str:
         "",
         "🛡 Límites de riesgo:",
         f"  Max/operación:    ${cfg['max_position_usd']:.0f}",
-        f"  Max pérdida/día:  ${cfg['max_daily_loss_usd']:.0f}",
+        # Corrección 2026-09-26 (quinta vuelta del PR #134): antes esta línea
+        # solo mostraba el TECHO configurado, nunca cuánto se lleva perdido
+        # HOY -- el mismo hueco que "Pérdidas consec" ya no tiene (esa sí
+        # mostraba actual/límite). Ahora ambas usan el mismo formato.
+        f"  Pérdida hoy:      ${cfg['daily_loss_usd']:.2f} / ${cfg['max_daily_loss_usd']:.0f}",
         f"  Stop-loss:        {cfg['stop_loss_pct']:.1f}%",
         f"  Pérdidas consec:  {cfg['consecutive_losses']}/{cfg['max_consecutive_losses']}",
         f"  Max posiciones:   {cfg['max_positions_open']}",
     ]
+
+    if cfg.get("paused_until", 0) > time.time():
+        import datetime
+        resume_str = datetime.datetime.utcfromtimestamp(
+            cfg["paused_until"]
+        ).strftime("%Y-%m-%d %H:%M UTC")
+        lines.append(
+            f"\n⏸️ PAUSADO por seguridad: {cfg.get('pause_reason', '')}\n"
+            f"  Reanuda automáticamente: {resume_str}"
+        )
 
     if cfg.get("last_shutdown_reason"):
         lines.append(f"\n🔔 Último shutdown: {cfg['last_shutdown_reason']}")

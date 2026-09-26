@@ -22,6 +22,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -309,6 +310,92 @@ def get_portfolio() -> Dict[str, Any]:
         "positions":  all_positions,
         "n_positions": len(all_positions),
         "orders":     orders,
+        "latency_ms": result["latency_ms"],
+    }
+
+
+def parse_etoro_timestamp(ts: Optional[str]) -> Optional[float]:
+    """eToro's trade-history timestamps look like '2026-09-23T19:46:25.2Z'
+    -- always UTC, variable-precision fractional seconds (1-6 digits).
+    `datetime.fromisoformat` rejects non-3/6-digit fractions on this
+    codebase's Python (3.9); `strptime`'s %f accepts 1-6, so it's used
+    instead. Returns epoch seconds, or None if `ts` is missing/unparseable."""
+    if not ts:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.strptime(ts, fmt).replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            continue
+    logger.warning("[LEDGER] etoro: no se pudo parsear timestamp %r", ts)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Trade-history rate limiting -- eToro caps this endpoint at 60 req/min.
+# Proactive sliding-window throttle, separate from _request()'s reactive
+# 429 backoff: this avoids ever hitting 429 on this endpoint in the first
+# place instead of just recovering from it.
+# ---------------------------------------------------------------------------
+
+_trade_history_call_times: List[float] = []
+_TRADE_HISTORY_RATE_LIMIT = 60   # requests per rolling 60s window
+
+
+def _respect_trade_history_rate_limit() -> None:
+    global _trade_history_call_times
+    now = time.time()
+    _trade_history_call_times = [t for t in _trade_history_call_times if now - t < 60]
+    if len(_trade_history_call_times) >= _TRADE_HISTORY_RATE_LIMIT:
+        sleep_for = 60 - (now - _trade_history_call_times[0])
+        if sleep_for > 0:
+            logger.info(
+                "[LEDGER] etoro trade/history — rate limit local (60/min), "
+                "durmiendo %.1fs", sleep_for,
+            )
+            time.sleep(sleep_for)
+        now = time.time()
+        _trade_history_call_times = [t for t in _trade_history_call_times if now - t < 60]
+    _trade_history_call_times.append(time.time())
+
+
+def get_trade_history(
+    min_date: str,
+    page: Optional[int] = None,
+    page_size: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Closed-trade history — REAL account only (eToro doesn't expose this on
+    demo). GET /trading/info/trade/history.
+    https://api-portal.etoro.com/api-reference/trading--real/list-trading-history
+
+    `min_date` is mandatory ('YYYY-MM-DD'); eToro's own lookback limit is
+    under 1 year. Returns each closed position's `netProfit`,
+    `closeTimestamp`, `positionId`, `openTimestamp`, etc. — no PnL
+    estimation, no invented numbers, straight from the broker.
+
+    Not gated on ETORO_ENVIRONMENT here: in practice this is only ever
+    called from LIVE position-close detection, and LIVE mode already
+    requires ETORO_ENVIRONMENT=real (auto_executor.activate_live()) — so a
+    demo-mode caller would just get whatever error the API itself returns.
+    """
+    _respect_trade_history_rate_limit()
+
+    params: Dict[str, Any] = {"minDate": min_date}
+    if page is not None:
+        params["page"] = page
+    if page_size is not None:
+        params["pageSize"] = page_size
+
+    result = _request("GET", "/trading/info/trade/history", params=params)
+    if not result["success"]:
+        return result
+
+    data = result["data"]
+    trades = data if isinstance(data, list) else data.get("trades", [])
+    return {
+        "success":    True,
+        "trades":     trades,
         "latency_ms": result["latency_ms"],
     }
 

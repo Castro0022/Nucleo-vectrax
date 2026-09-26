@@ -8,11 +8,17 @@ Evalúa condiciones de salida para posiciones PAPER abiertas:
   - Señal contraria detectada
   - Tiempo máximo de posición expirado
 
-Se ejecuta como parte del learning cycle.
-No cierra posiciones LIVE automáticamente — solo propone.
+Se ejecuta como parte del learning cycle. No cierra posiciones LIVE
+directamente (SL/TP los ejecuta el propio bróker) — pero SÍ detecta
+cuándo una posición LIVE registrada ya se cerró del lado del bróker y lo
+refleja en el registro propio, primero como estimación de peor caso y
+luego confirmándola contra el historial real de eToro en cuanto aparece
+ahí (ver check_live_positions_closed() y _resolve_pending_estimates(),
+correcciones de seguridad 2026-09-26).
 
 API pública:
-    check_open_positions() -> List[Dict]   (acciones tomadas)
+    check_open_positions() -> List[Dict]           (acciones PAPER + LIVE)
+    check_live_positions_closed() -> List[Dict]     (solo detección LIVE)
 """
 
 from __future__ import annotations
@@ -39,9 +45,14 @@ def check_open_positions() -> List[Dict[str, Any]]:
     max_hold_h = cfg.get("max_hold_hours", 24)
     actions = []
 
+    # Bug real encontrado 2026-09-26 (cuarta vuelta del PR #134): este
+    # "if not open_trades: return actions" salía ANTES de llegar a la
+    # detección LIVE de abajo. En modo LIVE puro -- el caso normal una vez
+    # pasada la fase PAPER inicial, sin ningún trade PAPER abierto -- eso
+    # significaba que check_live_positions_closed() JAMÁS corría. El bucle
+    # de abajo sobre una lista vacía ya es un no-op por sí solo; no hace
+    # falta ningún return temprano.
     open_trades = [t for t in get_paper_trades(limit=100) if t.status == "open"]
-    if not open_trades:
-        return actions
 
     for trade in open_trades:
         close_reason = _evaluate_exit(trade, max_hold_h)
@@ -58,12 +69,196 @@ def check_open_positions() -> List[Dict[str, Any]]:
                 # Log to observation ledger
                 _log_exit_observation(trade, close_reason, result)
 
+    # Detección de cierres LIVE (item 2 de la corrección de seguridad
+    # 2026-09-26) -- mismo ciclo periódico, después de resolver PAPER.
+    try:
+        live_actions = check_live_positions_closed()
+        actions.extend(live_actions)
+    except Exception as exc:
+        logger.warning("[POSITION_MGR] check_live_positions_closed error: %s", exc)
+
     if actions:
         logger.info(
             "[POSITION_MGR] Closed %d positions: %s",
             len(actions),
             [a.get("reason", "?") for a in actions],
         )
+
+    return actions
+
+
+def check_live_positions_closed() -> List[Dict[str, Any]]:
+    """Detecta posiciones LIVE registradas como abiertas que YA NO figuran
+    como abiertas en el bróker (item 2 de la corrección de seguridad
+    2026-09-26 — antes, una posición LIVE que se cerraba en eToro directo
+    por SL/TP nunca se enteraba el sistema: quedaba "open" para siempre en
+    el registro propio, y su resultado nunca llegaba a
+    record_trade_result()).
+
+    `get_portfolio()` solo da PnL NO realizado de posiciones ABIERTAS —
+    no sirve para saber cómo cerró una que ya desapareció. Corrección
+    2026-09-26 (segunda vuelta del PR #134): en cuanto se detecta que
+    desapareció, se registra de inmediato una ESTIMACIÓN de peor caso
+    (`auto_executor.worst_case_pnl_estimate`, asumiendo que se tocó el
+    propio stop-loss de la posición) vía
+    `record_live_trade_result(..., source="estimated")` -- eso SÍ cuenta
+    para daily_loss_usd/consecutive_losses (recalculados, nunca
+    inventados como un número fijo) y puede activar la pausa de 24h. Se
+    avisa por Telegram. Mientras el resultado siga siendo
+    `pnl_source="estimated"`, `check_risk_before_trade()` bloquea toda
+    entrada nueva (fail-closed) hasta que se confirme.
+
+    Corrección 2026-09-26 (cuarta vuelta del PR #134): investigado el
+    404 anterior más a fondo -- el endpoint correcto de historial de
+    cierres SÍ existe, pero es otro: GET /trading/info/trade/history
+    (cuenta real, ver `etoro_client.get_trade_history`), no
+    `portfolio.get_trade_history()` (ese sigue devolviendo 404). Cada
+    vez que corre esta función, ANTES de buscar cierres nuevos, intenta
+    resolver las estimaciones pendientes contra ese historial real
+    (`_resolve_pending_estimates`): si el `positionId` ya aparece ahí,
+    su `netProfit` reemplaza la estimación como PnL "real" (nunca se
+    suma). Si todavía no aparece, se reintenta en el próximo ciclo --
+    la estimación se deja intacta y sigue bloqueando entradas nuevas.
+    """
+    from connectors.etoro.auto_executor import (
+        get_live_trades, record_live_trade_result, worst_case_pnl_estimate,
+    )
+
+    actions: List[Dict[str, Any]] = []
+
+    pending = [t for t in get_live_trades(limit=200) if t.pnl_source == "estimated"]
+    if pending:
+        actions.extend(_resolve_pending_estimates(pending))
+
+    open_live = [t for t in get_live_trades(limit=200) if t.status == "open"]
+    if not open_live:
+        return actions
+
+    try:
+        from connectors.etoro.etoro_client import get_portfolio
+        portfolio = get_portfolio()
+    except Exception as exc:
+        logger.warning("[LIVE_POS] no se pudo consultar el bróker: %s", exc)
+        return actions
+    if not portfolio.get("success"):
+        logger.warning(
+            "[LIVE_POS] consulta al bróker falló: %s",
+            portfolio.get("error", "desconocido"),
+        )
+        return actions
+
+    broker_position_ids = {
+        str(p.get("positionID")) for p in portfolio.get("positions", [])
+        if p.get("positionID") is not None
+    }
+
+    for trade in open_live:
+        if trade.position_id in broker_position_ids:
+            continue  # sigue abierta según el bróker
+
+        estimate = worst_case_pnl_estimate(trade)
+        recorded = record_live_trade_result(
+            trade.trade_id, estimate, source="estimated",
+        )
+        actions.append({
+            "trade_id": trade.trade_id,
+            "position_id": trade.position_id,
+            "symbol": trade.symbol,
+            "status": "closed_pnl_pending",  # etiqueta para quien lea `actions`
+            "reason": "closed_pnl_pending",
+            "pnl_estimate_usd": round(estimate, 2),
+        })
+        logger.warning(
+            "[LIVE_POS] %s (%s %s) ya no está abierta en el bróker — sin "
+            "PnL realizado disponible, estimación de peor caso registrada: "
+            "%.2f USD (recorded=%s)",
+            trade.trade_id, trade.direction.upper(), trade.symbol,
+            estimate, recorded,
+        )
+        try:
+            from connectors.etoro.learning_engine import _tg_notify
+            _tg_notify(
+                f"⚠️ Posición LIVE {trade.symbol} ({trade.trade_id}) se "
+                f"cerró en el bróker sin PnL realizado disponible.\n"
+                f"Estimación de peor caso registrada: ${estimate:.2f}\n\n"
+                f"Entradas nuevas BLOQUEADAS hasta confirmar el PnL real "
+                f"con /vx etoro live_pnl {trade.trade_id} <pnl>."
+            )
+        except Exception:
+            pass
+
+    return actions
+
+
+def _resolve_pending_estimates(pending) -> List[Dict[str, Any]]:
+    """Intenta reemplazar cada estimación de peor caso pendiente
+    (`pnl_source == "estimated"`) por el PnL real desde el historial de
+    eToro. Corrección 2026-09-26 (cuarta vuelta del PR #134).
+
+    Una sola llamada a `get_trade_history()` cubre TODAS las pendientes:
+    `minDate` se fija en la apertura de la más antigua -- un minDate más
+    temprano solo trae más filas, nunca menos, así que es seguro y evita
+    una llamada por posición (respeta el límite de 60/min sin esfuerzo
+    extra). Lo que no aparece todavía se deja tal cual -- se reintenta en
+    el próximo ciclo, sin tocar la estimación existente.
+    """
+    from connectors.etoro.auto_executor import record_live_trade_result
+    from connectors.etoro.etoro_client import get_trade_history, parse_etoro_timestamp
+
+    actions: List[Dict[str, Any]] = []
+
+    min_date = time.strftime("%Y-%m-%d", time.gmtime(min(t.timestamp for t in pending)))
+    try:
+        result = get_trade_history(min_date=min_date)
+    except Exception as exc:
+        logger.warning("[LIVE_POS] no se pudo consultar el historial real: %s", exc)
+        return actions
+    if not result.get("success"):
+        logger.warning(
+            "[LIVE_POS] historial real falló: %s -- estimaciones pendientes "
+            "se reintentan en el próximo ciclo.", result.get("error"),
+        )
+        return actions
+
+    by_position_id = {
+        str(h.get("positionId")): h for h in result.get("trades", [])
+        if h.get("positionId") is not None
+    }
+
+    for trade in pending:
+        hist = by_position_id.get(trade.position_id)
+        if hist is None:
+            continue  # todavía no aparece en el historial -- reintenta después
+
+        net_profit = hist.get("netProfit")
+        closed_at = parse_etoro_timestamp(hist.get("closeTimestamp"))
+        if net_profit is None or closed_at is None:
+            continue  # fila incompleta -- reintenta después en vez de registrar a medias
+
+        recorded = record_live_trade_result(
+            trade.trade_id, net_profit, source="real", closed_at=closed_at,
+        )
+        actions.append({
+            "trade_id": trade.trade_id,
+            "position_id": trade.position_id,
+            "symbol": trade.symbol,
+            "status": "closed_confirmed",
+            "reason": "real_pnl_from_broker_history",
+            "pnl_real_usd": round(net_profit, 2),
+        })
+        logger.info(
+            "[LIVE_POS] %s | PnL real confirmado desde historial eToro: "
+            "%.2f USD (reemplazó la estimación, recorded=%s)",
+            trade.trade_id, net_profit, recorded,
+        )
+        try:
+            from connectors.etoro.learning_engine import _tg_notify
+            _tg_notify(
+                f"✅ PnL real confirmado para {trade.symbol} ({trade.trade_id}): "
+                f"${net_profit:.2f} (historial eToro, reemplazó la estimación)."
+            )
+        except Exception:
+            pass
 
     return actions
 
