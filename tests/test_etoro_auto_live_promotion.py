@@ -553,35 +553,40 @@ class TestConcurrentIdempotencyAcrossProcesses:
 
 class TestOneShotAfterSafetyShutdown:
 
-    def test_never_repromotes_after_a_consecutive_losses_shutdown(
+    def test_consecutive_losses_pause_leaves_live_mode_unchanged(
         self, isolated_executor, real_env, tg_calls
     ):
+        """Corrección 2026-09-26: un cortacircuito YA NO revierte el modo a
+        PAPER — activa una pausa de 24h y el modo se queda en LIVE todo el
+        tiempo (ver tests/test_live_trading_safety.py para la cobertura
+        completa de la pausa). Este test verifica que el disparo único de
+        la promoción PAPER→LIVE sigue sin verse afectado: como el modo
+        nunca deja LIVE, no hay nada que "re-promover".
+        """
         auto_executor.activate_paper()
         _close_paper(1.0, n=30)
         assert auto_executor.get_mode() == AutoMode.LIVE
         assert len(tg_calls) == 1
 
-        # A real circuit-breaker: 3 consecutive LIVE losses revert to PAPER.
-        # This path (record_trade_result(is_paper=False)) is pre-existing
-        # and untouched by this change.
-        for _ in range(3):
-            auto_executor.record_trade_result(-20.0, is_paper=False)
-        assert auto_executor.get_mode() == AutoMode.PAPER
-        # Either circuit-breaker may report last (both fire on -$20 losses
-        # against the default $10 daily-loss limit) — what matters here is
-        # that a real safety shutdown actually reverted the mode.
-        assert "auto-shutdown" in auto_executor.get_config()["last_shutdown_reason"]
+        # trade_id ahora es obligatorio también en LIVE (corrección de
+        # seguridad 2026-09-26, ver tests/test_live_trading_safety.py) --
+        # antes de esa corrección solo era obligatorio en PAPER.
+        for i in range(3):
+            auto_executor.record_trade_result(
+                -20.0, is_paper=False, trade_id=f"LIVE-SHUTDOWN-TEST-{i}"
+            )
 
-        # New PAPER trades keep closing afterward — count/env/creds are all
-        # still trivially satisfied, but the one-shot gate must NOT silently
-        # undo the shutdown.
-        _close_paper(1.0, n=1)
-        assert auto_executor.get_mode() == AutoMode.PAPER
-        reason = auto_executor.get_config()["last_auto_promotion_reason"]
-        assert "manual" in reason.lower()
-        assert len(tg_calls) == 1   # still just the original promotion
+        # El modo se queda en LIVE -- lo que cambió es que ahora hay una
+        # pausa de entradas activa (cubierta en detalle en
+        # test_live_trading_safety.py).
+        cfg = auto_executor.get_config()
+        assert auto_executor.get_mode() == AutoMode.LIVE
+        assert cfg["paused_until"] > 0
+        assert cfg["pause_reason"]
 
-        # The creator's manual command still works at any time.
+        # El comando manual del creador sigue funcionando en cualquier
+        # momento (no interactúa con la pausa -- eso es responsabilidad de
+        # check_risk_before_trade, no de activate_live()).
         result = auto_executor.activate_live("tg:2030762343")
         assert "🔴" in result
         assert auto_executor.get_mode() == AutoMode.LIVE

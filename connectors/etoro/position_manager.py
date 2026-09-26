@@ -8,11 +8,15 @@ Evalúa condiciones de salida para posiciones PAPER abiertas:
   - Señal contraria detectada
   - Tiempo máximo de posición expirado
 
-Se ejecuta como parte del learning cycle.
-No cierra posiciones LIVE automáticamente — solo propone.
+Se ejecuta como parte del learning cycle. No cierra posiciones LIVE
+directamente (SL/TP los ejecuta el propio bróker) — pero SÍ detecta
+cuándo una posición LIVE registrada ya se cerró del lado del bróker y lo
+refleja en el registro propio (ver check_live_positions_closed(),
+corrección de seguridad 2026-09-26).
 
 API pública:
-    check_open_positions() -> List[Dict]   (acciones tomadas)
+    check_open_positions() -> List[Dict]           (acciones PAPER + LIVE)
+    check_live_positions_closed() -> List[Dict]     (solo detección LIVE)
 """
 
 from __future__ import annotations
@@ -58,12 +62,97 @@ def check_open_positions() -> List[Dict[str, Any]]:
                 # Log to observation ledger
                 _log_exit_observation(trade, close_reason, result)
 
+    # Detección de cierres LIVE (item 2 de la corrección de seguridad
+    # 2026-09-26) -- mismo ciclo periódico, después de resolver PAPER.
+    try:
+        live_actions = check_live_positions_closed()
+        actions.extend(live_actions)
+    except Exception as exc:
+        logger.warning("[POSITION_MGR] check_live_positions_closed error: %s", exc)
+
     if actions:
         logger.info(
             "[POSITION_MGR] Closed %d positions: %s",
             len(actions),
             [a.get("reason", "?") for a in actions],
         )
+
+    return actions
+
+
+def check_live_positions_closed() -> List[Dict[str, Any]]:
+    """Detecta posiciones LIVE registradas como abiertas que YA NO figuran
+    como abiertas en el bróker (item 2 de la corrección de seguridad
+    2026-09-26 — antes, una posición LIVE que se cerraba en eToro directo
+    por SL/TP nunca se enteraba el sistema: quedaba "open" para siempre en
+    el registro propio, y su resultado nunca llegaba a
+    record_trade_result()).
+
+    NUNCA inventa ni estima el PnL. `get_portfolio()` solo da PnL NO
+    realizado de posiciones ABIERTAS — este cliente de eToro todavía no
+    tiene un endpoint de historial de posiciones cerradas, así que una
+    posición recién desaparecida no tiene, hoy, una fuente de PnL
+    realizado. Se marca `closed_pnl_pending` y se avisa por Telegram; NO
+    se llama a `record_trade_result()` para ella — contarla con un PnL
+    desconocido sería peor que no contarla (inflaría o desinflaría
+    consecutive_losses/daily_loss_usd con un número inventado). Si en el
+    futuro se agrega un endpoint de historial, conectar el PnL real aquí
+    es el único cambio que hace falta.
+    """
+    from connectors.etoro.auto_executor import get_live_trades, _update_live_trade
+
+    actions: List[Dict[str, Any]] = []
+    open_live = [t for t in get_live_trades(limit=200) if t.status == "open"]
+    if not open_live:
+        return actions
+
+    try:
+        from connectors.etoro.etoro_client import get_portfolio
+        portfolio = get_portfolio()
+    except Exception as exc:
+        logger.warning("[LIVE_POS] no se pudo consultar el bróker: %s", exc)
+        return actions
+    if not portfolio.get("success"):
+        logger.warning(
+            "[LIVE_POS] consulta al bróker falló: %s",
+            portfolio.get("error", "desconocido"),
+        )
+        return actions
+
+    broker_position_ids = {
+        str(p.get("positionID")) for p in portfolio.get("positions", [])
+        if p.get("positionID") is not None
+    }
+
+    for trade in open_live:
+        if trade.position_id in broker_position_ids:
+            continue  # sigue abierta según el bróker
+
+        _update_live_trade(trade.position_id, {"status": "closed_pnl_pending"})
+        actions.append({
+            "trade_id": trade.trade_id,
+            "position_id": trade.position_id,
+            "symbol": trade.symbol,
+            "status": "closed_pnl_pending",
+            "reason": "closed_pnl_pending",
+        })
+        logger.warning(
+            "[LIVE_POS] %s (%s %s) ya no está abierta en el bróker y no se "
+            "pudo obtener su PnL realizado — marcada closed_pnl_pending, "
+            "SIN registrar en record_trade_result.",
+            trade.trade_id, trade.direction.upper(), trade.symbol,
+        )
+        try:
+            from connectors.etoro.learning_engine import _tg_notify
+            _tg_notify(
+                f"⚠️ Posición LIVE {trade.symbol} ({trade.trade_id}) se "
+                f"cerró en el bróker pero no se pudo obtener el PnL "
+                f"realizado. Revisar manualmente con /etoro portfolio o el "
+                f"historial de eToro — no se contó contra los límites de "
+                f"riesgo."
+            )
+        except Exception:
+            pass
 
     return actions
 

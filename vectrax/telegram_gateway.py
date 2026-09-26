@@ -3025,7 +3025,9 @@ class TelegramGateway:
 
                 elif auto_sub == "config":
                     # View or set risk limits: /vx etoro auto config [key value]
-                    from connectors.etoro.auto_executor import get_config, update_config
+                    from connectors.etoro.auto_executor import (
+                        get_config, update_config, validate_risk_limit,
+                    )
                     if len(auto_args) >= 2:
                         key, val = auto_args[0], auto_args[1]
                         allowed_keys = {
@@ -3038,13 +3040,19 @@ class TelegramGateway:
                             return
                         try:
                             numeric = float(val)
-                            if key in ("max_consecutive_losses", "max_positions_open",
-                                       "min_paper_signals"):
-                                numeric = int(numeric)
-                            update_config({key: numeric})
-                            self._send(cid, f"✅ {key} = {numeric}")
                         except ValueError:
                             self._send(cid, "Valor inválido.")
+                            return
+                        # Corrección 2026-09-26: antes este comando aceptaba
+                        # cualquier número parseable sin rango — validate_risk_limit
+                        # aplica los techos duros de auto_executor.py (no
+                        # configurables desde acá) antes de escribir nada.
+                        valid, coerced, error = validate_risk_limit(key, numeric)
+                        if not valid:
+                            self._send(cid, f"❌ {error}")
+                            return
+                        update_config({key: coerced})
+                        self._send(cid, f"✅ {key} = {coerced}")
                     else:
                         cfg = get_config()
                         lines = ["⚙️ Config límites de riesgo:\n"]

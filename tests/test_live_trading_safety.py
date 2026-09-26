@@ -1,0 +1,553 @@
+"""
+tests/test_live_trading_safety.py — Corrección de seguridad LIVE, 2026-09-26.
+
+Contexto verificado antes de esta corrección: `record_trade_result(is_paper=False)`
+nunca se llamaba en producción (nada abría el registro de una posición LIVE, así
+que nada podía después reportar su cierre), por lo que `max_daily_loss_usd` y
+`max_consecutive_losses` nunca se activaban en modo LIVE. `max_positions_open`
+existía solo en texto de estado, sin ningún chequeo real. `/vx etoro auto config`
+aceptaba cualquier valor numérico sin rango.
+
+Cubre exactamente lo pedido:
+  - cierre LIVE registrado una sola vez
+  - cierre duplicado ignorado
+  - max_positions_open bloquea (PAPER local, LIVE contra el bróker)
+  - fallo del bróker bloquea en LIVE (fail closed)
+  - PnL no disponible no se registra (closed_pnl_pending, sin
+    record_trade_result, con aviso por Telegram)
+  - valores inválidos en Telegram rechazados (validate_risk_limit)
+
+Cambio adicional en el mismo PR (2026-09-26, sin merge/deploy todavía):
+los cortacircuitos YA NO revierten el modo a PAPER. En vez de eso:
+  - 3 pérdidas LIVE seguidas → pausa de 24h (el modo se queda en LIVE)
+  - límite de pérdida diaria → pausa de 24h (el modo se queda en LIVE)
+  - check_risk_before_trade() bloquea toda entrada nueva durante la pausa
+  - pasadas las 24h, la pausa se levanta sola (sin intervención manual) y
+    reinicia daily_loss_usd/consecutive_losses
+  - avisa por Telegram al pausar (motivo + hora de reanudación) y al
+    reanudar
+  - las posiciones ya abiertas nunca se tocan durante la pausa
+  - el HALT manual es independiente: solo se levanta con el comando del
+    creador; la pausa automática nunca lo toca
+  - la pausa vive en el mismo JSON persistido que el resto de la config,
+    así que un reinicio de procesos no la borra ni la acorta
+
+Nunca coloca una orden real: `trade_executor.execute_open` está
+envenenado (poison pill) en todos los tests de este archivo.
+"""
+from __future__ import annotations
+
+import itertools
+import sys
+import time
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from connectors.etoro import auto_executor
+from connectors.etoro.auto_executor import AutoMode
+
+
+# ── Fixtures ──────────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def isolated_executor(tmp_path, monkeypatch):
+    """Apunta config + logs PAPER/LIVE del auto-executor a archivos temporales
+    frescos — mismo patrón que `isolated_executor` en
+    test_etoro_auto_live_promotion.py, extendido con _LIVE_LOG_FILE."""
+    monkeypatch.setattr(auto_executor, "_CONFIG_FILE", str(tmp_path / "auto_cfg.json"))
+    monkeypatch.setattr(auto_executor, "_PAPER_LOG_FILE", str(tmp_path / "paper_trades.jsonl"))
+    monkeypatch.setattr(auto_executor, "_LIVE_LOG_FILE", str(tmp_path / "live_trades.jsonl"))
+    return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def no_real_orders(monkeypatch):
+    """Poison pill: cualquier intento de colocar una orden real revienta el
+    test — ningún test de este archivo debe llegar a trade_executor.execute_open."""
+    def _boom(*a, **k):
+        raise AssertionError(
+            "un test de seguridad LIVE nunca debe colocar una orden real"
+        )
+    from connectors.etoro import trade_executor
+    monkeypatch.setattr(trade_executor, "execute_open", _boom)
+
+
+@pytest.fixture(autouse=True)
+def tg_calls(monkeypatch):
+    """Captura las notificaciones de Telegram en vez de tocar la red."""
+    from connectors.etoro import learning_engine
+    sent = []
+    monkeypatch.setattr(
+        learning_engine, "_tg_notify", lambda text: sent.append(text) or True
+    )
+    return sent
+
+
+def _live_mode_cfg(**overrides):
+    cfg = dict(auto_executor.DEFAULTS)
+    cfg.update({
+        "mode": AutoMode.LIVE.value,
+        "live_activated_at": 1.0,
+        "live_activated_by": "test",
+    })
+    cfg.update(overrides)
+    return cfg
+
+
+_trade_seq = itertools.count(1)
+
+
+def _new_position_id() -> str:
+    return f"POS-TEST-{next(_trade_seq)}"
+
+
+# ── 1 y 2: registro único / duplicado ignorado ─────────────────────────────
+
+class TestLiveCloseRecordedOnce:
+    def test_live_close_registered_once(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg())
+        pid = _new_position_id()
+        auto_executor.record_trade_result(-1.0, is_paper=False, trade_id=f"LIVE-{pid}")
+
+        cfg = auto_executor.get_config()
+        assert cfg["consecutive_losses"] == 1
+        assert cfg["daily_loss_usd"] == pytest.approx(1.0)
+        assert f"LIVE-{pid}" in cfg["recorded_live_trade_ids"]
+
+    def test_duplicate_live_close_ignored(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg())
+        pid = _new_position_id()
+        tid = f"LIVE-{pid}"
+
+        auto_executor.record_trade_result(-1.0, is_paper=False, trade_id=tid)
+        cfg_after_first = auto_executor.get_config()
+        assert cfg_after_first["consecutive_losses"] == 1
+        assert cfg_after_first["daily_loss_usd"] == pytest.approx(1.0)
+
+        # Reenvío del MISMO trade_id (p. ej. el chequeo de 5 min y el de
+        # 30 min solapándose sobre la misma posición) -- no debe sumar
+        # una segunda vez.
+        auto_executor.record_trade_result(-1.0, is_paper=False, trade_id=tid)
+        cfg_after_dup = auto_executor.get_config()
+        assert cfg_after_dup["consecutive_losses"] == 1
+        assert cfg_after_dup["daily_loss_usd"] == pytest.approx(1.0)
+
+    def test_trade_id_required_for_live_too(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg())
+        with pytest.raises(ValueError):
+            auto_executor.record_trade_result(-1.0, is_paper=False, trade_id=None)
+
+    def test_trade_id_required_for_paper_unchanged(self, isolated_executor):
+        """No regresión: la exigencia de trade_id en PAPER sigue igual."""
+        auto_executor._save_config(dict(auto_executor.DEFAULTS))
+        with pytest.raises(ValueError):
+            auto_executor.record_trade_result(-1.0, is_paper=True, trade_id=None)
+
+
+# ── 3: 3 pérdidas LIVE seguidas → PAPER ─────────────────────────────────────
+
+class TestLiveConsecutiveLossesPause:
+    """Corrección adicional 2026-09-26: el cortacircuito YA NO revierte el
+    modo a PAPER -- activa una pausa de 24h y el modo se queda en LIVE
+    todo el tiempo."""
+
+    def test_three_live_losses_activate_pause_mode_stays_live(self, isolated_executor, tg_calls):
+        auto_executor._save_config(_live_mode_cfg(max_consecutive_losses=3))
+
+        for _ in range(3):
+            auto_executor.record_trade_result(
+                -1.0, is_paper=False, trade_id=f"LIVE-{_new_position_id()}"
+            )
+
+        cfg = auto_executor.get_config()
+        assert cfg["mode"] == AutoMode.LIVE.value          # el modo NUNCA cambia
+        assert cfg["consecutive_losses"] == 3
+        assert cfg["paused_until"] > time.time()
+        assert "pérdidas consecutivas" in cfg["pause_reason"]
+        assert any("pausad" in msg.lower() for msg in tg_calls)  # avisó por Telegram
+
+    def test_two_live_losses_do_not_pause(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg(max_consecutive_losses=3))
+        for _ in range(2):
+            auto_executor.record_trade_result(
+                -1.0, is_paper=False, trade_id=f"LIVE-{_new_position_id()}"
+            )
+        cfg = auto_executor.get_config()
+        assert cfg["mode"] == AutoMode.LIVE.value
+        assert cfg["paused_until"] == 0
+
+    def test_a_win_resets_consecutive_losses(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg(max_consecutive_losses=3))
+        auto_executor.record_trade_result(-1.0, is_paper=False, trade_id=f"LIVE-{_new_position_id()}")
+        auto_executor.record_trade_result(-1.0, is_paper=False, trade_id=f"LIVE-{_new_position_id()}")
+        auto_executor.record_trade_result(5.0, is_paper=False, trade_id=f"LIVE-{_new_position_id()}")
+        cfg = auto_executor.get_config()
+        assert cfg["consecutive_losses"] == 0
+        assert cfg["mode"] == AutoMode.LIVE.value
+        assert cfg["paused_until"] == 0
+
+    def test_second_breaker_does_not_extend_an_active_pause(self, isolated_executor):
+        """Si pérdidas consecutivas Y pérdida diaria disparan en el mismo
+        cierre, la pausa no se extiende ni el motivo se pisa dos veces."""
+        cfg0 = _live_mode_cfg(max_consecutive_losses=1, max_daily_loss_usd=0.5)
+        auto_executor._save_config(cfg0)
+        auto_executor.record_trade_result(-5.0, is_paper=False, trade_id=f"LIVE-{_new_position_id()}")
+        cfg = auto_executor.get_config()
+        first_paused_until = cfg["paused_until"]
+        first_reason = cfg["pause_reason"]
+        assert first_paused_until > 0
+
+        # Otro cierre perdedor con la pausa ya activa: check_risk_before_trade
+        # bloquearía la entrada antes de llegar aquí en el camino real, pero
+        # record_trade_result() en sí no debe tocar una pausa ya vigente.
+        auto_executor.record_trade_result(-5.0, is_paper=False, trade_id=f"LIVE-{_new_position_id()}")
+        cfg2 = auto_executor.get_config()
+        assert cfg2["paused_until"] == first_paused_until
+        assert cfg2["pause_reason"] == first_reason
+
+
+# ── 4: límite de pérdida diaria → pausa 24h (modo se queda en LIVE) ────────
+
+class TestLiveDailyLossPause:
+    def test_daily_loss_limit_activates_pause_mode_stays_live(self, isolated_executor, tg_calls):
+        auto_executor._save_config(_live_mode_cfg(max_daily_loss_usd=10.0, max_consecutive_losses=99))
+        auto_executor.record_trade_result(-6.0, is_paper=False, trade_id=f"LIVE-{_new_position_id()}")
+        cfg = auto_executor.get_config()
+        assert cfg["mode"] == AutoMode.LIVE.value
+        assert cfg["paused_until"] == 0  # todavía no llega al límite
+
+        auto_executor.record_trade_result(-6.0, is_paper=False, trade_id=f"LIVE-{_new_position_id()}")
+        cfg = auto_executor.get_config()
+        assert cfg["mode"] == AutoMode.LIVE.value           # el modo NUNCA cambia
+        assert cfg["paused_until"] > time.time()
+        assert "pérdida diaria" in cfg["pause_reason"]
+        assert cfg["daily_loss_usd"] >= 10.0
+        assert any("pausad" in msg.lower() for msg in tg_calls)
+
+
+# ── Bloqueo durante la pausa / reanudación automática a las 24h ────────────
+
+class TestPauseBlocksAndAutoResumes:
+    def test_check_risk_before_trade_blocks_during_pause(self, isolated_executor):
+        cfg = _live_mode_cfg()
+        cfg["paused_until"] = time.time() + 3600
+        cfg["pause_reason"] = "prueba"
+        auto_executor._save_config(cfg)
+
+        allowed, reason = auto_executor.check_risk_before_trade(10.0)
+        assert allowed is False
+        assert "pausad" in reason.lower()
+
+    def test_open_positions_are_never_touched_by_a_pause(self, isolated_executor):
+        """Una pausa activa no debe tocar las posiciones ya abiertas -- solo
+        bloquea ENTRADAS nuevas vía check_risk_before_trade(). No hay
+        ningún código en esta corrección que cierre o modifique una
+        LiveTrade al activar/mantener una pausa."""
+        auto_executor._save_config(_live_mode_cfg())
+        pid = _new_position_id()
+        auto_executor.record_live_trade_open(
+            position_id=pid, order_id="ORD-1", symbol="TSLA", direction="buy",
+            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
+            take_profit=310.0, proposal_id="PROP-1",
+        )
+        for _ in range(3):
+            auto_executor.record_trade_result(
+                -10.0, is_paper=False, trade_id=f"LIVE-{_new_position_id()}"
+            )
+        assert auto_executor.get_config()["paused_until"] > 0
+        # La posición sigue "open" -- nada de esta corrección la tocó.
+        trades = auto_executor.get_live_trades(limit=10)
+        assert [t for t in trades if t.position_id == pid][0].status == "open"
+
+    def test_pause_auto_lifts_after_24h_and_resets_counters(
+        self, isolated_executor, tg_calls, monkeypatch
+    ):
+        cfg = _live_mode_cfg(consecutive_losses=3, daily_loss_usd=15.0)
+        cfg["paused_until"] = time.time() - 1  # ya vencida
+        cfg["pause_reason"] = "prueba vencida"
+        auto_executor._save_config(cfg)
+        # Aislar ESTE test de max_positions_open (chequeo aparte, cubierto
+        # en TestMaxPositionsOpen) -- sin esto, check_risk_before_trade en
+        # LIVE intentaría una llamada real al bróker.
+        monkeypatch.setattr(
+            "connectors.etoro.etoro_client.get_portfolio",
+            lambda: {"success": True, "n_positions": 0, "positions": []},
+        )
+
+        allowed, reason = auto_executor.check_risk_before_trade(10.0)
+
+        fresh = auto_executor.get_config()
+        assert fresh["paused_until"] == 0
+        assert fresh["pause_reason"] == ""
+        assert fresh["consecutive_losses"] == 0
+        assert fresh["daily_loss_usd"] == 0.0
+        assert fresh["mode"] == AutoMode.LIVE.value  # seguía en LIVE todo el tiempo
+        assert any("reanudad" in msg.lower() or "levant" in msg.lower() for msg in tg_calls)
+        # Sin ninguna otra condición de bloqueo, la entrada ya se permite
+        # en la MISMA llamada que levantó la pausa.
+        assert allowed is True
+
+    def test_pause_not_yet_expired_is_not_lifted(self, isolated_executor):
+        cfg = _live_mode_cfg(consecutive_losses=3)
+        cfg["paused_until"] = time.time() + 3600  # vigente todavía
+        cfg["pause_reason"] = "prueba vigente"
+        auto_executor._save_config(cfg)
+
+        auto_executor.check_risk_before_trade(10.0)
+
+        fresh = auto_executor.get_config()
+        assert fresh["paused_until"] > time.time()
+        assert fresh["pause_reason"] == "prueba vigente"
+        assert fresh["consecutive_losses"] == 3  # no se reinició antes de tiempo
+
+
+# ── HALT manual sigue siendo independiente de la pausa automática ─────────
+
+class TestHaltIndependentFromPause:
+    def test_halt_is_never_lifted_by_pause_expiry(self, isolated_executor):
+        cfg = _live_mode_cfg(halt=True)
+        cfg["paused_until"] = time.time() - 1  # pausa automática ya vencida
+        cfg["pause_reason"] = "prueba"
+        auto_executor._save_config(cfg)
+
+        allowed, reason = auto_executor.check_risk_before_trade(10.0)
+
+        assert allowed is False
+        assert "HALT" in reason
+        fresh = auto_executor.get_config()
+        assert fresh["halt"] is True  # _maybe_lift_expired_pause nunca toca halt
+
+    def test_pause_expiring_does_not_auto_unhalt(self, isolated_executor):
+        cfg = _live_mode_cfg(halt=True, consecutive_losses=3)
+        cfg["paused_until"] = time.time() - 1
+        auto_executor._save_config(cfg)
+        auto_executor._maybe_lift_expired_pause()
+        assert auto_executor.get_config()["halt"] is True
+
+
+# ── La pausa sobrevive un reinicio de procesos ─────────────────────────────
+
+class TestPauseSurvivesRestart:
+    def test_pause_persists_across_a_simulated_restart(self, isolated_executor):
+        """paused_until/pause_reason viven en el mismo JSON persistido que
+        el resto de la config -- un proceso nuevo (simulado aquí releyendo
+        desde una instancia de módulo "fresca", sin ningún estado en
+        memoria previo) los lee del disco tal cual quedaron."""
+        cfg = _live_mode_cfg()
+        cfg["paused_until"] = time.time() + 3600
+        cfg["pause_reason"] = "activa antes del reinicio"
+        auto_executor._save_config(cfg)
+
+        # Simula un proceso nuevo: _load_config() vuelve a leer del disco,
+        # sin ningún estado en memoria heredado del proceso anterior.
+        reloaded = auto_executor._load_config()
+        assert reloaded["paused_until"] > time.time()
+        assert reloaded["pause_reason"] == "activa antes del reinicio"
+
+        # Y sigue bloqueando entradas después de ese "reinicio".
+        allowed, _ = auto_executor.check_risk_before_trade(10.0)
+        assert allowed is False
+
+    def test_restart_does_not_shorten_an_active_pause(self, isolated_executor):
+        cfg = _live_mode_cfg()
+        original_paused_until = time.time() + 3600
+        cfg["paused_until"] = original_paused_until
+        cfg["pause_reason"] = "no debe acortarse"
+        auto_executor._save_config(cfg)
+
+        # Nada en el arranque (_load_config, check_risk_before_trade) debe
+        # recortar ni extender paused_until por su cuenta.
+        auto_executor.check_risk_before_trade(10.0)
+        assert auto_executor.get_config()["paused_until"] == original_paused_until
+
+
+# ── 5: max_positions_open bloquea ───────────────────────────────────────────
+
+class TestMaxPositionsOpen:
+    def test_paper_blocks_when_at_limit(self, isolated_executor, monkeypatch):
+        auto_executor._save_config(dict(auto_executor.DEFAULTS, mode=AutoMode.PAPER.value, max_positions_open=2))
+        for i in range(2):
+            auto_executor.record_paper_trade(
+                symbol="AAPL", direction="buy", amount_usd=10.0,
+                entry_price=100.0, stop_loss=98.0, take_profit=105.0,
+                proposal_id=f"PROP-{i}",
+            )
+        allowed, reason = auto_executor.check_risk_before_trade(10.0)
+        assert allowed is False
+        assert "posiciones simultáneas" in reason
+
+    def test_paper_allows_below_limit(self, isolated_executor):
+        auto_executor._save_config(dict(auto_executor.DEFAULTS, mode=AutoMode.PAPER.value, max_positions_open=2))
+        auto_executor.record_paper_trade(
+            symbol="AAPL", direction="buy", amount_usd=10.0,
+            entry_price=100.0, stop_loss=98.0, take_profit=105.0,
+            proposal_id="PROP-1",
+        )
+        allowed, reason = auto_executor.check_risk_before_trade(10.0)
+        assert allowed is True
+        assert reason == ""
+
+    def test_live_counts_broker_positions_not_local_log(self, isolated_executor, monkeypatch):
+        """En LIVE, el conteo es contra el bróker real, no contra el log
+        propio -- aunque el log local diga 0 abiertas, si el bróker dice 2
+        y el techo es 2, bloquea."""
+        auto_executor._save_config(_live_mode_cfg(max_positions_open=2))
+        fake_portfolio = {"success": True, "n_positions": 2, "positions": []}
+        monkeypatch.setattr(
+            "connectors.etoro.etoro_client.get_portfolio", lambda: fake_portfolio
+        )
+        allowed, reason = auto_executor.check_risk_before_trade(10.0)
+        assert allowed is False
+        assert "posiciones simultáneas" in reason
+
+    def test_live_allows_when_broker_below_limit(self, isolated_executor, monkeypatch):
+        auto_executor._save_config(_live_mode_cfg(max_positions_open=2))
+        fake_portfolio = {"success": True, "n_positions": 1, "positions": []}
+        monkeypatch.setattr(
+            "connectors.etoro.etoro_client.get_portfolio", lambda: fake_portfolio
+        )
+        allowed, reason = auto_executor.check_risk_before_trade(10.0)
+        assert allowed is True
+
+
+# ── 6: fallo del bróker bloquea en LIVE (fail closed) ───────────────────────
+
+class TestBrokerFailureFailsClosed:
+    def test_broker_query_failure_blocks_live_trade(self, isolated_executor, monkeypatch):
+        auto_executor._save_config(_live_mode_cfg())
+        fake_portfolio = {"success": False, "error": "timeout"}
+        monkeypatch.setattr(
+            "connectors.etoro.etoro_client.get_portfolio", lambda: fake_portfolio
+        )
+        allowed, reason = auto_executor.check_risk_before_trade(10.0)
+        assert allowed is False
+        assert "bróker" in reason.lower() or "broker" in reason.lower()
+
+    def test_broker_query_exception_blocks_live_trade(self, isolated_executor, monkeypatch):
+        auto_executor._save_config(_live_mode_cfg())
+
+        def _raise():
+            raise ConnectionError("boom")
+        monkeypatch.setattr("connectors.etoro.etoro_client.get_portfolio", _raise)
+        allowed, reason = auto_executor.check_risk_before_trade(10.0)
+        assert allowed is False
+
+    def test_paper_mode_unaffected_by_broker_failure(self, isolated_executor, monkeypatch):
+        """No regresión: PAPER nunca consulta al bróker para este chequeo,
+        así que un bróker roto no debe bloquear PAPER."""
+        auto_executor._save_config(dict(auto_executor.DEFAULTS, mode=AutoMode.PAPER.value))
+
+        def _raise():
+            raise ConnectionError("boom")
+        monkeypatch.setattr("connectors.etoro.etoro_client.get_portfolio", _raise)
+        allowed, reason = auto_executor.check_risk_before_trade(10.0)
+        assert allowed is True
+
+
+# ── 7: PnL no disponible no se registra ─────────────────────────────────────
+
+class TestClosedPnlPending:
+    def test_disappeared_position_marked_pending_without_recording(
+        self, isolated_executor, monkeypatch, tg_calls
+    ):
+        from connectors.etoro import position_manager
+
+        auto_executor._save_config(_live_mode_cfg())
+        pid = _new_position_id()
+        auto_executor.record_live_trade_open(
+            position_id=pid, order_id="ORD-1", symbol="TSLA", direction="buy",
+            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
+            take_profit=310.0, proposal_id="PROP-1",
+        )
+
+        # El bróker ya no reporta esta posición como abierta.
+        monkeypatch.setattr(
+            "connectors.etoro.etoro_client.get_portfolio",
+            lambda: {"success": True, "n_positions": 0, "positions": []},
+        )
+
+        recorded = MagicMock()
+        monkeypatch.setattr(auto_executor, "record_trade_result", recorded)
+
+        actions = position_manager.check_live_positions_closed()
+
+        assert len(actions) == 1
+        assert actions[0]["status"] == "closed_pnl_pending"
+        recorded.assert_not_called()  # nunca se inventa un PnL
+
+        trades = auto_executor.get_live_trades(limit=10)
+        assert trades[0].status == "closed_pnl_pending"
+        assert any("PnL" in msg or "pnl" in msg.lower() for msg in tg_calls)
+
+    def test_position_still_open_at_broker_is_left_alone(self, isolated_executor, monkeypatch):
+        from connectors.etoro import position_manager
+
+        auto_executor._save_config(_live_mode_cfg())
+        pid = _new_position_id()
+        auto_executor.record_live_trade_open(
+            position_id=pid, order_id="ORD-1", symbol="TSLA", direction="buy",
+            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
+            take_profit=310.0, proposal_id="PROP-1",
+        )
+        monkeypatch.setattr(
+            "connectors.etoro.etoro_client.get_portfolio",
+            lambda: {"success": True, "n_positions": 1, "positions": [{"positionID": pid}]},
+        )
+        actions = position_manager.check_live_positions_closed()
+        assert actions == []
+        trades = auto_executor.get_live_trades(limit=10)
+        assert trades[0].status == "open"
+
+
+# ── 8: valores inválidos en Telegram rechazados ─────────────────────────────
+
+class TestValidateRiskLimit:
+    @pytest.mark.parametrize("key,value", [
+        ("max_position_usd", 0),
+        ("max_position_usd", -5),
+        ("max_position_usd", auto_executor.MAX_POSITION_USD_CEILING + 0.01),
+        ("max_daily_loss_usd", 0),
+        ("max_daily_loss_usd", auto_executor.MAX_DAILY_LOSS_USD_CEILING + 0.01),
+        ("stop_loss_pct", 0.0),
+        ("stop_loss_pct", 10.01),
+        ("max_consecutive_losses", 0),
+        ("max_consecutive_losses", 11),
+        ("max_positions_open", 0),
+        ("max_positions_open", 6),
+        ("min_paper_signals", 9),
+    ])
+    def test_out_of_range_rejected(self, key, value):
+        valid, coerced, error = auto_executor.validate_risk_limit(key, value)
+        assert valid is False
+        assert coerced is None
+        assert error
+
+    @pytest.mark.parametrize("key,value", [
+        ("max_position_usd", 1),
+        ("max_position_usd", auto_executor.MAX_POSITION_USD_CEILING),
+        ("max_daily_loss_usd", auto_executor.MAX_DAILY_LOSS_USD_CEILING),
+        ("stop_loss_pct", 1.5),
+        ("max_consecutive_losses", 3),
+        ("max_positions_open", 5),
+        ("min_paper_signals", 30),
+    ])
+    def test_in_range_accepted(self, key, value):
+        valid, coerced, error = auto_executor.validate_risk_limit(key, value)
+        assert valid is True
+        assert error == ""
+
+    def test_ceiling_is_not_configurable_by_the_validator_itself(self):
+        """El techo es una constante de módulo -- no un valor de config
+        que este validador pudiera aceptar cambiar."""
+        assert auto_executor.MAX_POSITION_USD_CEILING == 200.0
+        assert auto_executor.MAX_DAILY_LOSS_USD_CEILING == 50.0
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))
