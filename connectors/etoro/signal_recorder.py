@@ -221,7 +221,59 @@ def record_from_scenario(
         outcome_window_h=outcome_window_h,
     )
     save_signal(sig)
+    _capture_knowledge_async(sig)
     return sig
+
+
+def _capture_knowledge_async(sig: MarketSignal) -> None:
+    """Dispara la captura de conocimiento técnico (TA-Lib) EN SEGUNDO PLANO.
+
+    CORRECCIÓN (2026-09-25): la primera versión llamaba `_capture_knowledge`
+    en línea, dentro de `record_from_scenario()` -- que corre dentro del
+    ciclo principal de `learning_engine.run_learning_cycle()`, con un
+    presupuesto de 60s (`pipeline_worker` MAIN_LOOP_WATCHDOG y
+    MARKET_LEARN_TIMEOUT). Con varias señales nuevas en un mismo ciclo, cada
+    una con hasta 5 llamadas reales a la API de eToro, más el rate-limit
+    real observado (sleeps de 24-37s), el ciclo superaba los 60s y el
+    watchdog mataba el proceso ANTES de llegar al chequeo de posiciones
+    abiertas -- dejando trades ya vencidos sin cerrar, ciclo tras ciclo.
+
+    La captura sigue siendo la misma función y el mismo costo de red; lo
+    único que cambia es que corre en un hilo daemon que no bloquea el
+    retorno de `record_from_scenario()`, así que el ciclo principal sigue
+    su curso mientras la captura ocurre en paralelo. `knowledge_ledger` es
+    un JSONL append-only con su propio lock (ver su docstring) -- seguro
+    para escribirse desde un hilo aparte mientras el ciclo principal sigue.
+    """
+    import threading
+    threading.Thread(
+        target=_capture_knowledge, args=(sig,), daemon=True,
+        name=f"knowledge-capture-{sig.signal_id}",
+    ).start()
+
+
+def _capture_knowledge(sig: MarketSignal) -> None:
+    """Adjunta conocimiento técnico (TA-Lib) EN EL MOMENTO en que nace la
+    señal -- misma función (`knowledge_snapshot.snapshot_at`) que ya usaba
+    `knowledge_backfill.py` en retrospectiva, con `as_of_ts=sig.timestamp`
+    (que es "ahora" para una señal recién creada). Antes, solo las señales
+    backfilleadas a mano tenían conocimiento adjunto; las nuevas quedaban
+    sin él hasta que alguien corriera el backfill de nuevo.
+
+    Hace hasta 5 llamadas reales a la API de eToro (una por timeframe) --
+    el mismo costo que ya medía el backfill (~1.5s/señal, más si eToro
+    rate-limita). Corre en un hilo aparte (ver `_capture_knowledge_async`):
+    nunca bloquea el ciclo que la disparó. Nunca lanza: si esto falla, la
+    señal ya se guardó antes de spawnear el hilo -- se pierde el
+    conocimiento de ESTE instante, no la señal.
+    """
+    try:
+        from connectors.etoro.knowledge_snapshot import snapshot_at
+        from connectors.etoro import knowledge_ledger
+        features = snapshot_at(sig.symbol, sig.timestamp)
+        knowledge_ledger.record_features(sig.signal_id, features)
+    except Exception as exc:
+        logger.debug("knowledge capture failed for %s: %s", sig.signal_id, exc)
 
 
 def get_pending_signals() -> List[MarketSignal]:

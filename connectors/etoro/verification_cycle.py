@@ -11,6 +11,20 @@ Mismo patrón que ``connectors/freight/verification_cycle.py``. Aditivo: NO toca
 señales / patrones / proposals / ejecución. Deduplica por ``signal_id`` (cada
 señal se verifica UNA sola vez) para no doble-contar en el ledger acumulado.
 
+Conocimiento TA-Lib fusionado aquí (corrección 2026-09-26): cuando una señal
+se verifica contra el precio, si tiene conocimiento técnico adjunto
+(``connectors.etoro.knowledge_ledger``, capturado por separado al nacer la
+señal), este mismo paso construye TAMBIÉN un Outcome por cada condición
+TA-Lib activa en ese instante (``ta_feature_gravity.conditions_for_signal``)
+-- mismo signal_id, mismo status, misma procedencia que el Outcome del
+símbolo. Los dos van en la MISMA `Evidence` y pasan por el MISMO `commit()`:
+un solo pase, un solo origen, un solo marcador de deduplicación -- no dos
+scans independientes sobre las mismas señales. `ta_feature_gravity` ya NO
+tiene su propio contrato ni su propio origen: reutiliza `_origin_of`/
+`_origin_kind` de este módulo, así que una señal PAPER resuelta contra
+precio real cuenta como evidencia real para TA-Lib exactamente igual que ya
+cuenta para el patrón del símbolo -- no hay una regla nueva, es la MISMA.
+
 Creador: Mario Bravo Castro
 """
 from __future__ import annotations
@@ -142,9 +156,65 @@ def _fingerprint_from_outcome(outcome) -> str:
     """La estrella de un resultado recuperado del ledger.
 
     El `subject` de market ES el símbolo, así que la estrella se reconstruye
-    con la misma función que la creó.
+    con la misma función que la creó -- salvo que el Outcome traiga
+    `condition_id` en su evidencia (corrección 2026-09-26): ese es uno de
+    los outcomes TA-Lib fusionados en `_ta_condition_outcomes`, y su estrella
+    es la de la condición (`market:{symbol}:ta:{condición}`), no la del
+    símbolo. Es la MISMA distinción que hacía el contrato aparte que existía
+    antes -- ahora vive acá porque el contrato es uno solo.
     """
-    return star_fingerprint_for(getattr(outcome, "subject", ""))
+    condition_id = str((getattr(outcome, "evidence", None) or {}).get("condition_id", "") or "")
+    subject = getattr(outcome, "subject", "")
+    if condition_id:
+        from connectors.etoro.ta_feature_gravity import star_fingerprint_for as ta_star_fingerprint_for
+        return ta_star_fingerprint_for(subject, condition_id)
+    return star_fingerprint_for(subject)
+
+
+def _ta_condition_outcomes(sig: Any, status: OutcomeStatus, resolved_ts: float) -> List[Outcome]:
+    """Outcomes TA-Lib de la MISMA señal que se está verificando -- mismo
+    signal_id, mismo status y mismo resolved_ts que el Outcome del símbolo
+    (`status`/`resolved_ts` se reciben del caller para que ambos compartan
+    exactamente el mismo veredicto, sin recalcular nada por separado).
+
+    Sin conocimiento técnico adjunto todavía (`knowledge_ledger.get_features`
+    devuelve `None` -- la captura en segundo plano de `signal_recorder`
+    puede no haber terminado, o haber fallado): lista vacía. No bloquea ni
+    retrasa la verificación del outcome principal; si la señal se vuelve a
+    presentar en un ciclo posterior (replayable=True), se reintenta sola.
+    """
+    from connectors.etoro import knowledge_ledger
+    from connectors.etoro.ta_feature_gravity import (
+        conditions_for_signal, ensure_condition_stars,
+    )
+
+    signal_id = str(getattr(sig, "signal_id", "") or "")
+    entry = knowledge_ledger.get_features(signal_id)
+    if not entry:
+        return []
+
+    symbol = str(getattr(sig, "symbol", "") or "").upper()
+    price = float(getattr(sig, "entry_price", None) or getattr(sig, "price", 0.0) or 0.0)
+    conditions = conditions_for_signal(entry.get("features", {}), price)
+    if not conditions:
+        return []
+
+    # Misma llamada que antes creaba/tocaba la estrella de cada condición
+    # (gravity_engine.record_event) -- ahora disparada desde este único pase
+    # en vez de un scan aparte.
+    ensure_condition_stars(symbol, conditions)
+
+    return [
+        Outcome(
+            prediction_id=f"{signal_id}::{condition_id}",
+            domain=_DOMAIN,
+            subject=symbol,
+            status=status,
+            resolved_ts=resolved_ts,
+            evidence={"condition_id": condition_id, "signal_id": signal_id},
+        )
+        for condition_id in conditions
+    ]
 
 
 def _origin_of(sig: Any) -> str:
@@ -219,11 +289,17 @@ def _verify(signals: Iterable[Any], record: bool):
         outcome = _ADAPTER.resolve(pred, obs)
         outcomes.append(outcome)
         if outcome.status is not OutcomeStatus.PENDING:
-            # Una señal produce UN resultado, pero se entrega como evidencia
-            # igualmente: la regla de "confirmar solo lo completo" es del
-            # contrato y vale igual para 1:1 que para 1:N.
+            # Fusión TA-Lib (corrección 2026-09-26): el Outcome del símbolo
+            # y los outcomes de sus condiciones TA-Lib activas -- si las
+            # tiene -- van en la MISMA evidencia. `score_outcomes` abajo
+            # sigue viendo solo `outcome` (uno por señal): los TA-Lib no
+            # entran al DomainScore del símbolo, solo a sus propias
+            # estrellas de condición, vía la gravedad del commit().
+            combined = (
+                outcome, *_ta_condition_outcomes(sig, outcome.status, outcome.resolved_ts),
+            )
             evidences.append(outcome_contract.evidence(
-                _signal_identity(sig), _origin_of(sig), outcome,
+                _signal_identity(sig), _origin_of(sig), *combined,
             ))
 
     # El marcador de esta fuente (`market_verified.json`) lo confirma el
