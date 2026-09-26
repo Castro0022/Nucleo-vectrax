@@ -3082,6 +3082,43 @@ class TelegramGateway:
                         )
                     self._send(cid, "\n".join(lines))
 
+                elif auto_sub == "live_pnl":
+                    # Corrección 2026-09-26 (tercera vuelta del PR #134):
+                    # entrada manual del PnL REAL de una posición LIVE cuyo
+                    # cierre solo tiene una estimación de peor caso
+                    # (pnl_source="estimated") -- este cliente todavía no
+                    # tiene un endpoint de historial de posiciones cerradas
+                    # que funcione (investigado: 404 contra la API real).
+                    # Reemplaza la estimación, nunca se suma; desbloquea
+                    # check_risk_before_trade() si era la última pendiente.
+                    if len(auto_args) < 2:
+                        self._send(
+                            cid,
+                            "Uso: /vx etoro auto live_pnl <trade_id> <pnl>\n"
+                            "Ej.: /vx etoro auto live_pnl LIVE-12345 -3.20",
+                        )
+                        return
+                    trade_id, pnl_raw = auto_args[0], auto_args[1]
+                    try:
+                        pnl_value = float(pnl_raw)
+                    except ValueError:
+                        self._send(cid, "PnL inválido — debe ser un número (p. ej. -3.20).")
+                        return
+                    from connectors.etoro.auto_executor import record_live_trade_real_pnl
+                    changed = record_live_trade_real_pnl(trade_id, pnl_value)
+                    if changed:
+                        self._send(
+                            cid,
+                            f"✅ PnL real registrado para {trade_id}: ${pnl_value:.2f}\n"
+                            f"Reemplazó cualquier estimación previa.",
+                        )
+                    else:
+                        self._send(
+                            cid,
+                            f"⚠️ No se registró — {trade_id} no existe, o ya "
+                            f"tenía un PnL real definitivo.",
+                        )
+
                 else:
                     self._send(cid, (
                         "🤖 /vx etoro auto <sub>\n"
@@ -3091,7 +3128,8 @@ class TelegramGateway:
                         "  off             — desactivar\n"
                         "  exec <ID> [$]   — ejecutar propuesta\n"
                         "  config [k v]    — ver/cambiar límites de riesgo\n"
-                        "  paper_log       — historial de trades simulados"
+                        "  paper_log       — historial de trades simulados\n"
+                        "  live_pnl <id> <pnl> — registrar PnL real de un cierre LIVE estimado"
                     ))
                 return
 

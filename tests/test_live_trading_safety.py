@@ -453,18 +453,28 @@ class TestBrokerFailureFailsClosed:
 # ── 7: PnL no disponible no se registra ─────────────────────────────────────
 
 class TestClosedPnlPending:
-    def test_disappeared_position_marked_pending_without_recording(
+    """Corrección 2026-09-26 (segunda vuelta del PR #134): reemplaza el
+    diseño anterior ("closed_pnl_pending sin registrar nada") por una
+    estimación de peor caso inmediata, marcada pnl_source="estimated"."""
+
+    def _open_trade(self, **overrides):
+        pid = _new_position_id()
+        kwargs = dict(
+            position_id=pid, order_id="ORD-1", symbol="TSLA", direction="buy",
+            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
+            take_profit=310.0, proposal_id="PROP-1",
+        )
+        kwargs.update(overrides)
+        auto_executor.record_live_trade_open(**kwargs)
+        return pid
+
+    def test_disappeared_position_gets_worst_case_estimate_recorded(
         self, isolated_executor, monkeypatch, tg_calls
     ):
         from connectors.etoro import position_manager
 
         auto_executor._save_config(_live_mode_cfg())
-        pid = _new_position_id()
-        auto_executor.record_live_trade_open(
-            position_id=pid, order_id="ORD-1", symbol="TSLA", direction="buy",
-            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
-            take_profit=310.0, proposal_id="PROP-1",
-        )
+        pid = self._open_trade()
 
         # El bróker ya no reporta esta posición como abierta.
         monkeypatch.setattr(
@@ -472,29 +482,30 @@ class TestClosedPnlPending:
             lambda: {"success": True, "n_positions": 0, "positions": []},
         )
 
-        recorded = MagicMock()
-        monkeypatch.setattr(auto_executor, "record_trade_result", recorded)
-
         actions = position_manager.check_live_positions_closed()
 
         assert len(actions) == 1
         assert actions[0]["status"] == "closed_pnl_pending"
-        recorded.assert_not_called()  # nunca se inventa un PnL
+        # Estimación de peor caso: amount_usd * |entry-stop|/entry
+        # = 50 * (300-295)/300 = 0.8333...
+        assert actions[0]["pnl_estimate_usd"] == pytest.approx(-0.83, abs=0.01)
 
         trades = auto_executor.get_live_trades(limit=10)
-        assert trades[0].status == "closed_pnl_pending"
-        assert any("PnL" in msg or "pnl" in msg.lower() for msg in tg_calls)
+        assert trades[0].pnl_source == "estimated"
+        assert trades[0].status == "closed_loss"
+        assert trades[0].pnl_usd < 0
+        assert any("pnl" in msg.lower() or "estimaci" in msg.lower() for msg in tg_calls)
+
+        # Y SÍ cuenta para los contadores de riesgo -- a diferencia del
+        # diseño anterior, que nunca llamaba a nada.
+        cfg = auto_executor.get_config()
+        assert cfg["consecutive_losses"] == 1
 
     def test_position_still_open_at_broker_is_left_alone(self, isolated_executor, monkeypatch):
         from connectors.etoro import position_manager
 
         auto_executor._save_config(_live_mode_cfg())
-        pid = _new_position_id()
-        auto_executor.record_live_trade_open(
-            position_id=pid, order_id="ORD-1", symbol="TSLA", direction="buy",
-            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
-            take_profit=310.0, proposal_id="PROP-1",
-        )
+        pid = self._open_trade()
         monkeypatch.setattr(
             "connectors.etoro.etoro_client.get_portfolio",
             lambda: {"success": True, "n_positions": 1, "positions": [{"positionID": pid}]},
@@ -503,6 +514,235 @@ class TestClosedPnlPending:
         assert actions == []
         trades = auto_executor.get_live_trades(limit=10)
         assert trades[0].status == "open"
+        assert trades[0].pnl_source is None
+
+    def test_zero_paper_trades_still_detects_live_close(self, isolated_executor, monkeypatch):
+        """Bug real encontrado 2026-09-26 (cuarta vuelta del PR #134):
+        check_open_positions() salía antes de llegar a la detección LIVE
+        cuando no había trades PAPER abiertos -- el caso normal en modo
+        LIVE puro. Sin ningún trade PAPER, la detección LIVE debe correr
+        igual."""
+        from connectors.etoro import position_manager
+
+        auto_executor._save_config(_live_mode_cfg())
+        assert auto_executor.get_paper_trades(limit=100) == []  # cero PAPER abiertos
+
+        pid = self._open_trade()
+        monkeypatch.setattr(
+            "connectors.etoro.etoro_client.get_portfolio",
+            lambda: {"success": True, "n_positions": 0, "positions": []},
+        )
+
+        actions = position_manager.check_open_positions()  # la función completa, no solo la LIVE
+
+        assert len(actions) == 1
+        assert actions[0]["trade_id"] == f"LIVE-{pid}"
+        trades = auto_executor.get_live_trades(limit=10)
+        assert trades[0].pnl_source == "estimated"
+
+
+# ── record_live_trade_result: estimado vs real, sin sumar ─────────────────
+
+class TestRecordLiveTradeResultPrecedence:
+    def test_duplicate_estimate_ignored(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg())
+        pid = _new_position_id()
+        auto_executor.record_live_trade_open(
+            position_id=pid, order_id="O1", symbol="TSLA", direction="buy",
+            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
+            take_profit=310.0, proposal_id="P1",
+        )
+        tid = f"LIVE-{pid}"
+
+        changed1 = auto_executor.record_live_trade_result(tid, -5.0, source="estimated")
+        changed2 = auto_executor.record_live_trade_result(tid, -5.0, source="estimated")
+
+        assert changed1 is True
+        assert changed2 is False  # duplicada, ignorada
+        trade = auto_executor.get_live_trades(limit=10)[0]
+        assert trade.pnl_usd == -5.0  # no se duplicó/sumó
+
+    def test_real_pnl_replaces_estimate_without_summing(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg())
+        pid = _new_position_id()
+        auto_executor.record_live_trade_open(
+            position_id=pid, order_id="O1", symbol="TSLA", direction="buy",
+            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
+            take_profit=310.0, proposal_id="P1",
+        )
+        tid = f"LIVE-{pid}"
+
+        auto_executor.record_live_trade_result(tid, -5.0, source="estimated")
+        changed = auto_executor.record_live_trade_result(tid, -3.0, source="real")
+
+        assert changed is True
+        trade = auto_executor.get_live_trades(limit=10)[0]
+        assert trade.pnl_usd == -3.0  # reemplazó, NO -5 + -3 = -8
+        assert trade.pnl_source == "real"
+
+    def test_real_pnl_is_final_nothing_overwrites_it(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg())
+        pid = _new_position_id()
+        auto_executor.record_live_trade_open(
+            position_id=pid, order_id="O1", symbol="TSLA", direction="buy",
+            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
+            take_profit=310.0, proposal_id="P1",
+        )
+        tid = f"LIVE-{pid}"
+        auto_executor.record_live_trade_result(tid, -3.0, source="real")
+
+        changed = auto_executor.record_live_trade_result(tid, -99.0, source="estimated")
+
+        assert changed is False
+        trade = auto_executor.get_live_trades(limit=10)[0]
+        assert trade.pnl_usd == -3.0  # intacto
+
+    def test_manual_real_pnl_shortcut_uses_source_real(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg())
+        pid = _new_position_id()
+        auto_executor.record_live_trade_open(
+            position_id=pid, order_id="O1", symbol="TSLA", direction="buy",
+            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
+            take_profit=310.0, proposal_id="P1",
+        )
+        changed = auto_executor.record_live_trade_real_pnl(f"LIVE-{pid}", 4.5)
+        assert changed is True
+        trade = auto_executor.get_live_trades(limit=10)[0]
+        assert trade.pnl_source == "real"
+        assert trade.pnl_usd == 4.5
+
+
+# ── Recálculo desde cero: día, racha, y su interacción con la pausa ────────
+
+class TestRecomputedRiskCounters:
+    def _open_and_close(self, symbol, pnl, closed_at, source="real"):
+        pid = _new_position_id()
+        auto_executor.record_live_trade_open(
+            position_id=pid, order_id="O", symbol=symbol, direction="buy",
+            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
+            take_profit=310.0, proposal_id="P",
+        )
+        tid = f"LIVE-{pid}"
+        auto_executor.record_live_trade_result(tid, pnl, source=source, closed_at=closed_at)
+        return tid
+
+    def test_correcting_yesterdays_close_does_not_affect_todays_daily_loss(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg(max_consecutive_losses=99, max_daily_loss_usd=999))
+        yesterday = time.time() - 90000  # >24h atrás, otro día calendario
+        today = time.time()
+
+        tid_yesterday = self._open_and_close("AAPL", -1.0, closed_at=yesterday, source="estimated")
+        self._open_and_close("TSLA", -7.0, closed_at=today)
+
+        cfg = auto_executor.get_config()
+        assert cfg["daily_loss_usd"] == pytest.approx(7.0)  # solo la de hoy
+
+        # Corrección REAL del cierre de ayer (reemplaza la estimación) --
+        # sigue siendo de ayer, no debe sumarse ni restarse del daily_loss
+        # de HOY, sin importar cuánto cambie el número corregido.
+        auto_executor.record_live_trade_result(
+            tid_yesterday, -50.0, source="real", closed_at=yesterday,
+        )
+
+        cfg = auto_executor.get_config()
+        assert cfg["daily_loss_usd"] == pytest.approx(7.0)  # sin cambios
+
+    def test_streak_reconstructed_correctly_after_a_correction(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg(max_consecutive_losses=99, max_daily_loss_usd=999))
+        now = time.time()
+        t1 = self._open_and_close("AAPL", -5.0, closed_at=now - 30, source="estimated")
+        t2 = self._open_and_close("TSLA", -5.0, closed_at=now - 20, source="estimated")
+        t3 = self._open_and_close("NVDA", -5.0, closed_at=now - 10, source="estimated")
+
+        assert auto_executor.get_config()["consecutive_losses"] == 3
+
+        # Corrección: la del MEDIO (t2) en realidad fue una ganancia.
+        auto_executor.record_live_trade_result(t2, 8.0, source="real", closed_at=now - 20)
+
+        # Secuencia cronológica ahora: loss(t1), win(t2), loss(t3) -- la
+        # racha ACTUAL (desde el cierre más reciente hacia atrás) es 1.
+        assert auto_executor.get_config()["consecutive_losses"] == 1
+
+    def test_improving_correction_does_not_lift_an_active_pause(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg(max_consecutive_losses=3, max_daily_loss_usd=999))
+        now = time.time()
+        t1 = self._open_and_close("AAPL", -5.0, closed_at=now - 30, source="estimated")
+        self._open_and_close("TSLA", -5.0, closed_at=now - 20, source="estimated")
+        self._open_and_close("NVDA", -5.0, closed_at=now - 10, source="estimated")
+
+        cfg = auto_executor.get_config()
+        assert cfg["paused_until"] > 0
+        paused_until_before = cfg["paused_until"]
+
+        # Corrección que MEJORA (t1 en realidad fue ganancia) -- ya no hay
+        # 3 pérdidas consecutivas, pero la pausa activa NO debe levantarse.
+        auto_executor.record_live_trade_result(t1, 3.0, source="real", closed_at=now - 30)
+
+        cfg = auto_executor.get_config()
+        assert cfg["paused_until"] == paused_until_before  # sin cambios
+        assert cfg["consecutive_losses"] < 3  # el número sí se corrigió
+
+    def test_worsening_correction_activates_a_new_pause(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg(max_consecutive_losses=3, max_daily_loss_usd=999))
+        now = time.time()
+        self._open_and_close("AAPL", -5.0, closed_at=now - 30, source="estimated")
+        self._open_and_close("TSLA", 8.0, closed_at=now - 20, source="estimated")  # gana, rompe la racha
+        self._open_and_close("NVDA", -5.0, closed_at=now - 10, source="estimated")
+
+        assert auto_executor.get_config()["paused_until"] == 0  # racha actual=1, sin pausa
+
+        # Corrección que EMPEORA: la ganancia del medio en realidad fue
+        # pérdida -> secuencia queda loss/loss/loss -> racha reconstruida
+        # = 3 -> cruza el límite -> se activa la pausa.
+        trades = auto_executor.get_live_trades(limit=10)
+        middle = next(t for t in trades if t.symbol == "TSLA")
+        auto_executor.record_live_trade_result(
+            middle.trade_id, -2.0, source="real", closed_at=now - 20,
+        )
+
+        cfg = auto_executor.get_config()
+        assert cfg["consecutive_losses"] == 3
+        assert cfg["paused_until"] > 0  # la corrección que empeora SÍ activa
+
+
+# ── Fail-closed: bloqueo mientras haya estimaciones sin confirmar ─────────
+
+class TestFailClosedWhilePending:
+    def test_blocks_new_entries_while_any_estimate_pending(self, isolated_executor):
+        auto_executor._save_config(_live_mode_cfg())
+        pid = _new_position_id()
+        auto_executor.record_live_trade_open(
+            position_id=pid, order_id="O1", symbol="TSLA", direction="buy",
+            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
+            take_profit=310.0, proposal_id="P1",
+        )
+        auto_executor.record_live_trade_result(f"LIVE-{pid}", -0.8, source="estimated")
+
+        allowed, reason = auto_executor.check_risk_before_trade(10.0)
+        assert allowed is False
+        assert "estimad" in reason.lower()
+
+    def test_resolving_the_estimate_unblocks(self, isolated_executor, monkeypatch):
+        auto_executor._save_config(_live_mode_cfg())
+        pid = _new_position_id()
+        auto_executor.record_live_trade_open(
+            position_id=pid, order_id="O1", symbol="TSLA", direction="buy",
+            amount_usd=50.0, entry_price=300.0, stop_loss=295.0,
+            take_profit=310.0, proposal_id="P1",
+        )
+        auto_executor.record_live_trade_result(f"LIVE-{pid}", -0.8, source="estimated")
+        assert auto_executor.check_risk_before_trade(10.0)[0] is False
+
+        auto_executor.record_live_trade_real_pnl(f"LIVE-{pid}", -0.8)
+
+        # También aislar del chequeo de max_positions_open (no es lo que
+        # este test verifica).
+        monkeypatch.setattr(
+            "connectors.etoro.etoro_client.get_portfolio",
+            lambda: {"success": True, "n_positions": 0, "positions": []},
+        )
+        allowed, reason = auto_executor.check_risk_before_trade(10.0)
+        assert allowed is True, reason
 
 
 # ── 8: valores inválidos en Telegram rechazados ─────────────────────────────

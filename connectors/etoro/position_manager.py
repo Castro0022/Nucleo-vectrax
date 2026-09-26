@@ -43,9 +43,14 @@ def check_open_positions() -> List[Dict[str, Any]]:
     max_hold_h = cfg.get("max_hold_hours", 24)
     actions = []
 
+    # Bug real encontrado 2026-09-26 (cuarta vuelta del PR #134): este
+    # "if not open_trades: return actions" salía ANTES de llegar a la
+    # detección LIVE de abajo. En modo LIVE puro -- el caso normal una vez
+    # pasada la fase PAPER inicial, sin ningún trade PAPER abierto -- eso
+    # significaba que check_live_positions_closed() JAMÁS corría. El bucle
+    # de abajo sobre una lista vacía ya es un no-op por sí solo; no hace
+    # falta ningún return temprano.
     open_trades = [t for t in get_paper_trades(limit=100) if t.status == "open"]
-    if not open_trades:
-        return actions
 
     for trade in open_trades:
         close_reason = _evaluate_exit(trade, max_hold_h)
@@ -88,18 +93,27 @@ def check_live_positions_closed() -> List[Dict[str, Any]]:
     el registro propio, y su resultado nunca llegaba a
     record_trade_result()).
 
-    NUNCA inventa ni estima el PnL. `get_portfolio()` solo da PnL NO
-    realizado de posiciones ABIERTAS — este cliente de eToro todavía no
-    tiene un endpoint de historial de posiciones cerradas, así que una
-    posición recién desaparecida no tiene, hoy, una fuente de PnL
-    realizado. Se marca `closed_pnl_pending` y se avisa por Telegram; NO
-    se llama a `record_trade_result()` para ella — contarla con un PnL
-    desconocido sería peor que no contarla (inflaría o desinflaría
-    consecutive_losses/daily_loss_usd con un número inventado). Si en el
-    futuro se agrega un endpoint de historial, conectar el PnL real aquí
-    es el único cambio que hace falta.
+    `get_portfolio()` solo da PnL NO realizado de posiciones ABIERTAS —
+    este cliente de eToro todavía no tiene un endpoint de historial de
+    posiciones cerradas que funcione (investigado 2026-09-26: el único
+    candidato en el código, `portfolio.get_trade_history()`, devuelve 404
+    contra la API real -- no existe en esa ruta). Corrección 2026-09-26
+    (segunda vuelta del PR #134): en vez de "closed_pnl_pending sin
+    registrar nada", ahora se registra de inmediato una ESTIMACIÓN de
+    peor caso (`auto_executor.worst_case_pnl_estimate`, asumiendo que se
+    tocó el propio stop-loss de la posición) vía
+    `record_live_trade_result(..., source="estimated")` -- eso SÍ cuenta
+    para daily_loss_usd/consecutive_losses (recalculados, nunca
+    inventados como un número fijo) y puede activar la pausa de 24h. Se
+    avisa por Telegram. Cuando llegue el PnL real (bróker o
+    `/vx etoro live_pnl`, corrección manual del creador), reemplaza la
+    estimación -- nunca se suma sobre ella. Mientras el resultado siga
+    siendo `pnl_source="estimated"`, `check_risk_before_trade()` bloquea
+    toda entrada nueva (fail-closed) hasta que se confirme.
     """
-    from connectors.etoro.auto_executor import get_live_trades, _update_live_trade
+    from connectors.etoro.auto_executor import (
+        get_live_trades, record_live_trade_result, worst_case_pnl_estimate,
+    )
 
     actions: List[Dict[str, Any]] = []
     open_live = [t for t in get_live_trades(limit=200) if t.status == "open"]
@@ -128,28 +142,33 @@ def check_live_positions_closed() -> List[Dict[str, Any]]:
         if trade.position_id in broker_position_ids:
             continue  # sigue abierta según el bróker
 
-        _update_live_trade(trade.position_id, {"status": "closed_pnl_pending"})
+        estimate = worst_case_pnl_estimate(trade)
+        recorded = record_live_trade_result(
+            trade.trade_id, estimate, source="estimated",
+        )
         actions.append({
             "trade_id": trade.trade_id,
             "position_id": trade.position_id,
             "symbol": trade.symbol,
-            "status": "closed_pnl_pending",
+            "status": "closed_pnl_pending",  # etiqueta para quien lea `actions`
             "reason": "closed_pnl_pending",
+            "pnl_estimate_usd": round(estimate, 2),
         })
         logger.warning(
-            "[LIVE_POS] %s (%s %s) ya no está abierta en el bróker y no se "
-            "pudo obtener su PnL realizado — marcada closed_pnl_pending, "
-            "SIN registrar en record_trade_result.",
+            "[LIVE_POS] %s (%s %s) ya no está abierta en el bróker — sin "
+            "PnL realizado disponible, estimación de peor caso registrada: "
+            "%.2f USD (recorded=%s)",
             trade.trade_id, trade.direction.upper(), trade.symbol,
+            estimate, recorded,
         )
         try:
             from connectors.etoro.learning_engine import _tg_notify
             _tg_notify(
                 f"⚠️ Posición LIVE {trade.symbol} ({trade.trade_id}) se "
-                f"cerró en el bróker pero no se pudo obtener el PnL "
-                f"realizado. Revisar manualmente con /etoro portfolio o el "
-                f"historial de eToro — no se contó contra los límites de "
-                f"riesgo."
+                f"cerró en el bróker sin PnL realizado disponible.\n"
+                f"Estimación de peor caso registrada: ${estimate:.2f}\n\n"
+                f"Entradas nuevas BLOQUEADAS hasta confirmar el PnL real "
+                f"con /vx etoro live_pnl {trade.trade_id} <pnl>."
             )
         except Exception:
             pass

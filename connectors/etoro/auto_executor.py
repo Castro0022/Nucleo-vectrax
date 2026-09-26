@@ -738,6 +738,27 @@ def check_risk_before_trade(
             f"Reanuda en {remaining_h:.1f}h (automático, sin intervención manual)."
         )
 
+    # 0.6 Fail-closed: mientras exista una posición LIVE con PnL solo
+    #     ESTIMADO (pnl_source == "estimated", ver check_live_positions_closed
+    #     y worst_case_pnl_estimate) -- no confirmado por el bróker ni por
+    #     el creador -- no se abre nada nuevo. Una estimación de peor caso
+    #     es una medida de seguridad para los contadores de riesgo, no una
+    #     confirmación en la que apoyarse para seguir operando. Corrección
+    #     2026-09-26 (tercera vuelta del PR #134). No tiene su propio
+    #     aviso por Telegram aquí a propósito -- ya se avisó UNA vez cuando
+    #     se detectó y estimó el cierre; repetirlo en cada chequeo de
+    #     riesgo sería spam.
+    pending_estimates = [
+        t for t in get_live_trades(limit=200) if t.pnl_source == "estimated"
+    ]
+    if pending_estimates:
+        ids = ", ".join(t.trade_id for t in pending_estimates)
+        return False, (
+            f"⏸️ {len(pending_estimates)} posición(es) LIVE con PnL "
+            f"estimado, sin confirmar ({ids}). Bloqueado hasta resolver "
+            f"con /vx etoro live_pnl <trade_id> <pnl>."
+        )
+
     # 1. Mode must be PAPER or LIVE
     mode = AutoMode(cfg["mode"])
     if mode == AutoMode.OFF:
@@ -1041,10 +1062,24 @@ class LiveTrade:
     stop_loss:   float
     take_profit: float
     proposal_id: str
-    status:      str = "open"   # open / closed_win / closed_loss / closed_neutral / closed_pnl_pending
+    status:      str = "open"   # open / closed_win / closed_loss / closed_neutral
     exit_price:  Optional[float] = None
     pnl_usd:     Optional[float] = None
     pnl_pct:     Optional[float] = None
+    # Corrección 2026-09-26 (segunda y tercera vuelta del PR #134):
+    # `pnl_source` reemplaza el status "closed_pnl_pending" que existía
+    # antes -- ahora SIEMPRE hay un pnl_usd en cuanto se detecta el cierre
+    # (al menos una estimación de peor caso), y lo que distingue si es
+    # confiable es este campo, no un status aparte.
+    #   None        -> todavía abierta.
+    #   "estimated" -> pnl_usd es una estimación de peor caso, NO
+    #                  confirmada por el bróker. check_risk_before_trade()
+    #                  bloquea toda entrada nueva mientras exista al
+    #                  menos una posición en este estado (fail-closed).
+    #   "real"      -> pnl_usd confirmado (bróker o corrección manual del
+    #                  creador). Definitivo: nada lo puede reemplazar.
+    pnl_source:  Optional[str] = None
+    closed_at:   Optional[float] = None
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -1151,6 +1186,168 @@ def _update_live_trade(position_id: str, updates: Dict) -> bool:
         logger.error("_update_live_trade error: %s", e)
         return False
     return found
+
+
+def worst_case_pnl_estimate(trade: "LiveTrade") -> float:
+    """Estimación de PnL de peor caso para una posición LIVE que
+    desapareció del bróker sin PnL realizado disponible: asume que se
+    tocó el propio stop-loss registrado de ESTA operación (no el
+    `stop_loss_pct` global de la config, que pudo cambiar desde que se
+    abrió). `entry_price`/`stop_loss` ya son niveles de precio absolutos
+    guardados en la propia LiveTrade -- más preciso que releer un
+    porcentaje genérico."""
+    if not trade.entry_price:
+        return 0.0
+    stop_pct = abs(trade.entry_price - trade.stop_loss) / trade.entry_price
+    return -abs(trade.amount_usd * stop_pct)
+
+
+def _recompute_live_risk_counters(live_trades: "List[LiveTrade]") -> "tuple[float, int]":
+    """`daily_loss_usd` (de HOY) y `consecutive_losses` (racha), RECALCULADOS
+    desde cero a partir de los registros de resultado LIVE -- nunca
+    acumulados. Corrección 2026-09-26 (segunda vuelta del PR #134): esto es
+    lo que permite que una corrección posterior (estimado -> real) reescriba
+    el pasado sin duplicar ni arrastrar un número viejo que ya no es cierto.
+
+    - `daily_loss_usd`: suma de pérdidas (`pnl_usd < 0`) de cierres LIVE
+      cuyo `closed_at` cae en el día de HOY (hora local, mismo criterio que
+      `_reset_daily_loss_if_new_day`). Un cierre de otro día nunca contribuye,
+      así que corregir el PnL de una operación de ayer no mueve el número de
+      hoy.
+    - `consecutive_losses`: la racha reconstruida recorriendo los cierres
+      resueltos en orden cronológico por `closed_at`, contando hacia atrás
+      desde el más reciente hasta el primer resultado que NO sea pérdida
+      (pnl_usd >= 0 rompe la racha, mismo criterio que ya usaba
+      record_trade_result).
+
+    Solo considera cierres con `pnl_usd is not None` -- una posición sin
+    resultado todavía (imposible en la práctica, pero defensivo) no cuenta
+    como nada.
+    """
+    resolved = sorted(
+        (t for t in live_trades if t.pnl_usd is not None and t.closed_at),
+        key=lambda t: t.closed_at,
+    )
+    today = time.strftime("%Y-%m-%d")
+    daily_loss = 0.0
+    for t in resolved:
+        if t.pnl_usd < 0 and time.strftime("%Y-%m-%d", time.localtime(t.closed_at)) == today:
+            daily_loss += abs(t.pnl_usd)
+
+    consecutive = 0
+    for t in reversed(resolved):
+        if t.pnl_usd < 0:
+            consecutive += 1
+        else:
+            break
+
+    return round(daily_loss, 2), consecutive
+
+
+def record_live_trade_result(
+    trade_id: str, pnl_usd: float, source: str, closed_at: Optional[float] = None,
+) -> bool:
+    """Registra (o corrige) el resultado de UN cierre LIVE ya detectado por
+    `record_live_trade_open()`. Corrección 2026-09-26 (segunda vuelta del
+    PR #134): reemplaza el diseño anterior de "closed_pnl_pending sin
+    registrar nada en absoluto" -- ahora SIEMPRE hay un resultado (al menos
+    una estimación de peor caso, ver `worst_case_pnl_estimate`), y
+    `daily_loss_usd`/`consecutive_losses` se recalculan desde cero cada vez
+    (`_recompute_live_risk_counters`) en vez de acumularse en el momento.
+
+    Precedencia -- NUNCA se suma, siempre se reemplaza o se ignora:
+      - sin registro previo de resultado (`pnl_source is None`)  -> se escribe.
+      - previo 'estimated', nuevo 'estimated'  -> no-op (estimación duplicada).
+      - previo 'estimated', nuevo 'real'        -> reemplaza (nunca suma).
+      - previo 'real' (cualquier fuente nueva)  -> no-op (ya es definitivo,
+        nada lo puede pisar -- ni siquiera otro "real").
+
+    Tras escribir, SIEMPRE recalcula y persiste daily_loss_usd/
+    consecutive_losses desde el log completo, y evalúa los cortacircuitos:
+      - Si el recálculo cruza un límite, activa la pausa de 24h
+        (`_activate_pause`, idempotente -- no la extiende si ya estaba
+        activa ni pisa su motivo).
+      - Si el recálculo MEJORA (ya no cruza el límite), NO se toca ninguna
+        pausa ya activa -- este código nunca "levanta" una pausa por
+        mejorar; solo `_maybe_lift_expired_pause()` la levanta, por tiempo.
+
+    Todo bajo el mismo `_locked_config()` -- lectura, escritura del log LIVE,
+    recálculo y evaluación del cortacircuito son una sola sección crítica.
+
+    Devuelve True si el registro cambió (nuevo o reemplazado por uno real),
+    False si fue un no-op (duplicado, ya definitivo, o trade_id desconocido).
+    """
+    if source not in ("estimated", "real"):
+        raise ValueError(f"source debe ser 'estimated' o 'real', no {source!r}")
+    closed_at = closed_at if closed_at is not None else time.time()
+
+    changed = False
+    with _locked_config():
+        trades = get_live_trades(limit=0)
+        existing = next((t for t in trades if t.trade_id == trade_id), None)
+        if existing is None:
+            logger.warning(
+                "[LIVE] record_live_trade_result: trade_id %s no existe en "
+                "el log -- no se puede registrar su resultado.", trade_id,
+            )
+            return False
+
+        if existing.pnl_source == "real":
+            logger.debug(
+                "[LIVE] %s ya tiene PnL real definitivo -- ignorado (%s)",
+                trade_id, source,
+            )
+            return False
+        if existing.pnl_source == "estimated" and source == "estimated":
+            logger.debug("[LIVE] %s: estimación duplicada ignorada", trade_id)
+            return False
+
+        status = (
+            "closed_win" if pnl_usd > 0 else
+            "closed_loss" if pnl_usd < 0 else "closed_neutral"
+        )
+        _update_live_trade(existing.position_id, {
+            "status": status,
+            "pnl_usd": round(pnl_usd, 2),
+            "pnl_source": source,
+            "closed_at": closed_at,
+        })
+        changed = True
+        logger.warning(
+            "[LIVE] %s | resultado %s registrado: PnL=%.2f USD (%s)",
+            trade_id, source, pnl_usd, status,
+        )
+
+        fresh_trades = get_live_trades(limit=0)
+        daily_loss, consecutive = _recompute_live_risk_counters(fresh_trades)
+
+        cfg = _load_config()
+        cfg["daily_loss_usd"] = daily_loss
+        cfg["consecutive_losses"] = consecutive
+
+        if consecutive >= cfg["max_consecutive_losses"]:
+            _activate_pause(cfg, reason=(
+                f"{consecutive} pérdidas consecutivas LIVE "
+                f"(límite {cfg['max_consecutive_losses']})"
+            ))
+        if daily_loss >= cfg["max_daily_loss_usd"]:
+            _activate_pause(cfg, reason=(
+                f"límite de pérdida diaria LIVE alcanzado "
+                f"(${daily_loss:.2f} / ${cfg['max_daily_loss_usd']:.2f})"
+            ))
+        _save_config(cfg)
+
+    return changed
+
+
+def record_live_trade_real_pnl(trade_id: str, pnl_usd: float) -> bool:
+    """Atajo para que el creador registre manualmente el PnL REAL de una
+    posición LIVE (p. ej. leyéndolo del historial en la app de eToro,
+    mientras este cliente no tenga un endpoint de historial de posiciones
+    cerradas que funcione -- ver la investigación en el PR). Reemplaza
+    cualquier estimación previa de ESE trade_id; nunca se suma. Expuesto
+    por Telegram vía `/vx etoro live_pnl <trade_id> <pnl>`."""
+    return record_live_trade_result(trade_id, pnl_usd, source="real", closed_at=time.time())
 
 
 # ── Execute proposal ──────────────────────────────────────────────────
